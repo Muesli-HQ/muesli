@@ -721,6 +721,60 @@ struct MeetingsNavigationTests {
         ) == .failed)
     }
 
+    @Test("retry registration survives navigation, rejects duplicate jobs, and cancellation preserves data")
+    func retryRegistrationAndCancellation() async throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(
+            title: "Existing meeting", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Original transcript", formattedNotes: "Original notes",
+            micAudioPath: nil, systemAudioPath: nil,
+            savedRecordingPath: "/missing/retry-test.wav"
+        )
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        let result = await withCheckedContinuation { continuation in
+            controller.retranscribe(meeting: meeting) { continuation.resume(returning: $0) }
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            #expect(!controller.canRetranscribeMeeting(meeting))
+            #expect(!controller.canDeleteMeeting(meeting))
+            controller.appState.selectedMeetingID = nil
+            controller.appState.selectedMeetingRecord = nil
+            controller.appState.meetingsNavigationState = .browser
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            controller.retranscribe(meeting: meeting) { duplicate in
+                guard case .failure(let error) = duplicate,
+                      case .busy = error as? MeetingRetranscriptionError else {
+                    Issue.record("Expected synchronous busy rejection")
+                    return
+                }
+            }
+            controller.cancelMeetingRetranscription(id: id)
+        }
+        guard case .failure(let error) = result else { Issue.record("Expected cancellation"); return }
+        #expect(error is CancellationError)
+        #expect(controller.appState.meetingRetranscriptions[id]?.phase == .cancelled)
+        #expect(controller.canRetranscribeMeeting(meeting))
+        #expect(controller.canDeleteMeeting(meeting))
+        let restored = try #require(try store.meeting(id: id))
+        #expect(restored.rawTranscript == meeting.rawTranscript)
+        #expect(restored.formattedNotes == meeting.formattedNotes)
+        #expect(restored.savedRecordingPath == meeting.savedRecordingPath)
+        #expect(restored.status == .completed)
+    }
+
+    @Test("a failed initial meeting keeps its retained audio even without manual notes")
+    func failedMeetingKeepsRetainedAudio() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Failed meeting", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingSavedRecordingPath(id: id, path: "/retained/meeting.wav")
+        let controller = makeController(dictationStore: store)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        let recovered = try #require(try store.meeting(id: id))
+        #expect(recovered.status == .failed)
+        #expect(recovered.savedRecordingPath == "/retained/meeting.wav")
+        #expect(controller.canRetranscribeMeeting(recovered))
+    }
+
     @Test("retranscribe status is unchanged before processing starts")
     func retranscribeStatusIsUnchangedBeforeProcessingStarts() {
         #expect(MuesliController.retranscriptionFailureStatus(
@@ -739,13 +793,13 @@ struct MeetingsNavigationTests {
         ) == .completed)
     }
 
-    @Test("retranscribe processing failures mark meeting failed")
-    func retranscribeProcessingFailuresMarkMeetingFailed() {
+    @Test("retranscribe processing failures preserve original meeting status")
+    func retranscribeProcessingFailuresPreserveOriginalMeetingStatus() {
         #expect(MuesliController.retranscriptionFailureStatus(
             originalStatus: .completed,
             didSetProcessing: true,
             error: CocoaError(.fileReadUnknown)
-        ) == .failed)
+        ) == .completed)
     }
 
     @Test("cached manual notes are persisted before debounce")
@@ -1673,13 +1727,13 @@ struct MeetingsNavigationTests {
         controller.updateConfig {
             $0.sttBackend = BackendOption.parakeetMultilingual.backend
             $0.sttModel = BackendOption.parakeetMultilingual.model
-            $0.meetingTranscriptionBackend = BackendOption.nemotron35Multilingual.backend
-            $0.meetingTranscriptionModel = BackendOption.nemotron35Multilingual.model
+            $0.meetingTranscriptionBackend = BackendOption.cohereTranscribe.backend
+            $0.meetingTranscriptionModel = BackendOption.cohereTranscribe.model
         }
 
         #expect(controller.appState.selectedMeetingTranscriptionBackend.supportsMeetingTranscription)
-        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.nemotron35Multilingual.backend)
-        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.nemotron35Multilingual.model)
+        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.cohereTranscribe.backend)
+        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.cohereTranscribe.model)
         #expect(controller.config.meetingTranscriptionBackend == controller.appState.selectedMeetingTranscriptionBackend.backend)
         #expect(controller.config.meetingTranscriptionModel == controller.appState.selectedMeetingTranscriptionBackend.model)
     }

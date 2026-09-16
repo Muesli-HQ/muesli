@@ -642,7 +642,7 @@ final class MeetingSession {
         fputs("[meeting] recording discarded\n", stderr)
     }
 
-    func stop() async throws -> MeetingSessionResult {
+    func stop(onRecordingReady: ((URL?, Error?) async throws -> Void)? = nil) async throws -> MeetingSessionResult {
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
@@ -700,6 +700,9 @@ final class MeetingSession {
                 try? FileManager.default.removeItem(at: rawStreamingMicURL)
             }
         }
+
+        // Persist retained audio before final ASR or summary work can fail.
+        try await onRecordingReady?(retainedRecordingURL, retainedRecordingWriterError)
 
         var micTailFinalized = false
         var systemTailFinalized = false

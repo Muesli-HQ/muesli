@@ -308,7 +308,9 @@ struct BackendOption: Equatable {
     }
 
     var supportsMeetingTranscription: Bool {
-        !isStreamingDictationBackend
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
+            || Self.bodhanFamily.contains(self) || self == .appleSpeechAnalyzer
+            || self == .nemotron35Multilingual
     }
 
     var isSystemManaged: Bool {

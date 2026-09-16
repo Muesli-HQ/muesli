@@ -194,6 +194,7 @@ final class AppState {
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
     var liveMeetingTranscript: String = ""
+    var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
