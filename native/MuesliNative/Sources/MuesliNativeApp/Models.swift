@@ -1688,9 +1688,65 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum DictationTriggerMode: String, Codable, CaseIterable, Equatable {
+    case holdToRecord = "hold_to_record"
+    case hybrid = "hybrid"
+
+    var settingsTitle: String {
+        switch self {
+        case .holdToRecord: return "Hold"
+        case .hybrid: return "Hybrid"
+        }
+    }
+
+    func settingsSubtitle(doubleTapEnabled: Bool) -> String {
+        switch self {
+        case .holdToRecord:
+            return doubleTapEnabled
+                ? "Hold to record, release to transcribe. Double-tap is Hands-Free Mode."
+                : "Hold to record, release to transcribe."
+        case .hybrid:
+            return "Tap to start, tap again to stop. Hold to talk, release to transcribe."
+        }
+    }
+
+    func idleHoverPrompt(hotkeyLabel: String) -> String {
+        switch self {
+        case .holdToRecord:
+            return "Hold \(hotkeyLabel) to dictate"
+        case .hybrid:
+            return "Tap or hold \(hotkeyLabel) to dictate"
+        }
+    }
+
+    func emptyStatePrompt(hotkeyLabel: String) -> String {
+        switch self {
+        case .holdToRecord:
+            return "Hold \(hotkeyLabel) to start dictating"
+        case .hybrid:
+            return "Tap or hold \(hotkeyLabel) to start dictating"
+        }
+    }
+}
+
+struct DictationHotkeyTapPolicy: Equatable {
+    var dictationDoubleTapEnabled: Bool
+    var dictationHybridTapEnabled: Bool
+    var quilDoubleTapEnabled: Bool
+    var computerUseDoubleTapEnabled: Bool
+
+    init(triggerMode: DictationTriggerMode, handsFreeEnabled: Bool) {
+        dictationHybridTapEnabled = triggerMode == .hybrid
+        dictationDoubleTapEnabled = handsFreeEnabled && triggerMode != .hybrid
+        quilDoubleTapEnabled = handsFreeEnabled
+        computerUseDoubleTapEnabled = handsFreeEnabled
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
+    var dictationTriggerMode: DictationTriggerMode = .holdToRecord
     var quilHotkey: HotkeyConfig = .quilDefault
     var enableQuilMode: Bool = false
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
@@ -1833,6 +1889,7 @@ struct AppConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
         case enablePushToTalk = "enable_push_to_talk"
+        case dictationTriggerMode = "dictation_trigger_mode"
         case quilHotkey = "quil_hotkey"
         case enableQuilMode = "enable_quil_mode"
         case computerUseHotkey = "computer_use_hotkey"
@@ -1976,6 +2033,8 @@ struct AppConfig: Codable {
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
+        dictationTriggerMode = (try? c.decode(DictationTriggerMode.self, forKey: .dictationTriggerMode))
+            ?? defaults.dictationTriggerMode
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
