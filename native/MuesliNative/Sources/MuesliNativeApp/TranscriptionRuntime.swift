@@ -696,6 +696,11 @@ actor TranscriptionCoordinator {
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
+        await preloadMeetingVAD()
+        await preloadDiarizer(trigger: trigger)
+    }
+
+    func preloadMeetingVAD() async {
         if vadManager == nil {
             do {
                 vadManager = try await vadLoader()
@@ -704,8 +709,6 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
             }
         }
-
-        await preloadDiarizer(trigger: trigger)
     }
 
     func preloadDiarizer(
@@ -1013,6 +1016,32 @@ actor TranscriptionCoordinator {
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
+    }
+
+    /// Retained recordings can be hours long; do not use the whole-file import route.
+    func retranscribeMeetingRecording(
+        at url: URL,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
+        progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
+    ) async throws -> SpeechTranscriptionResult {
+        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
+            try await self.transcribeMeetingChunk(
+                at: chunk,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage,
+                whisperLanguage: whisperLanguage,
+                qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage,
+                appleSpeechLanguage: appleSpeechLanguage
+            )
+        }, progress: progress)
     }
 
     func transcribeMeetingChunk(
