@@ -577,6 +577,7 @@ public final class MuesliController: NSObject {
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
     private var meetingRetranscriptionTasks: [Int64: Task<Void, Never>] = [:]
+    private var modelFileMutationTokens: Set<UUID> = []
     private var meetingProcessingStages: [UUID: MeetingProcessingStage] = [:]
     private var pendingMeetingCompletionNotification: PendingMeetingCompletionNotification?
     private var contributionMilestonePromptDismissedThisLaunch = false
@@ -5682,7 +5683,7 @@ public final class MuesliController: NSObject {
     }
 
     func canRetranscribeMeeting(_ meeting: MeetingRecord) -> Bool {
-        meetingRetranscriptionTasks.isEmpty && !isMeetingRecording() && !isStartingMeetingRecording
+        meetingRetranscriptionTasks.isEmpty && appState.modelFileMutationCount == 0 && !isMeetingRecording() && !isStartingMeetingRecording
             && backgroundMeetingProcessingCount == 0 && importTask == nil
             && !isInteractiveAudioActivityInProgress
             && (meeting.status == .completed || meeting.status == .failed)
@@ -5820,6 +5821,7 @@ public final class MuesliController: NSObject {
                         selectedTemplatePrompt: templateSnapshot.prompt
                     )
                 } catch {
+                    if error is CancellationError { throw error }
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
                 }
 
@@ -7829,10 +7831,11 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
-    func resolveLiveMeetingAfterStopFailure(id: Int64) {
+    func resolveLiveMeetingAfterStopFailure(id: Int64, retainedRecordingPath: String? = nil) {
         if restoreResumedMeetingIfNeeded(id: id) { return }
+        if let retainedRecordingPath { attachEarlyMeetingRecording(id: id, path: retainedRecordingPath) }
         let manualNotes = manualNotesForLiveMeeting(id: id)
-        let hasRetainedAudio = meeting(id: id)?.savedRecordingPath?.isEmpty == false
+        let hasRetainedAudio = meeting(id: id)?.savedRecordingPath?.isEmpty == false || retainedRecordingPath?.isEmpty == false
         if manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasRetainedAudio {
             deleteMeetingDraftAndScheduleSync(id: id)
             clearCachedMeetingManualNotes(id: id)
@@ -7995,12 +7998,11 @@ public final class MuesliController: NSObject {
             do {
                 let stopped = try await sessionToStop.stop { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
-                    let shouldSave: Bool
-                    switch self.config.meetingRecordingSavePolicy {
-                    case .never: shouldSave = false
-                    case .always: shouldSave = true
-                    case .prompt: shouldSave = url != nil ? await self.promptToSaveMeetingRecording(for: title) : false
-                    }
+                    let shouldSave = await Self.shouldRetainMeetingRecording(
+                        policy: self.config.meetingRecordingSavePolicy,
+                        hasRecording: url != nil, writerFailed: error != nil,
+                        prompt: { await self.promptToSaveMeetingRecording(for: title) }
+                    )
                     guard shouldSave else {
                         if let url { try? FileManager.default.removeItem(at: url) }
                         earlyRecordingSave = PreparedMeetingRecordingSave(path: nil, error: nil)
@@ -8018,8 +8020,7 @@ public final class MuesliController: NSObject {
                     ))
                     earlyRecordingSave = prepared
                     if let id = liveMeetingID, let path = prepared.path {
-                        try self.dictationStore.updateMeetingSavedRecordingPath(id: id, path: path)
-                        self.syncAppState()
+                        self.attachEarlyMeetingRecording(id: id, path: path)
                     }
                 }
                 let result = await self.mergedResumeResult(for: stopped, meetingID: liveMeetingID)
@@ -8079,7 +8080,7 @@ public final class MuesliController: NSObject {
                 self.removeMeetingProcessing(processingID: processingID)
                 self.backgroundMeetingProcessingCount -= 1
                 if let failedLiveMeetingID {
-                    self.resolveLiveMeetingAfterStopFailure(id: failedLiveMeetingID)
+                    self.resolveLiveMeetingAfterStopFailure(id: failedLiveMeetingID, retainedRecordingPath: earlyRecordingSave?.path)
                 } else if let liveMeetingID {
                     // Resume merged + persisted successfully — drop the prior-transcript marker.
                     self.pendingResumePriorTranscript[liveMeetingID] = nil
@@ -8420,15 +8421,64 @@ public final class MuesliController: NSObject {
     /// Keep a WAV recovery copy if the requested compressed export fails. A
     /// recording-export error should not stop otherwise usable ASR/summary work.
     nonisolated static func prepareRecoverableMeetingRecording(
-        _ request: MeetingRecordingSaveRequest
+        _ request: MeetingRecordingSaveRequest,
+        save: (MeetingRecordingSaveRequest) async -> PreparedMeetingRecordingSave = {
+            await prepareMeetingRecordingSave(.save($0))
+        }
     ) async -> PreparedMeetingRecordingSave {
-        let prepared = await prepareMeetingRecordingSave(.save(request))
+        let prepared = await save(request)
         guard prepared.path == nil, prepared.error != nil, request.fileFormat != .wav else { return prepared }
-        let fallback = await prepareMeetingRecordingSave(.save(MeetingRecordingSaveRequest(
+        let fallback = await save(MeetingRecordingSaveRequest(
             tempURL: request.tempURL, meetingTitle: request.meetingTitle,
             startedAt: request.startedAt, supportDirectory: request.supportDirectory, fileFormat: .wav
-        )))
-        return PreparedMeetingRecordingSave(path: fallback.path, error: prepared.error)
+        ))
+        return fallback
+    }
+
+    /// Capture errors must remain visible even when there is no file to ask about.
+    static func shouldRetainMeetingRecording(
+        policy: MeetingRecordingSavePolicy, hasRecording: Bool, writerFailed: Bool,
+        prompt: () async -> Bool
+    ) async -> Bool {
+        switch policy {
+        case .never: return false
+        case .always: return true
+        case .prompt:
+            if writerFailed { return true }
+            return hasRecording ? await prompt() : false
+        }
+    }
+
+    /// A failed early attachment must not abort final transcription or teardown.
+    /// Final persistence retries the path; failure recovery also keeps the draft.
+    @discardableResult
+    func attachEarlyMeetingRecording(id: Int64, path: String) -> Bool {
+        do {
+            try dictationStore.updateMeetingSavedRecordingPath(id: id, path: path)
+            syncAppState()
+            return true
+        } catch {
+            fputs("[muesli-native] early recording attachment failed for meeting \(id): \(error); continuing finalization\n", stderr)
+            return false
+        }
+    }
+
+    var canModifyModelFiles: Bool {
+        !appState.meetingRetranscriptions.values.contains(where: \.isRunning)
+    }
+
+    /// Reserve synchronously, before an async unload/delete can yield to a retry.
+    func beginModelFileMutation() -> UUID? {
+        guard meetingRetranscriptionTasks.isEmpty else { return nil }
+        let token = UUID()
+        modelFileMutationTokens.insert(token)
+        appState.modelFileMutationCount = modelFileMutationTokens.count
+        return token
+    }
+
+    func endModelFileMutation(_ token: UUID) {
+        modelFileMutationTokens.remove(token)
+        appState.modelFileMutationCount = modelFileMutationTokens.count
     }
 
     private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
