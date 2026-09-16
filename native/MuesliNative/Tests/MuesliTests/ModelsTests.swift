@@ -1377,6 +1377,19 @@ struct AppConfigTests {
         #expect(decoded.dictationTriggerMode == .holdToRecord)
     }
 
+    @Test("hybrid dictation trigger mode survives encode/decode round-trip")
+    func dictationTriggerModeHybridRoundTrip() throws {
+        var config = AppConfig()
+        config.dictationTriggerMode = .hybrid
+
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(json?["dictation_trigger_mode"] as? String == "hybrid")
+        #expect(decoded.dictationTriggerMode == .hybrid)
+    }
+
     @Test("dictation trigger copy matches hold and hybrid")
     func dictationTriggerCopyMatchesHoldAndHybrid() {
         #expect(DictationTriggerMode.holdToRecord.idleHoverPrompt(hotkeyLabel: "Fn") == "Hold Fn to dictate")
