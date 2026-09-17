@@ -224,13 +224,20 @@ enum OrukeetModelStore {
 actor OrukeetInstallation {
     static let shared = OrukeetInstallation()
 
+    private struct Waiter {
+        let continuation: CheckedContinuation<Void, Error>
+        let progress: ((Double, String?) -> Void)?
+        let progressSnapshot: ModelDownloadProgressHandler?
+    }
     private struct Operation {
         let id: UUID
         let task: Task<Void, Error>
         var cancelling = false
+        var progress: (Double, String?)?
+        var snapshot: ModelDownloadProgress?
     }
     private var operation: Operation?
-    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private var waiters: [UUID: Waiter] = [:]
 
     func cancelAndWait() async {
         guard var active = operation else { return }
@@ -243,40 +250,70 @@ actor OrukeetInstallation {
     func install(
         progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?
     ) async throws {
-        try await run {
+        try await run(progress: progress, progressSnapshot: progressSnapshot) { report, snapshot in
             guard !OrukeetModelStore.isInstalled else { return }
-            try await OrukeetModelStore.install(progress: progress, progressSnapshot: progressSnapshot)
+            try await OrukeetModelStore.install(progress: report, progressSnapshot: snapshot)
         }
     }
 
-    func run(_ work: @escaping () async throws -> Void) async throws {
+    func run(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil,
+        _ work: @escaping (
+            _ progress: @escaping @Sendable (Double, String?) -> Void,
+            _ snapshot: @escaping ModelDownloadProgressHandler
+        ) async throws -> Void
+    ) async throws {
         try Task.checkCancellation()
-        if let active = operation, active.cancelling {
+        while let active = operation, active.cancelling {
             finish(id: active.id, result: await active.task.result)
-            return try await run(work)
         }
-        if operation == nil {
-            let id = UUID()
-            let task = Task { try await work() }
-            operation = Operation(id: id, task: task)
-            Task { self.finish(id: id, result: await task.result) }
-        }
+        try Task.checkCancellation()
         let callerID = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                if Task.isCancelled {
+                guard !Task.isCancelled else {
                     continuation.resume(throwing: CancellationError())
-                } else {
-                    waiters[callerID] = continuation
+                    return
                 }
+                waiters[callerID] = Waiter(
+                    continuation: continuation, progress: progress, progressSnapshot: progressSnapshot)
+                if let active = operation {
+                    if let (fraction, message) = active.progress { progress?(fraction, message) }
+                    if let snapshot = active.snapshot { progressSnapshot?(snapshot) }
+                    return
+                }
+                let id = UUID()
+                let task = Task {
+                    try await work({ fraction, message in
+                        Task { await self.reportProgress(fraction, message: message, id: id) }
+                    }, { snapshot in
+                        Task { await self.reportSnapshot(snapshot, id: id) }
+                    })
+                }
+                operation = Operation(id: id, task: task)
+                Task { self.finish(id: id, result: await task.result) }
             }
         } onCancel: {
             Task { await self.cancelWaiter(callerID) }
         }
+        try Task.checkCancellation()
+    }
+
+    private func reportProgress(_ fraction: Double, message: String?, id: UUID) {
+        guard operation?.id == id else { return }
+        operation?.progress = (fraction, message)
+        for waiter in waiters.values { waiter.progress?(fraction, message) }
+    }
+
+    private func reportSnapshot(_ snapshot: ModelDownloadProgress, id: UUID) {
+        guard operation?.id == id else { return }
+        operation?.snapshot = snapshot
+        for waiter in waiters.values { waiter.progressSnapshot?(snapshot) }
     }
 
     private func cancelWaiter(_ callerID: UUID) {
-        waiters.removeValue(forKey: callerID)?.resume(throwing: CancellationError())
+        waiters.removeValue(forKey: callerID)?.continuation.resume(throwing: CancellationError())
     }
 
     private func finish(id: UUID, result: Result<Void, Error>) {
@@ -284,6 +321,20 @@ actor OrukeetInstallation {
         operation = nil
         let completed = waiters
         waiters.removeAll()
-        for waiter in completed.values { waiter.resume(with: result) }
+        for waiter in completed.values { waiter.continuation.resume(with: result) }
+    }
+}
+
+/// A Retry must not start while an earlier UI cancellation is still stopping
+/// the managed download and compilation. Repeated Cancel actions stay ordered.
+struct OrukeetCancellationBarrier {
+    private(set) var pending: Task<Void, Never>?
+
+    mutating func enqueue(_ cancel: @escaping () async -> Void) {
+        let previous = pending
+        pending = Task {
+            await previous?.value
+            await cancel()
+        }
     }
 }

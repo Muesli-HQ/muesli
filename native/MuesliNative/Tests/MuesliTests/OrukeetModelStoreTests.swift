@@ -111,7 +111,7 @@ struct OrukeetModelStoreTests {
         let finish = OrukeetInstallationGate()
         let cancellation = OrukeetInstallationGate()
         let first = Task {
-            try await installer.run {
+            try await installer.run { _, _ in
                 await started.open()
                 try await withTaskCancellationHandler {
                     await finish.wait()
@@ -122,7 +122,7 @@ struct OrukeetModelStoreTests {
             }
         }
         await started.wait()
-        let second = Task { try await installer.run {} }
+        let second = Task { try await installer.run { _, _ in} }
         first.cancel()
         await #expect(throws: CancellationError.self) { try await first.value }
         #expect(await cancellation.isOpen == false)
@@ -136,7 +136,7 @@ struct OrukeetModelStoreTests {
         let started = OrukeetInstallationGate()
         let finish = OrukeetInstallationGate()
         let first = Task {
-            try await installer.run {
+            try await installer.run { _, _ in
                 await started.open()
                 try await withTaskCancellationHandler {
                     await finish.wait()
@@ -150,8 +150,117 @@ struct OrukeetModelStoreTests {
         await installer.cancelAndWait()
         await #expect(throws: CancellationError.self) { try await first.value }
         let retried = OrukeetInstallationGate()
-        try await installer.run { await retried.open() }
+        try await installer.run { _, _ in await retried.open() }
         #expect(await retried.isOpen)
+    }
+
+    @Test("Joiners receive current and future progress, and canceled callers stop observing", .timeLimit(.minutes(1)))
+    func sharedProgressSubscribers() async throws {
+        let installer = OrukeetInstallation()
+        let owner = OrukeetProgressRecorder(), joiner = OrukeetProgressRecorder()
+        let ownerScalar = OrukeetInstallationGate(), ownerSnapshot = OrukeetInstallationGate()
+        let joinedScalar = OrukeetInstallationGate(), joinedSnapshot = OrukeetInstallationGate()
+        let next = OrukeetInstallationGate(), finish = OrukeetInstallationGate()
+        let compiledScalar = OrukeetInstallationGate(), compiledSnapshot = OrukeetInstallationGate()
+        let first = Task {
+            try await installer.run(progress: { fraction, _ in
+                owner.record(fraction)
+                Task { await ownerScalar.open() }
+            }, progressSnapshot: { snapshot in
+                owner.record(snapshot.message)
+                Task { await ownerSnapshot.open() }
+            }) { report, snapshot in
+                report(0.2, "Downloading")
+                snapshot(.preparing(modelID: OrukeetModelStore.modelID, message: "Downloading"))
+                await next.wait()
+                report(0.7, "Compiling")
+                snapshot(.preparing(modelID: OrukeetModelStore.modelID, message: "Compiling"))
+                await finish.wait()
+            }
+        }
+        await ownerScalar.wait()
+        await ownerSnapshot.wait()
+        let second = Task {
+            try await installer.run(progress: { fraction, _ in
+                joiner.record(fraction)
+                Task {
+                    if fraction == 0.2 { await joinedScalar.open() }
+                    else { await compiledScalar.open() }
+                }
+            }, progressSnapshot: { snapshot in
+                joiner.record(snapshot.message)
+                Task {
+                    if snapshot.message == "Downloading" { await joinedSnapshot.open() }
+                    else { await compiledSnapshot.open() }
+                }
+            }) { _, _ in
+                Issue.record("A joining caller must not start another installation")
+            }
+        }
+        await joinedScalar.wait()
+        await joinedSnapshot.wait()
+        first.cancel()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        await next.open()
+        await compiledScalar.wait()
+        await compiledSnapshot.wait()
+        #expect(owner.fractions == [0.2])
+        #expect(owner.messages == ["Downloading"])
+        #expect(joiner.fractions == [0.2, 0.7])
+        #expect(joiner.messages == ["Downloading", "Compiling"])
+        await finish.open()
+        try await second.value
+    }
+
+    @Test("Retry waits for an older UI cancellation, including repeated Cancel", .timeLimit(.minutes(1)), arguments: [false, true])
+    func retryWaitsForCancellation(cancelRetry: Bool) async throws {
+        let installer = OrukeetInstallation()
+        var barrier = OrukeetCancellationBarrier()
+        let managedCancelStarted = OrukeetInstallationGate(), managedCancelReturn = OrukeetInstallationGate()
+        let cleanupFinished = OrukeetInstallationGate(), retryWaiting = OrukeetInstallationGate()
+        let replacementStarted = OrukeetInstallationGate(), secondCancelFinished = OrukeetInstallationGate()
+        // The old install has finished, but the UI cancellation is still awaiting
+        // the managed downloader before it cancels the Orukeet installation.
+        barrier.enqueue {
+            await managedCancelStarted.open()
+            await managedCancelReturn.wait()
+            await installer.cancelAndWait()
+            await cleanupFinished.open()
+        }
+        await managedCancelStarted.wait()
+        let pending = barrier.pending
+        let retry = Task {
+            await retryWaiting.open()
+            await pending?.value
+            try Task.checkCancellation()
+            try await installer.run { _, _ in await replacementStarted.open() }
+        }
+        await retryWaiting.wait()
+        #expect(await replacementStarted.isOpen == false)
+        if cancelRetry {
+            retry.cancel()
+            barrier.enqueue {
+                #expect(await cleanupFinished.isOpen)
+                await installer.cancelAndWait()
+                await secondCancelFinished.open()
+            }
+            let latest = barrier.pending
+            let replacement = Task {
+                await latest?.value
+                try Task.checkCancellation()
+                #expect(await secondCancelFinished.isOpen)
+                try await installer.run { _, _ in await replacementStarted.open() }
+            }
+            #expect(await secondCancelFinished.isOpen == false)
+            await managedCancelReturn.open()
+            await #expect(throws: CancellationError.self) { try await retry.value }
+            try await replacement.value
+        } else {
+            await managedCancelReturn.open()
+            try await retry.value
+        }
+        #expect(await cleanupFinished.isOpen)
+        #expect(await replacementStarted.isOpen)
     }
 
     @Test("Persisted readiness and manifest metadata reload, and disappear after removal")
@@ -279,5 +388,35 @@ private actor OrukeetInstallationGate {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending { waiter.resume() }
+    }
+}
+
+private final class OrukeetProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedFractions: [Double] = []
+    private var recordedMessages: [String?] = []
+
+    func record(_ fraction: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedFractions.append(fraction)
+    }
+
+    func record(_ message: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedMessages.append(message)
+    }
+
+    var fractions: [Double] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedFractions
+    }
+
+    var messages: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedMessages
     }
 }

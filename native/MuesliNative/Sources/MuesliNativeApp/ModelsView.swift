@@ -35,6 +35,7 @@ struct ModelsView: View {
     @State private var downloadGenerations: [String: UUID] = [:]
     @State private var downloadedModels: Set<String> = []
     @State private var downloadTasks: [String: Task<Void, Never>] = [:]
+    @State private var orukeetCancellation = OrukeetCancellationBarrier()
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
@@ -1745,8 +1746,11 @@ struct ModelsView: View {
         downloadGenerations[option.model] = generation
 
         let startTime = Date()
+        let pendingCancellation = option == .orukeet ? orukeetCancellation.pending : nil
         let task = Task {
             do {
+                await pendingCancellation?.value
+                try Task.checkCancellation()
                 try await controller.transcriptionCoordinator.preloadRequired(
                     backend: option,
                     includeMeetingHelpers: false,
@@ -1902,7 +1906,7 @@ struct ModelsView: View {
                 )
             }
         }
-        Task {
+        let cancel: () async -> Void = {
             let shouldCancel = await MainActor.run {
                 downloadGenerations[modelID] == cancellationGeneration
             }
@@ -1918,6 +1922,11 @@ struct ModelsView: View {
                 guard downloadGenerations[modelID] == cancellationGeneration else { return }
                 downloadGenerations.removeValue(forKey: modelID)
             }
+        }
+        if option == .orukeet {
+            orukeetCancellation.enqueue(cancel)
+        } else {
+            Task { await cancel() }
         }
     }
 
