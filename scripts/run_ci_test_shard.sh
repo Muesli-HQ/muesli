@@ -63,6 +63,7 @@ case "${shard}" in
   dictation-transcription)
     filters=(
       FluidAudioTranscriberTests
+      OrukeetModelStoreTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
       FillerWordFilterTests

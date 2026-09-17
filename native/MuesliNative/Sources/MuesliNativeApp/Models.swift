@@ -35,6 +35,13 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let orukeet = BackendOption(
+        backend: "fluidaudio", model: OrukeetModelStore.modelID,
+        label: "Orukeet (preview)", sizeLabel: "445 MiB download",
+        description: "Oruk's adaptation of Parakeet v3 for 25 languages. Runs locally with Core ML. Preview model, licensed CC BY-SA 4.0.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -205,7 +212,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
+        .senseVoiceSmall, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr, .orukeet,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -396,6 +403,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
+            if self == .orukeet { return OrukeetModelStore.isInstalled }
             let plan = model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()

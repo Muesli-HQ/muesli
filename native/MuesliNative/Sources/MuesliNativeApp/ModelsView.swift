@@ -2017,6 +2017,12 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
+            if option == .orukeet {
+                await OrukeetModelStore.cancelAndWait()
+                await controller.transcriptionCoordinator.unloadOrukeetTranscriber()
+                try removeItemIfPresent(at: OrukeetModelStore.cacheDirectory, fileManager: fm)
+                break
+            }
             let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
                 ifLoadedVersion: version
@@ -2087,6 +2093,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
+            if option == .orukeet { return OrukeetModelStore.isInstalled }
             let plan = option.model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()

@@ -7,6 +7,7 @@ import MuesliCore
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
+    private var loadedOrukeet = false
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -48,6 +49,7 @@ actor FluidAudioTranscriber {
         }
         self.asrManager = manager
         self.loadedVersion = version
+        self.loadedOrukeet = false
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: "Loading Parakeet into Core ML..."
@@ -55,6 +57,28 @@ actor FluidAudioTranscriber {
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[fluidaudio] models ready\n", stderr)
+    }
+
+    func loadOrukeet(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
+        if loadedOrukeet, asrManager != nil { return }
+        let models = try await OrukeetModelStore.prepare(progress: progress, progressSnapshot: progressSnapshot)
+        let manager = AsrManager(config: .default)
+        try await manager.loadModels(models)
+        try Task.checkCancellation()
+        asrManager = manager
+        loadedVersion = nil // Orukeet must never share Parakeet v3's loaded identity.
+        loadedOrukeet = true
+        progress?(1, nil)
+        progressSnapshot?(ModelDownloadProgress.preparing(modelID: OrukeetModelStore.modelID, message: "Model ready")
+            .replacing(phase: .ready, message: "Model ready"))
+    }
+
+    func shutdownOrukeet() {
+        guard loadedOrukeet else { return }
+        shutdown()
     }
 
     /// Transcribe a WAV file URL directly.
@@ -70,6 +94,7 @@ actor FluidAudioTranscriber {
     func shutdown() {
         asrManager = nil
         loadedVersion = nil
+        loadedOrukeet = false
     }
 
     func shutdown(ifLoadedVersion version: AsrModelVersion) {
