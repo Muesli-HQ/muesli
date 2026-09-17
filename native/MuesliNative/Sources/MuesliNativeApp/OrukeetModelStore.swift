@@ -80,12 +80,12 @@ enum OrukeetModelStore {
         // so Hugging Face records the acquisition without inference-time requests.
         let downloaded = try await ManagedASRModelDownloader.downloadIfNeeded(
             plan, progress: progress, progressSnapshot: progressSnapshot)
-        let archive = try validateManifest(Data(contentsOf: downloaded.appendingPathComponent("manifest.json")))
+        let archive = try validatedArchive(in: downloaded)
         try Task.checkCancellation()
         let preparing = ModelDownloadProgress.preparing(modelID: modelID, message: "Compiling Orukeet for this Mac...")
         progress?(0.95, preparing.message)
         progressSnapshot?(preparing)
-        try installArchive(at: downloaded.appendingPathComponent(archive.filename), to: directory)
+        try compileArchive(at: archive, to: directory)
     }
 
     static func cancelAndWait() async {
@@ -102,11 +102,35 @@ enum OrukeetModelStore {
         return archive
     }
 
-    /// Separate from acquisition so the exact installer can be regression-tested with the pinned archive offline.
-    static func installArchive(at archive: URL, to destination: URL) throws {
+    /// The managed downloader records transfer sizes before these content checks.
+    /// Invalidate only its download directory on corruption so Retry reacquires it.
+    static func validatedArchive(in downloaded: URL) throws -> URL {
+        do {
+            let archive = try validateManifest(Data(contentsOf: downloaded.appendingPathComponent("manifest.json")))
+            let url = downloaded.appendingPathComponent(archive.filename)
+            try validateArchive(at: url)
+            return url
+        } catch {
+            if error is CancellationError { throw error }
+            try FileManager.default.removeItem(at: downloaded)
+            throw error
+        }
+    }
+
+    private static func validateArchive(at archive: URL) throws {
+        try Task.checkCancellation()
         guard try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize == archiveBytes,
             try checksum(of: archive) == archiveSHA256
         else { throw CocoaError(.fileReadCorruptFile) }
+    }
+
+    /// Separate from acquisition so the exact installer can be regression-tested with the pinned archive offline.
+    static func installArchive(at archive: URL, to destination: URL) throws {
+        try validateArchive(at: archive)
+        try compileArchive(at: archive, to: destination)
+    }
+
+    private static func compileArchive(at archive: URL, to destination: URL) throws {
         let files = FileManager.default
         let parent = destination.deletingLastPathComponent()
         try files.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -137,20 +161,15 @@ enum OrukeetModelStore {
         try commitInstallation(from: bundle, to: destination)
     }
 
-    /// Keep the previous installation available for rollback if the final rename fails.
+    /// Use the same atomic replacement primitive as the managed downloader.
     static func commitInstallation(from bundle: URL, to destination: URL) throws {
         let files = FileManager.default
-        let backup = destination.deletingLastPathComponent()
-            .appendingPathComponent(".previous-\(UUID().uuidString)", isDirectory: true)
-        let hadPrevious = files.fileExists(atPath: destination.path)
-        if hadPrevious { try files.moveItem(at: destination, to: backup) }
-        do {
+        if files.fileExists(atPath: destination.path) {
+            _ = try files.replaceItemAt(destination, withItemAt: bundle,
+                                        backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
             try files.moveItem(at: bundle, to: destination)
-        } catch {
-            if hadPrevious { try files.moveItem(at: backup, to: destination) }
-            throw error
         }
-        if hadPrevious { try? files.removeItem(at: backup) }
     }
 
     static func load(from directory: URL) throws -> AsrModels {
@@ -202,28 +221,69 @@ enum OrukeetModelStore {
 
 /// Coalesce model preparation so selecting a model during a download cannot start
 /// another transfer or replace a directory while the first install is compiling.
-private actor OrukeetInstallation {
+actor OrukeetInstallation {
     static let shared = OrukeetInstallation()
-    private var task: Task<Void, Error>?
+
+    private struct Operation {
+        let id: UUID
+        let task: Task<Void, Error>
+        var cancelling = false
+    }
+    private var operation: Operation?
+    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
 
     func cancelAndWait() async {
-        let active = task
-        active?.cancel()
-        _ = try? await active?.value
+        guard var active = operation else { return }
+        active.cancelling = true
+        operation = active
+        active.task.cancel()
+        finish(id: active.id, result: await active.task.result)
     }
 
     func install(
         progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?
     ) async throws {
-        if let task { return try await task.value }
-        guard !OrukeetModelStore.isInstalled else { return }
-        let task = Task { try await OrukeetModelStore.install(progress: progress, progressSnapshot: progressSnapshot) }
-        self.task = task
-        defer { self.task = nil }
-        try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
+        try await run {
+            guard !OrukeetModelStore.isInstalled else { return }
+            try await OrukeetModelStore.install(progress: progress, progressSnapshot: progressSnapshot)
         }
+    }
+
+    func run(_ work: @escaping () async throws -> Void) async throws {
+        try Task.checkCancellation()
+        if let active = operation, active.cancelling {
+            finish(id: active.id, result: await active.task.result)
+            return try await run(work)
+        }
+        if operation == nil {
+            let id = UUID()
+            let task = Task { try await work() }
+            operation = Operation(id: id, task: task)
+            Task { self.finish(id: id, result: await task.result) }
+        }
+        let callerID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters[callerID] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(callerID) }
+        }
+    }
+
+    private func cancelWaiter(_ callerID: UUID) {
+        waiters.removeValue(forKey: callerID)?.resume(throwing: CancellationError())
+    }
+
+    private func finish(id: UUID, result: Result<Void, Error>) {
+        guard operation?.id == id else { return }
+        operation = nil
+        let completed = waiters
+        waiters.removeAll()
+        for waiter in completed.values { waiter.resume(with: result) }
     }
 }

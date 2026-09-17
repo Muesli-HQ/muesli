@@ -1909,6 +1909,9 @@ struct ModelsView: View {
             guard shouldCancel else { return }
 
             await ManagedASRModelDownloader.cancel(modelID: modelID)
+            if modelID == OrukeetModelStore.modelID {
+                await OrukeetModelStore.cancelAndWait()
+            }
             _ = await task?.value
 
             await MainActor.run {

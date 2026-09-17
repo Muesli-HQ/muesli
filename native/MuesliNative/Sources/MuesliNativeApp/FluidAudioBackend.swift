@@ -8,6 +8,32 @@ actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
     private var loadedOrukeet = false
+    private var loadGeneration = UUID()
+    private var pendingSelection: ModelSelection?
+
+    enum ModelSelection: Equatable {
+        case parakeet(AsrModelVersion)
+        case orukeet
+    }
+    typealias ManagerLoader = (ModelSelection, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> AsrManager
+    private let managerLoader: ManagerLoader?
+
+    init(managerLoader: ManagerLoader? = nil) {
+        self.managerLoader = managerLoader
+    }
+
+    private func beginLoad(_ selection: ModelSelection) -> UUID {
+        loadGeneration = UUID()
+        pendingSelection = selection
+        return loadGeneration
+    }
+
+    private func invalidatePendingLoad(_ selection: ModelSelection) {
+        if pendingSelection == selection {
+            loadGeneration = UUID()
+            pendingSelection = nil
+        }
+    }
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -27,26 +53,35 @@ actor FluidAudioTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        let generation = beginLoad(.parakeet(version))
+        defer { if loadGeneration == generation { pendingSelection = nil } }
         if loadedVersion == version, asrManager != nil { return }
 
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
         let plan = version == .v2 ? ManagedASRModelPlans.parakeetV2() : ManagedASRModelPlans.parakeetV3()
-        let manager = try await ManagedASRModelDownloader.loadValidated(
-            plan,
-            progress: progress,
-            progressSnapshot: progressSnapshot
-        ) { modelDirectory in
-            let preparing = ModelDownloadProgress.preparing(
-                modelID: plan.modelID,
-                message: "Loading Parakeet into Core ML..."
-            )
-            progress?(0.95, preparing.message)
-            progressSnapshot?(preparing)
-            let models = try await AsrModels.load(from: modelDirectory, version: version)
-            let manager = AsrManager(config: .default)
-            try await manager.loadModels(models)
-            return manager
+        let manager: AsrManager
+        if let managerLoader {
+            manager = try await managerLoader(.parakeet(version), progress, progressSnapshot)
+        } else {
+            manager = try await ManagedASRModelDownloader.loadValidated(
+                plan,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            ) { modelDirectory in
+                let preparing = ModelDownloadProgress.preparing(
+                    modelID: plan.modelID,
+                    message: "Loading Parakeet into Core ML..."
+                )
+                progress?(0.95, preparing.message)
+                progressSnapshot?(preparing)
+                let models = try await AsrModels.load(from: modelDirectory, version: version)
+                let manager = AsrManager(config: .default)
+                try await manager.loadModels(models)
+                return manager
+            }
         }
+        try Task.checkCancellation()
+        guard loadGeneration == generation else { throw CancellationError() }
         self.asrManager = manager
         self.loadedVersion = version
         self.loadedOrukeet = false
@@ -63,11 +98,19 @@ actor FluidAudioTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        let generation = beginLoad(.orukeet)
+        defer { if loadGeneration == generation { pendingSelection = nil } }
         if loadedOrukeet, asrManager != nil { return }
-        let models = try await OrukeetModelStore.prepare(progress: progress, progressSnapshot: progressSnapshot)
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
+        let manager: AsrManager
+        if let managerLoader {
+            manager = try await managerLoader(.orukeet, progress, progressSnapshot)
+        } else {
+            let models = try await OrukeetModelStore.prepare(progress: progress, progressSnapshot: progressSnapshot)
+            manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+        }
         try Task.checkCancellation()
+        guard loadGeneration == generation else { throw CancellationError() }
         asrManager = manager
         loadedVersion = nil // Orukeet must never share Parakeet v3's loaded identity.
         loadedOrukeet = true
@@ -77,8 +120,9 @@ actor FluidAudioTranscriber {
     }
 
     func shutdownOrukeet() {
+        invalidatePendingLoad(.orukeet)
         guard loadedOrukeet else { return }
-        shutdown()
+        clearLoadedModels()
     }
 
     /// Transcribe a WAV file URL directly.
@@ -92,17 +136,24 @@ actor FluidAudioTranscriber {
     }
 
     func shutdown() {
+        loadGeneration = UUID()
+        pendingSelection = nil
+        clearLoadedModels()
+    }
+
+    private func clearLoadedModels() {
         asrManager = nil
         loadedVersion = nil
         loadedOrukeet = false
     }
 
     func shutdown(ifLoadedVersion version: AsrModelVersion) {
+        invalidatePendingLoad(.parakeet(version))
         guard FluidAudioUnloadPolicy.shouldUnload(
             loadedVersion: loadedVersion,
             deletingVersion: version
         ) else { return }
-        shutdown()
+        clearLoadedModels()
     }
 }
 
