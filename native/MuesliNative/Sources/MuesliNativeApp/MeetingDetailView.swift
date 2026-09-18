@@ -1619,12 +1619,27 @@ struct MeetingDetailView: View {
     }
 
     private func activeCopyText(for meeting: MeetingRecord) -> String {
+        let body: String
+        let isEditing: Bool
+
         switch documentMode {
         case .notes:
-            return isEditingNotes ? editableNotes : Self.notesContent(for: meeting)
+            isEditing = isEditingNotes
+            body = isEditing ? editableNotes : Self.notesCopyContent(for: meeting)
         case .transcript:
-            return isEditingTranscript ? editableTranscript : meeting.rawTranscript
+            isEditing = isEditingTranscript
+            body = isEditing ? editableTranscript : meeting.rawTranscript
         }
+
+        let wordCount = isEditing ? Self.countWords(body) : meeting.wordCount
+        let header = MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount)
+        return header + body
+    }
+
+    private static func countWords(_ text: String) -> Int {
+        text.components(separatedBy: CharacterSet.whitespaces)
+            .filter { !$0.isEmpty }
+            .count
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
@@ -1667,6 +1682,16 @@ struct MeetingDetailView: View {
         }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+        }
+        return meeting.formattedNotes
+    }
+
+    static func notesCopyContent(for meeting: MeetingRecord) -> String {
+        if meeting.status == .noteOnly {
+            return meeting.manualNotes
+        }
+        if meeting.notesState != .structuredNotes {
+            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
     }
