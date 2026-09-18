@@ -64,6 +64,7 @@ case "${shard}" in
     filters=(
       FluidAudioTranscriberTests
       OrukeetModelStoreTests
+      OrukeetConcurrentLoadTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
       FillerWordFilterTests

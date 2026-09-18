@@ -9,7 +9,7 @@ actor FluidAudioTranscriber {
     private var loadedVersion: AsrModelVersion?
     private var loadedOrukeet = false
     private var loadGeneration = UUID()
-    private var pendingSelection: ModelSelection?
+    private var requestedSelection: ModelSelection?
 
     enum ModelSelection: Equatable {
         case parakeet(AsrModelVersion)
@@ -23,15 +23,19 @@ actor FluidAudioTranscriber {
     }
 
     private func beginLoad(_ selection: ModelSelection) -> UUID {
-        loadGeneration = UUID()
-        pendingSelection = selection
+        // Overlapping requests for the same model belong to one selection epoch.
+        // Keep that identity after one finishes while another is still loading.
+        if requestedSelection != selection {
+            loadGeneration = UUID()
+            requestedSelection = selection
+        }
         return loadGeneration
     }
 
-    private func invalidatePendingLoad(_ selection: ModelSelection) {
-        if pendingSelection == selection {
+    private func invalidateLoad(_ selection: ModelSelection) {
+        if requestedSelection == selection {
             loadGeneration = UUID()
-            pendingSelection = nil
+            requestedSelection = nil
         }
     }
 
@@ -54,7 +58,6 @@ actor FluidAudioTranscriber {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         let generation = beginLoad(.parakeet(version))
-        defer { if loadGeneration == generation { pendingSelection = nil } }
         if loadedVersion == version, asrManager != nil { return }
 
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
@@ -99,7 +102,6 @@ actor FluidAudioTranscriber {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         let generation = beginLoad(.orukeet)
-        defer { if loadGeneration == generation { pendingSelection = nil } }
         if loadedOrukeet, asrManager != nil { return }
         let manager: AsrManager
         if let managerLoader {
@@ -120,7 +122,7 @@ actor FluidAudioTranscriber {
     }
 
     func shutdownOrukeet() {
-        invalidatePendingLoad(.orukeet)
+        invalidateLoad(.orukeet)
         guard loadedOrukeet else { return }
         clearLoadedModels()
     }
@@ -137,7 +139,7 @@ actor FluidAudioTranscriber {
 
     func shutdown() {
         loadGeneration = UUID()
-        pendingSelection = nil
+        requestedSelection = nil
         clearLoadedModels()
     }
 
@@ -148,7 +150,7 @@ actor FluidAudioTranscriber {
     }
 
     func shutdown(ifLoadedVersion version: AsrModelVersion) {
-        invalidatePendingLoad(.parakeet(version))
+        invalidateLoad(.parakeet(version))
         guard FluidAudioUnloadPolicy.shouldUnload(
             loadedVersion: loadedVersion,
             deletingVersion: version
