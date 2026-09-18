@@ -830,19 +830,19 @@ public final class MuesliController: NSObject {
                 self.handleStop()
             }
         }
-        indicator.onCancelToggleDictation = { [weak self] in
+        indicator.onCancelDictation = { [weak self] in
             guard let self else { return }
             if self.computerUseHotkeyMonitor.isToggleRecording || self.computerUseCommandStartedAt != nil {
+                self.computerUseHotkeyMonitor.cancelCurrentSession()
                 self.handleComputerUseCancel()
-                self.computerUseHotkeyMonitor.cancelToggleMode()
             } else if self.quilHotkeyMonitor.isToggleRecording
                         || self.quilStartedAt != nil
                         || self.quilSelectionSnapshot != nil {
+                self.quilHotkeyMonitor.cancelCurrentSession()
                 self.handleQuilCancel()
-                self.quilHotkeyMonitor.cancelToggleMode()
             } else {
+                self.hotkeyMonitor.cancelCurrentSession()
                 self.handleCancel()
-                self.hotkeyMonitor.cancelToggleMode()
             }
             self.indicator.isToggleDictation = false
         }

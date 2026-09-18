@@ -210,7 +210,7 @@ final class FloatingIndicatorController: NSObject {
     var onToggleMeetingPause: (() -> Void)?
     var onOpenMeetingNotes: (() -> Void)?
     var onOpenHome: (() -> Void)?
-    var onCancelToggleDictation: (() -> Void)?
+    var onCancelDictation: (() -> Void)?
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
@@ -303,7 +303,7 @@ final class FloatingIndicatorController: NSObject {
                 if isMeetingRecording {
                     onToggleMeetingPause?()
                 } else {
-                    onCancelToggleDictation?()
+                    onCancelDictation?()
                 }
             } else {
                 if isMeetingRecording {
@@ -331,7 +331,7 @@ final class FloatingIndicatorController: NSObject {
         if isMeetingRecording {
             onDiscardMeeting?()
         } else {
-            onCancelToggleDictation?()
+            onCancelDictation?()
         }
     }
 
@@ -339,7 +339,7 @@ final class FloatingIndicatorController: NSObject {
         if isMeetingRecording, state == .recording {
             onDiscardMeeting?()
         } else if state == .recording {
-            onCancelToggleDictation?()
+            onCancelDictation?()
         }
     }
 

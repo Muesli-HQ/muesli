@@ -87,7 +87,7 @@ struct NotchIndicatorTests {
         var cancellations = 0
         var finishes = 0
         var discards = 0
-        indicator.onCancelToggleDictation = { cancellations += 1 }
+        indicator.onCancelDictation = { cancellations += 1 }
         indicator.onStopToggleDictation = { finishes += 1 }
         indicator.onDiscardMeeting = { discards += 1 }
         indicator.cancelNotchActivity()
