@@ -81,20 +81,24 @@ struct MeetingExporter {
 
     // MARK: - Markdown composition
 
-    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func metadataHeader(for meeting: MeetingRecord, wordCount: Int? = nil) -> String {
         var parts: [String] = []
-
         parts.append("# \(meeting.title)")
         parts.append("")
         parts.append("**Date:** \(formatExportDate(meeting.startTime))")
         parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
-        parts.append("**Words:** \(meeting.wordCount)")
+        parts.append("**Words:** \(wordCount ?? meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
         }
         parts.append("")
         parts.append("---")
         parts.append("")
+        return parts.joined(separator: "\n")
+    }
+
+    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+        var parts: [String] = [metadataHeader(for: meeting)]
 
         switch content {
         case .notes:
