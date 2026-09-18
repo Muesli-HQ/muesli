@@ -147,7 +147,7 @@ enum OrukeetModelStore {
         let bundle = staging.appendingPathComponent("orukeet-r3-coreml-baseline", isDirectory: true)
         for name in components {
             try Task.checkCancellation()
-            let compiled = try MLModel.compileModel(
+            let compiled = try await MLModel.compileModel(
                 at: bundle.appendingPathComponent("\(name).mlpackage"))
             defer { try? files.removeItem(at: compiled) }
             try files.moveItem(at: compiled, to: bundle.appendingPathComponent("\(name).mlmodelc"))
