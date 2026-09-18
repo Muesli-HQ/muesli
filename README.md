@@ -554,3 +554,11 @@ Muesli has been possible because of the generosity of companies such as:
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Muesli-HQ/muesli&type=date&legend=top-left" />
    </picture>
 </a>
+
+### Optional Orukeet preview
+
+The Models tab's experimental options include **Orukeet (preview)**, Oruk's adaptation of Parakeet v3 for 25 languages. It uses the existing local FluidAudio backend; onboarding and default models are unchanged.
+
+The 445 MiB portable Core ML archive and its integrity manifest come directly from [oruk/orukeet on Hugging Face](https://huggingface.co/oruk/orukeet), pinned to revision `43142dd1897f9ddadcd70173fcb5ff45c08aa951`. Muesli verifies the manifest, archive size, and SHA-256, then compiles the model for the current Mac. The normal model downloader supports progress, cancellation, and resume. The archive and compiled models have a separate cache, removable from Models. Cached transcription requires no network access.
+
+Orukeet weights are licensed [CC BY-SA 4.0](https://huggingface.co/oruk/orukeet/blob/main/LICENSE). This preview does not establish an accuracy or speed improvement for Muesli's Core ML runtime; compare it with your own recordings.
