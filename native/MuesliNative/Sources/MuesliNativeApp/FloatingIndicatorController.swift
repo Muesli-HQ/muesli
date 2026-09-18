@@ -164,6 +164,7 @@ private final class IdleShortcutPillView: NSView {
 
 @MainActor
 final class FloatingIndicatorController: NSObject {
+    private let notchIndicator = NotchIndicatorController()
     private var panel: NSPanel?
     private var containerView: NSView?
     private var contentView: HoverIndicatorView?
@@ -208,6 +209,7 @@ final class FloatingIndicatorController: NSObject {
     var onDiscardMeeting: (() -> Void)?
     var onToggleMeetingPause: (() -> Void)?
     var onOpenMeetingNotes: (() -> Void)?
+    var onOpenHome: (() -> Void)?
     var onCancelToggleDictation: (() -> Void)?
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
@@ -229,6 +231,17 @@ final class FloatingIndicatorController: NSObject {
     init(configStore: ConfigStore) {
         self.configStore = configStore
         super.init()
+        notchIndicator.onOpenHome = { [weak self] in self?.onOpenHome?() }
+        notchIndicator.onCancel = { [weak self] in self?.cancelNotchActivity() }
+        notchIndicator.powerProvider = { [weak self] in self?.powerProvider?() ?? -160 }
+        NotificationCenter.default.addObserver(self, selector: #selector(displayConfigurationChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    @objc private func displayConfigurationChanged() {
+        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch,
+              !isShowingLoading, !isComputerUseCursorMode else { return }
+        setState(state, config: config)
     }
 
     var onStopToggleDictation: (() -> Void)?
@@ -261,7 +274,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     var currentFrame: NSRect? {
-        indicatorScreenFrame
+        notchIndicator.screenFrame ?? indicatorScreenFrame
     }
 
     func pointerDragBegan() {
@@ -308,6 +321,20 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
+    func showDictationCompletion() {
+        guard state == .idle else { return }
+        notchIndicator.showCompletion()
+    }
+
+    func cancelNotchActivity() {
+        guard state != .idle else { return }
+        if isMeetingRecording {
+            onDiscardMeeting?()
+        } else {
+            onCancelToggleDictation?()
+        }
+    }
+
     func handleOptionClick() {
         if isMeetingRecording, state == .recording {
             onDiscardMeeting?()
@@ -317,6 +344,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func savePosition() {
+        guard !notchIndicator.isVisible else { return }
         guard let frame = indicatorScreenFrame else { return }
         let center = Self.positionCenter(
             for: frame,
@@ -536,7 +564,37 @@ final class FloatingIndicatorController: NSObject {
             isHovered = false
         }
         preservesCollapsedLeftEdge = state == .idle && isHovered
-        if !config.showFloatingIndicator && state == .idle {
+        if !config.showFloatingIndicator && config.indicatorAnchor != .notch && state == .idle {
+            close()
+            return
+        }
+        // Keep instructional transcripts and computer-use controls on their existing
+        // surface. The notch is an opt-in presentation, not a second recording owner.
+        if config.indicatorAnchor == .notch,
+           instructionTranscriptText == nil, !isComputerUseCancellationAvailable,
+           let screen = NSScreen.main {
+            let title: String
+            switch state {
+            case .idle: title = "Muesli"
+            case .preparing: title = "Preparing"
+            case .recording: title = isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")
+            case .transcribing: title = transcribingTitle
+            }
+            if notchIndicator.show(on: screen, title: title,
+                detail: state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title,
+                recording: state == .recording, paused: isMeetingRecordingPaused, meeting: isMeetingRecording,
+                handsFree: isToggleDictation || isMeetingRecording,
+                active: state != .idle, icon: Self.idleIndicatorIcon(config: config)) {
+                hoverExitWorkItem?.cancel()
+                hideMeetingTranscript()
+                stopWaveformAnimation()
+                panel?.orderOut(nil)
+                return
+            }
+        }
+        notchIndicator.hide()
+        if config.indicatorAnchor == .notch && state == .idle {
+            // Notch's non-notched-display fallback is activity-only too.
             close()
             return
         }
@@ -677,6 +735,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        notchIndicator.hide()
         // The cursor bubble reuses this panel and disables its mouse events.
         // While a run is stoppable, deliberately keep the stationary transcript
         // and Stop control for the entire run. A simultaneous cursor bubble
@@ -763,11 +822,18 @@ final class FloatingIndicatorController: NSObject {
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
         let config = configStore.load()
+        micIconView?.image = Self.idleIndicatorIcon(config: config)
+        if config.indicatorAnchor == .notch, !isShowingLoading, !isComputerUseCursorMode {
+            setState(state, config: config)
+        }
+    }
+
+    private static func idleIndicatorIcon(config: AppConfig) -> NSImage {
         let fallback = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let newImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallback
         newImage.isTemplate = true
-        micIconView?.image = newImage
+        return newImage
     }
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
@@ -782,6 +848,7 @@ final class FloatingIndicatorController: NSObject {
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
         hideShortcutPillChrome()
         guard state == .idle else { return }
+        notchIndicator.hide()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
@@ -856,6 +923,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        notchIndicator.hide()
         hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -972,6 +1040,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setHovered(_ hovered: Bool) {
+        guard !notchIndicator.isVisible else { return }
         if state == .recording, isMeetingRecording, !isShowingLoading, !isDragging {
             guard hovered else {
                 isMeetingTranscriptManuallyDismissed = false
@@ -1018,6 +1087,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func close() {
+        notchIndicator.hide()
         stopWaveformAnimation()
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
@@ -1194,7 +1264,6 @@ final class FloatingIndicatorController: NSObject {
 
     @objc private func waveformTimerFired(_ timer: Timer) {
         guard let contentView else { return }
-        let multipliers: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
         let minHeight: CGFloat = 3
         let maxHeight: CGFloat = 14
         let pillHeight = contentView.frame.height
@@ -1203,7 +1272,7 @@ final class FloatingIndicatorController: NSObject {
         if waveformAnimationMode == .level {
             let dB = CGFloat(powerProvider?() ?? -160)
             let raw = max(0, min(1, (dB + 68) / 38))
-            smoothedAmplitude = 0.48 * raw + 0.52 * smoothedAmplitude
+            smoothedAmplitude = IndicatorWaveformDynamics.smooth(raw, previous: smoothedAmplitude)
             levelAmplitude = smoothedAmplitude
         } else {
             levelAmplitude = 0
@@ -1212,7 +1281,7 @@ final class FloatingIndicatorController: NSObject {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
-            let m = i < multipliers.count ? multipliers[i] : 1.0
+            let m = IndicatorWaveformDynamics.standingWeight(index: i, count: barLayers.count)
             let amplitude: CGFloat
             switch waveformAnimationMode {
             case .level:
@@ -1763,10 +1832,7 @@ final class FloatingIndicatorController: NSObject {
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
         let config = configStore.load()
-        let fallbackImage = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
-        let idleImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallbackImage
-        idleImage.isTemplate = true
+        let idleImage = Self.idleIndicatorIcon(config: config)
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white
         micView.imageScaling = .scaleProportionallyDown
@@ -1849,7 +1915,7 @@ final class FloatingIndicatorController: NSObject {
         switch anchor {
         case .topLeading:
             return CGPoint(x: leadingX, y: topY)
-        case .topCenter:
+        case .topCenter, .notch:
             return CGPoint(x: centerX, y: topY)
         case .topTrailing:
             return CGPoint(x: trailingX, y: topY)
@@ -2018,7 +2084,7 @@ final class FloatingIndicatorController: NSObject {
 
     private func idleHoverPlacement(for anchor: IndicatorAnchor) -> IdleHoverPlacement {
         switch anchor {
-        case .topLeading, .topCenter, .topTrailing: return .below
+        case .topLeading, .topCenter, .topTrailing, .notch: return .below
         case .midLeading: return .trailing
         case .midTrailing: return .leading
         case .bottomLeading, .bottomCenter, .bottomTrailing, .custom: return .above

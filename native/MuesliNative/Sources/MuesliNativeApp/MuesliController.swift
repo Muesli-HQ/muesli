@@ -809,6 +809,10 @@ public final class MuesliController: NSObject {
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
         indicator.onToggleMeetingPause = { [weak self] in self?.toggleMeetingRecordingPause() }
         indicator.onOpenMeetingNotes = { [weak self] in self?.openActiveMeetingNotes() }
+        indicator.onOpenHome = { [weak self] in
+            self?.showTimelineHome()
+            self?.openHistoryWindow(tab: .timeline)
+        }
         indicator.onCancelComputerUse = { [weak self] in self?.handleComputerUseCancel() }
         indicator.onStopToggleDictation = { [weak self] in
             guard let self else { return }
@@ -9383,6 +9387,7 @@ public final class MuesliController: NSObject {
                                     taskID: taskID,
                                     message: saved ? nil : "Reformatted, but could not save Quill history"
                                 )
+                                self.indicator.showDictationCompletion()
                             } else {
                                 TelemetryDeck.signal("quil.paste_fallback", parameters: [
                                     "backend": backend.backend,
@@ -11073,6 +11078,7 @@ public final class MuesliController: NSObject {
             fputs("[muesli-native] ignoring stale Nemotron stop completion\n", stderr)
             return
         }
+        let hadStreamingInsertion = currentDictationOutputMode == .paste && !previousStreamText.isEmpty
         isNemotron35Streaming = false
         _streamingDictationController = nil
         nemotron35StreamingSessionID = nil
@@ -11114,6 +11120,7 @@ public final class MuesliController: NSObject {
         setState(.idle)
         meetingMonitor.resumeAfterCooldown()
         fputs("[muesli-native] Nemotron streaming done (\(String(format: "%.1f", duration))s)\n", stderr)
+        if hadStreamingInsertion { indicator.showDictationCompletion() }
         finishDictationLatencyTrace("nemotron_stop")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
@@ -11338,6 +11345,7 @@ public final class MuesliController: NSObject {
                 await MainActor.run {
                     if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
+                        var didDispatchPaste = false
                         PasteController.paste(
                             text: text,
                             appendDictationSentenceSpace: true,
@@ -11347,6 +11355,7 @@ public final class MuesliController: NSObject {
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
+                                if didDispatchPaste { self.indicator.showDictationCompletion() }
                                 if self.config.enableDictionaryCorrectionPrompts {
                                     // This opt-in monitor only schedules its first Accessibility
                                     // poll after 100 ms, so starting it here captures immediate
@@ -11381,6 +11390,7 @@ public final class MuesliController: NSObject {
                                 )
                             },
                             onLifecycleEvent: { [weak self] event in
+                                if event == .pasteDispatched { didDispatchPaste = true }
                                 self?.markDictationLatency(
                                     "paste_\(event.rawValue)",
                                     trace: completionLatencyTrace

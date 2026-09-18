@@ -1465,6 +1465,7 @@ enum IndicatorHoverStyle: String, Codable, CaseIterable {
 }
 
 enum IndicatorAnchor: String, Codable, CaseIterable {
+    case notch = "notch"
     case topLeading = "top_leading"
     case topCenter = "top_center"
     case topTrailing = "top_trailing"
@@ -1477,6 +1478,7 @@ enum IndicatorAnchor: String, Codable, CaseIterable {
 
     var label: String {
         switch self {
+        case .notch: return "Notch (with floating fallback)"
         case .topLeading: return "Top Left"
         case .topCenter: return "Top Center"
         case .topTrailing: return "Top Right"
@@ -1744,6 +1746,7 @@ struct AppConfig: Codable {
     var showHotkeyOnFloatingIndicator: Bool = false
     var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
+    var savedFloatingIndicatorAnchor: IndicatorAnchor? = nil
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
     var openAIAPIKey: String = ""
@@ -1887,6 +1890,7 @@ struct AppConfig: Codable {
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
         case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
+        case savedFloatingIndicatorAnchor = "saved_floating_indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
         case openAIAPIKey = "openai_api_key"
@@ -2080,6 +2084,7 @@ struct AppConfig: Codable {
             ?? defaults.indicatorHoverStyle
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
+        savedFloatingIndicatorAnchor = try? c.decode(IndicatorAnchor.self, forKey: .savedFloatingIndicatorAnchor)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
         indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
         openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
