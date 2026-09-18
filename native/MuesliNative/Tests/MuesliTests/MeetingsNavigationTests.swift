@@ -798,6 +798,84 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: id)?.savedRecordingPath == "/saved/recovery.wav")
     }
 
+    @Test("retained recording reference survives restart and repeated database failure")
+    func retainedRecordingReferenceSurvivesRestart() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("recovery.wav")
+        try Data([0, 1, 2]).write(to: audio)
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
+        do {
+            let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+            #expect(!controller.attachEarlyMeetingRecording(id: id, path: audio.path))
+            let result = MeetingSessionResult(
+                title: "Recovery", originalTitle: "Recovery", calendarEventID: nil,
+                startTime: Date(), endTime: Date(), durationSeconds: 1,
+                rawTranscript: "Retained speech", formattedNotes: "Notes",
+                retainedRecordingURL: nil, retainedRecordingError: nil,
+                systemRecordingURL: nil, templateSnapshot: MeetingTemplates.auto.snapshot
+            )
+            #expect(throws: (any Error).self) {
+                _ = try controller.persistCompletedMeetingResult(result, existingMeetingID: id,
+                    preparedRecordingSave: PreparedMeetingRecordingSave(path: audio.path, error: nil))
+            }
+            controller.resolveLiveMeetingAfterStopFailure(id: id, retainedRecordingPath: audio.path)
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        }
+        // A fresh controller has no in-memory path; failed recovery keeps the file.
+        do {
+            let restarted = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            restarted.recoverRetainedMeetingRecordings()
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+            #expect(FileManager.default.fileExists(atPath: reference.path))
+        }
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
+        let recovered = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        recovered.recoverRetainedMeetingRecordings()
+        let recoveredPath = try #require(try store.meeting(id: id)?.savedRecordingPath)
+        #expect(URL(fileURLWithPath: recoveredPath).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        recovered.recoverRetainedMeetingRecordings() // Idempotent after success.
+        #expect(try store.meeting(id: id)?.savedRecordingPath == recoveredPath)
+    }
+
+    @Test("recording recovery leaves newer recordings and unrelated identities untouched")
+    func recordingReferenceIdentityGuards() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("old.wav")
+        try Data([0]).write(to: audio)
+        let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        try store.updateMeetingSavedRecordingPath(id: id, path: "/newer.wav")
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == "/newer.wav")
+        try store.deleteMeeting(id: id)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id) == nil)
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+    }
+
     @Test("pending model deletion blocks retry until all mutation leases end")
     func modelMutationExcludesRetry() throws {
         let store = try makeStore()

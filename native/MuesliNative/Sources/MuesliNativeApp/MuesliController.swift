@@ -721,6 +721,7 @@ public final class MuesliController: NSObject {
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
+        recoverRetainedMeetingRecordings()
         recoverStaleLiveMeetings()
         normalizeMeetingTranscriptionSelectionForAvailability()
         SoundController.prewarmLifecycleSounds()
@@ -7995,6 +7996,7 @@ public final class MuesliController: NSObject {
             var meetingResult: MeetingSessionResult?
             var failedLiveMeetingID: Int64?
             var earlyRecordingSave: PreparedMeetingRecordingSave?
+            let recoveryMeeting = liveMeetingID.flatMap { self.meeting(id: $0) }
             do {
                 let stopped = try await sessionToStop.stop { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
@@ -8020,6 +8022,14 @@ public final class MuesliController: NSObject {
                     ))
                     earlyRecordingSave = prepared
                     if let id = liveMeetingID, let path = prepared.path {
+                        do {
+                            guard let recoveryMeeting else { throw CocoaError(.fileReadUnknown) }
+                            try self.preserveMeetingRecordingReference(meeting: recoveryMeeting, path: path)
+                        } catch {
+                            // Keep the audio and continue ASR even if both storage
+                            // mechanisms are unavailable; give the user its location.
+                            self.presentErrorAlert(title: "Recording Recovery", message: "Audio was saved at \(path), but its recovery reference could not be saved. Keep this location in case meeting finalization fails. \(error.localizedDescription)")
+                        }
                         self.attachEarlyMeetingRecording(id: id, path: path)
                     }
                 }
@@ -8044,6 +8054,9 @@ public final class MuesliController: NSObject {
                     )
                 }
                 completedMeetingID = persistenceResult.meetingID
+                if let path = preparedRecordingSave.path {
+                    try? FileManager.default.removeItem(at: MeetingRecordingRecoveryReference.url(for: URL(fileURLWithPath: path)))
+                }
                 if let recordingSaveError = persistenceResult.recordingSaveError {
                     await MainActor.run {
                         self.recordDiagnosticIncident(
@@ -8461,6 +8474,40 @@ public final class MuesliController: NSObject {
             fputs("[muesli-native] early recording attachment failed for meeting \(id): \(error); continuing finalization\n", stderr)
             return false
         }
+    }
+
+    func preserveMeetingRecordingReference(meeting: MeetingRecord, path: String) throws {
+        try MeetingRecordingRecoveryReference(
+            meetingID: meeting.id, startTime: meeting.startTime,
+            databasePath: dictationStore.resolvedDatabaseURL.standardizedFileURL.path
+        ).write(beside: URL(fileURLWithPath: path))
+    }
+
+    /// Replay only local retained-audio references. Failed reads/writes leave the
+    /// reference intact for the next launch; never recreate deleted meeting rows.
+    func recoverRetainedMeetingRecordings() {
+        let directory = configStore.supportDirectory().appendingPathComponent("meeting-recordings", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for referenceURL in files where referenceURL.lastPathComponent.hasSuffix(MeetingRecordingRecoveryReference.suffix) {
+            do {
+                let reference = try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: Data(contentsOf: referenceURL))
+                guard reference.databasePath == dictationStore.resolvedDatabaseURL.standardizedFileURL.path,
+                      let meeting = try dictationStore.meeting(id: reference.meetingID),
+                      meeting.startTime == reference.startTime else { continue }
+                let recordingPath = String(referenceURL.path.dropLast(MeetingRecordingRecoveryReference.suffix.count))
+                guard FileManager.default.fileExists(atPath: recordingPath) else { continue }
+                // A later successful recording takes precedence over a stale reference.
+                if let existingPath = meeting.savedRecordingPath, !existingPath.isEmpty,
+                   URL(fileURLWithPath: existingPath).resolvingSymlinksInPath() != URL(fileURLWithPath: recordingPath).resolvingSymlinksInPath() {
+                    continue
+                }
+                try dictationStore.updateMeetingSavedRecordingPath(id: meeting.id, path: recordingPath)
+                try FileManager.default.removeItem(at: referenceURL)
+            } catch {
+                fputs("[muesli-native] retained recording recovery deferred: \(error)\n", stderr)
+            }
+        }
+        syncAppState()
     }
 
     var canModifyModelFiles: Bool {
