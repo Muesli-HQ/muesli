@@ -1,4 +1,3 @@
-import Compression
 import Foundation
 
 enum InsightsContributionCodec {
@@ -66,10 +65,11 @@ enum InsightsContributionCodec {
             var output = Data(count: capacity)
             let written = output.withUnsafeMutableBytes { destination in
                 data.withUnsafeBytes { source in
-                    compression_encode_buffer(
-                        destination.bindMemory(to: UInt8.self).baseAddress!, capacity,
-                        source.bindMemory(to: UInt8.self).baseAddress!, data.count,
-                        nil, COMPRESSION_LZFSE
+                    MuesliCompression.lzfseEncode(
+                        source: source.bindMemory(to: UInt8.self).baseAddress!,
+                        sourceCount: data.count,
+                        destination: destination.bindMemory(to: UInt8.self).baseAddress!,
+                        destinationCapacity: capacity
                     )
                 }
             }
@@ -88,10 +88,11 @@ enum InsightsContributionCodec {
         var output = Data(count: originalCount)
         let written = output.withUnsafeMutableBytes { destination in
             data.withUnsafeBytes { source in
-                compression_decode_buffer(
-                    destination.bindMemory(to: UInt8.self).baseAddress!, originalCount,
-                    source.bindMemory(to: UInt8.self).baseAddress!, data.count,
-                    nil, COMPRESSION_LZFSE
+                MuesliCompression.lzfseDecode(
+                    source: source.bindMemory(to: UInt8.self).baseAddress!,
+                    sourceCount: data.count,
+                    destination: destination.bindMemory(to: UInt8.self).baseAddress!,
+                    destinationCapacity: originalCount
                 )
             }
         }

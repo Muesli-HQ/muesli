@@ -1,7 +1,6 @@
 // Vendored from FluidAudio v0.15.1 (ASR/Qwen3/), Apache License 2.0.
 // Original: https://github.com/FluidInference/FluidAudio — types renamed with MuesliQwen3 prefix.
 // Licensed under the Apache License, Version 2.0; see LICENSE-Apache-2.0 in this directory.
-import Accelerate
 @preconcurrency import CoreML
 import Foundation
 import OSLog
@@ -461,10 +460,7 @@ public actor MuesliQwen3AsrManager {
 
     private func argmaxFromLogits(_ logits: MLMultiArray) -> Int {
         let ptr = logits.dataPointer.bindMemory(to: Float.self, capacity: MuesliQwen3AsrConfig.vocabSize)
-        var maxVal: Float = 0
-        var maxIdx: vDSP_Length = 0
-        vDSP_maxvi(ptr, 1, &maxVal, &maxIdx, vDSP_Length(MuesliQwen3AsrConfig.vocabSize))
-        return Int(maxIdx)
+        return MuesliAccelerate.argmax(ptr, count: MuesliQwen3AsrConfig.vocabSize).index
     }
 
     // MARK: - Text Decoding

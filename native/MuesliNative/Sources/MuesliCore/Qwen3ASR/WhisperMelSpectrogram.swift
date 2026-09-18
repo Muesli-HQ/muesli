@@ -1,7 +1,6 @@
 // Vendored from FluidAudio v0.15.1 (ASR/Qwen3/), Apache License 2.0.
 // Original: https://github.com/FluidInference/FluidAudio — types renamed with MuesliQwen3 prefix.
 // Licensed under the Apache License, Version 2.0; see LICENSE-Apache-2.0 in this directory.
-import Accelerate
 import Foundation
 
 /// Whisper-compatible mel spectrogram extraction for Qwen3-ASR.
@@ -147,13 +146,12 @@ public final class MuesliQwen3WhisperMelSpectrogram {
             dftCos.withUnsafeBufferPointer { cosPtr in
                 windowedFrame.withUnsafeBufferPointer { xPtr in
                     realPart.withUnsafeMutableBufferPointer { outPtr in
-                        vDSP_mmul(
-                            cosPtr.baseAddress!, 1,
-                            xPtr.baseAddress!, 1,
-                            outPtr.baseAddress!, 1,
-                            vDSP_Length(numFreqBins),
-                            vDSP_Length(1),
-                            vDSP_Length(nFFT)
+                        MuesliAccelerate.matvec(
+                            matrix: cosPtr.baseAddress!,
+                            rows: numFreqBins,
+                            columns: nFFT,
+                            vector: xPtr.baseAddress!,
+                            output: outPtr.baseAddress!
                         )
                     }
                 }
@@ -162,34 +160,32 @@ public final class MuesliQwen3WhisperMelSpectrogram {
             dftSin.withUnsafeBufferPointer { sinPtr in
                 windowedFrame.withUnsafeBufferPointer { xPtr in
                     imagPart.withUnsafeMutableBufferPointer { outPtr in
-                        vDSP_mmul(
-                            sinPtr.baseAddress!, 1,
-                            xPtr.baseAddress!, 1,
-                            outPtr.baseAddress!, 1,
-                            vDSP_Length(numFreqBins),
-                            vDSP_Length(1),
-                            vDSP_Length(nFFT)
+                        MuesliAccelerate.matvec(
+                            matrix: sinPtr.baseAddress!,
+                            rows: numFreqBins,
+                            columns: nFFT,
+                            vector: xPtr.baseAddress!,
+                            output: outPtr.baseAddress!
                         )
                     }
                 }
             }
 
             // Power spectrum: |X[k]|^2 = Re^2 + Im^2
-            vDSP_vsq(realPart, 1, &powerSpec, 1, vDSP_Length(numFreqBins))
-            vDSP_vsq(imagPart, 1, &imagSq, 1, vDSP_Length(numFreqBins))
-            vDSP_vadd(powerSpec, 1, imagSq, 1, &powerSpec, 1, vDSP_Length(numFreqBins))
+            MuesliAccelerate.square(realPart, &powerSpec, count: numFreqBins)
+            MuesliAccelerate.square(imagPart, &imagSq, count: numFreqBins)
+            MuesliAccelerate.add(powerSpec, imagSq, &powerSpec, count: numFreqBins)
 
             // Apply mel filterbank: [nMels, numFreqBins] × [numFreqBins] → [nMels]
             melFilterbankFlat.withUnsafeBufferPointer { filterPtr in
                 powerSpec.withUnsafeBufferPointer { specPtr in
                     melFrame.withUnsafeMutableBufferPointer { outPtr in
-                        vDSP_mmul(
-                            filterPtr.baseAddress!, 1,
-                            specPtr.baseAddress!, 1,
-                            outPtr.baseAddress!, 1,
-                            vDSP_Length(nMels),
-                            vDSP_Length(1),
-                            vDSP_Length(numFreqBins)
+                        MuesliAccelerate.matvec(
+                            matrix: filterPtr.baseAddress!,
+                            rows: nMels,
+                            columns: numFreqBins,
+                            vector: specPtr.baseAddress!,
+                            output: outPtr.baseAddress!
                         )
                     }
                 }
@@ -197,13 +193,14 @@ public final class MuesliQwen3WhisperMelSpectrogram {
 
             // log10(clip(x, 1e-10)) - vectorized per frame
             // Clip to minimum value first
-            var minClip: Float = 1e-10
-            var maxClip: Float = Float.greatestFiniteMagnitude
-            vDSP_vclip(melFrame, 1, &minClip, &maxClip, &melFrame, 1, vDSP_Length(nMels))
+            MuesliAccelerate.clip(
+                melFrame, &melFrame,
+                low: 1e-10, high: Float.greatestFiniteMagnitude,
+                count: nMels
+            )
 
-            // log10 via vForce
-            var count = Int32(nMels)
-            vvlog10f(&melFrame, melFrame, &count)
+            // log10
+            MuesliAccelerate.log10(&melFrame, count: nMels)
 
             // Copy to output
             for melIdx in 0..<nMels {
@@ -214,27 +211,26 @@ public final class MuesliQwen3WhisperMelSpectrogram {
         // Dynamic range compression: max(x, globalMax - 8.0) - vectorized
         var globalMax: Float = -Float.infinity
         for melIdx in 0..<nMels {
-            var rowMax: Float = 0
-            vDSP_maxv(mel[melIdx], 1, &rowMax, vDSP_Length(numFrames))
+            let rowMax = MuesliAccelerate.max(mel[melIdx], count: numFrames)
             globalMax = max(globalMax, rowMax)
         }
         let minVal = globalMax - 8.0
 
         for melIdx in 0..<nMels {
-            var low = minVal
-            var high = Float.greatestFiniteMagnitude
             mel[melIdx].withUnsafeMutableBufferPointer { buffer in
-                vDSP_vclip(buffer.baseAddress!, 1, &low, &high, buffer.baseAddress!, 1, vDSP_Length(numFrames))
+                MuesliAccelerate.clip(
+                    buffer.baseAddress!, buffer.baseAddress!,
+                    low: minVal, high: Float.greatestFiniteMagnitude,
+                    count: numFrames
+                )
             }
         }
 
         // Whisper normalization: (x + 4.0) / 4.0 - vectorized
-        var addVal: Float = 4.0
-        var divVal: Float = 4.0
         for melIdx in 0..<nMels {
             mel[melIdx].withUnsafeMutableBufferPointer { buffer in
-                vDSP_vsadd(buffer.baseAddress!, 1, &addVal, buffer.baseAddress!, 1, vDSP_Length(numFrames))
-                vDSP_vsdiv(buffer.baseAddress!, 1, &divVal, buffer.baseAddress!, 1, vDSP_Length(numFrames))
+                MuesliAccelerate.addScalar(buffer.baseAddress!, buffer.baseAddress!, scalar: 4.0, count: numFrames)
+                MuesliAccelerate.divideScalar(buffer.baseAddress!, buffer.baseAddress!, scalar: 4.0, count: numFrames)
             }
         }
 

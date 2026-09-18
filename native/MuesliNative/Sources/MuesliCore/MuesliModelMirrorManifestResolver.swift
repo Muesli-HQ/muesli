@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// A pinned, public Muesli model manifest hosted at the trusted asset origin.
 ///

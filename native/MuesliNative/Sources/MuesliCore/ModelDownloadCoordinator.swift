@@ -1,5 +1,7 @@
-import CryptoKit
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// The lifecycle phase reported for a model download.
 public enum ModelDownloadPhase: String, Codable, Sendable {
@@ -657,7 +659,7 @@ public actor ModelDownloadCoordinator {
         if let expectedHash = file.sha256 {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
-            var hasher = SHA256()
+            var hasher = MuesliSHA256()
             while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
                 hasher.update(data: data)
             }
@@ -874,7 +876,7 @@ public actor ModelDownloadCoordinator {
     }
 
     private func manifestFingerprint(_ manifest: ModelDownloadManifest) -> String {
-        var hasher = SHA256()
+        var hasher = MuesliSHA256()
         func append(_ value: String) {
             hasher.update(data: Data(value.utf8))
             hasher.update(data: Data([0]))
@@ -986,7 +988,10 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDataDelega
 private extension URLSessionConfiguration {
     static var modelDownload: URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
+        #if os(macOS)
+        // `waitsForConnectivity` is get-only on swift-corelibs-foundation.
         configuration.waitsForConnectivity = false
+        #endif
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 24 * 60 * 60
         configuration.httpMaximumConnectionsPerHost = 4

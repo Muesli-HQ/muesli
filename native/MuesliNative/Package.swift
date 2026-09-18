@@ -1,6 +1,105 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+// MARK: - Platform-conditional manifest
+//
+// The macOS app and its macOS-only dependencies (MLX, FluidAudio, WhisperKit,
+// Sparkle, CoreML packages, the macOS LiteRT binary artifact, LocalVQE, ...)
+// are declared only when the manifest is evaluated on macOS. On Windows the
+// manifest exposes just the portable `MuesliCore` library and its tests, so
+// `swift build --target MuesliCore` never resolves or downloads macOS-only
+// packages or binary artifacts.
+
+#if os(Windows)
+let windowsVcpkgRoot = Context.environment["VCPKG_ROOT"]
+    ?? Context.environment["MUESLI_VCPKG_ROOT"]
+    ?? Context.environment["VCPKG_INSTALLATION_ROOT"]
+let windowsVcpkgInstalled = windowsVcpkgRoot.map { "\($0)/installed/x64-windows" }
+
+// Native headers/libraries come from the developer environment (vcpkg), not
+// from a machine-specific path baked into the package.
+let coreSwiftSettings: [SwiftSetting] = windowsVcpkgInstalled.map {
+    [.unsafeFlags(["-Xcc", "-I\($0)/include"])]
+} ?? []
+let coreLinkerSettings: [LinkerSetting] = windowsVcpkgInstalled.map {
+    [.unsafeFlags(["-L\($0)/lib"])]
+} ?? []
+
+let package = Package(
+    name: "MuesliNative",
+    // Declared for parity with the macOS manifest; ignored when building on Windows.
+    platforms: [
+        .macOS("14.2"),
+    ],
+    products: [
+        .library(name: "MuesliCore", targets: ["MuesliCore"]),
+        // Stable Swift↔C ABI consumed by the Windows app. Dynamic so the C#
+        // adapter can load it beside the packaged application.
+        .library(name: "MuesliCoreABI", type: .dynamic, targets: ["MuesliCoreABI"]),
+    ],
+    dependencies: [
+        // Exact pins keep the Windows dependency graph reproducible. The macOS graph is
+        // unaffected because this branch is only evaluated on Windows, and the Windows build
+        // resolves against Package.resolved.windows (staged as Package.resolved in an isolated
+        // build copy) rather than the macOS Package.resolved.
+        .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1"),
+        .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.1"),
+    ],
+    targets: [
+        // Portable Clang module maps resolving through the vcpkg include path.
+        .systemLibrary(name: "SQLite3", path: "Sources/CSQLite"),
+        .systemLibrary(name: "CLZFSE", path: "Sources/CLZFSE"),
+
+        .target(
+            name: "MuesliCore",
+            dependencies: [
+                "SQLite3",
+                "CLZFSE",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/MuesliCore",
+            exclude: [
+                // CoreML-backed Qwen3 backend is macOS-only; the portable parts of
+                // the Qwen3ASR directory (config, RoPE, mel spectrogram) still build.
+                "Qwen3ASR/Qwen3AsrManager.swift",
+                "Qwen3ASR/Qwen3AsrModels.swift",
+                "Qwen3ASR/Qwen3StreamingManager.swift",
+                "Qwen3ASR/LICENSE-Apache-2.0",
+            ],
+            swiftSettings: coreSwiftSettings,
+            linkerSettings: coreLinkerSettings + [
+                .linkedLibrary("sqlite3"),
+                .linkedLibrary("lzfse"),
+            ]
+        ),
+
+        .target(
+            name: "MuesliCoreABI",
+            dependencies: ["MuesliCore"],
+            path: "Sources/MuesliCoreABI",
+            swiftSettings: coreSwiftSettings,
+            linkerSettings: coreLinkerSettings
+        ),
+
+        .testTarget(
+            name: "MuesliCoreTests",
+            dependencies: ["MuesliCore"],
+            path: "Tests/MuesliCoreTests",
+            swiftSettings: coreSwiftSettings,
+            linkerSettings: coreLinkerSettings
+        ),
+        .testTarget(
+            name: "MuesliCoreABITests",
+            dependencies: ["MuesliCoreABI", "MuesliCore"],
+            path: "Tests/MuesliCoreABITests",
+            swiftSettings: coreSwiftSettings,
+            linkerSettings: coreLinkerSettings
+        ),
+    ],
+    cxxLanguageStandard: .cxx17
+)
+#else
 let package = Package(
     name: "MuesliNative",
     platforms: [
@@ -30,9 +129,31 @@ let package = Package(
             name: "MuesliCore",
             dependencies: [],
             path: "Sources/MuesliCore",
+            exclude: [
+                "Qwen3ASR/LICENSE-Apache-2.0",
+            ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]
+        ),
+        // Cross-platform C ABI bridge around MuesliCore. The Windows manifest
+        // also publishes it as a dynamic library; declaring the target here keeps
+        // the Apple branch compiling it for CI coverage.
+        .target(
+            name: "MuesliCoreABI",
+            dependencies: ["MuesliCore"],
+            path: "Sources/MuesliCoreABI"
+        ),
+        // Portable cross-platform tests for MuesliCore (run on macOS CI and Windows).
+        .testTarget(
+            name: "MuesliCoreTests",
+            dependencies: ["MuesliCore"],
+            path: "Tests/MuesliCoreTests"
+        ),
+        .testTarget(
+            name: "MuesliCoreABITests",
+            dependencies: ["MuesliCoreABI", "MuesliCore"],
+            path: "Tests/MuesliCoreABITests"
         ),
         .target(
             name: "MuesliNativeApp",
@@ -113,3 +234,4 @@ let package = Package(
     ],
     cxxLanguageStandard: .cxx17
 )
+#endif

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public enum Nemotron35ModelStoreError: Error, LocalizedError {
     case invalidURL(String)

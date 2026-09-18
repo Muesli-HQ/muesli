@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// A third-party ASR model whose transport is owned by Muesli.
 public struct ManagedASRModelPlan: Sendable {

@@ -1,5 +1,7 @@
-import CryptoKit
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Selects a complete Hugging Face directory or a subset of its top-level artifacts.
 public struct HuggingFaceModelSelection: Hashable, Sendable {
@@ -122,7 +124,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
 
         let sorted = filesByDestination.sorted { $0.key < $1.key }
         let revisionMaterial = sorted.map { $0.value.fingerprint }.joined(separator: "|")
-        let digest = SHA256.hash(data: Data(revisionMaterial.utf8))
+        let digest = MuesliSHA256.hash(data: Data(revisionMaterial.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
         return ModelDownloadManifest(

@@ -139,6 +139,45 @@ jobs:
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
+  # Shared portable MuesliCore and its C ABI bridge. These are the same sources
+  # Windows consumes, so the Apple branch must keep compiling and passing them.
+  shared_core:
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build shared MuesliCore and ABI bridge
+        run: |
+          swift build --package-path native/MuesliNative -c release --target MuesliCore
+          swift build --package-path native/MuesliNative -c release --target MuesliCoreABI
+
+      - name: Test shared core and ABI
+        run: |
+          swift test \
+            --package-path native/MuesliNative \
+            --scratch-path "${RUNNER_TEMP}/muesli-shared-core" \
+            --filter MuesliTextProcessingTests \
+            --filter BridgeTests \
+            --filter SQLitePersistenceTests \
+            --filter CompressionGoldenTests \
+            --filter CryptoSHA256Tests \
+            --filter AccelerateTests \
+            --filter InsightsTextAnalysisTests \
+            --filter LoggingFacadeTests
+
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
@@ -194,7 +233,7 @@ jobs:
   # This is the only required check in branch protection
   ci-gate:
     if: always()
-    needs: [changes, classifier-tests, build_release, test_shards, cli-smoke, update-flow]
+    needs: [changes, classifier-tests, build_release, test_shards, shared_core, cli-smoke, update-flow]
     runs-on: ubuntu-latest
     steps:
       # A successful draft gate could otherwise be reused on the same SHA when
@@ -213,14 +252,19 @@ jobs:
             echo "Required release build did not succeed."
             exit 1
           fi
+          if [[ "${{ needs.changes.outputs.full_ci }}" == "true" && "${{ needs.shared_core.result }}" != "success" ]]; then
+            echo "Required shared core build and tests did not succeed."
+            exit 1
+          fi
           if [[ "${{ needs.changes.result }}" == "success" ]] && \
              [[ "${{ needs.classifier-tests.result }}" == "success" ]] && \
              [[ "${{ needs.build_release.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.test_shards.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.shared_core.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.cli-smoke.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.update-flow.result }}" =~ ^(success|skipped)$ ]]; then
-            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, shared_core: ${{ needs.shared_core.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
           else
-            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, shared_core: ${{ needs.shared_core.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
             exit 1
           fi
