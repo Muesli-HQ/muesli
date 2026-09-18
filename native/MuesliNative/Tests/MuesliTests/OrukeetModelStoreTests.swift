@@ -37,7 +37,7 @@ struct OrukeetModelStoreTests {
     }
 
     @Test("Incomplete and corrupt installations do not replace an existing cache")
-    func failedInstallation() throws {
+    func failedInstallation() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -50,7 +50,7 @@ struct OrukeetModelStoreTests {
         #expect(throws: (any Error).self) { try OrukeetModelStore.load(from: destination) }
         let archive = root.appendingPathComponent("corrupt.zip")
         try Data("corrupt".utf8).write(to: archive)
-        #expect(throws: (any Error).self) { try OrukeetModelStore.installArchive(at: archive, to: destination) }
+        await #expect(throws: (any Error).self) { try await OrukeetModelStore.installArchive(at: archive, to: destination) }
         #expect(throws: (any Error).self) {
             try OrukeetModelStore.commitInstallation(from: root.appendingPathComponent("missing"), to: destination)
         }
@@ -114,14 +114,14 @@ struct OrukeetModelStoreTests {
             try await installer.run { _, _ in
                 await started.open()
                 try await withTaskCancellationHandler {
-                    await finish.wait()
+                    try await finish.wait()
                     try Task.checkCancellation()
                 } onCancel: {
                     Task { await cancellation.open(); await finish.open() }
                 }
             }
         }
-        await started.wait()
+        try await started.wait()
         let second = Task { try await installer.run { _, _ in} }
         first.cancel()
         await #expect(throws: CancellationError.self) { try await first.value }
@@ -139,14 +139,14 @@ struct OrukeetModelStoreTests {
             try await installer.run { _, _ in
                 await started.open()
                 try await withTaskCancellationHandler {
-                    await finish.wait()
+                    try await finish.wait()
                     try Task.checkCancellation()
                 } onCancel: {
                     Task { await finish.open() }
                 }
             }
         }
-        await started.wait()
+        try await started.wait()
         await installer.cancelAndWait()
         await #expect(throws: CancellationError.self) { try await first.value }
         let retried = OrukeetInstallationGate()
@@ -172,14 +172,14 @@ struct OrukeetModelStoreTests {
             }) { report, snapshot in
                 report(0.2, "Downloading")
                 snapshot(.preparing(modelID: OrukeetModelStore.modelID, message: "Downloading"))
-                await next.wait()
+                try await next.wait()
                 report(0.7, "Compiling")
                 snapshot(.preparing(modelID: OrukeetModelStore.modelID, message: "Compiling"))
-                await finish.wait()
+                try await finish.wait()
             }
         }
-        await ownerScalar.wait()
-        await ownerSnapshot.wait()
+        try await ownerScalar.wait()
+        try await ownerSnapshot.wait()
         let second = Task {
             try await installer.run(progress: { fraction, _ in
                 joiner.record(fraction)
@@ -197,13 +197,13 @@ struct OrukeetModelStoreTests {
                 Issue.record("A joining caller must not start another installation")
             }
         }
-        await joinedScalar.wait()
-        await joinedSnapshot.wait()
+        try await joinedScalar.wait()
+        try await joinedSnapshot.wait()
         first.cancel()
         await #expect(throws: CancellationError.self) { try await first.value }
         await next.open()
-        await compiledScalar.wait()
-        await compiledSnapshot.wait()
+        try await compiledScalar.wait()
+        try await compiledSnapshot.wait()
         #expect(owner.fractions == [0.2])
         #expect(owner.messages == ["Downloading"])
         #expect(joiner.fractions == [0.2, 0.7])
@@ -223,11 +223,16 @@ struct OrukeetModelStoreTests {
         // the managed downloader before it cancels the Orukeet installation.
         barrier.enqueue {
             await managedCancelStarted.open()
-            await managedCancelReturn.wait()
+            do {
+                try await managedCancelReturn.wait()
+            } catch {
+                Issue.record("Cancellation barrier gate failed: \(error)")
+                return
+            }
             await installer.cancelAndWait()
             await cleanupFinished.open()
         }
-        await managedCancelStarted.wait()
+        try await managedCancelStarted.wait()
         let pending = barrier.pending
         let retry = Task {
             await retryWaiting.open()
@@ -235,7 +240,7 @@ struct OrukeetModelStoreTests {
             try Task.checkCancellation()
             try await installer.run { _, _ in await replacementStarted.open() }
         }
-        await retryWaiting.wait()
+        try await retryWaiting.wait()
         #expect(await replacementStarted.isOpen == false)
         if cancelRetry {
             retry.cancel()
@@ -293,60 +298,119 @@ struct OrukeetModelStoreTests {
         #expect(!OrukeetModelStore.installed(at: root))
     }
 
-    @Test("Older asynchronous loads cannot overwrite a newer backend", arguments: [true, false])
+    @Test("Older asynchronous loads cannot overwrite a newer backend", .timeLimit(.minutes(1)), arguments: [true, false])
     func staleModelLoadIsRejected(orukeetFirst: Bool) async throws {
         let started = OrukeetInstallationGate()
         let finish = OrukeetInstallationGate()
         let old: FluidAudioTranscriber.ModelSelection = orukeetFirst ? .orukeet : .parakeet(.v3)
         let transcriber = FluidAudioTranscriber(managerLoader: { selection, _, _ in
-            if selection == old { await started.open(); await finish.wait() }
+            if selection == old { await started.open(); try await finish.wait() }
             return AsrManager(config: .default)
         })
         let first = Task {
             if orukeetFirst { try await transcriber.loadOrukeet() }
             else { try await transcriber.loadModels(version: .v3) }
         }
-        await started.wait()
+        try await started.wait()
         if orukeetFirst { try await transcriber.loadModels(version: .v3) }
         else { try await transcriber.loadOrukeet() }
         await finish.open()
         await #expect(throws: CancellationError.self) { try await first.value }
     }
 
-    @Test("Selecting an already loaded model invalidates an older pending load")
+    @Test("Selecting an already loaded model invalidates an older pending load", .timeLimit(.minutes(1)))
     func cachedSelectionRejectsPendingLoad() async throws {
         let started = OrukeetInstallationGate()
         let finish = OrukeetInstallationGate()
         let transcriber = FluidAudioTranscriber(managerLoader: { selection, _, _ in
-            if selection == .orukeet { await started.open(); await finish.wait() }
+            if selection == .orukeet { await started.open(); try await finish.wait() }
             return AsrManager(config: .default)
         })
         try await transcriber.loadModels(version: .v3)
         let first = Task { try await transcriber.loadOrukeet() }
-        await started.wait()
+        try await started.wait()
         try await transcriber.loadModels(version: .v3)
         await finish.open()
         await #expect(throws: CancellationError.self) { try await first.value }
     }
 
-    @Test("Unloading an in-progress model prevents it from publishing", arguments: [true, false])
+    @Test("Unloading an in-progress model prevents it from publishing", .timeLimit(.minutes(1)), arguments: [true, false])
     func unloadingPendingModel(orukeet: Bool) async throws {
         let started = OrukeetInstallationGate()
         let finish = OrukeetInstallationGate()
         let transcriber = FluidAudioTranscriber(managerLoader: { _, _, _ in
             await started.open()
-            await finish.wait()
+            try await finish.wait()
             return AsrManager(config: .default)
         })
         let first = Task {
             if orukeet { try await transcriber.loadOrukeet() }
             else { try await transcriber.loadModels(version: .v3) }
         }
-        await started.wait()
+        try await started.wait()
         if orukeet { await transcriber.shutdownOrukeet() }
         else { await transcriber.shutdown(ifLoadedVersion: .v3) }
         await finish.open()
         await #expect(throws: CancellationError.self) { try await first.value }
+    }
+
+    @Test("Cancel stops extraction before removing staging and preserves the installed model", .timeLimit(.minutes(1)))
+    func extractionCancellationWaitsForExit() async throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let destination = root.appendingPathComponent("compiled")
+        try files.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        let marker = destination.appendingPathComponent("previous")
+        try Data("working model".utf8).write(to: marker)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let operation = Task {
+            try await OrukeetModelStore.compileArchive(at: root.appendingPathComponent("fixture.zip"), to: destination) { _, staging in
+                try Data("extracting".utf8).write(to: staging.appendingPathComponent("partial"))
+                try await OrukeetArchiveProcess(process).run()
+            }
+        }
+        defer { operation.cancel() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !process.isRunning && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(process.isRunning)
+        operation.cancel()
+        await #expect(throws: CancellationError.self) { try await operation.value }
+        #expect(!process.isRunning)
+        #expect(try files.contentsOfDirectory(atPath: root.path) == ["compiled"])
+        #expect(try Data(contentsOf: marker) == Data("working model".utf8))
+    }
+
+    @Test("Cancellation before extraction does not launch a subprocess", .timeLimit(.minutes(1)))
+    func cancellationBeforeProcessLaunch() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let operation = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await OrukeetArchiveProcess(process).run()
+        }
+        await #expect(throws: CancellationError.self) { try await operation.value }
+        #expect(process.processIdentifier == 0)
+    }
+
+    @Test("Extraction preserves successful exit and corrupt archive errors", .timeLimit(.minutes(1)), arguments: [0, 7])
+    func extractionExitStatus(status: Int) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "exit \(status)"]
+        if status == 0 {
+            try await OrukeetArchiveProcess(process).run()
+        } else {
+            await #expect(throws: CocoaError(.fileReadCorruptFile)) {
+                try await OrukeetArchiveProcess(process).run()
+            }
+        }
+        #expect(!process.isRunning)
     }
 
     // Explicitly opt in: this test downloads the preview once and runs the real app backend.
@@ -376,19 +440,20 @@ struct OrukeetModelStoreTests {
 
 private actor OrukeetInstallationGate {
     private(set) var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { waiters.append($0) }
+    func wait() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !isOpen {
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else { throw GateTimeout() }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try Task.checkCancellation()
     }
 
-    func open() {
-        isOpen = true
-        let pending = waiters
-        waiters.removeAll()
-        for waiter in pending { waiter.resume() }
-    }
+    func open() { isOpen = true }
+
+    private struct GateTimeout: Error {}
 }
 
 private final class OrukeetProgressRecorder: @unchecked Sendable {

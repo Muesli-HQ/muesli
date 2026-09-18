@@ -85,7 +85,7 @@ enum OrukeetModelStore {
         let preparing = ModelDownloadProgress.preparing(modelID: modelID, message: "Compiling Orukeet for this Mac...")
         progress?(0.95, preparing.message)
         progressSnapshot?(preparing)
-        try compileArchive(at: archive, to: directory)
+        try await compileArchive(at: archive, to: directory)
     }
 
     static func cancelAndWait() async {
@@ -125,12 +125,16 @@ enum OrukeetModelStore {
     }
 
     /// Separate from acquisition so the exact installer can be regression-tested with the pinned archive offline.
-    static func installArchive(at archive: URL, to destination: URL) throws {
+    static func installArchive(at archive: URL, to destination: URL) async throws {
         try validateArchive(at: archive)
-        try compileArchive(at: archive, to: destination)
+        try await compileArchive(at: archive, to: destination)
     }
 
-    private static func compileArchive(at archive: URL, to destination: URL) throws {
+    static func compileArchive(
+        at archive: URL, to destination: URL,
+        extract: (URL, URL) async throws -> Void = extractArchive
+    ) async throws {
+        try Task.checkCancellation()
         let files = FileManager.default
         let parent = destination.deletingLastPathComponent()
         try files.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -138,12 +142,8 @@ enum OrukeetModelStore {
             ".install-\(UUID().uuidString)", isDirectory: true)
         try files.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? files.removeItem(at: staging) }
-        let unpack = Process()
-        unpack.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        unpack.arguments = ["-x", "-k", archive.path, staging.path]
-        try unpack.run()
-        unpack.waitUntilExit()
-        guard unpack.terminationStatus == 0 else { throw CocoaError(.fileReadCorruptFile) }
+        try await extract(archive, staging)
+        try Task.checkCancellation()
         let bundle = staging.appendingPathComponent("orukeet-r3-coreml-baseline", isDirectory: true)
         for name in components {
             try Task.checkCancellation()
@@ -159,6 +159,13 @@ enum OrukeetModelStore {
             to: bundle.appendingPathComponent(".revision"), atomically: true, encoding: .utf8)
         try Task.checkCancellation()
         try commitInstallation(from: bundle, to: destination)
+    }
+
+    private static func extractArchive(at archive: URL, to staging: URL) async throws {
+        let unpack = Process()
+        unpack.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unpack.arguments = ["-x", "-k", archive.path, staging.path]
+        try await OrukeetArchiveProcess(unpack).run()
     }
 
     /// Use the same atomic replacement primitive as the managed downloader.
@@ -336,5 +343,56 @@ struct OrukeetCancellationBarrier {
             await previous?.value
             await cancel()
         }
+    }
+}
+
+/// Serializes launch with cancellation so cancellation cannot miss a process
+/// that has not started yet. Completion waits for actual exit before the caller
+/// removes its staging directory; no cooperative-executor thread blocks on it.
+final class OrukeetArchiveProcess: @unchecked Sendable {
+    private let process: Process
+    private let lock = NSLock()
+    private var cancelled = false
+
+    init(_ process: Process) {
+        self.process = process
+    }
+
+    func run() async throws {
+        let status = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                start(continuation)
+            }
+        } onCancel: {
+            self.cancel()
+        }
+        try Task.checkCancellation()
+        guard status == 0 else { throw CocoaError(.fileReadCorruptFile) }
+    }
+
+    private func start(_ continuation: CheckedContinuation<Int32, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        process.terminationHandler = { process in
+            continuation.resume(returning: process.terminationStatus)
+        }
+        do {
+            try process.run()
+        } catch {
+            process.terminationHandler = nil
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        if process.isRunning { process.terminate() }
     }
 }
