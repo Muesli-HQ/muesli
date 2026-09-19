@@ -2,6 +2,7 @@ import Testing
 import AppKit
 import Foundation
 import MuesliCore
+import SQLite3
 @testable import MuesliNativeApp
 
 private enum OpenRouterDisconnectTestError: Error {
@@ -721,6 +722,210 @@ struct MeetingsNavigationTests {
         ) == .failed)
     }
 
+    @Test("retry registration survives navigation, rejects duplicate jobs, and cancellation preserves data")
+    func retryRegistrationAndCancellation() async throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(
+            title: "Existing meeting", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Original transcript", formattedNotes: "Original notes",
+            micAudioPath: nil, systemAudioPath: nil,
+            savedRecordingPath: "/missing/retry-test.wav"
+        )
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        let result = await withCheckedContinuation { continuation in
+            controller.retranscribe(meeting: meeting) { continuation.resume(returning: $0) }
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            #expect(!controller.canRetranscribeMeeting(meeting))
+            #expect(!controller.canDeleteMeeting(meeting))
+            #expect(!controller.canModifyModelFiles)
+            #expect(controller.beginModelFileMutation() == nil)
+            controller.appState.selectedMeetingID = nil
+            controller.appState.selectedMeetingRecord = nil
+            controller.appState.meetingsNavigationState = .browser
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            controller.retranscribe(meeting: meeting) { duplicate in
+                guard case .failure(let error) = duplicate,
+                      case .busy = error as? MeetingRetranscriptionError else {
+                    Issue.record("Expected synchronous busy rejection")
+                    return
+                }
+            }
+            controller.cancelMeetingRetranscription(id: id)
+        }
+        guard case .failure(let error) = result else { Issue.record("Expected cancellation"); return }
+        #expect(error is CancellationError)
+        #expect(controller.appState.meetingRetranscriptions[id]?.phase == .cancelled)
+        #expect(controller.canRetranscribeMeeting(meeting))
+        #expect(controller.canDeleteMeeting(meeting))
+        #expect(controller.canModifyModelFiles)
+        let restored = try #require(try store.meeting(id: id))
+        #expect(restored.rawTranscript == meeting.rawTranscript)
+        #expect(restored.formattedNotes == meeting.formattedNotes)
+        #expect(restored.savedRecordingPath == meeting.savedRecordingPath)
+        #expect(restored.status == .completed)
+    }
+
+    @Test("a failed initial meeting keeps its retained audio even without manual notes")
+    func failedMeetingKeepsRetainedAudio() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Failed meeting", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingSavedRecordingPath(id: id, path: "/retained/meeting.wav")
+        let controller = makeController(dictationStore: store)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        let recovered = try #require(try store.meeting(id: id))
+        #expect(recovered.status == .failed)
+        #expect(recovered.savedRecordingPath == "/retained/meeting.wav")
+        #expect(controller.canRetranscribeMeeting(recovered))
+    }
+
+    @Test("early recording path failure remains nonfatal and preserves the recovery draft")
+    func earlyAttachmentFailurePreservesRecovery() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Recoverable", calendarEventID: nil, startTime: Date())
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER fail_recording_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected path failure'); END;"
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        let controller = makeController(dictationStore: store)
+        #expect(!controller.attachEarlyMeetingRecording(id: id, path: "/saved/recovery.wav"))
+        // Even a second path-write failure must not delete a draft with saved audio.
+        controller.resolveLiveMeetingAfterStopFailure(id: id, retainedRecordingPath: "/saved/recovery.wav")
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_recording_path", nil, nil, nil) == SQLITE_OK)
+        #expect(controller.attachEarlyMeetingRecording(id: id, path: "/saved/recovery.wav"))
+        #expect(try store.meeting(id: id)?.savedRecordingPath == "/saved/recovery.wav")
+    }
+
+    @Test("retained recording reference survives restart and repeated database failure")
+    func retainedRecordingReferenceSurvivesRestart() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("recovery.wav")
+        try Data([0, 1, 2]).write(to: audio)
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
+        do {
+            let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+            #expect(!controller.attachEarlyMeetingRecording(id: id, path: audio.path))
+            let result = MeetingSessionResult(
+                title: "Recovery", originalTitle: "Recovery", calendarEventID: nil,
+                startTime: Date(), endTime: Date(), durationSeconds: 1,
+                rawTranscript: "Retained speech", formattedNotes: "Notes",
+                retainedRecordingURL: nil, retainedRecordingError: nil,
+                systemRecordingURL: nil, templateSnapshot: MeetingTemplates.auto.snapshot
+            )
+            #expect(throws: (any Error).self) {
+                _ = try controller.persistCompletedMeetingResult(result, existingMeetingID: id,
+                    preparedRecordingSave: PreparedMeetingRecordingSave(path: audio.path, error: nil))
+            }
+            controller.resolveLiveMeetingAfterStopFailure(id: id, retainedRecordingPath: audio.path)
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        }
+        // A fresh controller has no in-memory path; failed recovery keeps the file.
+        do {
+            let restarted = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            restarted.recoverRetainedMeetingRecordings()
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+            #expect(FileManager.default.fileExists(atPath: reference.path))
+        }
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
+        let recovered = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        recovered.recoverRetainedMeetingRecordings()
+        let recoveredPath = try #require(try store.meeting(id: id)?.savedRecordingPath)
+        #expect(URL(fileURLWithPath: recoveredPath).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        recovered.recoverRetainedMeetingRecordings() // Idempotent after success.
+        #expect(try store.meeting(id: id)?.savedRecordingPath == recoveredPath)
+    }
+
+    @Test("recording recovery leaves newer recordings and unrelated identities untouched")
+    func recordingReferenceIdentityGuards() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("old.wav")
+        try Data([0]).write(to: audio)
+        let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        try store.updateMeetingSavedRecordingPath(id: id, path: "/newer.wav")
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == "/newer.wav")
+        try store.deleteMeeting(id: id)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id) == nil)
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+    }
+
+    @Test("pending model deletion blocks retry until all mutation leases end")
+    func modelMutationExcludesRetry() throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(title: "Saved", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "text", formattedNotes: "notes", micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/saved.wav")
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        let first = try #require(controller.beginModelFileMutation())
+        let second = try #require(controller.beginModelFileMutation())
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.endModelFileMutation(first)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.endModelFileMutation(second)
+        #expect(controller.canRetranscribeMeeting(meeting))
+        #expect(controller.appState.modelFileMutationCount == 0)
+        controller.appState.activeAudioImportCount = 1
+        #expect(!controller.canModifyModelFiles)
+        #expect(controller.beginModelFileMutation() == nil)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.appState.activeAudioImportCount = 0
+        #expect(controller.canModifyModelFiles)
+    }
+
+    @Test("prompt policy surfaces writer errors without asking to save a nonexistent file")
+    func retentionPolicyPreservesWriterFailure() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: false, writerFailed: true, prompt: {
+            Issue.record("No prompt expected for a failed writer")
+            return false
+        }))
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
+        #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("WAV recovery reports success and double failure reports the fallback error")
+    func recordingFallbackOutcome() async {
+        let request = MeetingRecordingSaveRequest(tempURL: URL(fileURLWithPath: "/unused.wav"), meetingTitle: "Test", startedAt: Date(), supportDirectory: URL(fileURLWithPath: "/unused"), fileFormat: .m4a)
+        let recovered = await MuesliController.prepareRecoverableMeetingRecording(request, save: { request in
+            request.fileFormat == .wav
+                ? PreparedMeetingRecordingSave(path: "/saved/recovery.wav", error: nil)
+                : PreparedMeetingRecordingSave(path: nil, error: .failedToSaveRecording(underlying: CocoaError(.fileWriteUnknown)))
+        })
+        #expect(recovered.path == "/saved/recovery.wav")
+        #expect(recovered.error == nil)
+        let failed = await MuesliController.prepareRecoverableMeetingRecording(request, save: { _ in
+            PreparedMeetingRecordingSave(path: nil, error: .failedToSaveRecording(underlying: CocoaError(.fileWriteNoPermission)))
+        })
+        #expect(failed.path == nil)
+        #expect(failed.error != nil)
+    }
+
     @Test("retranscribe status is unchanged before processing starts")
     func retranscribeStatusIsUnchangedBeforeProcessingStarts() {
         #expect(MuesliController.retranscriptionFailureStatus(
@@ -739,13 +944,13 @@ struct MeetingsNavigationTests {
         ) == .completed)
     }
 
-    @Test("retranscribe processing failures mark meeting failed")
-    func retranscribeProcessingFailuresMarkMeetingFailed() {
+    @Test("retranscribe processing failures preserve original meeting status")
+    func retranscribeProcessingFailuresPreserveOriginalMeetingStatus() {
         #expect(MuesliController.retranscriptionFailureStatus(
             originalStatus: .completed,
             didSetProcessing: true,
             error: CocoaError(.fileReadUnknown)
-        ) == .failed)
+        ) == .completed)
     }
 
     @Test("cached manual notes are persisted before debounce")
@@ -1673,13 +1878,13 @@ struct MeetingsNavigationTests {
         controller.updateConfig {
             $0.sttBackend = BackendOption.parakeetMultilingual.backend
             $0.sttModel = BackendOption.parakeetMultilingual.model
-            $0.meetingTranscriptionBackend = BackendOption.nemotron35Multilingual.backend
-            $0.meetingTranscriptionModel = BackendOption.nemotron35Multilingual.model
+            $0.meetingTranscriptionBackend = BackendOption.cohereTranscribe.backend
+            $0.meetingTranscriptionModel = BackendOption.cohereTranscribe.model
         }
 
         #expect(controller.appState.selectedMeetingTranscriptionBackend.supportsMeetingTranscription)
-        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.nemotron35Multilingual.backend)
-        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.nemotron35Multilingual.model)
+        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.cohereTranscribe.backend)
+        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.cohereTranscribe.model)
         #expect(controller.config.meetingTranscriptionBackend == controller.appState.selectedMeetingTranscriptionBackend.backend)
         #expect(controller.config.meetingTranscriptionModel == controller.appState.selectedMeetingTranscriptionBackend.model)
     }

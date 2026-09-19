@@ -411,12 +411,14 @@ struct BackendOptionTests {
         ) == nil)
     }
 
-    @Test("streaming dictation models are excluded from meeting transcription")
-    func streamingDictationModelsAreExcludedFromMeetingTranscription() {
-        #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
+    @Test("meeting transcription offers supported families without experimental or oversized models")
+    func meetingModelEligibility() {
+        #expect(BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
         #expect(BackendOption.parakeetMultilingual.supportsMeetingTranscription)
         #expect(BackendOption.whisperLargeTurbo.supportsMeetingTranscription)
-        #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
+        #expect(!BackendOption.cohereTranscribe.supportsMeetingTranscription)
+        #expect(BackendOption.experimental.allSatisfy { !$0.supportsMeetingTranscription })
+        #expect(BackendOption.bodhanFamily.allSatisfy { $0.supportsMeetingTranscription })
     }
 
     @Test("only multilingual Whisper models expose language selection")

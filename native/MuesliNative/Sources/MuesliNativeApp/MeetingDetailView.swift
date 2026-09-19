@@ -87,7 +87,10 @@ struct MeetingDetailView: View {
     let backLabel: String
     @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
     @State private var isSummarizing = false
-    @State private var isRetranscribing = false
+    private var isRetranscribing: Bool {
+        guard let id = meeting?.id else { return false }
+        return appState.meetingRetranscriptions[id]?.isRunning == true
+    }
     @State private var isEditingNotes = false
     @State private var isEditingTranscript = false
     @State private var editableTitle: String
@@ -106,6 +109,7 @@ struct MeetingDetailView: View {
     @State private var manualNotesSaveStatusTask: DispatchWorkItem?
     @State private var summaryErrorMessage: String?
     @State private var retranscriptionErrorMessage: String?
+    @State private var pendingRetranscriptionBackend: BackendOption?
     @State private var showDeleteConfirmation = false
     @State private var transcriptResummaryPromptMeetingID: Int64?
     @State private var transcriptEditOriginalTranscript: String?
@@ -142,6 +146,8 @@ struct MeetingDetailView: View {
             if let meeting {
                 VStack(alignment: .leading, spacing: 0) {
                     header(meeting)
+
+                    retranscriptionStatus(for: meeting)
 
                     Divider()
                         .background(MuesliTheme.surfaceBorder)
@@ -189,6 +195,24 @@ struct MeetingDetailView: View {
             }
         } message: {
             Text(summaryErrorMessage ?? "The updated meeting notes could not be saved.")
+        }
+        .confirmationDialog("Re-transcribe saved recording?", isPresented: Binding(
+            get: { pendingRetranscriptionBackend != nil },
+            set: { if !$0 { pendingRetranscriptionBackend = nil } }
+        ), titleVisibility: .visible) {
+            Button("Re-transcribe") {
+                if let model = pendingRetranscriptionBackend, let meeting {
+                    controller.retranscribe(meeting: controller.meeting(id: meeting.id) ?? meeting, backend: model) { result in
+                        if case .failure(let error) = result, appState.meetingRetranscriptions[meeting.id] == nil {
+                            retranscriptionErrorMessage = error.localizedDescription
+                        }
+                    }
+                }
+                pendingRetranscriptionBackend = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
+        } message: {
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
         }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {
@@ -805,38 +829,52 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
-    private func retranscribeAction(for meeting: MeetingRecord) -> some View {
-        if meeting.savedRecordingPath != nil {
-            if isRetranscribing {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Re-transcribing...")
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+    private func retranscribeAction(for meeting: MeetingRecord, accessibilityIdentifier: String) -> some View {
+        if meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+           meeting.status != .recording, meeting.status != .noteOnly {
+            Menu {
+                let models = BackendOption.downloadedMeetingTranscription
+                if models.isEmpty { Text("Download a meeting model in Settings") }
+                ForEach(models, id: \.model) { model in
+                    Button(model.label) {
+                        pendingRetranscriptionBackend = model
+                    }
                 }
-                .padding(.horizontal, MuesliTheme.spacing8)
-            } else {
-                iconButton("arrow.clockwise", label: "Re-transcribe") {
-                    startRetranscription(for: meeting)
-                }
-                .disabled(meeting.status == .recording || meeting.status == .processing || isEditingNotes || isEditingTranscript)
+            } label: {
+                Label("Re-transcribe", systemImage: "waveform")
             }
+            .disabled(!controller.canRetranscribeMeeting(meeting) || isSummarizing || isEditingNotes || isEditingTranscript)
+            .accessibilityIdentifier(accessibilityIdentifier)
         }
     }
 
-    private func startRetranscription(for meeting: MeetingRecord) {
-        isRetranscribing = true
-        controller.retranscribe(meeting: meeting) { [meeting] result in
-            isRetranscribing = false
-            switch result {
-            case .success:
-                if let updated = controller.meeting(id: meeting.id) {
-                    syncLocalState(with: updated)
+    @ViewBuilder
+    private func retranscriptionStatus(for meeting: MeetingRecord) -> some View {
+        if meeting.savedRecordingPath?.isEmpty == false || appState.meetingRetranscriptions[meeting.id] != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.status.models")
+                    if let job = appState.meetingRetranscriptions[meeting.id] {
+                        if job.isRunning { ProgressView().controlSize(.small) }
+                        Text(job.message).font(.callout)
+                        Spacer()
+                        if job.isRunning {
+                            Button("Cancel") { controller.cancelMeetingRetranscription(id: meeting.id) }
+                        } else {
+                            Button("Dismiss") { appState.meetingRetranscriptions[meeting.id] = nil }
+                        }
+                    }
                 }
-            case .failure(let error):
-                retranscriptionErrorMessage = error.localizedDescription
+                if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
+                    if job.phase == .transcribing { ProgressView(value: job.fraction) }
+                    if !job.preview.isEmpty {
+                        Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
+                    }
+                }
             }
+            .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+            .padding(.bottom, 12)
+            .accessibilityIdentifier("meeting.retranscription.status")
         }
     }
 
@@ -894,8 +932,6 @@ struct MeetingDetailView: View {
     private func contentToolbar(for meeting: MeetingRecord) -> some View {
         HStack {
             Spacer()
-
-            retranscribeAction(for: meeting)
 
             Button(action: {
                 controller.copyToClipboard(activeCopyText(for: meeting))
@@ -1150,6 +1186,8 @@ struct MeetingDetailView: View {
                 Label(primarySummaryActionLabel(for: meeting), systemImage: "sparkles")
             }
             .disabled(isSummarizing || isRetranscribing)
+
+            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.menu.models")
 
             Button {
                 toggleEditing(for: meeting)
