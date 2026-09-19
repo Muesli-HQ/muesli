@@ -98,6 +98,55 @@ struct AudioFileImportControllerTests {
 
     // MARK: - Speaker Formatting Tests
 
+    @Test("conversion streams a longer stereo file without duration drift")
+    func convertLongStereoFile() async throws {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("long-import-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_000))
+        buffer.frameLength = 48_000
+        for channel in 0..<2 { buffer.floatChannelData![channel].initialize(repeating: 0.1, count: 48_000) }
+        do {
+            let writer = try AVAudioFile(forWriting: source, settings: format.settings)
+            for _ in 0..<120 { try writer.write(from: buffer) }
+        }
+        let (wav, _) = try await AudioFileImportController.convertToWAV(sourceURL: source)
+        defer { try? FileManager.default.removeItem(at: wav) }
+        let result = try AVAudioFile(forReading: wav)
+        #expect(abs(Double(result.length) / result.fileFormat.sampleRate - 120) < 0.05)
+        #expect(result.fileFormat.commonFormat == .pcmFormatInt16)
+        #expect(result.fileFormat.channelCount == 1)
+    }
+
+    @Test("incremental conversion supports compressed M4A audio")
+    func convertCompressedAudio() async throws {
+        let source = try createTestAudioFile(duration: 2, sampleRate: 16_000, channels: 1)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("compressed-import-\(UUID())")
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let compressed = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(from: source, meetingTitle: "Test", startedAt: Date(), supportDirectory: directory, fileFormat: .m4a)
+        let (wav, _) = try await AudioFileImportController.convertToWAV(sourceURL: compressed)
+        defer { try? FileManager.default.removeItem(at: wav) }
+        let result = try AVAudioFile(forReading: wav)
+        #expect(abs(Double(result.length) / result.fileFormat.sampleRate - 2) < 0.1)
+        #expect(result.fileFormat.commonFormat == .pcmFormatInt16)
+    }
+
+    @Test("cancelled conversion leaves its source intact")
+    func cancelledConversion() async throws {
+        let source = try createTestAudioFile(duration: 1, sampleRate: 48_000, channels: 1)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await AudioFileImportController.convertToWAV(sourceURL: source)
+        }
+        do { _ = try await task.value; Issue.record("Expected cancellation") }
+        catch { #expect(error is CancellationError) }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
     @Test("formatTranscriptWithSpeakers returns raw text when no segments")
     func formatTranscriptWithSpeakersNoSegments() {
         let result = AudioFileImportController.formatTranscriptWithSpeakers(

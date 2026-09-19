@@ -5684,7 +5684,7 @@ public final class MuesliController: NSObject {
     }
 
     func canRetranscribeMeeting(_ meeting: MeetingRecord) -> Bool {
-        meetingRetranscriptionTasks.isEmpty && appState.modelFileMutationCount == 0 && !isMeetingRecording() && !isStartingMeetingRecording
+        meetingRetranscriptionTasks.isEmpty && appState.modelFileMutationCount == 0 && appState.activeAudioImportCount == 0 && !isMeetingRecording() && !isStartingMeetingRecording
             && backgroundMeetingProcessingCount == 0 && importTask == nil
             && !isInteractiveAudioActivityInProgress
             && (meeting.status == .completed || meeting.status == .failed)
@@ -5760,7 +5760,7 @@ public final class MuesliController: NSObject {
                 await self.transcriptionCoordinator.setNemotron35PromptId(snapshot.resolvedNemotron35Language.promptId)
                 try Task.checkCancellation()
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = .transcribing
-                let transcription = try await self.transcriptionCoordinator.retranscribeMeetingRecording(
+                let transcription = try await self.transcriptionCoordinator.transcribeRecordedAudio(
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: snapshot.resolvedCohereLanguage,
@@ -6994,8 +6994,8 @@ public final class MuesliController: NSObject {
     // MARK: - Audio File Import
 
     private func ensureNoMeetingRetranscription() -> Bool {
-        guard meetingRetranscriptionTasks.isEmpty else {
-            presentErrorAlert(title: "Re-transcription in progress", message: "Wait for re-transcription to finish, or cancel it from the meeting, before starting another recording, import, or model change.")
+        guard meetingRetranscriptionTasks.isEmpty, appState.activeAudioImportCount == 0 else {
+            presentErrorAlert(title: "Audio processing in progress", message: "Wait for the current import or re-transcription to finish, or cancel it, before starting another recording, import, or model change.")
             return false
         }
         return true
@@ -7004,7 +7004,7 @@ public final class MuesliController: NSObject {
     /// Presents a file picker and imports an audio file for offline transcription.
     func importAudioFile() {
         guard ensureNoMeetingRetranscription() else { return }
-        guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
+        guard !isMeetingRecording(), !isStartingMeetingRecording, appState.modelFileMutationCount == 0 else { return }
         guard normalizeMeetingTranscriptionSelectionForAvailability() != nil else {
             presentErrorAlert(
                 title: "Import Failed",
@@ -7032,7 +7032,7 @@ public final class MuesliController: NSObject {
     /// Imports an audio file from a URL (drag-and-drop or file picker).
     func importAudioFileFromURL(_ url: URL) {
         guard ensureNoMeetingRetranscription() else { return }
-        guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
+        guard !isMeetingRecording(), !isStartingMeetingRecording, appState.modelFileMutationCount == 0 else { return }
         guard AudioFileImportController.isSupportedFileURL(url) else {
             presentErrorAlert(
                 title: "Import Failed",
@@ -7058,6 +7058,10 @@ public final class MuesliController: NSObject {
     }
 
     private func importAudioFile(from sourceURL: URL, sessionID: UUID) async {
+        // Cancellation may clear UI ownership before an in-flight model call
+        // returns. Keep its runtime protected until the operation really exits.
+        appState.activeAudioImportCount += 1
+        defer { appState.activeAudioImportCount -= 1 }
         let filename = sourceURL.deletingPathExtension().lastPathComponent
         let title = filename.isEmpty ? "Imported Recording" : filename
 
@@ -8511,12 +8515,12 @@ public final class MuesliController: NSObject {
     }
 
     var canModifyModelFiles: Bool {
-        !appState.meetingRetranscriptions.values.contains(where: \.isRunning)
+        !appState.meetingRetranscriptions.values.contains(where: \.isRunning) && !appState.isMeetingStarting && appState.activeAudioImportCount == 0
     }
 
     /// Reserve synchronously, before an async unload/delete can yield to a retry.
     func beginModelFileMutation() -> UUID? {
-        guard meetingRetranscriptionTasks.isEmpty else { return nil }
+        guard meetingRetranscriptionTasks.isEmpty, !isStartingMeetingRecording, appState.activeAudioImportCount == 0 else { return nil }
         let token = UUID()
         modelFileMutationTokens.insert(token)
         appState.modelFileMutationCount = modelFileMutationTokens.count
