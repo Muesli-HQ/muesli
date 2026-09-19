@@ -44,10 +44,11 @@ enum NotchCompletionTiming {
 struct NotchCompletionAnimation: NSViewRepresentable {
     let completionID: Int
     let reduceMotion: Bool
+    let accent: NSColor
 
     func makeNSView(context: Context) -> NotchCompletionAnimationView { NotchCompletionAnimationView() }
     func updateNSView(_ view: NotchCompletionAnimationView, context: Context) {
-        view.update(completionID: completionID, reduceMotion: reduceMotion)
+        view.update(completionID: completionID, reduceMotion: reduceMotion, accent: accent)
     }
     static func dismantleNSView(_ view: NotchCompletionAnimationView, coordinator: ()) { view.stop() }
 }
@@ -65,7 +66,6 @@ final class NotchCompletionAnimationView: NSView {
         layer?.masksToBounds = true
         for shape in [outline, sweep] {
             shape.fillColor = nil
-            shape.strokeColor = NSColor.systemOrange.cgColor
             shape.lineWidth = 2
             shape.lineCap = .round
             shape.opacity = 0
@@ -92,7 +92,12 @@ final class NotchCompletionAnimationView: NSView {
         outline.removeAllAnimations()
     }
 
-    func update(completionID: Int, reduceMotion: Bool) {
+    func update(completionID: Int, reduceMotion: Bool, accent: NSColor) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outline.strokeColor = accent.cgColor
+        sweep.strokeColor = accent.cgColor
+        CATransaction.commit()
         guard completionID != lastCompletionID else { return }
         lastCompletionID = completionID
         stop()

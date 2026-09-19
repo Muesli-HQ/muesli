@@ -5,6 +5,60 @@ import SwiftUI
 
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
+    @Test("Outcome colors distinguish completion, attention, and failure")
+    func outcomes() {
+        #expect(NotchOutcome.computerUse(.done) == .success)
+        #expect(NotchOutcome.computerUse(.needsConfirmation) == .needsInput)
+        #expect(NotchOutcome.computerUse(.failed) == .failure)
+        #expect(NotchOutcome.computerUse(.timedOut) == .failure)
+        #expect(NotchOutcome.computerUse(.cancelled) == nil)
+        #expect(NotchOutcome.quillFailure(QuilTransformationError.selectionChanged) == .needsInput)
+        #expect(NotchOutcome.quillFailure(QuilTransformationError.accessibilityPermissionRequired) == .needsInput)
+        #expect(NotchOutcome.quillFailure(QuilTransformationError.emptyResponse) == .failure)
+        #expect(NotchOutcome.success.color == .systemGreen)
+        #expect(NotchOutcome.needsInput.color == .systemYellow)
+        #expect(NotchOutcome.failure.color == .systemRed)
+        #expect(NotchOutcome.success.duration == 2)
+        #expect(NotchOutcome.needsInput.duration == nil)
+        #expect(NotchOutcome.failure.duration == 5)
+    }
+
+    @Test("Expanded instruction panel is centered below the camera on offset screens")
+    func instructionPanelGeometry() {
+        let geometry = NotchIndicatorGeometry(cutout: CGRect(x: 1500, y: 900, width: 180, height: 32), wingWidth: 110)
+        let frame = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900))
+        #expect(frame.midX == geometry.cutout.midX)
+        #expect(frame.maxY == geometry.cutout.minY)
+        #expect(frame.width == 440)
+        #expect(frame.height == 115)
+        let review = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), requiresReview: true)
+        #expect(review.height == 180)
+        #expect(review.maxY == geometry.cutout.minY)
+    }
+
+    @MainActor
+    @Test("Live instruction survives status updates and clears at session end")
+    func instructionLifecycle() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        defer { indicator.close() }
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        indicator.showQuilInstruction("Rewrite this paragraph", config: config)
+        #expect(indicator.instructionMode == .quill)
+        indicator.setTranscribingTitle("Applying changes", config: config)
+        #expect(indicator.notchInstruction == "Rewrite this paragraph")
+        indicator.setState(.idle, config: config)
+        #expect(indicator.instructionMode == nil)
+        #expect(indicator.notchInstruction == nil)
+        indicator.showComputerUseTranscript("Open Calendar", config: config)
+        indicator.setTranscribingTitle("Reading screen", config: config)
+        #expect(indicator.instructionMode == .computerUse)
+        #expect(indicator.notchInstruction == "Open Calendar")
+        indicator.setState(.idle, config: config)
+        #expect(indicator.notchInstruction == nil)
+    }
+
     @Test("Compositor sweep offsets its endpoints to preserve a visible segment")
     func compositorSweepTiming() throws {
         let start = NotchCompletionTiming.sweep(keyPath: "strokeStart")
@@ -103,6 +157,51 @@ struct NotchIndicatorTests {
         indicator.cancelNotchActivity()
         #expect(discards == 1)
         #expect(cancellations == 3)
+        indicator.setMeetingRecordingPaused(true, config: config)
+        indicator.cancelNotchActivity()
+        #expect(discards == 2)
+        #expect(cancellations == 3 && finishes == 0)
+    }
+
+    @Test("Meeting notch handoff preserves live power and routes pause/stop without discard")
+    @MainActor
+    func meetingControlsAndSharedPower() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        defer { indicator.close() }
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        var pauses = 0
+        var stops = 0
+        var discards = 0
+        indicator.onToggleMeetingPause = { pauses += 1 }
+        indicator.onStopMeeting = { stops += 1 }
+        indicator.onDiscardMeeting = { discards += 1 }
+        indicator.toggleNotchMeetingPause()
+        indicator.stopNotchMeeting()
+        #expect(pauses == 0 && stops == 0)
+
+        var power: Float = -45
+        indicator.powerProvider = { power }
+        indicator.setMeetingRecording(true, config: config)
+        // Exercise the production surface handoff even on CI's non-notched display.
+        indicator.prepareForNotchPresentation()
+        #expect(indicator.powerProvider?() == -45)
+        power = -22
+        #expect(indicator.powerProvider?() == -22)
+        indicator.toggleNotchMeetingPause()
+        indicator.setMeetingRecordingPaused(true, config: config)
+        indicator.prepareForNotchPresentation()
+        indicator.toggleNotchMeetingPause()
+        indicator.setMeetingRecordingPaused(false, config: config)
+        indicator.prepareForNotchPresentation()
+        #expect(indicator.powerProvider?() == -22)
+        indicator.stopNotchMeeting()
+        #expect(pauses == 2 && stops == 1 && discards == 0)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.powerProvider == nil)
+        indicator.stopNotchMeeting()
+        #expect(stops == 1)
     }
 
     @Test("Notch is hidden until activity and has no idle hold")

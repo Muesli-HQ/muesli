@@ -7,6 +7,47 @@ import AppKit
 @Suite("Recording indicator style settings")
 struct RecordingIndicatorStyleTests {
     @MainActor
+    @Test("Live instruction panel renders long text and review controls", arguments: [false, true])
+    func liveInstructionPanel(review: Bool) throws {
+        let renderer = ImageRenderer(content: NotchLiveInstructionView(
+            instruction: String(repeating: "Make this paragraph more concise. ", count: 12),
+            status: review ? "This action requires confirmation." : "Rewriting selection",
+            appName: "TextEdit", appIcon: nil, accent: .blue, requiresReview: review,
+            onCollapse: {}, onCancel: {}).frame(width: 440, height: review ? 180 : 115))
+        renderer.scale = 2
+        let image = try #require(renderer.nsImage)
+        let tiff = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiff))
+        #expect(bitmap.pixelsWide == 880)
+        #expect(bitmap.pixelsHigh == (review ? 360 : 230))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("muesli-live-instruction-\(review).png"))
+    }
+
+    @Test("Indicator palette respects custom accents and keeps neutral visible")
+    func palette() {
+        let color = RecordingIndicatorPalette.accent(hex: "#336699")
+        #expect(abs(color.redComponent - 0.2) < 0.001)
+        #expect(abs(color.greenComponent - 0.4) < 0.001)
+        #expect(abs(color.blueComponent - 0.6) < 0.001)
+        #expect(RecordingIndicatorPalette.accent(hex: "1e1e2e") == RecordingIndicatorPalette.accent(hex: "invalid"))
+    }
+
+    @MainActor
+    @Test("Expanded instruction previews render in both modes", arguments: ["Quill", "Computer use"])
+    func expandedPreview(mode: String) throws {
+        let renderer = ImageRenderer(content: NotchInstructionPreview(accent: .purple, mode: mode, phase: "Needs approval")
+            .environment(\.colorScheme, .dark))
+        renderer.scale = 2
+        let image = try #require(renderer.nsImage)
+        let tiff = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiff))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("muesli-expanded-\(mode).png"))
+        #expect(bitmap.pixelsWide == 1400)
+    }
+
+    @MainActor
     @Test("Style tiles render at Retina resolution with the Muesli mark")
     func renderTiles() throws {
         let content = RecordingIndicatorStylePicker(selection: .classic, onSelect: { _ in })

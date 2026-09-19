@@ -35,6 +35,7 @@ extension AppConfig {
 
 struct RecordingIndicatorStylePicker: View {
     let selection: RecordingIndicatorStyle
+    var accent: Color = MuesliTheme.accent
     let onSelect: (RecordingIndicatorStyle) -> Void
 
     var body: some View {
@@ -42,13 +43,13 @@ struct RecordingIndicatorStylePicker: View {
             ForEach(RecordingIndicatorStyle.allCases, id: \.self) { style in
                 Button { onSelect(style) } label: {
                     VStack(alignment: .leading, spacing: 12) {
-                        RecordingIndicatorPreview(style: style)
+                        RecordingIndicatorPreview(style: style, accent: accent)
                             .frame(height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .accessibilityHidden(true)
                         HStack(spacing: 8) {
                             Image(systemName: selection == style ? "largecircle.fill.circle" : "circle")
-                                .foregroundStyle(selection == style ? Color.accentColor : Color.secondary)
+                                .foregroundStyle(selection == style ? accent : Color.secondary)
                             Text(style.title).font(.headline)
                         }
                         Text(style.description).font(.caption).foregroundStyle(.secondary)
@@ -59,7 +60,7 @@ struct RecordingIndicatorStylePicker: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(selection == style ? Color.accentColor : Color.primary.opacity(0.14),
+                            .strokeBorder(selection == style ? accent : Color.primary.opacity(0.14),
                                           lineWidth: selection == style ? 2 : 1)
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 12))
@@ -71,6 +72,10 @@ struct RecordingIndicatorStylePicker: View {
                 .accessibilityAddTraits(selection == style ? [.isSelected] : [])
             }
         }
+        // Limit the adaptive grid to three cards; otherwise wide settings panes
+        // reserve empty columns after Notch and make the choices look left-aligned.
+        .frame(maxWidth: 3 * 210 + 2 * 12)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
@@ -78,6 +83,7 @@ struct RecordingIndicatorStylePicker: View {
 /// the resting mark uses the same renderer as the real Muesli indicator.
 struct RecordingIndicatorPreview: View {
     let style: RecordingIndicatorStyle
+    var accent: Color = MuesliTheme.accent
 
     var body: some View {
         GeometryReader { geometry in
@@ -128,7 +134,7 @@ struct RecordingIndicatorPreview: View {
                     }
                     .foregroundStyle(.white)
                     .frame(width: active ? 138 : 66, height: 34)
-                    .background(Color(white: 0.07), in: Capsule())
+                    .background(active ? accent.opacity(0.85) : Color(white: 0.07), in: Capsule())
                     .overlay { Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.75) }
                     .shadow(color: .black.opacity(0.22), radius: 5, y: 3)
                 }
@@ -147,7 +153,7 @@ struct RecordingIndicatorPreview: View {
             Color.black.frame(width: 74)
             if active {
                 HStack(spacing: 8) {
-                    bars(.orange).scaleEffect(0.75)
+                    bars(accent).scaleEffect(0.75)
                     Image(systemName: "xmark").font(.system(size: 8))
                 }.frame(width: 76)
             }
@@ -159,7 +165,7 @@ struct RecordingIndicatorPreview: View {
         .overlay {
             if active {
                 UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10)
-                    .strokeBorder(.orange.opacity(0.45), lineWidth: 0.7)
+                    .strokeBorder(accent.opacity(0.45), lineWidth: 0.7)
             }
         }
         .frame(width: 240, height: 30, alignment: .top)
