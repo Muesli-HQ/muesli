@@ -1018,8 +1018,9 @@ actor TranscriptionCoordinator {
         ))
     }
 
-    /// Retained recordings can be hours long; do not use the whole-file import route.
-    func retranscribeMeetingRecording(
+    /// Imports and retained recordings share bounded replay; live capture keeps
+    /// its own chunking, repair and noise-cancellation path.
+    func transcribeRecordedAudio(
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,

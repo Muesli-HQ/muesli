@@ -196,6 +196,7 @@ final class AppState {
     var liveMeetingTranscript: String = ""
     var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
     var modelFileMutationCount = 0
+    var activeAudioImportCount = 0
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.

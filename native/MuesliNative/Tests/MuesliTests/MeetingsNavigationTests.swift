@@ -890,6 +890,12 @@ struct MeetingsNavigationTests {
         controller.endModelFileMutation(second)
         #expect(controller.canRetranscribeMeeting(meeting))
         #expect(controller.appState.modelFileMutationCount == 0)
+        controller.appState.activeAudioImportCount = 1
+        #expect(!controller.canModifyModelFiles)
+        #expect(controller.beginModelFileMutation() == nil)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.appState.activeAudioImportCount = 0
+        #expect(controller.canModifyModelFiles)
     }
 
     @Test("prompt policy surfaces writer errors without asking to save a nonexistent file")

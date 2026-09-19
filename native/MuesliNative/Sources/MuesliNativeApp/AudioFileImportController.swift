@@ -91,27 +91,21 @@ enum AudioFileImportController {
 
         if let compatibleWAV = try compatibleWAVInfo(sourceURL: sourceURL) {
             let outputURL = try temporaryWAVURL()
-            try FileManager.default.copyItem(at: sourceURL, to: outputURL)
+            do {
+                try FileManager.default.copyItem(at: sourceURL, to: outputURL)
+                try Task.checkCancellation()
+            } catch {
+                try? FileManager.default.removeItem(at: outputURL)
+                throw error
+            }
             return (outputURL, compatibleWAV.duration)
         }
 
         let duration = try await audioDuration(sourceURL: sourceURL)
         try Task.checkCancellation()
 
-        let samples: [Float]
-        do {
-            samples = try AudioConverter().resampleAudioFile(sourceURL)
-        } catch {
-            samples = try await decodeSamplesWithAssetReader(sourceURL: sourceURL)
-        }
-        try Task.checkCancellation()
-
-        guard !samples.isEmpty else {
-            throw ImportError.noAudioTracks
-        }
-
-        let wavURL = try WavWriter.writeTemporaryWAV(samples: samples, directoryName: "muesli-import")
-        let resolvedDuration = duration ?? Double(samples.count) / Double(WavWriter.sampleRate)
+        let (wavURL, decodedDuration) = try await decodeWAVWithAssetReader(sourceURL: sourceURL)
+        let resolvedDuration = duration ?? decodedDuration
         guard resolvedDuration > 0, resolvedDuration.isFinite else {
             try? FileManager.default.removeItem(at: wavURL)
             throw ImportError.readError("Invalid audio duration.")
@@ -142,7 +136,7 @@ enum AudioFileImportController {
         sourceURL: URL,
         title: String,
         controller: MuesliController,
-        progress: @escaping (String) -> Void
+        progress: @escaping @Sendable (String) -> Void
     ) async throws -> ImportResult {
         progress("Converting audio file...")
         let (wavURL, duration) = try await convertToWAV(sourceURL: sourceURL)
@@ -166,32 +160,21 @@ enum AudioFileImportController {
 
         try Task.checkCancellation()
 
-        // Run VAD to skip silent files (prevents Cohere hallucinations on silence)
-        if let vadManager = await transcriptionCoordinator.getVadManager() {
-            do {
-                let vadResults = try await vadManager.process(wavURL)
-                let hasSpeech = vadResults.contains { $0.probability > 0.5 }
-                if !hasSpeech {
-                    throw ImportError.readError("No speech detected in the selected audio file.")
-                }
-            } catch let error as ImportError {
-                throw error
-            } catch {
-                fputs("[import] VAD check failed, transcribing anyway: \(error)\n", stderr)
-            }
-        }
-
-        try Task.checkCancellation()
+        // VAD runs per replay window, not against the whole imported file.
+        await transcriptionCoordinator.setNemotron35PromptId(config.resolvedNemotron35Language.promptId)
 
         progress("Transcribing audio...")
-        let transcription = try await transcriptionCoordinator.transcribeMeeting(
+        let transcription = try await transcriptionCoordinator.transcribeRecordedAudio(
             at: wavURL,
             backend: backend,
             cohereLanguage: config.resolvedCohereLanguage,
             bodhanLanguage: config.resolvedBodhanLanguage,
             whisperLanguage: config.resolvedWhisperLanguage,
             parakeetLanguage: config.resolvedParakeetLanguage,
-            appleSpeechLanguage: config.resolvedAppleSpeechLanguage
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
+            progress: { fraction, _ in
+                progress("Transcribing audio · \(Int(fraction * 100))%")
+            }
         )
         let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawTranscript.isEmpty else {
@@ -336,7 +319,7 @@ enum AudioFileImportController {
         return duration > 0 && duration.isFinite ? duration : nil
     }
 
-    private static func decodeSamplesWithAssetReader(sourceURL: URL) async throws -> [Float] {
+    private static func decodeWAVWithAssetReader(sourceURL: URL) async throws -> (URL, TimeInterval) {
         let asset = AVURLAsset(url: sourceURL)
         let tracks = try await asset.load(.tracks)
         guard let audioTrack = tracks.first(where: { $0.mediaType == .audio }) else {
@@ -346,6 +329,8 @@ enum AudioFileImportController {
         let reader = try AVAssetReader(asset: asset)
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
             AVLinearPCMIsFloatKey: true,
             AVLinearPCMBitDepthKey: 32,
             AVLinearPCMIsBigEndianKey: false,
@@ -361,21 +346,47 @@ enum AudioFileImportController {
         guard reader.startReading() else {
             throw ImportError.readError(reader.error?.localizedDescription ?? "Unknown read error")
         }
+        defer { reader.cancelReading() }
+
+        let wavURL = try temporaryWAVURL()
+        var completed = false
+        defer { if !completed { try? FileManager.default.removeItem(at: wavURL) } }
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+        let writer = try AVAudioFile(forWriting: wavURL, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false
+        ])
 
         let converter = AudioConverter()
-        var samples: [Float] = []
+        var frameCount = 0
         while reader.status == .reading {
             try Task.checkCancellation()
-            guard let sampleBuffer = output.copyNextSampleBuffer() else {
-                break
+            let didRead = try autoreleasepool {
+                guard let sampleBuffer = output.copyNextSampleBuffer() else { return false }
+                let samples = try converter.resampleSampleBuffer(sampleBuffer)
+                guard !samples.isEmpty else { return true }
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
+                    throw ImportError.conversionFailed("Could not allocate conversion buffer.")
+                }
+                buffer.frameLength = AVAudioFrameCount(samples.count)
+                samples.withUnsafeBufferPointer { source in
+                    buffer.floatChannelData![0].update(from: source.baseAddress!, count: samples.count)
+                }
+                try writer.write(from: buffer)
+                frameCount += samples.count
+                return true
             }
-            samples.append(contentsOf: try converter.resampleSampleBuffer(sampleBuffer))
+            if !didRead { break }
         }
 
         guard reader.status == .completed else {
             throw ImportError.readError(reader.error?.localizedDescription ?? "Read did not complete")
         }
-        return samples
+        try Task.checkCancellation()
+        guard frameCount > 0 else { throw ImportError.noAudioTracks }
+        completed = true
+        return (wavURL, Double(frameCount) / 16_000)
     }
 
     /// Copies the converted WAV to the meeting-recordings directory so the imported
