@@ -32,7 +32,8 @@ enum TranscriptFormatter {
                 }
             }
 
-            taggedSystem = systemSegments.map { segment in
+            let lexicalUnits = normalizeLexicalUnits(systemSegments)
+            taggedSystem = lexicalUnits.map { segment in
                 let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
@@ -63,6 +64,7 @@ enum TranscriptFormatter {
     /// segments from the same speaker that are far apart in time stay separate
     /// so they interleave correctly with other speakers.
     private static let consolidationGapThreshold: TimeInterval = 2.0
+    private static let lexicalFragmentGapThreshold: TimeInterval = 0.35
 
     private static func consolidate(_ segments: [TaggedSegment]) -> [TaggedSegment] {
         guard !segments.isEmpty else { return [] }
@@ -172,6 +174,61 @@ enum TranscriptFormatter {
         return 0
     }
 
+    /// Reassembles token-timed ASR fragments before speaker attribution so a
+    /// diarization boundary cannot split one lexical word across speaker turns.
+    private static func normalizeLexicalUnits(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+        let chronologicalSegments = segments.sorted { $0.start < $1.start }
+        guard let first = chronologicalSegments.first else { return [] }
+
+        var result: [SpeechSegment] = []
+        var current = first
+
+        for segment in chronologicalSegments.dropFirst() {
+            let gap = max(0, segment.start - current.end)
+            if shouldCombineIntoLexicalUnit(current.text, segment.text, gap: gap) {
+                current = SpeechSegment(
+                    start: current.start,
+                    end: max(current.end, segment.end),
+                    text: current.text + segment.text
+                )
+            } else {
+                result.append(current)
+                current = segment
+            }
+        }
+
+        result.append(current)
+        return result
+    }
+
+    private static func shouldCombineIntoLexicalUnit(
+        _ lhs: String,
+        _ rhs: String,
+        gap: TimeInterval
+    ) -> Bool {
+        let trimmedLHS = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRHS = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLHS.isEmpty, !trimmedRHS.isEmpty else { return false }
+
+        if isPunctuationOnly(trimmedLHS) || isPunctuationOnly(trimmedRHS) {
+            return true
+        }
+
+        guard gap <= lexicalFragmentGapThreshold else { return false }
+
+        guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
+        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace, !lhsLast.isPunctuation else {
+            return false
+        }
+
+        return !trimmedLHS.contains(where: \.isWhitespace)
+            && !trimmedRHS.contains(where: \.isWhitespace)
+    }
+
+    private static func isPunctuationOnly(_ text: String) -> Bool {
+        text.allSatisfy { $0.isPunctuation || $0.isSymbol }
+    }
+
     private static func appendText(_ lhs: String, _ rhs: String, gap: TimeInterval) -> String {
         if shouldConcatenateDirectly(lhs, rhs, gap: gap) {
             return lhs + rhs
@@ -180,7 +237,7 @@ enum TranscriptFormatter {
     }
 
     private static func shouldConcatenateDirectly(_ lhs: String, _ rhs: String, gap: TimeInterval) -> Bool {
-        guard gap <= 0.35 else { return false }
+        guard gap <= lexicalFragmentGapThreshold else { return false }
         guard !lhs.isEmpty, !rhs.isEmpty else { return false }
         guard !rhs.contains(where: \.isWhitespace) else { return false }
         guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
