@@ -192,6 +192,7 @@ struct SettingsView: View {
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
+    @State private var isPreviewingExpandedNotch = false
     @State private var selectedPane: SettingsPane
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
@@ -2248,45 +2249,49 @@ struct SettingsView: View {
 
     private var appearanceSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("Floating Indicator") {
-                settingsRow("Show floating indicator") {
-                    settingsSwitch(isOn: appState.config.showFloatingIndicator) { newValue in
-                        controller.updateConfig { $0.showFloatingIndicator = newValue }
-                        controller.refreshIndicatorVisibility()
-                    }
+            settingsSection("Recording indicator") {
+                RecordingIndicatorStylePicker(selection: appState.config.recordingIndicatorStyle,
+                    accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
+                    controller.updateConfig { $0.selectRecordingIndicatorStyle(style) }
+                    controller.refreshIndicatorVisibility()
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Show hotkey on floating indicator") {
-                    settingsSwitch(isOn: appState.config.showHotkeyOnFloatingIndicator) { newValue in
-                        controller.updateConfig { $0.showHotkeyOnFloatingIndicator = newValue }
+                .padding(.bottom, 12)
+                #if DEBUG
+                Button("Preview expanded notch…") { isPreviewingExpandedNotch = true }
+                    .sheet(isPresented: $isPreviewingExpandedNotch) {
+                        NotchInstructionPreview(accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex)))
                     }
-                    .disabled(!appState.config.showFloatingIndicator)
-                }
-                settingsRow("Hover style") {
-                    settingsMenu(
-                        selection: appState.config.indicatorHoverStyle.label,
-                        options: IndicatorHoverStyle.allCases.map(\.label)
-                    ) { label in
-                        guard let style = IndicatorHoverStyle.allCases.first(where: { $0.label == label }) else { return }
-                        controller.updateConfig { $0.indicatorHoverStyle = style }
+                #endif
+                if appState.config.recordingIndicatorStyle == .notch {
+                    settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
+                    settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
+                } else {
+                    settingsRow("Keep visible when idle") {
+                        settingsSwitch(isOn: appState.config.showFloatingIndicator) { newValue in
+                            controller.updateConfig { $0.showFloatingIndicator = newValue }
+                            controller.refreshIndicatorVisibility()
+                        }
                     }
-                    .disabled(!appState.config.showFloatingIndicator)
-                }
-                settingsDescription("Classic grows the pill to show the hotkey. Shortcut pill keeps a thin grip and pops a separate label on hover.")
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indicator position") {
-                    let isCustom = appState.config.indicatorAnchor == .custom
-                    let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
-                    let options = (isCustom ? [customIndicatorPositionLabel] : [])
-                        + IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
-                    settingsMenu(
-                        selection: selection,
-                        options: options
-                    ) { label in
-                        if label == customIndicatorPositionLabel { return }
-                        guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
-                        controller.updateConfig { $0.indicatorAnchor = anchor }
-                        controller.refreshIndicatorVisibility()
+                    settingsDescription("When off, appears only during recording and processing.")
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Position") {
+                        let isCustom = appState.config.indicatorAnchor == .custom
+                        let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
+                        let options = (isCustom ? [customIndicatorPositionLabel] : [])
+                            + IndicatorAnchor.allCases.filter { $0 != .custom && $0 != .notch }.map(\.label)
+                        settingsMenu(selection: selection, options: options) { label in
+                            if label == customIndicatorPositionLabel { return }
+                            guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
+                            controller.updateConfig { $0.indicatorAnchor = anchor }
+                            controller.refreshIndicatorVisibility()
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Show keyboard shortcut on hover") {
+                        settingsSwitch(isOn: appState.config.showHotkeyOnFloatingIndicator) { newValue in
+                            controller.updateConfig { $0.showHotkeyOnFloatingIndicator = newValue }
+                        }
+                        .disabled(!appState.config.showFloatingIndicator)
                     }
                 }
             }
