@@ -4,8 +4,11 @@ import Foundation
 enum IndicatorWaveformDynamics {
     /// Classic capsule dimensions, also used by the notch's standing waveform.
     static func standingBarFrame(index: Int, count: Int = 5, amplitude: CGFloat, bounds: CGRect) -> CGRect {
-        let width: CGFloat = 3
-        let spacing: CGFloat = 3
+        guard count > 0, index >= 0, index < count else { return .zero }
+        let naturalWidth = CGFloat(count * 6 - 3)
+        let scale = min(1, max(0, bounds.width) / naturalWidth)
+        let width: CGFloat = 3 * scale
+        let spacing: CGFloat = 3 * scale
         let total = CGFloat(count) * width + CGFloat(max(0, count - 1)) * spacing
         let height = min(bounds.height, 3 + 11 * max(0, min(1, amplitude)))
         return CGRect(x: bounds.midX - total / 2 + CGFloat(index) * (width + spacing),

@@ -192,7 +192,6 @@ struct SettingsView: View {
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
-    @State private var isPreviewingExpandedNotch = false
     @State private var selectedPane: SettingsPane
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
@@ -2256,12 +2255,6 @@ struct SettingsView: View {
                     controller.refreshIndicatorVisibility()
                 }
                 .padding(.bottom, 12)
-                #if DEBUG
-                Button("Preview expanded notch…") { isPreviewingExpandedNotch = true }
-                    .sheet(isPresented: $isPreviewingExpandedNotch) {
-                        NotchInstructionPreview(accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex)))
-                    }
-                #endif
                 if appState.config.recordingIndicatorStyle == .notch {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
                     settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")

@@ -598,6 +598,8 @@ private final class NotchWaveformView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        // Keep both bars and their glow inside the space reserved beside controls.
+        layer?.masksToBounds = true
         for _ in 0..<15 {
             let bar = CALayer()
             bar.cornerRadius = 1

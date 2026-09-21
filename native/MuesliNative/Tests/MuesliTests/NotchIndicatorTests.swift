@@ -187,6 +187,21 @@ struct NotchIndicatorTests {
         #expect(last.midY == bounds.midY)
     }
 
+    @Test("Seven standing bars stay inside narrow meeting and reduced-motion containers",
+          arguments: [CGFloat(0), 1, 16, 27, 39, 42, 58])
+    func constrainedStandingBars(width: CGFloat) {
+        let bounds = CGRect(x: 10, y: 4, width: width, height: 20)
+        for index in 0..<7 {
+            let frame = IndicatorWaveformDynamics.standingBarFrame(
+                index: index, count: 7, amplitude: 1, bounds: bounds)
+            #expect(frame.minX >= bounds.minX - 0.0001)
+            #expect(frame.maxX <= bounds.maxX + 0.0001)
+            #expect(frame.minY >= bounds.minY)
+            #expect(frame.maxY <= bounds.maxY)
+            #expect(frame.width <= 3)
+        }
+    }
+
     @MainActor
     @Test("Notch cancel routes recording and processing to cancellation, never finish")
     func cancellationRouting() {
