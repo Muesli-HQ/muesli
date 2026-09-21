@@ -50,7 +50,9 @@ enum NotchOutcome: Equatable {
 /// Visual noise gate only; never changes captured audio or transcription.
 enum NotchWaveformLevel {
     static func amplitude(decibels: Float) -> CGFloat {
-        IndicatorWaveformDynamics.amplitude(decibels: decibels)
+        guard decibels.isFinite, decibels > -50 else { return 0 }
+        let normalized = CGFloat(min(1, (decibels + 50) / 30))
+        return normalized * normalized
     }
 }
 
@@ -669,20 +671,28 @@ private final class NotchWaveformView: NSView {
     private func drawBars() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let count = scrolling && !reduceMotion ? bars.count : 5
+        let isStanding = !scrolling || reduceMotion
+        let count = isStanding ? 7 : bars.count
         for (index, bar) in bars.enumerated() {
             bar.isHidden = index >= count
             guard index < count else { continue }
             let amplitude = scrolling && !reduceMotion
                 ? samples[(nextSample + index) % samples.count]
                 : smoothed * IndicatorWaveformDynamics.standingWeight(index: index, count: count)
-            let baseline: CGFloat = count == 5 ? 3 : 1
-            let height = baseline + amplitude * max(0, bounds.height - baseline)
-            let stride = bounds.width / CGFloat(count)
-            bar.frame = CGRect(x: CGFloat(index) * stride, y: (bounds.height - height) / 2,
-                               width: min(count == 5 ? 4 : 2, stride * 0.6), height: height)
-            bar.shadowOpacity = Float(amplitude * 0.45)
-            bar.shadowPath = CGPath(roundedRect: bar.bounds, cornerWidth: 1, cornerHeight: 1, transform: nil)
+            if isStanding {
+                bar.frame = IndicatorWaveformDynamics.standingBarFrame(
+                    index: index, count: count, amplitude: amplitude, bounds: bounds)
+            } else {
+                let height = 0.75 + amplitude * max(0, min(14, bounds.height) - 0.75)
+                let stride = bounds.width / CGFloat(count)
+                let width = min(1.25, stride * 0.5)
+                bar.frame = CGRect(x: CGFloat(index) * stride + (stride - width) / 2,
+                                   y: (bounds.height - height) / 2, width: width, height: height)
+            }
+            bar.cornerRadius = min(bar.frame.width, bar.frame.height) / 2
+            bar.shadowOpacity = Float(amplitude * 0.2)
+            bar.shadowPath = CGPath(roundedRect: bar.bounds, cornerWidth: bar.cornerRadius,
+                                   cornerHeight: bar.cornerRadius, transform: nil)
         }
         CATransaction.commit()
     }

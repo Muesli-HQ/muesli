@@ -1341,9 +1341,6 @@ final class FloatingIndicatorController: NSObject {
 
     @objc private func waveformTimerFired(_ timer: Timer) {
         guard let contentView else { return }
-        let minHeight: CGFloat = 3
-        let maxHeight: CGFloat = 14
-        let pillHeight = contentView.frame.height
         let elapsed = CGFloat(Date().timeIntervalSince(waveformAnimationStartedAt))
         let levelAmplitude: CGFloat
         if waveformAnimationMode == .level {
@@ -1368,9 +1365,8 @@ final class FloatingIndicatorController: NSObject {
                 amplitude = 0.28 + (sin(phase) + 1) * 0.22 * m
                 bar.opacity = Float(0.38 + (sin(phase) + 1) * 0.18)
             }
-            let h = minHeight + (maxHeight - minHeight) * amplitude
-            bar.frame.size.height = h
-            bar.frame.origin.y = (pillHeight - h) / 2
+            bar.frame = IndicatorWaveformDynamics.standingBarFrame(
+                index: i, count: barLayers.count, amplitude: amplitude, bounds: contentView.bounds)
         }
         CATransaction.commit()
     }

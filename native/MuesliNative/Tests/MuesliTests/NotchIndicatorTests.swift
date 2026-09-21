@@ -164,15 +164,27 @@ struct NotchIndicatorTests {
 
     @Test("Waveform gates silence and keeps background noise understated")
     func waveformNoiseFloor() {
-        for db: Float in [-160, -70, -68, -.infinity, .infinity, .nan] {
+        for db: Float in [-160, -70, -50, -.infinity, .infinity, .nan] {
             #expect(NotchWaveformLevel.amplitude(decibels: db) == 0)
         }
-        for db: Float in [-65, -50, -40, -30, 0] {
-            #expect(NotchWaveformLevel.amplitude(decibels: db) == IndicatorWaveformDynamics.amplitude(decibels: db))
-        }
+        #expect(NotchWaveformLevel.amplitude(decibels: -40) < 0.12)
         #expect(NotchWaveformLevel.amplitude(decibels: -30) > 0.4)
         #expect(NotchWaveformLevel.amplitude(decibels: -20) == 1)
         #expect(NotchWaveformLevel.amplitude(decibels: 0) == 1)
+    }
+
+    @Test("Standing bars retain capsule dimensions with five or seven bars", arguments: [5, 7])
+    func standingBarGeometry(count: Int) {
+        let bounds = CGRect(x: 0, y: 0, width: 58, height: 20)
+        let first = IndicatorWaveformDynamics.standingBarFrame(index: 0, count: count, amplitude: 0, bounds: bounds)
+        let last = IndicatorWaveformDynamics.standingBarFrame(index: count - 1, count: count, amplitude: 1, bounds: bounds)
+        #expect(first.width == 3)
+        #expect(first.height == 3)
+        #expect(last.height == 14)
+        #expect(last.maxX - first.minX == CGFloat(count * 6 - 3))
+        #expect((first.minX + last.maxX) / 2 == bounds.midX)
+        #expect(first.midY == bounds.midY)
+        #expect(last.midY == bounds.midY)
     }
 
     @MainActor
