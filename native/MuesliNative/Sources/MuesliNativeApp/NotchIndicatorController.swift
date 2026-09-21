@@ -50,9 +50,7 @@ enum NotchOutcome: Equatable {
 /// Visual noise gate only; never changes captured audio or transcription.
 enum NotchWaveformLevel {
     static func amplitude(decibels: Float) -> CGFloat {
-        guard decibels.isFinite, decibels > -50 else { return 0 }
-        let normalized = CGFloat(min(1, (decibels + 50) / 30))
-        return normalized * normalized
+        IndicatorWaveformDynamics.amplitude(decibels: decibels)
     }
 }
 
@@ -145,7 +143,12 @@ final class NotchIndicatorController {
     private var expanded = true
     private var screenBounds = CGRect.zero
     private var requiresReview = false
-    private var outcome: NotchOutcome?
+    private(set) var outcome: NotchOutcome?
+    private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
+
+    init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry) {
+        self.resolveGeometry = resolveGeometry
+    }
     var onReview: (() -> Void)?
     var onOpenHome: (() -> Void)?
     var onCancel: (() -> Void)?
@@ -169,7 +172,7 @@ final class NotchIndicatorController {
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil) -> Bool {
-        guard let geometry = Self.geometry(for: screen) else { hide(); return false }
+        guard let geometry = resolveGeometry(screen) else { hide(); return false }
         requiresReview = false
         outcome = nil
         dismissActivity?.cancel()
@@ -232,6 +235,8 @@ final class NotchIndicatorController {
     }
 
     func hide() {
+        outcome = nil
+        requiresReview = false
         instructionPanel?.orderOut(nil)
         instructionPanel?.contentView = nil
         instruction = nil
@@ -242,6 +247,22 @@ final class NotchIndicatorController {
         panel?.orderOut(nil)
         // Releasing the hosted view cancels waveform/activation tasks while hidden.
         panel?.contentView = nil
+    }
+
+    /// Geometry-only update: retain the result, disclosure state, callbacks and
+    /// original dismissal task. A detached built-in display must not lose a
+    /// pending review; show that existing result below the external menu bar.
+    @discardableResult
+    func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
+        guard outcome != nil else { return false }
+        guard let screen else { return true }
+        screenBounds = screen.visibleFrame
+        geometry = resolveGeometry(screen) ?? NotchIndicatorGeometry(
+            cutout: CGRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.maxY - 32,
+                           width: 0, height: 32), wingWidth: 110)
+        render()
+        panel?.orderFrontRegardless()
+        return true
     }
 
     func showCompletion() {
@@ -648,14 +669,18 @@ private final class NotchWaveformView: NSView {
     private func drawBars() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        let count = scrolling && !reduceMotion ? bars.count : 5
         for (index, bar) in bars.enumerated() {
+            bar.isHidden = index >= count
+            guard index < count else { continue }
             let amplitude = scrolling && !reduceMotion
                 ? samples[(nextSample + index) % samples.count]
-                : smoothed * IndicatorWaveformDynamics.standingWeight(index: index, count: bars.count)
-            let height = 1 + amplitude * max(0, bounds.height - 1)
-            let stride = bounds.width / CGFloat(bars.count)
+                : smoothed * IndicatorWaveformDynamics.standingWeight(index: index, count: count)
+            let baseline: CGFloat = count == 5 ? 3 : 1
+            let height = baseline + amplitude * max(0, bounds.height - baseline)
+            let stride = bounds.width / CGFloat(count)
             bar.frame = CGRect(x: CGFloat(index) * stride, y: (bounds.height - height) / 2,
-                               width: min(2, stride * 0.6), height: height)
+                               width: min(count == 5 ? 4 : 2, stride * 0.6), height: height)
             bar.shadowOpacity = Float(amplitude * 0.45)
             bar.shadowPath = CGPath(roundedRect: bar.bounds, cornerWidth: 1, cornerHeight: 1, transform: nil)
         }

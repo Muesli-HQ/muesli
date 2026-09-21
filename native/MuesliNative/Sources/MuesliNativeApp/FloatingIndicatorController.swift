@@ -247,6 +247,9 @@ final class FloatingIndicatorController: NSObject {
     @objc private func displayConfigurationChanged() {
         guard let config = lastLoadedConfig, config.indicatorAnchor == .notch,
               !isShowingLoading, !isComputerUseCursorMode else { return }
+        // A terminal result belongs to presentation, not the now-idle recorder.
+        // Moving it must not replay idle or restart its dismissal deadline.
+        if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return }
         setState(state, config: config)
     }
 
@@ -1344,8 +1347,7 @@ final class FloatingIndicatorController: NSObject {
         let elapsed = CGFloat(Date().timeIntervalSince(waveformAnimationStartedAt))
         let levelAmplitude: CGFloat
         if waveformAnimationMode == .level {
-            let dB = CGFloat(powerProvider?() ?? -160)
-            let raw = max(0, min(1, (dB + 68) / 38))
+            let raw = IndicatorWaveformDynamics.amplitude(decibels: powerProvider?() ?? -160)
             smoothedAmplitude = IndicatorWaveformDynamics.smooth(raw, previous: smoothedAmplitude)
             levelAmplitude = smoothedAmplitude
         } else {

@@ -5,6 +5,49 @@ import SwiftUI
 
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
+    @MainActor
+    @Test("Placement refresh does not extend success dismissal")
+    func outcomeDeadline() async throws {
+        let screen = try #require(NSScreen.main)
+        let controller = NotchIndicatorController(resolveGeometry: { screen in
+            NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+        })
+        defer { controller.hide() }
+        #expect(controller.showOutcome(on: screen, outcome: .success,
+            instruction: nil, message: "Done", icon: NSImage()))
+        try await Task.sleep(for: .seconds(1.2))
+        #expect(controller.refreshOutcomePlacement(on: screen))
+        try await Task.sleep(for: .seconds(1.1))
+        #expect(controller.outcome == nil)
+        #expect(!controller.isVisible)
+    }
+
+    @MainActor
+    @Test("Display refresh retains pending outcome, including non-notch fallback")
+    func outcomeRefresh() throws {
+        let screen = try #require(NSScreen.main)
+        var supported = true
+        let controller = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        defer { controller.hide() }
+        #expect(controller.showOutcome(on: screen, outcome: .needsInput,
+            instruction: "Open Calendar", message: "Please review", icon: NSImage()))
+        #expect(controller.refreshOutcomePlacement(on: screen))
+        #expect(controller.outcome == .needsInput)
+        supported = false
+        #expect(controller.refreshOutcomePlacement(on: screen))
+        #expect(controller.outcome == .needsInput)
+        #expect(controller.isVisible)
+        #expect(controller.screenFrame?.midX == screen.visibleFrame.midX)
+        #expect(controller.refreshOutcomePlacement(on: nil))
+        #expect(controller.outcome == .needsInput)
+        controller.hide()
+        #expect(!controller.refreshOutcomePlacement(on: screen))
+    }
+
     @Test("Outcome colors distinguish completion, attention, and failure")
     func outcomes() {
         #expect(NotchOutcome.computerUse(.done) == .success)
@@ -121,10 +164,12 @@ struct NotchIndicatorTests {
 
     @Test("Waveform gates silence and keeps background noise understated")
     func waveformNoiseFloor() {
-        for db: Float in [-160, -70, -50, -.infinity, .infinity, .nan] {
+        for db: Float in [-160, -70, -68, -.infinity, .infinity, .nan] {
             #expect(NotchWaveformLevel.amplitude(decibels: db) == 0)
         }
-        #expect(NotchWaveformLevel.amplitude(decibels: -40) < 0.12)
+        for db: Float in [-65, -50, -40, -30, 0] {
+            #expect(NotchWaveformLevel.amplitude(decibels: db) == IndicatorWaveformDynamics.amplitude(decibels: db))
+        }
         #expect(NotchWaveformLevel.amplitude(decibels: -30) > 0.4)
         #expect(NotchWaveformLevel.amplitude(decibels: -20) == 1)
         #expect(NotchWaveformLevel.amplitude(decibels: 0) == 1)

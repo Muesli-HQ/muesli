@@ -2,6 +2,11 @@ import Foundation
 
 /// Shared by the floating pill and notch. Rendering remains owned by each surface.
 enum IndicatorWaveformDynamics {
+    static func amplitude(decibels: Float) -> CGFloat {
+        guard decibels.isFinite else { return 0 }
+        return max(0, min(1, CGFloat(decibels + 68) / 38))
+    }
+
     static func smooth(_ amplitude: CGFloat, previous: CGFloat) -> CGFloat {
         0.48 * amplitude + 0.52 * previous
     }
