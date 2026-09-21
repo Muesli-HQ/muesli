@@ -1600,6 +1600,19 @@ struct SettingsView: View {
                     presets: SummaryModelPreset.chatGPTTranscriptCleanupModels
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
+            let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
+            if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                    settingsReasoningSlider(
+                        model: model,
+                        preferred: appState.config.transcriptCleanupReasoningEffort,
+                        accessibilityLabel: "Transcript cleanup thinking"
+                    ) { effort in
+                        controller.updateConfig { $0.transcriptCleanupReasoningEffort = effort }
+                    }
+                }
+            }
         case .some(.openAI):
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -1616,6 +1629,19 @@ struct SettingsView: View {
                     currentModel: appState.config.postProcessorOpenAIModel,
                     presets: SummaryModelPreset.openAIModels
                 ) { controller.updatePostProcessorModel($0, for: backend) }
+            }
+            let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
+            if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                    settingsReasoningSlider(
+                        model: model,
+                        preferred: appState.config.transcriptCleanupReasoningEffort,
+                        accessibilityLabel: "Transcript cleanup thinking"
+                    ) { effort in
+                        controller.updateConfig { $0.transcriptCleanupReasoningEffort = effort }
+                    }
+                }
             }
             keyStatusRow(key: appState.config.openAIAPIKey)
         case .some(.openRouter):
@@ -1731,7 +1757,11 @@ struct SettingsView: View {
 
     private var meetingSummarySettingsSection: some View {
         settingsSection("Meeting Summaries") {
-            settingsRow("Summary backend", controlWidth: meetingControlWidth) {
+            settingsRow(
+                "Summary backend",
+                description: "Remote summaries may send transcripts, notes, screen context, and participant names.",
+                controlWidth: meetingControlWidth
+            ) {
                 settingsMenu(
                     selection: appState.selectedMeetingSummaryBackend.label,
                     options: MeetingSummaryBackendOption.all.map(\.label)
@@ -1754,6 +1784,21 @@ struct SettingsView: View {
                         presets: SummaryModelPreset.chatGPTModels
                     ) { val in controller.updateConfig { $0.chatGPTModel = val } }
                 }
+                let model = appState.config.chatGPTModel.isEmpty
+                    ? (SummaryModelPreset.chatGPTModels.first?.id ?? "")
+                    : appState.config.chatGPTModel
+                if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsReasoningSlider(
+                            model: model,
+                            preferred: appState.config.meetingSummaryReasoningEffort,
+                            accessibilityLabel: "Meeting summary thinking"
+                        ) { effort in
+                            controller.updateConfig { $0.meetingSummaryReasoningEffort = effort }
+                        }
+                    }
+                }
             } else if appState.selectedMeetingSummaryBackend == .openAI {
                 settingsRow("API Key", controlWidth: meetingControlWidth) {
                     PastableSecureField(
@@ -1769,6 +1814,21 @@ struct SettingsView: View {
                         currentModel: appState.config.openAIModel,
                         presets: SummaryModelPreset.openAIModels
                     ) { val in controller.updateConfig { $0.openAIModel = val } }
+                }
+                let model = appState.config.openAIModel.isEmpty
+                    ? (SummaryModelPreset.openAIModels.first?.id ?? "")
+                    : appState.config.openAIModel
+                if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsReasoningSlider(
+                            model: model,
+                            preferred: appState.config.meetingSummaryReasoningEffort,
+                            accessibilityLabel: "Meeting summary thinking"
+                        ) { effort in
+                            controller.updateConfig { $0.meetingSummaryReasoningEffort = effort }
+                        }
+                    }
                 }
                 keyStatusRow(key: appState.config.openAIAPIKey)
             } else if appState.selectedMeetingSummaryBackend == .ollama {
@@ -1947,6 +2007,19 @@ struct SettingsView: View {
                         currentModel: appState.config.computerUsePlannerModel,
                         presets: SummaryModelPreset.computerUsePlannerModels
                     ) { val in controller.updateConfig { $0.computerUsePlannerModel = val } }
+                }
+                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
+                if !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsReasoningSlider(
+                            model: plannerModel,
+                            preferred: appState.config.computerUseReasoningEffort,
+                            accessibilityLabel: "Computer use thinking"
+                        ) { effort in
+                            controller.updateConfig { $0.computerUseReasoningEffort = effort }
+                        }
+                    }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Timeout", controlWidth: meetingControlWidth) {
@@ -3587,6 +3660,45 @@ struct SettingsView: View {
             }
         )
         .frame(height: 24)
+    }
+
+    @ViewBuilder
+    private func settingsReasoningSlider(
+        model: String,
+        preferred: ReasoningEffort?,
+        accessibilityLabel: String,
+        onChange: @escaping (ReasoningEffort) -> Void
+    ) -> some View {
+        let efforts = ReasoningEffortPolicy.selectableEfforts(for: model)
+        if let effectiveEffort = ReasoningEffortPolicy.resolvedEffort(
+            for: model,
+            preferred: preferred
+        ) {
+            HStack(spacing: 12) {
+                Slider(
+                    value: Binding(
+                        get: {
+                            Double(efforts.firstIndex(of: effectiveEffort) ?? 0)
+                        },
+                        set: { value in
+                            let index = min(max(Int(value.rounded()), 0), efforts.count - 1)
+                            onChange(efforts[index])
+                        }
+                    ),
+                    in: 0 ... Double(efforts.count - 1),
+                    step: 1
+                )
+                .tint(MuesliTheme.accent)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityValue(effectiveEffort.label)
+
+                Text(effectiveEffort.label)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .frame(width: 80, alignment: .trailing)
+            }
+            .frame(height: 24)
+        }
     }
 
     @ViewBuilder

@@ -78,9 +78,16 @@ struct DictationRowView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         if let trace = record.computerUseTrace, !isQuilTransformation {
-                            Text(Self.displayFinalStatus(trace.finalStatus))
-                                .font(MuesliTheme.captionMedium())
-                                .foregroundStyle(statusColor(trace.finalStatus))
+                            HStack(spacing: MuesliTheme.spacing8) {
+                                if trace.finalStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "running" {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Computer use in progress")
+                                }
+                                Text(Self.displayFinalStatus(trace.finalStatus))
+                                    .font(MuesliTheme.captionMedium())
+                                    .foregroundStyle(statusColor(trace.finalStatus))
+                            }
                         }
                     }
 
@@ -228,6 +235,10 @@ struct DictationRowView: View {
 
     private static func displayFinalStatus(_ status: String) -> String {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "running":
+            return "Running"
+        case "interrupted":
+            return "Interrupted"
         case "done":
             return "Done"
         case "timed_out", "timedout":

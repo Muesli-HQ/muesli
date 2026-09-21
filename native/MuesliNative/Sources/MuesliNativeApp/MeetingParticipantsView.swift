@@ -294,7 +294,13 @@ struct MeetingParticipantsView: View {
     }
 
     private func attach(_ contact: CNContact) async {
-        await attach(MeetingContactIdentity.participant(for: contact))
+        let resolvedContact = await MeetingContactResolver().resolve(contact)
+        await attach(
+            MeetingContactIdentity.participant(
+                for: resolvedContact,
+                preservingIdentifierFrom: contact
+            )
+        )
     }
 
     private func attach(_ participant: MeetingParticipantDraft) async {

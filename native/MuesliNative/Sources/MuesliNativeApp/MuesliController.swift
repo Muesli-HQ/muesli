@@ -399,7 +399,7 @@ public final class MuesliController: NSObject {
         duckingController: audioDuckingController,
         routingController: dictationAudioRoutingController
     )
-    private lazy var computerUseAudioSessionManager = DictationAudioSessionManager(
+    lazy var computerUseAudioSessionManager = DictationAudioSessionManager(
         recorder: computerUseRecorder,
         duckingController: audioDuckingController,
         routingController: dictationAudioRoutingController
@@ -526,6 +526,8 @@ public final class MuesliController: NSObject {
     private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
+    private var hasRequestedComputerUseScreenRecordingAccess = false
+    private var activeComputerUseTrace: ComputerUseRunTrace?
     private var activeQuilAudioSessionID: UUID?
     private var quilStartedAt: Date?
     private var pendingQuilStopStartedAt: Date?
@@ -710,6 +712,7 @@ public final class MuesliController: NSObject {
         MuesliController.current = self
         do {
             try dictationStore.migrateIfNeeded()
+            try dictationStore.markRunningComputerUseTracesInterrupted()
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
@@ -806,6 +809,7 @@ public final class MuesliController: NSObject {
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
         indicator.onToggleMeetingPause = { [weak self] in self?.toggleMeetingRecordingPause() }
         indicator.onOpenMeetingNotes = { [weak self] in self?.openActiveMeetingNotes() }
+        indicator.onCancelComputerUse = { [weak self] in self?.handleComputerUseCancel() }
         indicator.onStopToggleDictation = { [weak self] in
             guard let self else { return }
             if self.hotkeyMonitor.isToggleRecording {
@@ -1040,6 +1044,9 @@ public final class MuesliController: NSObject {
         quilHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
         computerUseCommandTask?.cancel()
+        activeComputerUseTrace?.finish(status: "interrupted", message: "The app stopped.")
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
         cancelHostedDictation()
@@ -5621,6 +5628,7 @@ public final class MuesliController: NSObject {
         Task { [weak self] in
             guard let self else { return }
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
+            let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
             do {
                 let notes = try await MeetingSummaryClient.summarize(
                     transcript: meeting.rawTranscript,
@@ -5629,6 +5637,7 @@ public final class MuesliController: NSObject {
                     template: templateSnapshot,
                     existingNotes: self.notesContextForResummary(meeting),
                     manualNotesToRetain: meeting.manualNotes,
+                    participantNames: participantNames,
                     openRouterAPIKeyOverride: openRouterKey
                 )
                 try self.dictationStore.updateMeetingSummary(
@@ -5707,6 +5716,7 @@ public final class MuesliController: NSObject {
                 }
 
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
+                let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
                 let formattedNotes: String
                 do {
                     formattedNotes = try await MeetingSummaryClient.summarize(
@@ -5715,7 +5725,8 @@ public final class MuesliController: NSObject {
                         config: self.config,
                         template: templateSnapshot,
                         existingNotes: self.notesContextForResummary(meeting),
-                        manualNotesToRetain: meeting.manualNotes
+                        manualNotesToRetain: meeting.manualNotes,
+                        participantNames: participantNames
                     )
                 } catch {
                     fputs("[muesli-native] re-transcription summary generation failed: \(error)\n", stderr)
@@ -5786,6 +5797,15 @@ public final class MuesliController: NSObject {
         return try await Task.detached(priority: .userInitiated) {
             try DictationStore(databaseURL: databaseURL).listMeetingParticipants(meetingID: meetingID)
         }.value
+    }
+
+    private func summaryParticipantNames(meetingID: Int64) async -> [String] {
+        do {
+            return try await meetingParticipants(meetingID: meetingID).map(\.displayName)
+        } catch {
+            fputs("[summary] failed to load participants for meeting \(meetingID): \(error.localizedDescription)\n", stderr)
+            return []
+        }
     }
 
     func attachMeetingParticipant(
@@ -7196,6 +7216,10 @@ public final class MuesliController: NSObject {
                         return self.manualNotesForLiveMeeting(id: meetingID)
                     }
                 }
+                meetingSession.participantNamesProvider = { [weak self] in
+                    guard let self else { return [] }
+                    return await self.summaryParticipantNames(meetingID: meetingID)
+                }
                 meetingSession.liveTitleProvider = { [weak self] in
                     await MainActor.run {
                         guard let self else { return nil }
@@ -8170,6 +8194,7 @@ public final class MuesliController: NSObject {
             )
         }
 
+        let participantNames = await summaryParticipantNames(meetingID: meetingID)
         let regeneratedNotes: String
         do {
             regeneratedNotes = try await MeetingSummaryClient.summarize(
@@ -8179,6 +8204,7 @@ public final class MuesliController: NSObject {
                 template: result.templateSnapshot,
                 existingNotes: nil,
                 manualNotesToRetain: manualNotes,
+                participantNames: participantNames,
                 visualContext: mergedVisualContext
             )
         } catch {
@@ -9072,7 +9098,7 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private func handleComputerUsePrepare() {
+    func handleComputerUsePrepare() {
         guard canPrepareComputerUseCommand else { return }
         fputs("[cua] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
@@ -9503,8 +9529,39 @@ public final class MuesliController: NSObject {
         meetingMonitor.refreshState()
     }
 
+    /// Denial must release an already armed session before any permission UI.
+    func ensureComputerUseScreenRecordingAccess(isGranted: Bool) -> Bool {
+        guard isGranted else {
+            handleComputerUseCancel()
+            return false
+        }
+        return true
+    }
+
     private func handleComputerUseStart() {
         guard canStartComputerUseCommand else { return }
+        guard ensureComputerUseScreenRecordingAccess(isGranted: CGPreflightScreenCaptureAccess()) else {
+            if !hasRequestedComputerUseScreenRecordingAccess {
+                hasRequestedComputerUseScreenRecordingAccess = true
+                // macOS owns this prompt and its Open System Settings action.
+                // Opening Settings ourselves as well leaves the prompt behind.
+                _ = CGRequestScreenCaptureAccess()
+                return
+            }
+            // A denied request may no longer produce a system prompt. Offer a
+            // Settings shortcut on a subsequent attempt, without requesting again.
+            let alert = NSAlert()
+            alert.messageText = "Allow Screen Recording for computer use"
+            alert.informativeText = "Muesli needs Screen Recording permission to see the apps you ask it to use. Enable it in System Settings, then try your command again."
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            return
+        }
         fputs("[cua] recording start\n", stderr)
         meetingMonitor.suppressWhileActive()
         computerUseCommandStartedAt = Date()
@@ -9544,6 +9601,9 @@ public final class MuesliController: NSObject {
             return
         }
         computerUseCommandTask?.cancel()
+        activeComputerUseTrace?.finish(status: "cancelled", message: "Stopped by the user.")
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
         computerUseAudioSessionManager.cancel(reason: "computer_use_cancel")
@@ -9692,7 +9752,7 @@ public final class MuesliController: NSObject {
         computerUseCommandTask = task
     }
 
-    private var canPrepareComputerUseCommand: Bool {
+    var canPrepareComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
             && !isMeetingAudioProcessing
@@ -9782,29 +9842,48 @@ public final class MuesliController: NSObject {
         taskID: UUID
     ) async {
         guard computerUseCommandTaskID == taskID else { return }
+        indicator.setComputerUseCancellationAvailable(true)
         resetComputerUseFloatingStatus()
         presentComputerUseTranscript(transcript)
         setState(.transcribing)
+        let runTrace = ComputerUseRunTrace { [weak self] events, status, message in
+            guard let self, let dictationID else { return }
+            do {
+                try self.dictationStore.insertComputerUseTrace(
+                    dictationID: dictationID, finalStatus: status,
+                    finalMessage: message, events: events
+                )
+            } catch {
+                fputs("[cua] trace persistence failed: \(error)\n", stderr)
+            }
+            self.statusBarController?.refresh()
+            self.historyWindowController?.reload()
+            self.syncAppState()
+        }
+        activeComputerUseTrace = runTrace
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
         }
-
-        let result = await runtime.run(command: transcript)
-        guard computerUseCommandTaskID == taskID else { return }
-        indicator.hideComputerUseCursor()
-        if result.status == .cancelled {
-            computerUseCommandTask = nil
-            computerUseCommandTaskID = nil
-            setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
-            TelemetryDeck.signal("computer_use.command_finished", parameters: [
-                "status": "\(result.status)",
-            ])
-            return
+        runtime.onEvent = { [weak self] event in
+            guard let self, self.computerUseCommandTaskID == taskID else { return }
+            runTrace.record(event)
         }
-        persistComputerUseTrace(result, dictationID: dictationID)
+
+        let result: ComputerUsePlannerRuntimeResult
+        if CGPreflightScreenCaptureAccess() {
+            result = await runtime.run(command: transcript)
+        } else {
+            result = ComputerUsePlannerRuntimeResult(
+                status: .failed,
+                message: "Screen Recording permission is required. Enable it in System Settings and try again."
+            )
+        }
+        guard computerUseCommandTaskID == taskID else { return }
+        runTrace.finish(status: computerUseTraceStatus(result.status), message: result.message, finalEvents: result.traceEvents)
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
+        indicator.hideComputerUseCursor()
         await waitForComputerUseFloatingStatusDwell()
         guard computerUseCommandTaskID == taskID else { return }
         computerUseCommandTask = nil
@@ -9947,19 +10026,6 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private func persistComputerUseTrace(_ result: ComputerUsePlannerRuntimeResult, dictationID: Int64?) {
-        guard let dictationID else { return }
-        try? dictationStore.insertComputerUseTrace(
-            dictationID: dictationID,
-            finalStatus: computerUseTraceStatus(result.status),
-            finalMessage: result.message,
-            events: result.traceEvents
-        )
-        statusBarController?.refresh()
-        historyWindowController?.reload()
-        syncAppState()
-    }
-
     private func computerUseTraceStatus(_ status: ComputerUsePlannerRuntimeResult.Status) -> String {
         switch status {
         case .done:
@@ -10003,7 +10069,11 @@ public final class MuesliController: NSObject {
             icon = ""
         }
         statusBarController?.setStatus(message)
-        indicator.showWarning(floatingMessage, icon: icon, duration: 3.0)
+        if result.status == .done {
+            indicator.showSuccess(floatingMessage)
+        } else {
+            indicator.showWarning(floatingMessage, icon: icon, duration: 3.0)
+        }
     }
 
     /// Streaming RNNT dictation backend (handsfree live text at cursor).

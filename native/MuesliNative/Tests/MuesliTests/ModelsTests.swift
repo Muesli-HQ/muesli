@@ -706,6 +706,7 @@ struct SummaryModelPresetTests {
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
         #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-astra" })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-sol" })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-terra" })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-luna" })
@@ -721,6 +722,7 @@ struct SummaryModelPresetTests {
     func chatGPTModels() {
         #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
         #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-astra" })
         #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-sol" })
         #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-terra" })
         #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-luna" })
@@ -743,6 +745,7 @@ struct SummaryModelPresetTests {
         #expect(presets.first?.label.contains("default") == true)
         #expect(Set(presets.map(\.id)) == Set([
             "gpt-5.4-mini",
+            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -771,6 +774,7 @@ struct SummaryModelPresetTests {
     @Test("Computer use planner presets use GPT-5.6 Sol by default")
     func computerUsePlannerModels() {
         #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-astra" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
@@ -781,13 +785,39 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("GPT-5.6 family uses fixed High reasoning")
-    func gpt56ReasoningEffort() {
-        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-sol") == "high")
-        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-terra") == "high")
-        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-luna") == "high")
-        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.4-mini") == nil)
-        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.5") == nil)
+    @Test("reasoning models expose only their supported efforts")
+    func reasoningEffort() {
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-astra") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-sol") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-terra") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-luna") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.4-mini") == "none")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.4") == "none")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.4-pro") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5-mini") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.5") == nil)
+        #expect(
+            ReasoningEffortPolicy.apiValue(for: "gpt-6-astra", preferred: .xhigh)
+                == "xhigh"
+        )
+        #expect(
+            ReasoningEffortPolicy.selectableEfforts(for: "gpt-6-astra")
+                == [.low, .medium, .high, .xhigh, .max]
+        )
+        #expect(
+            ReasoningEffortPolicy.selectableEfforts(for: "gpt-5.4-mini")
+                == [.off, .low, .medium, .high, .xhigh]
+        )
+        #expect(
+            ReasoningEffortPolicy.selectableEfforts(for: "gpt-5.6-sol")
+                == [.off, .low, .medium, .high, .xhigh, .max]
+        )
+        #expect(
+            ReasoningEffortPolicy.selectableEfforts(for: "gpt-5-mini")
+                == [.minimal, .low, .medium, .high]
+        )
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.4-mini", preferred: .max) == "none")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-astra", preferred: .off) == "high")
     }
 
     @Test("model menu includes custom configured model")
@@ -947,6 +977,7 @@ struct AppConfigTests {
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
+        #expect(config.meetingSummaryReasoningEffort == nil)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
         #expect(config.meetingRecordingSavePolicy == .never)
         #expect(config.showScheduledMeetingNotifications == true)
@@ -969,6 +1000,7 @@ struct AppConfigTests {
         #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
         #expect(config.postProcessorChatGPTModel.isEmpty)
         #expect(config.postProcessorOpenAIModel.isEmpty)
+        #expect(config.transcriptCleanupReasoningEffort == nil)
         #expect(config.postProcessorOpenRouterModel.isEmpty)
         #expect(config.postProcessorOllamaModel.isEmpty)
         #expect(config.postProcessorLMStudioModel.isEmpty)
@@ -986,6 +1018,7 @@ struct AppConfigTests {
         #expect(config.computerUseHotkeyDefaultDisabledMigrationApplied == true)
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
+        #expect(config.computerUseReasoningEffort == nil)
         #expect(config.computerUseTimeoutSeconds == 120)
         #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
@@ -1180,6 +1213,7 @@ struct AppConfigTests {
         config.enableComputerUseHotkey = false
         config.enableComputerUsePlanner = false
         config.computerUsePlannerModel = "gpt-5.4"
+        config.computerUseReasoningEffort = .medium
         config.computerUseTimeoutSeconds = 180
         config.hotkeyTriggerThresholdMS = 125
         config.computerUseHotkeyTriggerThresholdMS = 350
@@ -1190,10 +1224,12 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.meetingSummaryReasoningEffort = .xhigh
         config.meetingSummaryRetryCount = 5
         config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
         config.postProcessorChatGPTModel = "gpt-5.4-mini"
         config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.transcriptCleanupReasoningEffort = .low
         config.postProcessorOpenRouterModel = "openrouter/test-model"
         config.postProcessorOllamaModel = "qwen3.5"
         config.postProcessorLMStudioModel = "lmstudio-loaded"
@@ -1263,6 +1299,7 @@ struct AppConfigTests {
         #expect(decoded.enableComputerUseHotkey == false)
         #expect(decoded.enableComputerUsePlanner == false)
         #expect(decoded.computerUsePlannerModel == "gpt-5.4")
+        #expect(decoded.computerUseReasoningEffort == .medium)
         #expect(decoded.computerUseTimeoutSeconds == 180)
         #expect(decoded.hotkeyTriggerThresholdMS == 125)
         #expect(decoded.computerUseHotkeyTriggerThresholdMS == 350)
@@ -1273,10 +1310,12 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.meetingSummaryReasoningEffort == .xhigh)
         #expect(decoded.meetingSummaryRetryCount == 5)
         #expect(decoded.postProcessorBackend == "openrouter")
         #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
         #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.transcriptCleanupReasoningEffort == .low)
         #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
         #expect(decoded.postProcessorOllamaModel == "qwen3.5")
         #expect(decoded.postProcessorLMStudioModel == "lmstudio-loaded")
@@ -1309,11 +1348,36 @@ struct AppConfigTests {
         #expect(decoded.enableAutomaticDiagnosticIssuePrompts == false)
     }
 
+    @Test("Reasoning preferences use model defaults when absent or invalid")
+    func reasoningPreferencesUseModelDefaults() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        let invalid = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data("""
+            {
+              "computer_use_reasoning_effort": "unsupported",
+              "meeting_summary_reasoning_effort": "unsupported",
+              "transcript_cleanup_reasoning_effort": "unsupported"
+            }
+            """.utf8)
+        )
+
+        #expect(missing.computerUseReasoningEffort == nil)
+        #expect(missing.meetingSummaryReasoningEffort == nil)
+        #expect(missing.transcriptCleanupReasoningEffort == nil)
+        #expect(invalid.computerUseReasoningEffort == nil)
+        #expect(invalid.meetingSummaryReasoningEffort == nil)
+        #expect(invalid.transcriptCleanupReasoningEffort == nil)
+    }
+
     @Test("JSON coding keys use snake_case")
     func snakeCaseKeys() throws {
         var config = AppConfig()
         config.contributionPromptNextWordCount = 1_000
         config.contributionPromptNextMeetingCount = 25
+        config.computerUseReasoningEffort = .medium
+        config.meetingSummaryReasoningEffort = .off
+        config.transcriptCleanupReasoningEffort = .low
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
@@ -1324,10 +1388,13 @@ struct AppConfigTests {
         #expect(json["computer_use_hotkey_default_disabled_migration_applied"] != nil)
         #expect(json["enable_computer_use_planner"] != nil)
         #expect(json["computer_use_planner_model"] != nil)
+        #expect(json["computer_use_reasoning_effort"] != nil)
         #expect(json["computer_use_timeout_seconds"] != nil)
         #expect(json["hotkey_trigger_threshold_ms"] != nil)
         #expect(json["computer_use_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
+        #expect(json["meeting_summary_reasoning_effort"] != nil)
+        #expect(json["transcript_cleanup_reasoning_effort"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["indic_asr_language"] != nil)
         #expect(json["whisper_language"] != nil)

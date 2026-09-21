@@ -220,6 +220,7 @@ final class MeetingSession {
     /// if the meeting ends dead.
     var onSystemAudioHealthEpisode: ((MeetingSystemAudioHealthEvent) -> Void)?
     var manualNotesProvider: (() async -> String?)?
+    var participantNamesProvider: (() async -> [String])?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
@@ -882,6 +883,7 @@ final class MeetingSession {
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
         let manualNotes = await manualNotesProvider?()
+        let participantNames = await participantNamesProvider?() ?? []
         let formattedNotes: String
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
@@ -891,6 +893,7 @@ final class MeetingSession {
                 template: templateSnapshot,
                 existingNotes: nil,
                 manualNotesToRetain: manualNotes,
+                participantNames: participantNames,
                 visualContext: visualContext.isEmpty ? nil : visualContext,
                 previousMeetingNotes: previousMeetingNotes
             )

@@ -212,6 +212,7 @@ final class FloatingIndicatorController: NSObject {
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
+    private var computerUseStopButton: NSButton?
     private var transcribingTitle = "Transcribing"
     private var instructionTranscriptText: String?
     private var instructionTranscriptShowsProgress = false
@@ -231,6 +232,33 @@ final class FloatingIndicatorController: NSObject {
     }
 
     var onStopToggleDictation: (() -> Void)?
+
+    var onCancelComputerUse: (() -> Void)?
+    private(set) var isComputerUseCancellationAvailable = false
+
+    func setComputerUseCancellationAvailable(_ available: Bool) {
+        isComputerUseCancellationAvailable = available
+        if !available {
+            computerUseStopButton?.removeFromSuperview()
+            computerUseStopButton = nil
+        }
+    }
+
+    @objc private func stopComputerUse() { onCancelComputerUse?() }
+
+    private func layoutComputerUseStopButton(in size: NSSize) {
+        guard isComputerUseCancellationAvailable, let contentView else { return }
+        let button = computerUseStopButton ?? NSButton(title: "✕", target: self, action: #selector(stopComputerUse))
+        button.isBordered = false
+        button.contentTintColor = .white
+        button.toolTip = "Stop computer use"
+        button.setAccessibilityLabel("Stop computer use")
+        button.frame = NSRect(x: 5, y: (size.height - 28) / 2, width: 28, height: 28)
+        if button.superview == nil { contentView.addSubview(button) }
+        computerUseStopButton = button
+        iconLabel?.isHidden = true
+        wandIconView?.isHidden = true
+    }
 
     var currentFrame: NSRect? {
         indicatorScreenFrame
@@ -253,6 +281,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
+        if isComputerUseCancellationAvailable {
+            if (x ?? 0) < 34 { onCancelComputerUse?() }
+            return
+        }
         if state == .recording, let x {
             if x < 30 {
                 if isMeetingRecording {
@@ -636,6 +668,7 @@ final class FloatingIndicatorController: NSObject {
             break
         }
 
+        layoutComputerUseStopButton(in: targetFrame.size)
         panel.orderFrontRegardless()
         if state == .preparing {
             contentView.displayIfNeeded()
@@ -644,6 +677,11 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        // The cursor bubble reuses this panel and disables its mouse events.
+        // While a run is stoppable, deliberately keep the stationary transcript
+        // and Stop control for the entire run. A simultaneous cursor bubble
+        // requires a separate panel; switching this one would hide Stop.
+        guard !isComputerUseCancellationAvailable else { return }
         hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
@@ -734,6 +772,14 @@ final class FloatingIndicatorController: NSObject {
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
+        showNotice(message, icon: icon, duration: duration, background: NSColor.colorWith(hex: 0xD99A11, alpha: 0.92))
+    }
+
+    func showSuccess(_ message: String, duration: TimeInterval = 3.0) {
+        showNotice(message, icon: "✓", duration: duration, background: NSColor.colorWith(hex: 0x34C759, alpha: 0.92))
+    }
+
+    private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
         hideShortcutPillChrome()
         guard state == .idle else { return }
         let config = configStore.load()
@@ -754,7 +800,7 @@ final class FloatingIndicatorController: NSObject {
         let y = min(max(center.y - warningSize.height / 2, screen.minY), screen.maxY - warningSize.height)
         let targetFrame = NSRect(x: x, y: y, width: warningSize.width, height: warningSize.height)
 
-        // Warning uses its own solid amber background — hide glass layers.
+        // Notices use a solid status color.
         glassView?.isHidden = true
         tintLayer?.isHidden = true
         micIconView?.isHidden = true
@@ -768,7 +814,7 @@ final class FloatingIndicatorController: NSObject {
             panel.animator().alphaValue = 1.0
             contentView.animator().frame = NSRect(origin: .zero, size: warningSize)
             contentView.layer?.cornerRadius = warningSize.height / 2
-            contentView.layer?.backgroundColor = NSColor.colorWith(hex: 0xD99A11, alpha: 0.92).cgColor
+            contentView.layer?.backgroundColor = background.cgColor
             contentView.layer?.borderWidth = 1.0
             contentView.layer?.borderColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.24).cgColor
 
@@ -779,6 +825,7 @@ final class FloatingIndicatorController: NSObject {
             iconLabel.textColor = NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
             iconLabel.animator().alphaValue = hasIcon ? 1 : 0
 
+            Self.configureTextLabel(textLabel, forTranscript: false)
             textLabel.stringValue = message
             textLabel.font = warningFont
             textLabel.textColor = NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
@@ -2083,7 +2130,10 @@ final class FloatingIndicatorController: NSObject {
         let iconWidth = hasIcon ? max(24, ceil(iconSize.width) + 2) : 0
         let iconHeight = max(18, ceil(iconSize.height))
         let availableTextWidth = max(0, size.width - (horizontalPadding * 2) - iconWidth - gap)
-        let textWidth = min(ceil(textSize.width) + 2, availableTextWidth)
+        // NSTextFieldCell includes drawing insets that attributed-string sizing
+        // omits; short status labels such as "Done" must not lose their last letters.
+        let measuredTextWidth = max(ceil(textSize.width) + 6, ceil(textLabel.cell?.cellSize.width ?? 0))
+        let textWidth = min(measuredTextWidth, availableTextWidth)
         let textHeight = max(16, ceil(textSize.height))
 
         let totalWidth = iconWidth + gap + textWidth
@@ -2151,6 +2201,18 @@ final class FloatingIndicatorController: NSObject {
         )
     }
 
+    static func computerUseTranscriptTextHeightsForTesting(
+        transcript: String,
+        screenWidth: CGFloat
+    ) -> (allocated: CGFloat, required: CGFloat) {
+        let normalized = normalizedInstructionTranscript(transcript)
+        let size = computerUseTranscriptPillSizeForTesting(transcript: normalized, screenWidth: screenWidth)
+        return (
+            allocated: max(16, size.height - 24),
+            required: transcriptTextFieldHeight(normalized, font: .systemFont(ofSize: 12, weight: .medium), width: max(40, size.width - 58))
+        )
+    }
+
     static func quillInstructionTextHeightsForTesting(
         transcript: String,
         screenWidth: CGFloat,
@@ -2198,36 +2260,23 @@ final class FloatingIndicatorController: NSObject {
         let minWidth = min(CGFloat(280), max(160, screen.width - 48))
         let maxWidth = max(minWidth, min(720, screen.width - 48))
         // NSTextFieldCell reserves a little more horizontal drawing room than
-        // NSString reports. Account for it in Quill before deciding that a
+        // NSString reports. Account for it before deciding that a
         // prompt fits on one line; otherwise the cell wraps the final word even
         // when the pill still has room available.
-        let textFieldInsetAllowance: CGFloat = showsProgress ? 6 : 2
+        let textFieldInsetAllowance: CGFloat = 6
         let singleLineTextWidth = ceil(
             (normalized as NSString).size(withAttributes: [.font: font]).width
         ) + textFieldInsetAllowance
         let preferredWidth = min(maxWidth, max(minWidth, chromeWidth + singleLineTextWidth))
         let textWidth = max(40, preferredWidth - chromeWidth)
-        // Quill keeps the spoken instruction on screen while the model works.
+        // CUA and Quill keep the spoken instruction visible while the model works.
         // Measure that text through the same AppKit cell used to render it: the
         // NSString bounding box can disagree with NSTextField at word-wrap
         // boundaries and leave the final rendered line outside the label frame.
-        // Keep CUA on its existing sizing path until its rendering is addressed
-        // independently.
-        let textHeight = showsProgress
-            ? transcriptTextFieldHeight(normalized, font: font, width: textWidth)
-            : transcriptTextHeight(normalized, font: font, width: textWidth)
+        let textHeight = transcriptTextFieldHeight(normalized, font: font, width: textWidth)
         let maxHeight = max(CGFloat(56), screen.height - 48)
         let preferredHeight = max(CGFloat(44), ceil(textHeight) + (verticalPadding * 2))
         return NSSize(width: preferredWidth, height: min(preferredHeight, maxHeight))
-    }
-
-    private static func transcriptTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
-        let bounding = (text as NSString).boundingRect(
-            with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        )
-        return max(16, ceil(bounding.height))
     }
 
     private static func transcriptTextFieldHeight(

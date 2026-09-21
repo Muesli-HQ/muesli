@@ -1645,7 +1645,10 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Connect an LLM provider to get AI-powered meeting notes.\nYou can set this up later in Settings.")
+                Text(
+                    "Connect an LLM provider for AI-powered meeting notes.\n"
+                        + "Remote summaries may send transcripts, notes, screen context, and participant names off-device."
+                )
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)

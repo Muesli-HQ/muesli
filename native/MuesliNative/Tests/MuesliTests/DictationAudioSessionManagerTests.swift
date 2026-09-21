@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
@@ -884,5 +885,45 @@ private final class FakeDictationRoute: DictationAudioRouting {
 
     func refreshRouteAfterDictationSession() {
         restoreCalls += 1
+    }
+}
+
+// Reuse the fake recorder to exercise the controller without opening a microphone.
+extension ComputerUseRunDiagnosticsTests {
+    @Test("denied screen permission releases prepared CUA ownership before the next interaction")
+    @MainActor
+    func permissionDenialReleasesPreparedSession() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let harness = Harness(routeKind: .speakerLike)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: directory)
+        )
+        controller.computerUseAudioSessionManager = harness.manager
+        controller.handleComputerUsePrepare()
+        harness.wait()
+        #expect(harness.manager.hasActiveSession)
+        #expect(controller.appState.dictationState == .preparing)
+        #expect(!controller.canPrepareComputerUseCommand)
+
+        #expect(!controller.ensureComputerUseScreenRecordingAccess(isGranted: false))
+        harness.wait()
+        #expect(!harness.manager.hasActiveSession)
+        #expect(controller.appState.dictationState == .idle)
+        #expect(controller.canPrepareComputerUseCommand)
+
+        controller.handleComputerUsePrepare()
+        harness.wait()
+        #expect(harness.manager.hasActiveSession)
+        #expect(controller.ensureComputerUseScreenRecordingAccess(isGranted: true))
+        #expect(harness.manager.hasActiveSession)
+        #expect(harness.recorder.activateCalls == 2)
+        #expect(!controller.ensureComputerUseScreenRecordingAccess(isGranted: false))
+        harness.wait()
     }
 }

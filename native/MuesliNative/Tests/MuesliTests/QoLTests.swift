@@ -384,6 +384,16 @@ struct IndicatorFrameSizeTests {
         #expect(long.height > short.height)
     }
 
+    @Test("CUA instruction fits the rendered text field at wrap boundaries", arguments: [300.0, 420.0, 1200.0])
+    @MainActor
+    func computerUseTranscriptFitsRenderedTextField(screenWidth: Double) {
+        let transcript = "Open my Twitter and go to Muesli's page by swapping the profiles, then find the latest post and read every reply while keeping the final words of this command visible in the floating bubble."
+        let heights = FloatingIndicatorController.computerUseTranscriptTextHeightsForTesting(
+            transcript: transcript, screenWidth: screenWidth
+        )
+        #expect(heights.allocated >= heights.required)
+    }
+
     @Test("Quill instruction pill reserves room for its progress spinner")
     @MainActor
     func quillInstructionPillIncludesProgressChrome() {

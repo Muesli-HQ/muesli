@@ -405,27 +405,34 @@ struct MeetingStreamingPartialSessionTests {
 
     @Test("asynchronous frozen preview text has a fixed segment bound")
     func asynchronousFrozenPreviewIsBounded() async throws {
-        let engine = ManualAsynchronousPartialEngine()
+        let texts = (0..<(MeetingStreamingPartialSession.maxFrozenSegments + 2))
+            .map { "[segment\($0)]" }
+        let engine = ManualAsynchronousPartialEngine(processTexts: texts)
         let session = MeetingStreamingPartialSession(engine: engine, label: "Others")
+        defer { session.stop() }
         let collector = PartialCollector()
         session.onPartialUpdate = { collector.record($0) }
         await session.connect()
 
-        for index in 0..<(MeetingStreamingPartialSession.maxFrozenSegments + 2) {
-            // Queued audio is processed only after the preceding restart finishes.
+        var ids: [UUID] = []
+        for text in texts {
+            let id = UUID()
+            ids.append(id)
+            // The serial audio/boundary queue owns readiness. Emit the fake result
+            // when audio is processed, then await the real finalization signal.
+            // Preview throttling and restart-entry counters are not completion gates.
             session.enqueue(samples(chunkCount: 1))
-            #expect(await waitUntil { engine.processCalls == index + 1 })
-            engine.emit("[segment\(index)]")
-            #expect(await waitUntil { collector.latest?.contains("[segment\(index)]") == true })
-            session.markSegmentBoundary(id: UUID())
-            #expect(await waitUntil { engine.restartCalls == index + 1 })
+            session.markSegmentBoundary(id: id)
+            let finalized = try #require(await session.finalizedSegmentText(id: id))
+            #expect(finalized == text)
         }
 
-        let latest = try #require(collector.latest)
-        #expect(!latest.contains("[segment0]"))
-        #expect(!latest.contains("[segment1]"))
-        #expect(latest.contains("[segment2]"))
-        #expect(latest.contains("[segment13]"))
+        #expect(engine.processCalls == texts.count)
+        for (index, id) in ids.enumerated() {
+            #expect(session.pendingSegmentText(id: id) == (index < 2 ? nil : texts[index]))
+        }
+        let expectedPreview = texts.dropFirst(2).joined(separator: " ")
+        #expect(await waitUntil { collector.latest == expectedPreview })
     }
 
     @Test("overlapping boundaries serialize restarts and retain the newest callbacks")
@@ -922,12 +929,14 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
     private let blocksFinish: Bool
     private let finalText: String?
     private let failsFinish: Bool
+    private let processTexts: [String]
 
-    init(blocksRestart: Bool = false, blocksFinish: Bool = false, finalText: String? = nil, failsFinish: Bool = false) {
+    init(blocksRestart: Bool = false, blocksFinish: Bool = false, finalText: String? = nil, failsFinish: Bool = false, processTexts: [String] = []) {
         self.blocksRestart = blocksRestart
         self.blocksFinish = blocksFinish
         self.finalText = finalText
         self.failsFinish = failsFinish
+        self.processTexts = processTexts
     }
 
     var isFinishing: Bool { state.withLock { $0.isFinishing } }
@@ -945,7 +954,12 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
     }
 
     func process(samples: [Float]) async throws {
-        state.withLock { $0.processCalls += 1 }
+        let index = state.withLock { s in
+            let index = s.processCalls
+            s.processCalls += 1
+            return index
+        }
+        if processTexts.indices.contains(index) { emit(processTexts[index]) }
     }
 
     func restart(
