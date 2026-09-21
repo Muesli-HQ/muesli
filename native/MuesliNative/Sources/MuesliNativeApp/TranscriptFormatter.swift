@@ -13,18 +13,21 @@ enum TranscriptFormatter {
         micSegments: [SpeechSegment],
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
-        let displayMicSegments = micSegments
-        let taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+        // Speaker numbers are shared across both channels so labels stay unique
+        // across the whole transcript (a "Speaker 1" on the mic channel and a
+        // "Speaker 1" on the system channel are two different diarization runs —
+        // they are never implied to be the same person).
+        var nextSpeakerNumber = 1
 
         let taggedSystem: [TaggedSegment]
         if let diarizationSegments, !diarizationSegments.isEmpty {
             // Build speaker label map: raw ID → "Speaker 1", "Speaker 2", etc. in first-appearance order
             var speakerLabelMap: [String: String] = [:]
-            var nextSpeakerNumber = 1
             for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
                 if speakerLabelMap[seg.speakerId] == nil {
                     speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
@@ -33,11 +36,33 @@ enum TranscriptFormatter {
             }
 
             taggedSystem = systemSegments.map { segment in
-                let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap, fallbackLabel: "Others")
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
         } else {
             taggedSystem = systemSegments.map { TaggedSegment(segment: $0, speaker: "Others") }
+        }
+
+        // Only replace the "You" label when mic diarization actually found more
+        // than one distinct speaker — a single detected speaker (or a failed/
+        // disabled diarization pass) keeps the existing single-mic behavior.
+        let taggedMic: [TaggedSegment]
+        if let micDiarizationSegments, !micDiarizationSegments.isEmpty,
+           Set(micDiarizationSegments.map(\.speakerId)).count > 1 {
+            var micSpeakerLabelMap: [String: String] = [:]
+            for seg in micDiarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+                if micSpeakerLabelMap[seg.speakerId] == nil {
+                    micSpeakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
+                    nextSpeakerNumber += 1
+                }
+            }
+
+            taggedMic = micSegments.map { segment in
+                let speaker = findSpeaker(for: segment, in: micDiarizationSegments, labelMap: micSpeakerLabelMap, fallbackLabel: "You")
+                return TaggedSegment(segment: segment, speaker: speaker)
+            }
+        } else {
+            taggedMic = micSegments.map { TaggedSegment(segment: $0, speaker: "You") }
         }
 
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
@@ -104,10 +129,11 @@ enum TranscriptFormatter {
     private static func findSpeaker(
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment],
-        labelMap: [String: String]
+        labelMap: [String: String],
+        fallbackLabel: String
     ) -> String {
         if labelMap.count == 1 {
-            return labelMap.values.first ?? "Others"
+            return labelMap.values.first ?? fallbackLabel
         }
 
         let segStart = Float(segment.start)
@@ -128,7 +154,7 @@ enum TranscriptFormatter {
         }
 
         if let bestSpeakerId, bestOverlap > 0 {
-            return labelMap[bestSpeakerId] ?? "Others"
+            return labelMap[bestSpeakerId] ?? fallbackLabel
         }
 
         if let nearestSpeakerId = nearestSpeaker(
@@ -136,9 +162,9 @@ enum TranscriptFormatter {
             in: diarizationSegments,
             maxGapSeconds: 2.0
         ) {
-            return labelMap[nearestSpeakerId] ?? "Others"
+            return labelMap[nearestSpeakerId] ?? fallbackLabel
         }
-        return "Others"
+        return fallbackLabel
     }
 
 

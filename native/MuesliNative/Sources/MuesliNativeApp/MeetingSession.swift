@@ -777,6 +777,16 @@ final class MeetingSession {
             }
         }
 
+        var micDiarizationSegments: [TimedSpeakerSegment]?
+        if config.diarizeMicrophoneAudio, let rawStreamingMicURL {
+            // Opt-in: diarize the mic channel too, for in-person meetings where
+            // multiple people are picked up by a single Mac mic. Off by default
+            // (see AppConfig.diarizeMicrophoneAudio).
+            if let micDiarizationResult = try? await transcriptionCoordinator.diarizeMicAudio(at: rawStreamingMicURL) {
+                micDiarizationSegments = micDiarizationResult.segments
+            }
+        }
+
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
         micSegments.sort { lhs, rhs in
             if lhs.start == rhs.start {
@@ -833,7 +843,8 @@ final class MeetingSession {
         let reconciledTranscriptInputs = TranscriptReconciler.reconcile(
             micTurns: micSegments,
             systemSegments: systemSegments,
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micDiarizationSegments: micDiarizationSegments
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
@@ -841,6 +852,7 @@ final class MeetingSession {
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
             meetingStart: meetingStart
         )
 
@@ -909,6 +921,7 @@ final class MeetingSession {
             micChunks: micChunkHealthTracker.snapshot(),
             systemChunks: systemChunkHealthTracker.snapshot(),
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
             protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
         )
 

@@ -6,6 +6,7 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
+    let micDiarizationSegments: [TimedSpeakerSegment]?
 }
 
 enum TranscriptReconciler {
@@ -34,9 +35,10 @@ enum TranscriptReconciler {
     static func reconcile(
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
-        diarizationSegments: [TimedSpeakerSegment]?
+        diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil
     ) -> ReconciledTranscriptInputs {
-        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns))
+        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns), diarizationSegments: micDiarizationSegments)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
             micTurns: normalizedMicTurns,
@@ -47,7 +49,7 @@ enum TranscriptReconciler {
         var keptSystemTurns: [SpeechSegment] = []
 
         for window in windows {
-            let reconciledWindow = reconcile(window)
+            let reconciledWindow = reconcile(window, micDiarizationSegments: micDiarizationSegments)
             keptMicTurns.append(contentsOf: reconciledWindow.micTurns)
             keptSystemTurns.append(contentsOf: reconciledWindow.systemTurns)
         }
@@ -55,12 +57,16 @@ enum TranscriptReconciler {
         return ReconciledTranscriptInputs(
             micSegments: sortedSegments(keptMicTurns),
             systemSegments: sortedSegments(keptSystemTurns),
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micDiarizationSegments: micDiarizationSegments
         )
     }
 
-    private static func reconcile(_ window: OverlapWindow) -> OverlapWindow {
-        let mergedMicTurns = mergeReadableSegments(window.micTurns)
+    private static func reconcile(
+        _ window: OverlapWindow,
+        micDiarizationSegments: [TimedSpeakerSegment]?
+    ) -> OverlapWindow {
+        let mergedMicTurns = mergeReadableSegments(window.micTurns, diarizationSegments: micDiarizationSegments)
         let keptSystemTurns = sortedSegments(dedupeSystemSegments(window.systemTurns))
 
         guard !mergedMicTurns.isEmpty, !keptSystemTurns.isEmpty else {
@@ -73,7 +79,8 @@ enum TranscriptReconciler {
         }
 
         let keptMicTurns = mergeReadableSegments(
-            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) }
+            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) },
+            diarizationSegments: micDiarizationSegments
         )
 
         return OverlapWindow(
@@ -164,31 +171,93 @@ enum TranscriptReconciler {
         return !normalizedText(micTurn.text).isEmpty
     }
 
-    private static func mergeReadableSegments(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+    /// Merges adjacent, close-together segments into single readable turns.
+    /// When `diarizationSegments` identifies more than one distinct speaker,
+    /// a merge is refused across a detected speaker change — otherwise two
+    /// room speakers' turns could combine into one SpeechSegment, and
+    /// downstream speaker attribution would credit all of that text to
+    /// whichever speaker has the most overlap (see TranscriptFormatter).
+    private static func mergeReadableSegments(
+        _ segments: [SpeechSegment],
+        diarizationSegments: [TimedSpeakerSegment]? = nil
+    ) -> [SpeechSegment] {
         guard !segments.isEmpty else { return [] }
 
         let orderedSegments = sortedSegments(segments)
         var merged: [SpeechSegment] = [orderedSegments[0]]
+        var mergedSpeaker = dominantSpeaker(for: orderedSegments[0], in: diarizationSegments)
 
         for segment in orderedSegments.dropFirst() {
             guard let previous = merged.last else {
                 merged.append(segment)
+                mergedSpeaker = dominantSpeaker(for: segment, in: diarizationSegments)
                 continue
             }
 
             let gap = max(0, segment.start - previous.end)
-            if gap <= turnMergeGapSeconds {
+            let segmentSpeaker = dominantSpeaker(for: segment, in: diarizationSegments)
+            // A nil speaker on either side means diarization couldn't confidently
+            // place that segment — don't let that uncertainty block a merge.
+            let sameSpeaker = mergedSpeaker == nil || segmentSpeaker == nil || mergedSpeaker == segmentSpeaker
+            if gap <= turnMergeGapSeconds && sameSpeaker {
                 merged[merged.count - 1] = SpeechSegment(
                     start: previous.start,
                     end: max(previous.end, segment.end),
                     text: joinText(previous.text, segment.text)
                 )
+                if mergedSpeaker == nil { mergedSpeaker = segmentSpeaker }
             } else {
                 merged.append(segment)
+                mergedSpeaker = segmentSpeaker
             }
         }
 
         return merged
+    }
+
+    /// Best-overlap (falling back to nearest-within-2s) diarized speaker for a
+    /// segment. Returns nil when diarization is unavailable, has fewer than
+    /// two distinct speakers (nothing to disambiguate), or has no usable
+    /// match — mirroring TranscriptFormatter's own speaker assignment so a
+    /// turn that's kept separate here is attributed the same way downstream.
+    private static func dominantSpeaker(
+        for segment: SpeechSegment,
+        in diarizationSegments: [TimedSpeakerSegment]?
+    ) -> String? {
+        guard let diarizationSegments, !diarizationSegments.isEmpty,
+              Set(diarizationSegments.map(\.speakerId)).count > 1 else { return nil }
+
+        let segStart = Float(segment.start)
+        let segEnd = Float(max(segment.end, segment.start + 0.1))
+
+        var bestOverlap: Float = 0
+        var bestSpeakerId: String?
+        for diarSeg in diarizationSegments {
+            let overlapStart = max(segStart, diarSeg.startTimeSeconds)
+            let overlapEnd = min(segEnd, diarSeg.endTimeSeconds)
+            let overlap = max(0, overlapEnd - overlapStart)
+            if overlap > bestOverlap {
+                bestOverlap = overlap
+                bestSpeakerId = diarSeg.speakerId
+            }
+        }
+        if let bestSpeakerId, bestOverlap > 0 { return bestSpeakerId }
+
+        let segMidpoint = (segStart + segEnd) / 2
+        guard let nearest = diarizationSegments.min(by: { lhs, rhs in
+            temporalGap(between: segMidpoint, and: lhs) < temporalGap(between: segMidpoint, and: rhs)
+        }) else { return nil }
+        return temporalGap(between: segMidpoint, and: nearest) <= 2.0 ? nearest.speakerId : nil
+    }
+
+    private static func temporalGap(between point: Float, and diarizationSegment: TimedSpeakerSegment) -> Float {
+        if point < diarizationSegment.startTimeSeconds {
+            return diarizationSegment.startTimeSeconds - point
+        }
+        if point > diarizationSegment.endTimeSeconds {
+            return point - diarizationSegment.endTimeSeconds
+        }
+        return 0
     }
 
     private static func dedupeSystemSegments(_ systemSegments: [SpeechSegment]) -> [SpeechSegment] {
