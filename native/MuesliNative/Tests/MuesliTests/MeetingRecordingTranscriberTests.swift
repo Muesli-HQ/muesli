@@ -6,6 +6,52 @@ import Testing
 
 @Suite("Bounded meeting recording transcription")
 struct MeetingRecordingTranscriberTests {
+    @Test("optional diarization failures preserve successful ASR with a warning")
+    func optionalDiarizationFallback() async throws {
+        let transcription = SpeechTranscriptionResult(text: "Recovered transcript", segments: [])
+        for error in [DiarizerError.notInitialized, .processingFailed("timeout"), .memoryAllocationFailed] {
+            let result = try await RecordedTranscriptDiarization.apply(to: transcription) { throw error }
+            #expect(result.transcript == transcription.text)
+            #expect(result.warning?.contains("without speaker labels") == true)
+        }
+    }
+
+    @Test("diarization cancellation never becomes successful raw-text fallback")
+    func optionalDiarizationCancellation() async {
+        let transcription = SpeechTranscriptionResult(text: "Do not save", segments: [])
+        do {
+            _ = try await RecordedTranscriptDiarization.apply(to: transcription) { throw CancellationError() }
+            Issue.record("Expected cancellation")
+        } catch { #expect(error is CancellationError) }
+        let task = Task {
+            try await RecordedTranscriptDiarization.apply(to: transcription) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw DiarizerError.processingFailed("cancelled backend operation")
+            }
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Expected wrapped cancellation")
+        } catch { #expect(error is CancellationError) }
+    }
+
+    @Test("successful speaker identification returns labelled text without a warning")
+    func optionalDiarizationSuccess() async throws {
+        let transcription = SpeechTranscriptionResult(text: "Hello Goodbye", segments: [
+            SpeechSegment(start: 0, end: 2, text: "Hello"),
+            SpeechSegment(start: 3, end: 5, text: "Goodbye"),
+        ])
+        let result = try await RecordedTranscriptDiarization.apply(to: transcription) {
+            [
+                TimedSpeakerSegment(speakerId: "1", embedding: [], startTimeSeconds: 0, endTimeSeconds: 2, qualityScore: 1),
+                TimedSpeakerSegment(speakerId: "2", embedding: [], startTimeSeconds: 3, endTimeSeconds: 5, qualityScore: 1),
+            ]
+        }
+        #expect(result.transcript.contains("Speaker 1: Hello"))
+        #expect(result.transcript.contains("Speaker 2: Goodbye"))
+        #expect(result.warning == nil)
+    }
+
     private func recording(seconds: Int) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("retry-test-\(UUID()).wav")
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))

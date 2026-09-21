@@ -191,5 +191,41 @@ struct MeetingRetranscriptionProgress: Equatable {
     var fraction: Double = 0
     var preview: String = ""
     var message: String = "Preparing model…"
+    var warning: String?
     var isRunning: Bool { phase == .preparing || phase == .transcribing || phase == .diarizing || phase == .summarizing }
+}
+
+enum RecordedTranscriptDiarization {
+    struct Outcome: Sendable {
+        let transcript: String
+        let warning: String?
+    }
+
+    /// Speaker identification enriches a successful ASR result; it must not
+    /// prevent recovery. Cancellation is never treated as a successful fallback.
+    static func apply(
+        to transcription: SpeechTranscriptionResult,
+        identify: @Sendable () async throws -> [TimedSpeakerSegment]
+    ) async throws -> Outcome {
+        try Task.checkCancellation()
+        do {
+            let segments = try await identify()
+            try Task.checkCancellation()
+            let text = AudioFileImportController.formatTranscriptWithSpeakers(
+                transcription: transcription, diarizationSegments: segments,
+                meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
+            )
+            return Outcome(transcript: text, warning: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Backends may report cancellation as an ordinary model/network error.
+            try Task.checkCancellation()
+            fputs("[retranscription] speaker identification unavailable; keeping ASR transcript: \(error)\n", stderr)
+            return Outcome(
+                transcript: transcription.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                warning: "Speaker identification failed. Transcription continued without speaker labels."
+            )
+        }
+    }
 }

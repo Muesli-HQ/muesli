@@ -871,6 +871,12 @@ struct MeetingDetailView: View {
                         Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
                     }
                 }
+                if let warning = appState.meetingRetranscriptions[meeting.id]?.warning {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("meeting.retranscription.diarizationWarning")
+                }
             }
             .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
             .padding(.bottom, 12)

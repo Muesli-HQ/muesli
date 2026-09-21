@@ -577,6 +577,7 @@ public final class MuesliController: NSObject {
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
     private var meetingRetranscriptionTasks: [Int64: Task<Void, Never>] = [:]
+    private var isShuttingDown = false
     private var modelFileMutationTokens: Set<UUID> = []
     private var meetingProcessingStages: [UUID: MeetingProcessingStage] = [:]
     private var pendingMeetingCompletionNotification: PendingMeetingCompletionNotification?
@@ -1023,7 +1024,18 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func cancelMeetingRetranscriptionsForShutdown() async {
+        isShuttingDown = true
+        // Suspend asynchronously (never block the main thread) until retry
+        // cancellation and its deferred state cleanup finish. Do this before
+        // tearing down any shared resources those jobs may still access.
+        let retranscriptionTasks = Array(meetingRetranscriptionTasks.values)
+        retranscriptionTasks.forEach { $0.cancel() }
+        for task in retranscriptionTasks { await task.value }
+    }
+
     func shutdown() async {
+        await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
@@ -5684,7 +5696,7 @@ public final class MuesliController: NSObject {
     }
 
     func canRetranscribeMeeting(_ meeting: MeetingRecord) -> Bool {
-        meetingRetranscriptionTasks.isEmpty && appState.modelFileMutationCount == 0 && appState.activeAudioImportCount == 0 && !isMeetingRecording() && !isStartingMeetingRecording
+        !isShuttingDown && meetingRetranscriptionTasks.isEmpty && appState.modelFileMutationCount == 0 && appState.activeAudioImportCount == 0 && !isMeetingRecording() && !isStartingMeetingRecording
             && backgroundMeetingProcessingCount == 0 && importTask == nil
             && !isInteractiveAudioActivityInProgress
             && (meeting.status == .completed || meeting.status == .failed)
@@ -5727,7 +5739,7 @@ public final class MuesliController: NSObject {
                 self.reconcileFinishedMeetingPresentation()
                 self.syncAppState()
                 self.historyWindowController?.reload()
-                self.showPendingMeetingCompletionNotificationIfPossible()
+                if !self.isShuttingDown { self.showPendingMeetingCompletionNotificationIfPossible() }
             }
             do {
                 try Task.checkCancellation()
@@ -5786,21 +5798,22 @@ public final class MuesliController: NSObject {
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = .diarizing
                 self.appState.meetingRetranscriptions[meeting.id]?.fraction = 0
                 self.appState.meetingRetranscriptions[meeting.id]?.message = "Loading speaker identification…"
-                await self.transcriptionCoordinator.preloadDiarizer(trigger: .retranscription)
-                let speakerSegments = try await self.transcriptionCoordinator.diarizeRecordedAudio(
-                    at: recordingURL,
-                    progress: { [weak self] fraction in
-                        await MainActor.run {
-                            self?.appState.meetingRetranscriptions[meeting.id]?.fraction = fraction
-                            self?.appState.meetingRetranscriptions[meeting.id]?.message = "Identifying speakers · \(Int(fraction * 100))%"
+                let coordinator = self.transcriptionCoordinator
+                let diarization = try await RecordedTranscriptDiarization.apply(to: transcription) { [weak self] in
+                    await coordinator.preloadDiarizer(trigger: .retranscription)
+                    return try await coordinator.diarizeRecordedAudio(
+                        at: recordingURL,
+                        progress: { [weak self] fraction in
+                            await MainActor.run {
+                                self?.appState.meetingRetranscriptions[meeting.id]?.fraction = fraction
+                                self?.appState.meetingRetranscriptions[meeting.id]?.message = "Identifying speakers · \(Int(fraction * 100))%"
+                            }
                         }
-                    }
-                )
+                    )
+                }
                 try Task.checkCancellation()
-                rawTranscript = AudioFileImportController.formatTranscriptWithSpeakers(
-                    transcription: transcription, diarizationSegments: speakerSegments,
-                    meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
-                )
+                rawTranscript = diarization.transcript
+                self.appState.meetingRetranscriptions[meeting.id]?.warning = diarization.warning
 
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
                 let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
@@ -7013,7 +7026,8 @@ public final class MuesliController: NSObject {
     // MARK: - Audio File Import
 
     private func ensureNoMeetingRetranscription() -> Bool {
-        guard meetingRetranscriptionTasks.isEmpty, appState.activeAudioImportCount == 0 else {
+        guard !isShuttingDown else { return false }
+        guard meetingRetranscriptionTasks.isEmpty, appState.activeAudioImportCount == 0, !isStartingMeetingRecording else {
             presentErrorAlert(title: "Audio processing in progress", message: "Wait for the current import or re-transcription to finish, or cancel it, before starting another recording, import, or model change.")
             return false
         }
@@ -8534,12 +8548,12 @@ public final class MuesliController: NSObject {
     }
 
     var canModifyModelFiles: Bool {
-        !appState.meetingRetranscriptions.values.contains(where: \.isRunning) && !appState.isMeetingStarting && appState.activeAudioImportCount == 0
+        !isShuttingDown && !appState.meetingRetranscriptions.values.contains(where: \.isRunning) && !appState.isMeetingStarting && appState.activeAudioImportCount == 0
     }
 
     /// Reserve synchronously, before an async unload/delete can yield to a retry.
     func beginModelFileMutation() -> UUID? {
-        guard meetingRetranscriptionTasks.isEmpty, !isStartingMeetingRecording, appState.activeAudioImportCount == 0 else { return nil }
+        guard !isShuttingDown, meetingRetranscriptionTasks.isEmpty, !isStartingMeetingRecording, appState.activeAudioImportCount == 0 else { return nil }
         let token = UUID()
         modelFileMutationTokens.insert(token)
         appState.modelFileMutationCount = modelFileMutationTokens.count

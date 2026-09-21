@@ -766,6 +766,34 @@ struct MeetingsNavigationTests {
         #expect(restored.status == .completed)
     }
 
+    @Test("shutdown asynchronously drains retry cleanup and prevents new retries")
+    func shutdownDrainsRetranscription() async throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(
+            title: "Existing", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Original transcript", formattedNotes: "Original notes",
+            micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/missing/shutdown.wav"
+        )
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        var completed = false
+        controller.retranscribe(meeting: meeting) { result in
+            guard case .failure(let error) = result else { Issue.record("Expected cancellation"); return }
+            #expect(error is CancellationError)
+            completed = true
+        }
+        await controller.cancelMeetingRetranscriptionsForShutdown()
+        #expect(completed)
+        #expect(!controller.canModifyModelFiles)
+        #expect(controller.beginModelFileMutation() == nil)
+        #expect(controller.appState.meetingRetranscriptions[id]?.phase == .cancelled)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        #expect(controller.canDeleteMeeting(meeting)) // job registry was drained by defer
+        #expect(try store.meeting(id: id)?.rawTranscript == "Original transcript")
+        #expect(try store.meeting(id: id)?.formattedNotes == "Original notes")
+        await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
+    }
+
     @Test("a failed initial meeting keeps its retained audio even without manual notes")
     func failedMeetingKeepsRetainedAudio() throws {
         let store = try makeStore()
