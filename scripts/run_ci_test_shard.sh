@@ -43,6 +43,8 @@ case "${shard}" in
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
+      NotchIndicatorTests
+      RecordingIndicatorStyleTests
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
