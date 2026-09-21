@@ -1081,6 +1081,27 @@ actor TranscriptionCoordinator {
         ))
     }
 
+    /// Recorded-file replay only. Live meeting finalization remains unchanged.
+    func diarizeRecordedAudio(
+        at url: URL,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) async throws -> [TimedSpeakerSegment] {
+        try Task.checkCancellation()
+        guard let diarizerManager, diarizerManager.isAvailable else { throw DiarizerError.notInitialized }
+        let session = RecordedAudioDiarizationSession(manager: diarizerManager)
+        let reader = try RecordingAudioWindowReader(
+            url: url, seconds: RecordedAudioDiarizationSession.windowSeconds, overlapSeconds: 0
+        )
+        defer { reader.close() }
+        var segments: [TimedSpeakerSegment] = []
+        while let window = try reader.next() {
+            segments.append(contentsOf: try session.process(window))
+            await progress(window.fraction)
+        }
+        try Task.checkCancellation()
+        return segments
+    }
+
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
         guard let diarizerManager, diarizerManager.isAvailable else {
             fputs("[muesli-native] diarization not available, skipping\n", stderr)

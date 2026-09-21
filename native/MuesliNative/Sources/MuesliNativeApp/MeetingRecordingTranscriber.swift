@@ -1,5 +1,137 @@
 import AVFoundation
+import FluidAudio
 import Foundation
+
+/// Shared disk-backed reader for ASR and diarization. Only one window exists
+/// at a time; the caller must finish inference before requesting the next one.
+final class RecordingAudioWindowReader {
+    struct Window {
+        let url: URL
+        let start: Double
+        let end: Double
+        let fraction: Double
+    }
+
+    private let file: AVAudioFile
+    private let directory: URL
+    private let capacity: AVAudioFrameCount
+    private let overlap: AVAudioFramePosition
+    private var finished = false
+
+    init(url: URL, seconds: Double, overlapSeconds: Double) throws {
+        file = try AVAudioFile(forReading: url)
+        let rate = file.processingFormat.sampleRate
+        guard rate.isFinite, rate > 0, file.length > 0,
+              seconds.isFinite, overlapSeconds.isFinite,
+              seconds > 0, overlapSeconds >= 0, overlapSeconds < seconds,
+              rate * seconds >= 1, rate * seconds < Double(UInt32.max) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        capacity = AVAudioFrameCount(rate * seconds)
+        overlap = AVAudioFramePosition(rate * overlapSeconds)
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-replay-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func close() { try? FileManager.default.removeItem(at: directory) }
+    deinit { close() }
+
+    func next() throws -> Window? {
+        try Task.checkCancellation()
+        guard !finished else { return nil }
+        let start = file.framePosition
+        let rate = file.processingFormat.sampleRate
+        let count = AVAudioFrameCount(min(AVAudioFramePosition(capacity), file.length - start))
+        let url = directory.appendingPathComponent("chunk.wav")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        try autoreleasepool {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else {
+                throw CocoaError(.fileReadTooLarge)
+            }
+            let writer = try AVAudioFile(forWriting: url, settings: file.processingFormat.settings)
+            // AVAudioFile can return a short read before EOF (including WAV).
+            // Fill this window without accumulating another PCM buffer or
+            // accidentally turning the final decoder tail into a tiny ASR chunk.
+            var remaining = count
+            while remaining > 0 {
+                try Task.checkCancellation()
+                try file.read(into: buffer, frameCount: remaining)
+                guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
+                try writer.write(from: buffer)
+                remaining -= buffer.frameLength
+            }
+        }
+        let end = file.framePosition
+        finished = end == file.length
+        if !finished { file.framePosition = max(start + 1, end - overlap) }
+        return Window(url: url, start: Double(start) / rate, end: Double(end) / rate,
+                      fraction: Double(end) / Double(file.length))
+    }
+}
+
+/// Reuses the loaded models, but never shares speaker identities across jobs.
+/// PCM is bounded to the model's native ten-second window; only lightweight
+/// speaker/timing output grows with the transcript, not audio or embeddings.
+final class RecordedAudioDiarizationSession {
+    static let windowSeconds: Double = 10
+    static let maximumSpeakers = 128
+    private let manager: DiarizerManager
+    private var speakers: SpeakerManager
+
+    init(manager: DiarizerManager) {
+        self.manager = manager
+        speakers = manager.speakerManager
+        speakers.reset()
+    }
+
+    func process(_ window: RecordingAudioWindowReader.Window) throws -> [TimedSpeakerSegment] {
+        try Task.checkCancellation()
+        return try autoreleasepool {
+            let samples = try AudioConverter().resampleAudioFile(window.url)
+            let result = try withSpeakerState { model in
+                try model.performCompleteDiarization(samples, sampleRate: 16_000, atTime: window.start)
+            }
+            return Self.clippedSegments(result.segments, start: window.start, end: window.end)
+        }
+    }
+
+    func withSpeakerState<T>(_ infer: (DiarizerManager) throws -> T) throws -> T {
+        // No await while swapping the model's speaker state. The coordinator
+        // serializes inference; restore even on cancellation/model/limit failure.
+        try Task.checkCancellation()
+        let previous = manager.speakerManager
+        manager.speakerManager = speakers
+        defer { manager.speakerManager = previous }
+        let result = try infer(manager)
+        try Task.checkCancellation()
+        try Self.validateSpeakerCount(manager.speakerManager.speakerCount)
+        speakers = manager.speakerManager
+        return result
+    }
+
+    static func validateSpeakerCount(_ count: Int) throws {
+        // Fail explicitly rather than merging unrelated voices or allowing a
+        // noisy recording to grow the embedding database indefinitely. FluidAudio
+        // already limits each speaker's raw embedding history to 50 entries.
+        guard count <= maximumSpeakers else {
+            throw DiarizerError.processingFailed("Speaker tracking exceeded its safety limit.")
+        }
+    }
+
+    static func clippedSegments(_ segments: [TimedSpeakerSegment], start: Double, end: Double) -> [TimedSpeakerSegment] {
+        segments.compactMap { segment in
+            let lower = max(Float(start), segment.startTimeSeconds)
+            let upper = min(Float(end), segment.endTimeSeconds)
+            guard !segment.speakerId.isEmpty, lower.isFinite, upper.isFinite, upper > lower else { return nil }
+            return TimedSpeakerSegment(speakerId: segment.speakerId, embedding: [],
+                                       startTimeSeconds: lower, endTimeSeconds: upper,
+                                       qualityScore: segment.qualityScore)
+        }
+    }
+}
 
 /// Reads only one bounded window at a time. Awaiting inference before the next
 /// read provides backpressure even when decoding is much faster than ASR.
@@ -12,37 +144,13 @@ actor MeetingRecordingTranscriber {
         infer: @Sendable (URL) async throws -> SpeechTranscriptionResult,
         progress: @Sendable (Double, String) async -> Void
     ) async throws -> SpeechTranscriptionResult {
-        let file = try AVAudioFile(forReading: url)
-        let rate = file.processingFormat.sampleRate
-        guard rate.isFinite, rate > 0, file.length > 0 else {
-            throw MeetingRetranscriptionError.emptyTranscript
-        }
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-retry-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let capacity = AVAudioFrameCount(rate * Self.windowSeconds)
-        let overlap = AVAudioFramePosition(rate * Self.overlapSeconds)
+        let reader = try RecordingAudioWindowReader(url: url, seconds: Self.windowSeconds, overlapSeconds: Self.overlapSeconds)
+        defer { reader.close() }
         var transcript = ""
         var previousWindowText = ""
         var segments: [SpeechSegment] = []
-        while file.framePosition < file.length {
-            try Task.checkCancellation()
-            let start = file.framePosition
-            let count = AVAudioFrameCount(min(AVAudioFramePosition(capacity), file.length - start))
-            let chunkURL = directory.appendingPathComponent("chunk.wav")
-            // Buffer and writer are released before inference, not after the full recording.
-            try autoreleasepool {
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else {
-                    throw CocoaError(.fileReadTooLarge)
-                }
-                try file.read(into: buffer, frameCount: count)
-                guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
-                let writer = try AVAudioFile(forWriting: chunkURL, settings: file.processingFormat.settings)
-                try writer.write(from: buffer)
-            }
-            let end = file.framePosition
-            let result = try await infer(chunkURL)
+        while let window = try reader.next() {
+            let result = try await infer(window.url)
             try Task.checkCancellation()
             let addition = Self.removingOverlap(previous: previousWindowText, next: result.text)
             // A silent window breaks the shared-word boundary. Never match text
@@ -50,12 +158,10 @@ actor MeetingRecordingTranscriber {
             previousWindowText = String(result.text.suffix(400))
             if !addition.isEmpty {
                 transcript += transcript.isEmpty ? addition : " " + addition
-                segments.append(SpeechSegment(start: Double(start) / rate, end: Double(end) / rate, text: addition))
+                segments.append(SpeechSegment(start: window.start, end: window.end, text: addition))
             }
-            try FileManager.default.removeItem(at: chunkURL)
-            await progress(Double(end) / Double(file.length), String(transcript.suffix(2_000)))
-            if end == file.length { break }
-            file.framePosition = max(start + 1, end - overlap)
+            try FileManager.default.removeItem(at: window.url)
+            await progress(window.fraction, String(transcript.suffix(2_000)))
         }
         return SpeechTranscriptionResult(text: transcript, segments: segments)
     }
@@ -80,10 +186,10 @@ actor MeetingRecordingTranscriber {
 }
 
 struct MeetingRetranscriptionProgress: Equatable {
-    enum Phase: Equatable { case preparing, transcribing, summarizing, completed, cancelled, failed }
+    enum Phase: Equatable { case preparing, transcribing, diarizing, summarizing, completed, cancelled, failed }
     var phase: Phase = .preparing
     var fraction: Double = 0
     var preview: String = ""
     var message: String = "Preparing model…"
-    var isRunning: Bool { phase == .preparing || phase == .transcribing || phase == .summarizing }
+    var isRunning: Bool { phase == .preparing || phase == .transcribing || phase == .diarizing || phase == .summarizing }
 }

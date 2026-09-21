@@ -5778,10 +5778,29 @@ public final class MuesliController: NSObject {
                     }
                 )
                 try Task.checkCancellation()
-                let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                var rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTranscript.isEmpty else {
                     throw MeetingRetranscriptionError.emptyTranscript
                 }
+
+                self.appState.meetingRetranscriptions[meeting.id]?.phase = .diarizing
+                self.appState.meetingRetranscriptions[meeting.id]?.fraction = 0
+                self.appState.meetingRetranscriptions[meeting.id]?.message = "Loading speaker identification…"
+                await self.transcriptionCoordinator.preloadDiarizer(trigger: .retranscription)
+                let speakerSegments = try await self.transcriptionCoordinator.diarizeRecordedAudio(
+                    at: recordingURL,
+                    progress: { [weak self] fraction in
+                        await MainActor.run {
+                            self?.appState.meetingRetranscriptions[meeting.id]?.fraction = fraction
+                            self?.appState.meetingRetranscriptions[meeting.id]?.message = "Identifying speakers · \(Int(fraction * 100))%"
+                        }
+                    }
+                )
+                try Task.checkCancellation()
+                rawTranscript = AudioFileImportController.formatTranscriptWithSpeakers(
+                    transcription: transcription, diarizationSegments: speakerSegments,
+                    meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
+                )
 
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
                 let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)

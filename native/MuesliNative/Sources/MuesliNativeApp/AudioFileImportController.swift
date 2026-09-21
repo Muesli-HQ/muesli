@@ -189,17 +189,13 @@ enum AudioFileImportController {
            diarizerManager.isAvailable {
             progress("Identifying speakers...")
             do {
-                let converter = AudioConverter()
-                let samples = try converter.resampleAudioFile(wavURL)
-                try Task.checkCancellation()
-                let diarizationResult = try diarizerManager.performCompleteDiarization(
-                    samples,
-                    sampleRate: 16000
-                )
-                if !diarizationResult.segments.isEmpty {
+                let speakerSegments = try await transcriptionCoordinator.diarizeRecordedAudio(at: wavURL) { fraction in
+                    progress("Identifying speakers · \(Int(fraction * 100))%")
+                }
+                if !speakerSegments.isEmpty {
                     diarizedTranscript = formatTranscriptWithSpeakers(
                         transcription: transcription,
-                        diarizationSegments: diarizationResult.segments,
+                        diarizationSegments: speakerSegments,
                         meetingStart: importedTranscriptTimelineStart()
                     )
                 }
@@ -422,7 +418,7 @@ enum AudioFileImportController {
         return collapsed.isEmpty ? "Imported-Recording" : String(collapsed.prefix(80))
     }
 
-    private static func importedTranscriptTimelineStart() -> Date {
+    static func importedTranscriptTimelineStart() -> Date {
         Calendar.current.startOfDay(for: Date())
     }
 
@@ -441,7 +437,7 @@ enum AudioFileImportController {
         let speakerCount = Set(diarizationSegments.map(\.speakerId)).count
         guard speakerCount > 1 else { return rawText }
 
-        if rawText.range(of: #"(?m)^\[[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\]\s+(You|Others|Speaker\s+\d+):"#, options: .regularExpression) != nil {
+        if rawText.range(of: #"(?m)^\[[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\]\s+(You|Others|Multiple speakers|Unknown speaker|Speaker\s+\d+):"#, options: .regularExpression) != nil {
             return rawText
         }
 
@@ -454,7 +450,8 @@ enum AudioFileImportController {
             micSegments: [],
             systemSegments: transcribedSegments,
             diarizationSegments: diarizationSegments,
-            meetingStart: meetingStart
+            meetingStart: meetingStart,
+            conservativeSpeakerAttribution: true
         )
         return formatted.isEmpty ? rawText : formatted
     }

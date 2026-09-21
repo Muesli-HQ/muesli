@@ -866,7 +866,7 @@ struct MeetingDetailView: View {
                     }
                 }
                 if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
-                    if job.phase == .transcribing { ProgressView(value: job.fraction) }
+                    if job.phase == .transcribing || job.phase == .diarizing { ProgressView(value: job.fraction) }
                     if !job.preview.isEmpty {
                         Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
                     }
@@ -2141,6 +2141,8 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }
         if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
