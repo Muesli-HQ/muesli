@@ -29,6 +29,7 @@ final class ComputerUsePlannerRuntime {
     typealias ExecuteHandler = @MainActor (ComputerUseToolCall, ComputerUseElementRegistry) async -> ComputerUseExecutionResult
 
     var onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?
+    var onObservedApplication: (@MainActor (String, String) -> Void)?
 
     private let config: AppConfig
     private let maxSteps: Int?
@@ -390,6 +391,7 @@ final class ComputerUsePlannerRuntime {
     }
 
     private func observationEvent(_ observation: ComputerUseObservation, step: Int?) -> ComputerUseTraceEvent {
+        onObservedApplication?(observation.appName, observation.bundleID)
         let app = observation.appName.isEmpty ? "Unknown app" : observation.appName
         let window = observation.windowTitle.isEmpty ? "No focused window" : observation.windowTitle
         var details = ["state \(observation.stateID)", "\(app) - \(window) - \(observation.elements.count) AX candidates"]

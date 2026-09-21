@@ -809,7 +809,12 @@ public final class MuesliController: NSObject {
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
         indicator.onToggleMeetingPause = { [weak self] in self?.toggleMeetingRecordingPause() }
         indicator.onOpenMeetingNotes = { [weak self] in self?.openActiveMeetingNotes() }
+        indicator.onOpenHome = { [weak self] in
+            self?.showTimelineHome()
+            self?.openHistoryWindow(tab: .timeline)
+        }
         indicator.onCancelComputerUse = { [weak self] in self?.handleComputerUseCancel() }
+        indicator.onReviewComputerUse = { [weak self] in self?.openHistoryWindow(tab: .dictations) }
         indicator.onStopToggleDictation = { [weak self] in
             guard let self else { return }
             if self.hotkeyMonitor.isToggleRecording {
@@ -826,19 +831,17 @@ public final class MuesliController: NSObject {
                 self.handleStop()
             }
         }
-        indicator.onCancelToggleDictation = { [weak self] in
+        indicator.onCancelDictation = { [weak self] in
             guard let self else { return }
-            if self.computerUseHotkeyMonitor.isToggleRecording || self.computerUseCommandStartedAt != nil {
+            if self.interactiveAudioSessionOwnership.computerUseIsActive {
+                self.computerUseHotkeyMonitor.cancelCurrentSession()
                 self.handleComputerUseCancel()
-                self.computerUseHotkeyMonitor.cancelToggleMode()
-            } else if self.quilHotkeyMonitor.isToggleRecording
-                        || self.quilStartedAt != nil
-                        || self.quilSelectionSnapshot != nil {
+            } else if self.interactiveAudioSessionOwnership.quilIsActive {
+                self.quilHotkeyMonitor.cancelCurrentSession()
                 self.handleQuilCancel()
-                self.quilHotkeyMonitor.cancelToggleMode()
             } else {
+                self.hotkeyMonitor.cancelCurrentSession()
                 self.handleCancel()
-                self.hotkeyMonitor.cancelToggleMode()
             }
             self.indicator.isToggleDictation = false
         }
@@ -9100,6 +9103,7 @@ public final class MuesliController: NSObject {
 
     func handleComputerUsePrepare() {
         guard canPrepareComputerUseCommand else { return }
+        indicator.instructionMode = .computerUse
         fputs("[cua] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
@@ -9111,6 +9115,7 @@ public final class MuesliController: NSObject {
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
         guard ensureQuilModelIsAvailable() else { return }
+        indicator.instructionMode = .quill
         quilSelectionSnapshot = nil
         quilTargetCaptureError = nil
         meetingMonitor.suppressWhileActive()
@@ -9122,6 +9127,7 @@ public final class MuesliController: NSObject {
 
     private func handleQuilStart() {
         guard canStartQuil else { return }
+        indicator.instructionMode = .quill
         quilStartedAt = Date()
         indicator.powerProvider = { [weak self] in
             self?.quilAudioSessionManager.currentPower() ?? -160
@@ -9140,6 +9146,8 @@ public final class MuesliController: NSObject {
             do {
                 let snapshot = try QuilSelectionSnapshot.capture()
                 quilSelectionSnapshot = snapshot
+                indicator.updateInstructionApp(name: snapshot.application.localizedName ?? "",
+                    bundleID: snapshot.application.bundleIdentifier ?? "")
                 quilTargetCaptureError = nil
                 startQuilContextCapture(for: snapshot)
             } catch {
@@ -9233,7 +9241,7 @@ public final class MuesliController: NSObject {
                     instruction = "Audio instruction"
                     await MainActor.run {
                         guard self.quilTaskID == taskID else { return }
-                        self.indicator.setTranscribingTitle("Applying audio instruction", config: self.config)
+                        self.indicator.showQuilInstruction("Audio instruction", config: self.config)
                     }
                 } else {
                     let result = try await self.transcriptionCoordinator.transcribeDictation(
@@ -9309,7 +9317,8 @@ public final class MuesliController: NSObject {
                         )
                         self.finishQuilTask(
                             taskID: taskID,
-                            message: saved ? "No changes needed" : "No changes needed; Quill history was not saved"
+                            message: saved ? "No changes needed" : "No changes needed; Quill history was not saved",
+                            outcome: saved ? .success : .needsInput
                         )
                         return
                     }
@@ -9381,7 +9390,8 @@ public final class MuesliController: NSObject {
                                 ])
                                 self.finishQuilTask(
                                     taskID: taskID,
-                                    message: saved ? nil : "Reformatted, but could not save Quill history"
+                                    message: saved ? nil : "Reformatted, but could not save Quill history",
+                                    outcome: saved ? .success : .needsInput
                                 )
                             } else {
                                 TelemetryDeck.signal("quil.paste_fallback", parameters: [
@@ -9391,7 +9401,8 @@ public final class MuesliController: NSObject {
                                 let message = saved
                                     ? userMessage
                                     : "Generated, but paste and Quill history both failed"
-                                self.finishQuilTask(taskID: taskID, message: message)
+                                self.finishQuilTask(taskID: taskID, message: message,
+                                    outcome: retainedForManualPaste ? .needsInput : .failure)
                             }
                         },
                         onLifecycleEvent: { event in
@@ -9490,19 +9501,25 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func finishQuilTask(taskID: UUID, message: String?) {
+    private func finishQuilTask(taskID: UUID, message: String?, outcome: NotchOutcome) {
         guard quilTaskID == taskID else { return }
+        let instruction = indicator.notchInstruction
         clearQuilSession()
-        if let message { indicator.showWarning(message, icon: "", duration: 2.0) }
         resumeAfterQuil()
+        if indicator.showInstructionOutcome(outcome, mode: .quill, instruction: instruction,
+                                            message: message ?? "Reformatted", config: config) { return }
+        if let message { indicator.showWarning(message, icon: "", duration: 2.0) }
     }
 
     @MainActor
     private func presentQuilFailure(_ error: Error) {
+        let instruction = indicator.notchInstruction
         clearQuilSession(cancelAudioReason: "quil_failure")
         resumeAfterQuil()
         let message = error.localizedDescription
         statusBarController?.setStatus(message)
+        if indicator.showInstructionOutcome(.quillFailure(error), mode: .quill, instruction: instruction,
+                                            message: message, config: config) { return }
         indicator.showWarning(message, icon: "!", duration: 3.0)
     }
 
@@ -9563,6 +9580,7 @@ public final class MuesliController: NSObject {
             return
         }
         fputs("[cua] recording start\n", stderr)
+        indicator.instructionMode = .computerUse
         meetingMonitor.suppressWhileActive()
         computerUseCommandStartedAt = Date()
         indicator.powerProvider = { [weak self] in
@@ -9869,6 +9887,10 @@ public final class MuesliController: NSObject {
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
         }
+        runtime.onObservedApplication = { [weak self] name, bundleID in
+            guard let self, self.computerUseCommandTaskID == taskID else { return }
+            self.indicator.updateInstructionApp(name: name, bundleID: bundleID)
+        }
 
         let result: ComputerUsePlannerRuntimeResult
         if CGPreflightScreenCaptureAccess() {
@@ -10042,7 +10064,15 @@ public final class MuesliController: NSObject {
     }
 
     private func presentComputerUseRuntimeResult(_ result: ComputerUsePlannerRuntimeResult) {
+        let instruction = indicator.notchInstruction
         setState(.idle)
+        let outcome = NotchOutcome.computerUse(result.status)
+        if let outcome,
+           indicator.showInstructionOutcome(outcome, mode: .computerUse, instruction: instruction,
+                                            message: result.message, config: config) {
+            statusBarController?.setStatus(result.message)
+            return
+        }
         let message: String
         let floatingMessage: String
         let icon: String
@@ -11073,6 +11103,7 @@ public final class MuesliController: NSObject {
             fputs("[muesli-native] ignoring stale Nemotron stop completion\n", stderr)
             return
         }
+        let hadStreamingInsertion = currentDictationOutputMode == .paste && !previousStreamText.isEmpty
         isNemotron35Streaming = false
         _streamingDictationController = nil
         nemotron35StreamingSessionID = nil
@@ -11114,6 +11145,7 @@ public final class MuesliController: NSObject {
         setState(.idle)
         meetingMonitor.resumeAfterCooldown()
         fputs("[muesli-native] Nemotron streaming done (\(String(format: "%.1f", duration))s)\n", stderr)
+        if hadStreamingInsertion { indicator.showDictationCompletion() }
         finishDictationLatencyTrace("nemotron_stop")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
@@ -11338,6 +11370,7 @@ public final class MuesliController: NSObject {
                 await MainActor.run {
                     if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
+                        var didDispatchPaste = false
                         PasteController.paste(
                             text: text,
                             appendDictationSentenceSpace: true,
@@ -11347,6 +11380,7 @@ public final class MuesliController: NSObject {
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
+                                if didDispatchPaste { self.indicator.showDictationCompletion() }
                                 if self.config.enableDictionaryCorrectionPrompts {
                                     // This opt-in monitor only schedules its first Accessibility
                                     // poll after 100 ms, so starting it here captures immediate
@@ -11381,6 +11415,7 @@ public final class MuesliController: NSObject {
                                 )
                             },
                             onLifecycleEvent: { [weak self] event in
+                                if event == .pasteDispatched { didDispatchPaste = true }
                                 self?.markDictationLatency(
                                     "paste_\(event.rawValue)",
                                     trace: completionLatencyTrace

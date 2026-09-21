@@ -2281,6 +2281,129 @@ struct HotkeyMonitorTests {
         }
     }
 
+    @Test("external cancellation invalidates armed, prepared and active holds", arguments: [0.0, 0.20, 0.30])
+    @MainActor
+    func externalCancellationResetsHold(elapsed: Double) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: elapsed)
+        monitor.cancelCurrentSession()
+        monitor.cancelCurrentSession() // Idempotent, with no duplicate callbacks.
+        let cancelledEvents = events
+        scheduler.advance(by: 1)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        scheduler.advance(by: 1)
+        #expect(events == cancelledEvents)
+
+        // A new press remains usable and cannot inherit double-tap history.
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.30)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(Array(events.dropFirst(cancelledEvents.count)) == ["prepare", "start", "stop"])
+    }
+
+    @Test("external cancellation resets pending and active combinations", arguments: [false, true], [0.0, 0.20, 0.30])
+    @MainActor
+    func externalCancellationResetsCombination(toggle: Bool, elapsed: Double) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        monitor.combinationActivation = toggle ? .toggle : .pushToTalk
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+        monitor.onToggleStart = { events.append("toggleStart") }
+        monitor.onToggleStop = { events.append("toggleStop") }
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: elapsed)
+        monitor.cancelCurrentSession()
+        let cancelledEvents = events
+        scheduler.advance(by: 1)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == cancelledEvents)
+        #expect(!monitor.isToggleRecording)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.30)
+        #expect(events.count > cancelledEvents.count)
+        monitor.cancelCurrentSession()
+    }
+
+    @Test("cancelling preparation prevents start even inside the start callback")
+    @MainActor
+    func preparationCanCancelReentrantly() {
+        let scheduler = ManualHotkeyScheduler()
+        // Make start execute before the separate prepare item, exercising its
+        // synchronous onPrepare call rather than relying on timer cancellation.
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.5, startDelay: 0.25)
+        monitor.doubleTapEnabled = false
+        var starts = 0
+        monitor.onPrepare = { monitor.cancelCurrentSession() }
+        monitor.onStart = { starts += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 1)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(starts == 0)
+    }
+
+    @Test("cancellation clears short-tap history and deferred cancellation")
+    @MainActor
+    func cancellationClearsDoubleTapHistory() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var toggles = 0
+        var cancels = 0
+        monitor.onToggleStart = { toggles += 1 }
+        monitor.onCancel = { cancels += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.cancelCurrentSession()
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggles == 0)
+        monitor.cancelCurrentSession()
+        scheduler.advance(by: 1)
+        #expect(cancels == 0)
+    }
+
+    @Test("external cancellation resets active double-tap without stop callback")
+    @MainActor
+    func externalCancellationResetsDoubleTap() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var stops = 0
+        monitor.onToggleStop = { stops += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+        monitor.cancelCurrentSession()
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        scheduler.advance(by: 1)
+        #expect(!monitor.isToggleRecording)
+        #expect(stops == 0)
+    }
+
+    @Test("cancellation inside arming schedules no further work")
+    @MainActor
+    func armingCanCancelReentrantly() {
+        var scheduled = 0
+        let monitor = HotkeyMonitor(scheduleAfter: { _, _ in scheduled += 1 })
+        monitor.onArm = { monitor.cancelCurrentSession() }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(scheduled == 0)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(scheduled == 0)
+    }
+
     @Test("escape still cancels active hold dictation immediately")
     func escapeCancelsActiveHoldDictation() async throws {
         let monitor = HotkeyMonitor(
