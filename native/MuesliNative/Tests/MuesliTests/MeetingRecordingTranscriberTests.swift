@@ -6,6 +6,37 @@ import Testing
 
 @Suite("Bounded meeting recording transcription")
 struct MeetingRecordingTranscriberTests {
+    @Test("replay windows preserve every PCM sample without duplication", arguments: [5.0, 10.0])
+    func windowSampleIntegrity(seconds: Double) throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sample-integrity-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        func sample(_ index: Int) -> Float { Float(index % 8191) / 8192 }
+        do {
+            let writer = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_000))
+            buffer.frameLength = 16_000
+            for second in 0..<21 {
+                for i in 0..<16_000 { buffer.floatChannelData![0][i] = sample(second * 16_000 + i) }
+                try writer.write(from: buffer)
+            }
+        }
+        let reader = try RecordingAudioWindowReader(url: url, seconds: seconds, overlapSeconds: seconds == 5 ? 0.4 : 0)
+        defer { reader.close() }
+        while let window = try reader.next() {
+            let file = try AVAudioFile(forReading: window.url)
+            let start = Int((window.start * 16_000).rounded())
+            #expect(file.length == AVAudioFramePosition(((window.end - window.start) * 16_000).rounded()))
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096))
+            while file.framePosition < file.length {
+                let offset = Int(file.framePosition)
+                try file.read(into: buffer, frameCount: 4096)
+                try #require(buffer.frameLength > 0)
+                #expect((0..<Int(buffer.frameLength)).allSatisfy { buffer.floatChannelData![0][$0] == sample(start + offset + $0) })
+            }
+        }
+    }
+
     @Test("optional diarization failures preserve successful ASR with a warning")
     func optionalDiarizationFallback() async throws {
         let transcription = SpeechTranscriptionResult(text: "Recovered transcript", segments: [])

@@ -915,9 +915,12 @@ struct MeetingsNavigationTests {
         #expect(!FileManager.default.fileExists(atPath: reference.path))
         #expect(FileManager.default.fileExists(atPath: audio.path))
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
-        try store.updateMeetingSavedRecordingPath(id: id, path: "/newer.wav")
+        let newerAudio = recordings.appendingPathComponent("newer.wav")
+        try Data([1]).write(to: newerAudio)
+        try store.updateMeetingSavedRecordingPath(id: id, path: newerAudio.path)
         controller.recoverRetainedMeetingRecordings()
-        #expect(try store.meeting(id: id)?.savedRecordingPath == "/newer.wav")
+        #expect(try store.meeting(id: id)?.savedRecordingPath == newerAudio.path)
+        #expect(FileManager.default.fileExists(atPath: newerAudio.path))
         #expect(!FileManager.default.fileExists(atPath: reference.path))
         #expect(FileManager.default.fileExists(atPath: audio.path))
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
@@ -926,6 +929,37 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: id) == nil)
         #expect(!FileManager.default.fileExists(atPath: reference.path))
         #expect(FileManager.default.fileExists(atPath: audio.path))
+    }
+
+    @Test("verified recovery replaces a missing saved path only after successful persistence")
+    func recoveryReplacesMissingSavedPath() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("recovery.wav")
+        try Data([0, 1, 2]).write(to: audio)
+        let missing = recordings.appendingPathComponent("missing.wav").path
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingSavedRecordingPath(id: id, path: missing)
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == missing)
+        #expect(FileManager.default.fileExists(atPath: reference.path))
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
+        controller.recoverRetainedMeetingRecordings()
+        let recovered = try #require(try store.meeting(id: id)?.savedRecordingPath)
+        #expect(URL(fileURLWithPath: recovered).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(try Data(contentsOf: audio) == Data([0, 1, 2]))
     }
 
     @Test("recording recovery cleans missing audio references but preserves foreign and unreadable references")

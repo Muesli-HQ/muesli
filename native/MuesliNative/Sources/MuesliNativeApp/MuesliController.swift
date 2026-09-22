@@ -8544,9 +8544,21 @@ public final class MuesliController: NSObject {
                     try FileManager.default.removeItem(at: referenceURL)
                     continue
                 }
-                // A later successful recording takes precedence over a stale reference.
+                // Only a reachable newer recording supersedes verified recovery
+                // audio. Unknown I/O failures keep the reference for another launch.
                 if let existingPath = meeting.savedRecordingPath, !existingPath.isEmpty,
                    URL(fileURLWithPath: existingPath).resolvingSymlinksInPath() != URL(fileURLWithPath: recordingPath).resolvingSymlinksInPath() {
+                    do {
+                        let existingURL = URL(fileURLWithPath: existingPath).resolvingSymlinksInPath()
+                        let attributes = try FileManager.default.attributesOfItem(atPath: existingURL.path)
+                        guard attributes[.type] as? FileAttributeType == .typeRegular else { continue }
+                    } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                        // Replace the missing path below, removing the reference
+                        // only after that database write succeeds.
+                        try dictationStore.updateMeetingSavedRecordingPath(id: meeting.id, path: recordingPath)
+                        try FileManager.default.removeItem(at: referenceURL)
+                        continue
+                    }
                     try FileManager.default.removeItem(at: referenceURL)
                     continue
                 }
