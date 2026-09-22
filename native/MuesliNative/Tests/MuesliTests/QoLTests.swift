@@ -590,6 +590,22 @@ struct FloatingMeetingTranscriptTests {
 
 @Suite("Floating indicator pointer interaction")
 struct FloatingIndicatorPointerInteractionTests {
+    @MainActor
+    @Test("loading pill accepts pointer input across its full bounds and defers updates during drag")
+    func loadingPillDragging() throws {
+        let indicator = makeIndicator()
+        defer { indicator.close() }
+        indicator.showLoading("Transcribing audio…")
+        let frame = try #require(indicator.currentFrame)
+        let bounds = NSRect(origin: .zero, size: frame.size)
+        #expect(indicator.pointerInteractiveRect(in: bounds) == bounds)
+        indicator.pointerInteractionBegan()
+        indicator.showLoading("Generating a much longer summary stage…")
+        #expect(indicator.currentFrame == frame)
+        indicator.hideLoading() // A cancelled import must not reappear on mouse-up.
+        indicator.pointerInteractionEnded()
+    }
+
     @Test("small pointer movement remains a click while deliberate movement drags")
     func dragThreshold() {
         let start = NSPoint(x: 100, y: 100)

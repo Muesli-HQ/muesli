@@ -9,6 +9,12 @@ import UniformTypeIdentifiers
 /// Converts the source file to 16kHz mono WAV, transcribes it, optionally runs
 /// speaker diarization, and creates a meeting record with the result.
 enum AudioFileImportController {
+    static func floatingProgressLabel(_ status: String) -> String {
+        if status.hasPrefix("Transcribing audio") { return "Transcribing audio…" }
+        if status.hasPrefix("Identifying speakers") { return "Identifying speakers…" }
+        return status
+    }
+
     static let supportedExtensions: Set<String> = ["m4a", "mp4", "wav", "mp3"]
 
     private static let allowedTypes: [UTType] = {

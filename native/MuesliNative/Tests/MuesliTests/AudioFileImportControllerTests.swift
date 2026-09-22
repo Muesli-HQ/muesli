@@ -7,6 +7,14 @@ import MuesliCore
 
 @Suite("AudioFileImportController")
 struct AudioFileImportControllerTests {
+    @Test("floating import progress shows stages rather than percentages")
+    func floatingProgressStages() {
+        for percent in [0, 1, 50, 88, 100] {
+            #expect(AudioFileImportController.floatingProgressLabel("Transcribing audio · \(percent)%") == "Transcribing audio…")
+            #expect(AudioFileImportController.floatingProgressLabel("Identifying speakers · \(percent)%") == "Identifying speakers…")
+        }
+        #expect(AudioFileImportController.floatingProgressLabel("Generating summary...") == "Generating summary...")
+    }
 
     // MARK: - WAV Conversion Tests
 

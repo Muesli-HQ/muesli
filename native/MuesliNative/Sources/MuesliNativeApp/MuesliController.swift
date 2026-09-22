@@ -9032,7 +9032,7 @@ public final class MuesliController: NSObject {
         updateMeetingStartStatus(status)
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
-        indicator.showLoading(status)
+        indicator.showLoading(AudioFileImportController.floatingProgressLabel(status))
     }
 
     private func blockDictationForMeetingActivityIfNeeded() -> Bool {
