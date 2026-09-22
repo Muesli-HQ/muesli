@@ -887,6 +887,7 @@ struct MeetingsNavigationTests {
         try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: support) }
         let audio = recordings.appendingPathComponent("old.wav")
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
         try Data([0]).write(to: audio)
         let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
         let meeting = try #require(try store.meeting(id: id))
@@ -894,14 +895,47 @@ struct MeetingsNavigationTests {
         try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
         controller.recoverRetainedMeetingRecordings()
         #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
         try store.updateMeetingSavedRecordingPath(id: id, path: "/newer.wav")
         controller.recoverRetainedMeetingRecordings()
         #expect(try store.meeting(id: id)?.savedRecordingPath == "/newer.wav")
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
         try store.deleteMeeting(id: id)
         controller.recoverRetainedMeetingRecordings()
         #expect(try store.meeting(id: id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
         #expect(FileManager.default.fileExists(atPath: audio.path))
+    }
+
+    @Test("recording recovery cleans missing audio references but preserves foreign and unreadable references")
+    func recordingReferenceCleanupScope() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let missingAudio = recordings.appendingPathComponent("missing.wav")
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: missingAudio.path)
+        let foreignAudio = recordings.appendingPathComponent("foreign.wav")
+        try MeetingRecordingRecoveryReference(meetingID: id, startTime: meeting.startTime,
+            databasePath: store.resolvedDatabaseURL.path + ".other").write(beside: foreignAudio)
+        let unreadable = MeetingRecordingRecoveryReference.url(for: recordings.appendingPathComponent("unreadable.wav"))
+        let malformed = Data("not JSON".utf8)
+        try malformed.write(to: unreadable)
+
+        controller.recoverRetainedMeetingRecordings()
+        controller.recoverRetainedMeetingRecordings() // Cleanup is idempotent.
+        #expect(!FileManager.default.fileExists(atPath: MeetingRecordingRecoveryReference.url(for: missingAudio).path))
+        #expect(FileManager.default.fileExists(atPath: MeetingRecordingRecoveryReference.url(for: foreignAudio).path))
+        #expect(try Data(contentsOf: unreadable) == malformed)
+        #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
     }
 
     @Test("pending model deletion blocks retry until all mutation leases end")

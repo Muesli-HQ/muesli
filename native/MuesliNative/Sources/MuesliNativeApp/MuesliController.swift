@@ -8521,21 +8521,33 @@ public final class MuesliController: NSObject {
     }
 
     /// Replay only local retained-audio references. Failed reads/writes leave the
-    /// reference intact for the next launch; never recreate deleted meeting rows.
+    /// reference intact for the next launch. Remove only obsolete references for
+    /// this database, never recordings or references owned by another database.
     func recoverRetainedMeetingRecordings() {
         let directory = configStore.supportDirectory().appendingPathComponent("meeting-recordings", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         for referenceURL in files where referenceURL.lastPathComponent.hasSuffix(MeetingRecordingRecoveryReference.suffix) {
             do {
                 let reference = try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: Data(contentsOf: referenceURL))
-                guard reference.databasePath == dictationStore.resolvedDatabaseURL.standardizedFileURL.path,
-                      let meeting = try dictationStore.meeting(id: reference.meetingID),
-                      meeting.startTime == reference.startTime else { continue }
+                guard reference.databasePath == dictationStore.resolvedDatabaseURL.standardizedFileURL.path else { continue }
+                guard let meeting = try dictationStore.meeting(id: reference.meetingID),
+                      meeting.startTime == reference.startTime else {
+                    try FileManager.default.removeItem(at: referenceURL)
+                    continue
+                }
                 let recordingPath = String(referenceURL.path.dropLast(MeetingRecordingRecoveryReference.suffix.count))
-                guard FileManager.default.fileExists(atPath: recordingPath) else { continue }
+                // Unlike fileExists, a throwing lookup distinguishes missing audio
+                // from permission/I/O failures that must remain recoverable.
+                do {
+                    _ = try FileManager.default.attributesOfItem(atPath: recordingPath)
+                } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                    try FileManager.default.removeItem(at: referenceURL)
+                    continue
+                }
                 // A later successful recording takes precedence over a stale reference.
                 if let existingPath = meeting.savedRecordingPath, !existingPath.isEmpty,
                    URL(fileURLWithPath: existingPath).resolvingSymlinksInPath() != URL(fileURLWithPath: recordingPath).resolvingSymlinksInPath() {
+                    try FileManager.default.removeItem(at: referenceURL)
                     continue
                 }
                 try dictationStore.updateMeetingSavedRecordingPath(id: meeting.id, path: recordingPath)
