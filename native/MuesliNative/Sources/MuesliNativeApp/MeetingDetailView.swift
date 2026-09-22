@@ -346,6 +346,7 @@ struct MeetingDetailView: View {
                 .layoutPriority(1)
 
                 if showsManualNotesEditor(for: meeting) {
+                    recordingRecoveryHeaderAction(for: meeting)
                     compactRecordingControls(for: meeting)
                 } else {
                     compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
@@ -454,7 +455,10 @@ struct MeetingDetailView: View {
         appliedTemplate: MeetingTemplateSnapshot
     ) -> some View {
         if showsManualNotesEditor(for: meeting) {
-            recordingControlGroup(for: meeting)
+            HStack(spacing: MuesliTheme.spacing8) {
+                recordingRecoveryHeaderAction(for: meeting)
+                recordingControlGroup(for: meeting)
+            }
         } else {
             compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
         }
@@ -849,13 +853,17 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func recordingRecoveryHeaderAction(for meeting: MeetingRecord) -> some View {
+        if Self.showsRecordingRecoveryAction(for: meeting) {
+            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
+        }
+    }
+
+    @ViewBuilder
     private func retranscriptionStatus(for meeting: MeetingRecord) -> some View {
-        if Self.showsRecordingRecoveryAction(for: meeting) || appState.meetingRetranscriptions[meeting.id] != nil {
+        if appState.meetingRetranscriptions[meeting.id] != nil {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    if Self.showsRecordingRecoveryAction(for: meeting) {
-                        retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.status.models")
-                    }
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
                         Text(job.message).font(.callout)
