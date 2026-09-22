@@ -463,6 +463,7 @@ struct ModelsView: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
+                    .disabled(!controller.canModifyModelFiles)
                     .help("Delete live caption model")
                 } else {
                     Button("Download") {
