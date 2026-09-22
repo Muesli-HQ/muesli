@@ -220,6 +220,7 @@ final class FloatingIndicatorController: NSObject {
     private var instructionTranscriptShowsProgress = false
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
+    private var deferredLoadingMessage: String?
     private var isComputerUseCursorMode = false
     private var computerUseCursorReturnFrame: NSRect?
 
@@ -325,6 +326,10 @@ final class FloatingIndicatorController: NSObject {
 
     func pointerInteractionEnded() {
         isDragging = false
+        if let message = deferredLoadingMessage {
+            deferredLoadingMessage = nil
+            showLoading(message)
+        }
         if state == .idle, isHovered, !pointerIsInsidePanel() {
             scheduleHoverExit()
         }
@@ -821,6 +826,7 @@ final class FloatingIndicatorController: NSObject {
             computerUseCursorReturnFrame = panel.frame
         }
         isComputerUseCursorMode = true
+        deferredLoadingMessage = nil
         hoverExitWorkItem?.cancel()
         isHovered = false
         preservesCollapsedLeftEdge = false
@@ -999,6 +1005,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        if isDragging {
+            deferredLoadingMessage = message
+            return
+        }
+        // Repeated progress callbacks must not animate or reposition the panel.
+        if isShowingLoading, textLabel?.stringValue == message { return }
         notchIndicator.hide()
         hideShortcutPillChrome()
         let config = configStore.load()
@@ -1105,6 +1117,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func hideLoading() {
+        deferredLoadingMessage = nil
         guard isShowingLoading else { return }
         isShowingLoading = false
         loadingSpinner?.stopAnimation(nil)
@@ -1183,6 +1196,7 @@ final class FloatingIndicatorController: NSObject {
         loadingSpinner = nil
         instructionTranscriptShowsProgress = false
         isShowingLoading = false
+        deferredLoadingMessage = nil
         meetingTranscriptPanel.close()
     }
 
@@ -1376,6 +1390,7 @@ final class FloatingIndicatorController: NSObject {
     /// uses the full panel; shortcut-pill limits interaction to the visible
     /// resting grip, expanding to the label pill + mic capsule only while hovered.
     func pointerInteractiveRect(in bounds: NSRect) -> NSRect {
+        if isShowingLoading { return bounds }
         // Cache: hit-testing runs on the pointer hot path; reading + decoding
         // config from disk per event would add avoidable main-thread latency.
         let config = lastLoadedConfig ?? configStore.load()
