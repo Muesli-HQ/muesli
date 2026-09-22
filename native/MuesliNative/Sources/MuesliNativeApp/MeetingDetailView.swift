@@ -850,10 +850,12 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func retranscriptionStatus(for meeting: MeetingRecord) -> some View {
-        if meeting.savedRecordingPath?.isEmpty == false || appState.meetingRetranscriptions[meeting.id] != nil {
+        if Self.showsRecordingRecoveryAction(for: meeting) || appState.meetingRetranscriptions[meeting.id] != nil {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.status.models")
+                    if Self.showsRecordingRecoveryAction(for: meeting) {
+                        retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.status.models")
+                    }
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
                         Text(job.message).font(.callout)
@@ -882,6 +884,10 @@ struct MeetingDetailView: View {
             .padding(.bottom, 12)
             .accessibilityIdentifier("meeting.retranscription.status")
         }
+    }
+
+    static func showsRecordingRecoveryAction(for meeting: MeetingRecord) -> Bool {
+        meeting.status == .failed && meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     @ViewBuilder

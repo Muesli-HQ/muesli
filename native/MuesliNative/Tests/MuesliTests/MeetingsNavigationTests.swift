@@ -805,6 +805,23 @@ struct MeetingsNavigationTests {
         #expect(recovered.status == .failed)
         #expect(recovered.savedRecordingPath == "/retained/meeting.wav")
         #expect(controller.canRetranscribeMeeting(recovered))
+        #expect(MeetingDetailView.showsRecordingRecoveryAction(for: recovered))
+    }
+
+    @Test("prominent recording recovery action is hidden for successful meetings and failures without audio")
+    func recordingRecoveryActionVisibility() throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(title: "Saved", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "text", formattedNotes: "notes", micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/saved.wav")
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(!MeetingDetailView.showsRecordingRecoveryAction(for: meeting))
+        let controller = makeController(dictationStore: store)
+        #expect(controller.canRetranscribeMeeting(meeting)) // Overflow action remains available.
+        let failedID = try store.createLiveMeeting(title: "Failed", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: failedID, manualNotes: "Keep draft")
+        controller.resolveLiveMeetingAfterStopFailure(id: failedID)
+        let failed = try #require(try store.meeting(id: failedID))
+        #expect(failed.status == .failed)
+        #expect(!MeetingDetailView.showsRecordingRecoveryAction(for: failed))
     }
 
     @Test("early recording path failure remains nonfatal and preserves the recovery draft")
