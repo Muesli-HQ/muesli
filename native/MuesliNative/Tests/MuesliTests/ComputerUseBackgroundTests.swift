@@ -191,6 +191,12 @@ extension ComputerUseBackgroundTests {
 
     @Test("Reference observations keep target image bytes out of text history")
     func referenceObservation() {
+        let windows = ComputerUseReferenceRuntime.observation(from: ["result": [
+            "content": [["type": "text", "text": "Found 1 window(s)."]],
+            "structuredContent": ["windows": [["pid": 1252, "window_id": 42]]]
+        ]])
+        #expect(windows.text.contains("Found 1 window(s)."))
+        #expect(windows.text.contains("\"window_id\":42"))
         let response: [String: Any] = ["result": ["content": [
             ["type": "text", "text": "Exact target window 42"],
             ["type": "image", "mimeType": "image/png", "data": "aGVsbG8="]
