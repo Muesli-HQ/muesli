@@ -87,3 +87,40 @@ to identify platform limitations; never treat source similarity as parity.
 Branch and comparison contract established. Direct-driver wiring, builds,
 schema capture and live benchmark runs are pending. No benchmark result or
 runtime parity is claimed by this setup commit.
+
+## September 23 instrumentation
+
+The benchmark branch was rebased onto the native branch (`ae689d56`), which
+includes main `f29f7cdd` and the native focus-restoration patch. Both backends
+therefore have the same app/notch baseline. DevA is the explicitly requested
+host for this sequential comparison; DevB is not overwritten.
+
+Reference source: `912a4550b72a770f3a21e1f3453961a9eca9de08`, version 0.28.2.
+Built unmodified with `cargo build --locked -p cua-driver` on macOS arm64.
+Binary SHA256: `bd82a1376f6b571189557bee14d61b183a30420f8bc60fdc92ee80a82f7ac21a`.
+Local binary: `~/Library/Caches/muesli-trycua/<revision>/arm64/cua-driver`.
+
+`ComputerUseReferenceDriver` launches a private daemon and MCP proxy directly
+from DevA, with standard runtime authorization and telemetry disabled. The host
+captures initialize, tools/list, read-only permissions, timed tool requests and
+responses, and endpoint metadata in a private temporary evidence directory.
+The driver is external to the app bundle for this local experiment. No shipping
+packaging changes are made. Quit stops the host-owned children. Evidence remains;
+the endpoint file is removed on orderly shutdown.
+
+After building this branch into DevA, quit DevA and run
+`scripts/reference_driver_probe.sh` to enable the explicit dev-only host.
+Normal voice CUA still uses the native implementation. Model-driven routing to
+upstream's full schema, benchmark fixtures, and performance comparisons remain
+separate follow-up work; schema capture is not evidence of task completion or
+background parity. Do not label this build as a working trycua voice backend.
+
+Live probe passed: MCP initialized as cua-driver 0.28.2, `tools/list` returned
+58 tools with no pagination, and permission output reported Accessibility and
+Screen Recording granted with host attribution `com.muesli.dev.a`. Direct
+ScreenCaptureKit readiness was explicitly not probed. The first attempt exposed
+the macOS Unix socket path limit; a private 0700 directory under `/tmp` fixes it.
+Orderly DevA quit terminated the daemon and removed its endpoint, and relaunch
+completed the same handshake successfully. Xcode app/CLI build, installed deep
+signature, installed functional LocalVQE verification, standalone Swift 6 host
+type-check, and shell syntax checks passed. No X task was run through trycua.

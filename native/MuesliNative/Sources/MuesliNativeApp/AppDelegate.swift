@@ -9,6 +9,8 @@ import MuesliCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var controller: MuesliController?
     private var terminationTask: Task<Void, Never>?
+    private var referenceDriver: ComputerUseReferenceDriver?
+    private var referenceStartup: Task<Void, Never>?
     private(set) var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdateDelegate = SparkleUpdateDelegate()
 
@@ -47,6 +49,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+               let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let reference = ComputerUseReferenceDriver()
+                referenceDriver = reference
+                let executable = CommandLine.arguments[index + 1]
+                referenceStartup = Task { @MainActor in
+                    do { try await reference.start(executable: executable) }
+                    catch { fputs("[muesli-reference] \(error.localizedDescription)\n", stderr) }
+                }
+            }
             if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
                let index = CommandLine.arguments.firstIndex(of: "--computer-use-command-file"),
                CommandLine.arguments.indices.contains(index + 1),
@@ -100,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         terminationTask = Task { @MainActor [weak self] in
             let finished = await ShutdownDeadline.run(seconds: Self.shutdownDeadline) {
+                self?.referenceStartup?.cancel()
+                await self?.referenceStartup?.value
+                await self?.referenceDriver?.stop()
                 await controller.shutdown()
             }
             if !finished {
