@@ -11982,8 +11982,8 @@ public final class MuesliController: NSObject {
     private func showMeetingEndNotification(title: String) {
         guard isMeetingRecording() else { return }
         meetingNotification.show(
-            title: "Meeting ended",
-            subtitle: "\(title) · scheduled time is over",
+            title: "Scheduled time ended",
+            subtitle: "\(title) may still be ongoing. Stop when finished.",
             actionLabel: "Stop Transcribing",
             dismissAfter: 45,
             onStartRecording: { [weak self] in
