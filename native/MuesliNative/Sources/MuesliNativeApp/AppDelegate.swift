@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             self.controller = controller
             controller.start()
             if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+               CommandLine.arguments.contains("--trycua-probe-only"),
                let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
                CommandLine.arguments.indices.contains(index + 1) {
                 let reference = ComputerUseReferenceDriver()
