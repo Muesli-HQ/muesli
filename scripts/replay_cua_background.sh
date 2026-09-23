@@ -37,7 +37,12 @@ if pgrep -x "$app" >/dev/null; then
 fi
 output_dir="$(mktemp -d /tmp/muesli-cua-baseline.XXXXXX)"
 echo "Baseline artifacts: $output_dir"
-open -g -a "/Applications/$app.app" --args --computer-use-command-file "$command_file"
+reference_args=()
+if [[ -n "${MUESLI_REFERENCE_DRIVER:-}" ]]; then
+  [[ -x "$MUESLI_REFERENCE_DRIVER" ]] || { echo "Reference driver missing" >&2; exit 2; }
+  reference_args=(--trycua-driver "$MUESLI_REFERENCE_DRIVER")
+fi
+open -g -a "/Applications/$app.app" --args --computer-use-command-file "$command_file" "${reference_args[@]}"
 PYTHONUNBUFFERED=1 python3 - "$support/muesli.db" "$previous_id" "$command_file" "$output_dir" <<'PY'
 import json,pathlib,sqlite3,sys,time
 path,previous,fixture,out=sys.argv[1:]

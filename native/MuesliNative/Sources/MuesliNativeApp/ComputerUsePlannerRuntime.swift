@@ -31,6 +31,7 @@ final class ComputerUsePlannerRuntime {
     var onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?
     var onObservedApplication: (@MainActor (String, String) -> Void)?
 
+    private let referenceExecutable: String?
     private let backgroundSession: ComputerUseBackgroundSession?
     private let isScreenLocked: @MainActor () -> Bool
     private let config: AppConfig
@@ -65,6 +66,7 @@ final class ComputerUsePlannerRuntime {
             try await ComputerUseTextEditing.prepare(call, registry: registry, config: config, coordinator: writer)
         }
         self.now = now
+        self.referenceExecutable = observe == nil && plan == nil && execute == nil ? ComputerUseReferenceDriver.selectedExecutable : nil
         self.isScreenLocked = isScreenLocked
         self.config = config
         self.maxSteps = maxSteps
@@ -89,6 +91,10 @@ final class ComputerUsePlannerRuntime {
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
+        if let referenceExecutable, config.enableComputerUsePlanner {
+            return await ComputerUseReferenceRuntime(config: config, executable: referenceExecutable,
+                maxSteps: maxSteps, timeout: timeoutSeconds, onEvent: onEvent, onStatus: onStatus).run(command: command)
+        }
         defer { backgroundSession?.end() }
         let traceLog = ComputerUseTraceEventLog(onEvent: onEvent)
         traceLog.append(traceEvent(
