@@ -124,3 +124,32 @@ Orderly DevA quit terminated the daemon and removed its endpoint, and relaunch
 completed the same handshake successfully. Xcode app/CLI build, installed deep
 signature, installed functional LocalVQE verification, standalone Swift 6 host
 type-check, and shell syntax checks passed. No X task was run through trycua.
+
+## Reference planner routing
+
+`--trycua-driver PATH` now selects a per-command reference planner/runtime for
+normal voice CUA and the command-file replay. It reuses Muesli's authenticated
+model transport/model/reasoning settings and the existing trace/Stop/result UI.
+Every upstream action and observation uses MCP; no native executor fallback.
+The runtime exposes 27 task-relevant upstream schemas unchanged plus local
+finish/fail tools, excluding administration, clipboard, recording, desktop,
+process termination and arbitrary-code tools. This is a declared catalog subset,
+not full upstream-agent parity. The benchmark instructions require background
+exact-window operation and an unsent draft, with fresh-state verification.
+
+A private daemon is started per command and stopped on completion, error or
+cancellation. Trace events carry `trycua` backend/version/model and tool markers.
+`--trycua-probe-only` retains the earlier read-only connection probe. Programmatic
+baseline: set `MUESLI_REFERENCE_DRIVER` to the pinned binary and run
+`scripts/replay_cua_background.sh A`. The exact transcript fixture is unchanged.
+
+The routing build and installed signature/LocalVQE validation passed. The live
+replay was refused before app restart because macOS was locked; no model-driven
+reference result is claimed. DevA was explicitly relaunched with --trycua-driver
+so its next voice CUA command uses the reference backend after unlocking.
+
+Validation caveat: the focused test suite also fails under SwiftPM's native build
+system on the pre-existing LiteRtLmSamplerParams visibility/conversion errors.
+The new schema/image tests have not executed. Xcode app compilation and installed
+runtime checks succeeded. Logs: /tmp/muesli-reference-routing-build.log,
+/tmp/muesli-reference-routing-tests.log, /tmp/muesli-reference-prompt-run1.log.

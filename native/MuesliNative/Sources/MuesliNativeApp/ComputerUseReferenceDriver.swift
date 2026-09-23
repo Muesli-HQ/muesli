@@ -5,6 +5,13 @@ import Darwin
 /// child so macOS can attribute permission checks to the dev host.
 @MainActor
 final class ComputerUseReferenceDriver {
+    static var selectedExecutable: String? {
+        guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+              let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
+              CommandLine.arguments.indices.contains(index + 1) else { return nil }
+        return CommandLine.arguments[index + 1]
+    }
+    private(set) var tools: [[String: Any]] = []
     private var daemon: Process?
     private var proxy: Process?
     private var input: FileHandle?
@@ -64,7 +71,13 @@ final class ComputerUseReferenceDriver {
                 "clientInfo": ["name": "MuesliReferenceBenchmark", "version": "1"]])
             try save(initialized, name: "initialize.json")
             try send(["jsonrpc": "2.0", "method": "notifications/initialized"])
-            try save(try await request(method: "tools/list", params: [:]), name: "tools.json")
+            let catalog = try await request(method: "tools/list", params: [:])
+            guard let result = catalog["result"] as? [String: Any],
+                  let definitions = result["tools"] as? [[String: Any]], result["nextCursor"] == nil else {
+                throw failure("Incomplete reference tool catalog")
+            }
+            tools = definitions
+            try save(catalog, name: "tools.json")
             try save(try await call(name: "check_permissions", arguments: ["prompt": false]), name: "permissions.json")
             try save(["pid": service.processIdentifier, "socket": socket, "executable": executable,
                       "host": Bundle.main.bundleIdentifier ?? "", "permission_mode": "standard"], name: "endpoint.json")
