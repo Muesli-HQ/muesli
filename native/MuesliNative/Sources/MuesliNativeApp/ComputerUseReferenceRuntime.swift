@@ -56,7 +56,9 @@ final class ComputerUseReferenceRuntime {
                 image = "data:\(block["mimeType"] as? String ?? "image/png");base64,\(data)"
             }
         }
-        if text.isEmpty, let structured = result["structuredContent"],
+        // MCP text is often only a summary (e.g. "Found 12 windows").
+        // Exact window IDs, geometry and semantic refs live in structuredContent.
+        if let structured = result["structuredContent"],
            let data = try? JSONSerialization.data(withJSONObject: structured, options: [.sortedKeys]),
            let value = String(data: data, encoding: .utf8) { text.append(value) }
         return (String(text.joined(separator: "\n").prefix(60_000)), image)
