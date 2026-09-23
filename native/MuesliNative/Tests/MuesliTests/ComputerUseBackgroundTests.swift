@@ -173,3 +173,33 @@ struct ComputerUseBackgroundTests {
         #expect(result.status == .done)
     }
 }
+
+extension ComputerUseBackgroundTests {
+    @Test("Reference schemas preserve upstream targeting and exclude administration")
+    func referenceSchemas() throws {
+        let schema: [String: Any] = ["type": "object", "required": ["pid", "window_id"],
+                                    "properties": ["pid": ["type": "integer"], "window_id": ["type": "integer"]]]
+        let catalog: [[String: Any]] = [
+            ["name": "get_window_state", "inputSchema": schema],
+            ["name": "kill_app", "inputSchema": schema]
+        ]
+        let definitions = ComputerUseReferenceRuntime.definitions(from: catalog)
+        #expect(definitions.compactMap { $0["name"] as? String } == ["get_window_state", "finish", "fail"])
+        let forwarded = try #require(definitions.first?["parameters"] as? [String: Any])
+        #expect(NSDictionary(dictionary: forwarded).isEqual(to: schema))
+    }
+
+    @Test("Reference observations keep target image bytes out of text history")
+    func referenceObservation() {
+        let response: [String: Any] = ["result": ["content": [
+            ["type": "text", "text": "Exact target window 42"],
+            ["type": "image", "mimeType": "image/png", "data": "aGVsbG8="]
+        ]]]
+        let observed = ComputerUseReferenceRuntime.observation(from: response)
+        #expect(observed.text == "Exact target window 42")
+        #expect(observed.image == "data:image/png;base64,aGVsbG8=")
+        let failure = ComputerUseReferenceRuntime.observation(from: ["result": ["content": [["type": "text", "text": "Permission denied"]], "isError": true]])
+        #expect(failure.image == nil)
+        #expect(failure.text == "Permission denied")
+    }
+}

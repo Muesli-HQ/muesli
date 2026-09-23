@@ -8,6 +8,6 @@ if pgrep -x MuesliDevA >/dev/null; then
   echo 'Quit DevA first so the explicit reference launch arguments take effect.' >&2
   exit 1
 fi
-open -g -a /Applications/MuesliDevA.app --args --trycua-driver "$binary"
+open -g -a /Applications/MuesliDevA.app --args --trycua-probe-only --trycua-driver "$binary"
 echo 'Reference evidence is written under /tmp/muesli-reference-<UUID>.'
-echo 'Native voice CUA is unchanged; this starts the instrumented reference endpoint only.'
+echo 'This starts the read-only endpoint probe; use --trycua-driver without --trycua-probe-only for per-command routing.'
