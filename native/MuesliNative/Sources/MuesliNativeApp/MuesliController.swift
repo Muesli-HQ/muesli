@@ -571,6 +571,7 @@ public final class MuesliController: NSObject {
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
     private var meetingSignalLossPromptState = MeetingSignalLossPromptState()
     private let meetingAutoStopGracePeriod: TimeInterval = 20
+    private let meetingSignalLossTranscriptQuietPeriod: TimeInterval = 45
     private var meetingActivity: NSObjectProtocol?
     private var isStoppingMeetingRecording: Bool { meetingCapture?.session.capturePhase == .stopping }
     private var isPresentingMeetingTerminationConfirmation = false
@@ -7375,6 +7376,7 @@ public final class MuesliController: NSObject {
                             )
                         }
                         guard !entries.isEmpty else { return }
+                        self.noteMeetingTranscriptActivity()
                         do {
                             try self.dictationStore.appendLiveTranscriptCheckpoints(meetingID: meetingID, entries: entries)
                         } catch {
@@ -7404,6 +7406,9 @@ public final class MuesliController: NSObject {
                         } else {
                             guard self.appState.liveMeetingPartialOthers != tail else { return }
                             self.appState.liveMeetingPartialOthers = tail
+                        }
+                        if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            self.noteMeetingTranscriptActivity()
                         }
                         self.indicator.updateMeetingTranscript(
                             transcript: self.appState.liveMeetingTranscript,
@@ -9113,7 +9118,7 @@ public final class MuesliController: NSObject {
 
     private func armMeetingAutoStop(
         source: MeetingAutoStopSource?,
-        response: MeetingSignalLossResponse = .autoStopAfterWarning
+        response: MeetingSignalLossResponse = .warnOnly
     ) {
         activeMeetingAutoStop.arm(source: source)
         activeMeetingSignalLossResponse = source == nil ? .none : response
@@ -9214,9 +9219,22 @@ public final class MuesliController: NSObject {
         meetingNotification.close()
     }
 
+    private func noteMeetingTranscriptActivity() {
+        meetingSignalLossPromptState.noteTranscriptActivity(now: Date())
+        let promptID = meetingSignalLossPromptID(for: activeMeetingID)
+        if meetingNotification.isVisible,
+           meetingNotification.currentPromptID == promptID {
+            meetingSignalLossPromptState.markAutoDismissed()
+            meetingNotification.close()
+        }
+    }
+
     private func presentMeetingSignalLossPromptIfNeeded() {
         guard activeMeetingSignalLossResponse != .none,
               meetingSignalLossPromptState.canPresentPrompt,
+              !meetingSignalLossPromptState.hasRecentTranscriptActivity(
+                  now: Date(), quietPeriod: meetingSignalLossTranscriptQuietPeriod
+              ),
               activeMeetingSession?.isRecording == true,
               !isStoppingMeetingRecording else { return }
 
@@ -9225,11 +9243,10 @@ public final class MuesliController: NSObject {
         guard meetingNotification.currentPromptID != promptID || !meetingNotification.isVisible else { return }
 
         meetingSignalLossPromptState.markPromptPresented()
-        let response = activeMeetingSignalLossResponse
         let didShow = meetingNotification.show(
             promptID: promptID,
             title: "Meeting signal lost",
-            subtitle: "Still transcribing. Stop if the meeting ended.",
+            subtitle: "Recording continues. Stop if the meeting ended.",
             actionLabel: "Stop Transcribing",
             dismissAfter: 30,
             // MeetingNotificationController uses onStartRecording as its generic
@@ -9246,16 +9263,9 @@ public final class MuesliController: NSObject {
                 guard let self else { return }
                 guard self.activeMeetingID == meetingID else { return }
                 self.meetingSignalLossPromptState.markAutoDismissed()
-                guard response == .autoStopAfterWarning else { return }
-                fputs("[meeting] auto-stopping recording after meeting source disappeared and warning timed out\n", stderr)
-                self.stopMeetingRecording()
             }
         )
-
-        if !didShow, response == .autoStopAfterWarning {
-            fputs("[meeting] auto-stopping recording after meeting source disappeared; warning unavailable\n", stderr)
-            stopMeetingRecording()
-        }
+        if !didShow { meetingSignalLossPromptState.markAutoDismissed() }
     }
 
     private func presentMeetingDetection(_ candidate: MeetingCandidate) {
