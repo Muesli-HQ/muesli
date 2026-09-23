@@ -165,8 +165,16 @@ final class ComputerUseBackgroundFocusGuard {
                 if !userActed { self.focusChanged = true }
                 if Self.shouldRestore(activatedBundle: activated.bundleIdentifier, targetBundle: bundleID,
                                       priorPID: prior?.processIdentifier, activatedPID: activated.processIdentifier, userActed: userActed) {
-                    let accepted = prior?.activate(options: []) ?? false
-                    self.diagnostics.append("restoreRequested=\(accepted)")
+                    // NSRunningApplication can reject activation of our own
+                    // accessory app. Use NSApplication for that case; the
+                    // subsequent focus check still verifies the actual result.
+                    if prior?.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                        self.diagnostics.append("restoreRequested=selfApplication")
+                    } else {
+                        let accepted = prior?.activate(options: []) ?? false
+                        self.diagnostics.append("restoreRequested=\(accepted)")
+                    }
                 }
             }
         }
