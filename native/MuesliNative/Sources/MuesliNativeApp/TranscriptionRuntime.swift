@@ -320,6 +320,30 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func transformAudioForQuil(
+        wavURL: URL, selectedText: String, appContext: String?, model: String
+    ) async throws -> String {
+        guard #available(macOS 15, *) else { throw QuilTransformationError.unsupportedModel }
+        let gemmaModel = Gemma4LiteRTModel.resolved(model)
+        guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
+            throw QuilTransformationError.modelUnavailable
+        }
+        try QuilModelPolicy.validate(selectedText: selectedText, backend: .gemma4LiteRT, model: model)
+        let prompt = QuilTransformationPrompt.userPrompt(
+            selectedText: selectedText,
+            instruction: "Carry out the spoken instruction in the attached audio.",
+            appContext: appContext
+        )
+        let raw = try await gemma4LiteRTTranscriber.generateFromAudio(
+            wavURL: wavURL, systemPrompt: QuilTransformationPrompt.audioSystem,
+            userPrompt: prompt, model: gemmaModel,
+            maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+        )
+        try Task.checkCancellation()
+        // Do not run an ASR fallback or corrective second generation on this path.
+        return try QuilTransformationOutput.validated(raw)
+    }
+
     func transformSelectedTextForQuil(
         selectedText: String,
         instruction: String,
@@ -672,6 +696,11 @@ actor TranscriptionCoordinator {
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
+        await preloadMeetingVAD()
+        await preloadDiarizer(trigger: trigger)
+    }
+
+    func preloadMeetingVAD() async {
         if vadManager == nil {
             do {
                 vadManager = try await vadLoader()
@@ -680,8 +709,6 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
             }
         }
-
-        await preloadDiarizer(trigger: trigger)
     }
 
     func preloadDiarizer(
@@ -991,6 +1018,33 @@ actor TranscriptionCoordinator {
         ))
     }
 
+    /// Imports and retained recordings share bounded replay; live capture keeps
+    /// its own chunking, repair and noise-cancellation path.
+    func transcribeRecordedAudio(
+        at url: URL,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
+        progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
+    ) async throws -> SpeechTranscriptionResult {
+        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
+            try await self.transcribeMeetingChunk(
+                at: chunk,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage,
+                whisperLanguage: whisperLanguage,
+                qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage,
+                appleSpeechLanguage: appleSpeechLanguage
+            )
+        }, progress: progress)
+    }
+
     func transcribeMeetingChunk(
         at url: URL,
         backend: BackendOption,
@@ -1025,6 +1079,27 @@ actor TranscriptionCoordinator {
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
+    }
+
+    /// Recorded-file replay only. Live meeting finalization remains unchanged.
+    func diarizeRecordedAudio(
+        at url: URL,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) async throws -> [TimedSpeakerSegment] {
+        try Task.checkCancellation()
+        guard let diarizerManager, diarizerManager.isAvailable else { throw DiarizerError.notInitialized }
+        let session = RecordedAudioDiarizationSession(manager: diarizerManager)
+        let reader = try RecordingAudioWindowReader(
+            url: url, seconds: RecordedAudioDiarizationSession.windowSeconds, overlapSeconds: 0
+        )
+        defer { reader.close() }
+        var segments: [TimedSpeakerSegment] = []
+        while let window = try reader.next() {
+            segments.append(contentsOf: try session.process(window))
+            await progress(window.fraction)
+        }
+        try Task.checkCancellation()
+        return segments
     }
 
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {

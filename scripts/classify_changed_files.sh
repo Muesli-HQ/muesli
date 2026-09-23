@@ -4,6 +4,7 @@ set -euo pipefail
 docs_only=true
 app_source=false
 release_surface=false
+packaging_surface=false
 workflow=false
 ci_config=false
 site_or_metadata=false
@@ -37,11 +38,13 @@ while IFS= read -r file; do
 
     scripts/build_native_app.sh|scripts/release*.sh|scripts/notarize_app.sh|scripts/test_packaged_cli.sh|scripts/verify_update_flow.sh|scripts/run_ci_test_shard.sh|scripts/muesli_spm_cache.sh)
       release_surface=true
+      packaging_surface=true
       docs_only=false
       ;;
 
     scripts/*)
       release_surface=true
+      packaging_surface=true
       docs_only=false
       ;;
 
@@ -58,7 +61,14 @@ while IFS= read -r file; do
     .github/FUNDING.yml|README.md|LICENSE|database-schema.md|docs/*.md|docs/reports/*|docs/plans/*|Context/*)
       ;;
 
-    docs/appcast*.xml|docs/index.html|docs/download/*|docs/llms.txt)
+    docs/download/*)
+      release_surface=true
+      packaging_surface=true
+      site_or_metadata=true
+      docs_only=false
+      ;;
+
+    docs/appcast*.xml|docs/index.html|docs/llms.txt)
       release_surface=true
       site_or_metadata=true
       docs_only=false
@@ -88,6 +98,7 @@ source_or_release=false
 full_ci=false
 workflow_ci=false
 review_worthy=false
+native_or_packaging=false
 
 if [[ "$app_source" == true || "$release_surface" == true ]]; then
   source_or_release=true
@@ -95,6 +106,12 @@ fi
 
 if [[ "$source_or_release" == true || "$ci_config" == true || "$unknown" == true ]]; then
   full_ci=true
+fi
+
+# Keep full_ci as the broad validation signal used by update-flow. Published
+# metadata still needs validation/review, but does not change the native build.
+if [[ "$app_source" == true || "$packaging_surface" == true || "$ci_config" == true || "$unknown" == true ]]; then
+  native_or_packaging=true
 fi
 
 if [[ "$workflow" == true && "$full_ci" == false ]]; then
@@ -124,4 +141,4 @@ emit source_or_release "$source_or_release"
 emit full_ci "$full_ci"
 emit workflow_ci "$workflow_ci"
 emit review_worthy "$review_worthy"
-emit native_or_packaging "$full_ci"
+emit native_or_packaging "$native_or_packaging"

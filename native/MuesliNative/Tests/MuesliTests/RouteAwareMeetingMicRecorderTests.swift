@@ -214,6 +214,8 @@ struct RouteAwareMeetingMicRecorderTests {
         try await waitUntil { recorder.activeRecorderKindForDebug() == .appScoped }
         try await waitUntil { samples == [[1], [2]] }
 
+        // Audio promotion precedes retirement on the separate cleanup queue.
+        try await waitUntil { system.stopCalls == 1 && system.cancelCalls == 1 }
         #expect(samples == [[1], [2]])
         #expect(system.stopCalls == 1)
         #expect(system.cancelCalls == 1)
@@ -677,6 +679,7 @@ struct RouteAwareMeetingMicRecorderTests {
 
         replacement.onRawPCMSamples?([4, 5, 6])
         try await waitUntil { samples == [[4, 5, 6]] }
+        try await waitUntil { degraded.stopCalls == 1 && degraded.cancelCalls == 1 }
         #expect(degraded.stopCalls == 1)
         #expect(recorder.activeRecorderKindForDebug() == .appScoped)
     }

@@ -101,6 +101,14 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5, 6])
     }
 
+    @Test("restored calendar step uses macOS calendar access")
+    func restoredRemovedCalendarStep() {
+        for useCase: OnboardingUseCase in [.meetings, .dictationAndMeetings, .voiceNotesAndMeetings, .everything] {
+            #expect(OnboardingFlow.normalizedStep(6, for: useCase) == OnboardingFlow.Step.calendarAccess.rawValue)
+            #expect(OnboardingFlow.orderedSteps(for: useCase).last == OnboardingFlow.Step.calendarAccess.rawValue)
+        }
+    }
+
     @Test("normalized step advances over skipped steps")
     func normalizedStepAdvancesOverSkippedSteps() {
         #expect(OnboardingFlow.normalizedStep(2, for: .meetings) == 3)

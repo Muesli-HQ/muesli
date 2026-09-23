@@ -18,6 +18,40 @@ struct DictationStoreTests {
         return store
     }
 
+    @Test("startup interrupts only running CUA traces and preserves their events")
+    func reconcileRunningComputerUseTraces() throws {
+        let store = try makeStore()
+        let event = ComputerUseTraceEvent(kind: "tool_result", title: "Listed apps", body: "OK")
+        var ids: [Int64] = []
+        for status in ["running", "done", "cancelled"] {
+            let id = try store.insertDictation(text: status, durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+            try store.insertComputerUseTrace(dictationID: id, finalStatus: status, finalMessage: status, events: [event])
+            ids.append(id)
+        }
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 1)
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 0)
+        let rows = try store.recentDictations(limit: 10)
+        for (index, status) in ["interrupted", "done", "cancelled"].enumerated() {
+            let row = try #require(rows.first { $0.id == ids[index] })
+            #expect(row.computerUseTrace?.finalStatus == status)
+            #expect(row.computerUseTrace?.events == [event])
+        }
+    }
+
+    @Test("malformed CUA trace JSON keeps the trace status with an empty event list")
+    func malformedComputerUseTraceIsReadable() throws {
+        let store = try makeStore()
+        let id = try store.insertDictation(text: "test", durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+        try store.insertComputerUseTrace(dictationID: id, finalStatus: "interrupted", finalMessage: "Stopped", events: [])
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE computer_use_traces SET trace_json = 'invalid json'", nil, nil, nil) == SQLITE_OK)
+        let trace = try #require(store.dictation(id: id)?.computerUseTrace)
+        #expect(trace.finalStatus == "interrupted")
+        #expect(trace.events.isEmpty)
+    }
+
     private func makeLegacyStore() throws -> DictationStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-legacy-test-\(UUID().uuidString).db")

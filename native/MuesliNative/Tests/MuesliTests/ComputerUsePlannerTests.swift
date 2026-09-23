@@ -392,8 +392,8 @@ struct ComputerUsePlannerModelTests {
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == "gpt-5.4")
     }
 
-    @Test("uses fixed High reasoning for every GPT-5.6 planner tier")
-    func usesHighReasoningForGPT56Family() {
+    @Test("uses model defaults when no computer use preference is stored")
+    func usesModelDefaultReasoning() {
         for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
             let body = ComputerUsePlannerClient.requestBody(
                 systemPrompt: "System",
@@ -407,16 +407,32 @@ struct ComputerUsePlannerModelTests {
         }
     }
 
-    @Test("keeps GPT-5.4 Mini available without changing its reasoning behavior")
-    func preservesGPT54MiniReasoning() {
-        let body = ComputerUsePlannerClient.requestBody(
+    @Test("forwards computer use reasoning independently")
+    func forwardsComputerUseReasoning() {
+        let defaultBody = ComputerUsePlannerClient.requestBody(
             systemPrompt: "System",
             userPrompt: "User",
             imageDataURL: nil,
             model: "gpt-5.4-mini"
         )
+        let selectedBody = ComputerUsePlannerClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            imageDataURL: nil,
+            model: "gpt-5.4-mini",
+            reasoningEffort: .xhigh
+        )
+        let invalidBody = ComputerUsePlannerClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            imageDataURL: nil,
+            model: "gpt-5.4-mini",
+            reasoningEffort: .max
+        )
 
-        #expect(body["reasoning"] == nil)
+        #expect((defaultBody["reasoning"] as? [String: String])?["effort"] == "none")
+        #expect((selectedBody["reasoning"] as? [String: String])?["effort"] == "xhigh")
+        #expect((invalidBody["reasoning"] as? [String: String])?["effort"] == "none")
     }
 }
 
@@ -1307,5 +1323,181 @@ struct ComputerUsePlannerRuntimeTests {
             scaleY: 1,
             imageDataURL: "data:image/jpeg;base64,abc"
         )
+    }
+}
+
+@Suite("Computer Use run diagnostics")
+struct ComputerUseRunDiagnosticsTests {
+    @Test @MainActor
+    func liveProgressPrecedesPlannerCompletion() async {
+        var events: [ComputerUseTraceEvent] = []
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { _ in
+                #expect(events.contains { $0.kind == "planning" })
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "Done"))
+            }
+        )
+        runtime.onEvent = { events.append($0) }
+        let result = await runtime.run(command: "test")
+        #expect(events == result.traceEvents)
+    }
+
+    @Test @MainActor
+    func cancellationDiscardsLatePlannerAction() async {
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        let (waiting, hold) = AsyncStream<Void>.makeStream()
+        var executions = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { _ in
+                signal.yield(())
+                for await _ in waiting { break }
+                // A provider can return a response despite cancellation.
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listApps))
+            },
+            execute: { _, _ in executions += 1; return .executed("listed") }
+        )
+        let task = Task { await runtime.run(command: "test") }
+        for await _ in started { break }
+        task.cancel()
+        let result = await task.value
+        hold.finish()
+        signal.finish()
+        #expect(result.status == .cancelled)
+        #expect(executions == 0)
+    }
+
+    @Test @MainActor
+    func cancellationBetweenActionsPreventsAnotherStep() async {
+        var executions = 0
+        var planCalls = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { _ in
+                planCalls += 1
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listApps))
+            },
+            execute: { _, _ in
+                executions += 1
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .executed("Listed apps")
+            }
+        )
+        let result = await Task { await runtime.run(command: "test") }.value
+        #expect(result.status == .cancelled)
+        #expect(executions == 1)
+        #expect(planCalls == 1)
+    }
+
+    @Test @MainActor
+    func finalizationRejectsOldRunUpdates() {
+        var oldWrites: [String] = []
+        var newWrites: [String] = []
+        let oldRun = ComputerUseRunTrace { _, status, _ in oldWrites.append(status) }
+        let newRun = ComputerUseRunTrace { _, status, _ in newWrites.append(status) }
+        let event = ComputerUseTraceEvent(kind: "tool_result", title: "Listed apps", body: "OK")
+        oldRun.record(event)
+        oldRun.finish(status: "cancelled", message: "Stopped")
+        newRun.record(event)
+        oldRun.record(event)
+        oldRun.finish(status: "done", message: "Late completion", finalEvents: [])
+        #expect(oldWrites == ["running", "cancelled"])
+        #expect(oldRun.events.first == event)
+        #expect(oldRun.events.last?.kind == "cancelled")
+        #expect(newWrites == ["running"])
+        #expect(!newRun.isFinalized)
+    }
+
+    @Test @MainActor
+    func stopClickTakesPrecedenceOverDictation() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        var stops = 0
+        var dictationStops = 0
+        indicator.onCancelComputerUse = { stops += 1 }
+        indicator.onStopToggleDictation = { dictationStops += 1 }
+        indicator.setComputerUseCancellationAvailable(true)
+        let config = AppConfig()
+        indicator.showComputerUseTranscript("Find the search field", config: config)
+        defer { indicator.setState(.idle, config: config) }
+        let stationaryFrame = indicator.currentFrame
+        #expect(stationaryFrame != nil)
+        indicator.showComputerUseCursor(at: CGPoint(x: 100, y: 100), label: "Search")
+        #expect(indicator.currentFrame == stationaryFrame)
+        indicator.handleClick(atX: 12)
+        indicator.handleClick(atX: 80)
+        #expect(stops == 1)
+        #expect(dictationStops == 0)
+        indicator.handleClick(atX: 33)
+        #expect(stops == 2)
+        indicator.handleClick(atX: 34)
+        #expect(stops == 2)
+        #expect(dictationStops == 0)
+        indicator.setComputerUseCancellationAvailable(false)
+        indicator.handleClick(atX: 12)
+        #expect(stops == 2)
+    }
+
+    @Test @MainActor
+    func traceBurstsFlushTheirLatestEventWithoutAnotherEvent() async throws {
+        var writes: [[ComputerUseTraceEvent]] = []
+        let trace = ComputerUseRunTrace(persistenceInterval: .milliseconds(20)) { events, _, _ in writes.append(events) }
+        let event = ComputerUseTraceEvent(kind: "planning", title: "Planning", body: "Step")
+        trace.record(event)
+        trace.record(event)
+        trace.record(event)
+        #expect(writes.count == 1)
+        // Join the actual trailing task. Concurrent AppKit tests can occupy
+        // the main actor beyond a wall-clock deadline without losing the write.
+        let pending = try #require(trace.pendingPersistence)
+        await pending.value
+        #expect(trace.events == [event, event, event])
+        #expect(writes.count == 2)
+        #expect(writes.last?.count == 3)
+    }
+
+    @Test @MainActor
+    func terminalFlushCancelsPendingRunningWrite() async throws {
+        var statuses: [String] = []
+        var latestCount = 0
+        let trace = ComputerUseRunTrace(persistenceInterval: .milliseconds(20)) { events, status, _ in
+            statuses.append(status)
+            latestCount = events.count
+        }
+        let event = ComputerUseTraceEvent(kind: "planning", title: "Planning", body: "Step")
+        trace.record(event)
+        trace.record(event)
+        let pending = try #require(trace.pendingPersistence)
+        trace.finish(status: "cancelled", message: "Stopped")
+        #expect(latestCount == 3)
+        await pending.value
+        #expect(trace.isFinalized)
+        #expect(trace.pendingPersistence == nil)
+        #expect(statuses == ["running", "cancelled"])
+    }
+
+    @Test
+    func deeplyNestedProviderErrorsHaveBoundedTraversal() {
+        var error: [String: Any] = ["message": "Too deep"]
+        for _ in 0..<100 { error = ["error": error] }
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "error", "error": error]) == "The provider reported a failed response.")
+    }
+
+    @Test
+    func validationKeepsSpecificReason() {
+        let error = DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "click requires exactly one addressing mode"))
+        #expect(ComputerUsePlannerResponse.decodingFailureDetail(error) == "click requires exactly one addressing mode")
+    }
+
+    @Test
+    func streamedErrorsKeepProviderExplanation() {
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "response.failed", "response": ["error": ["message": "Quota exhausted"]]]) == "Quota exhausted")
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "error", "code": "capacity"]) == "capacity")
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "response.failed"]) != nil)
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "response.completed", "message": "OK"]) == nil)
     }
 }

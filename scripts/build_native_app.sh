@@ -134,7 +134,7 @@ if [[ "$USE_XCODE_BUILD" == "1" ]]; then
   if [[ "${MUESLI_PROFILE_OPTIMIZED:-0}" == "1" ]]; then
     performance_args=(SWIFT_OPTIMIZATION_LEVEL=-O GCC_OPTIMIZATION_LEVEL=3)
   fi
-  xcodebuild build "${plugin_validation_args[@]}" "${performance_args[@]}" \
+  xcodebuild build ${plugin_validation_args[@]+"${plugin_validation_args[@]}"} ${performance_args[@]+"${performance_args[@]}"} \
     -project "$XCODE_PROJECT_DIR/MuesliXcode.xcodeproj" \
     -scheme Muesli \
     -configuration "$XCODE_CONFIG" \

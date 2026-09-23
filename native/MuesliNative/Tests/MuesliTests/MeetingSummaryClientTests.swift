@@ -66,6 +66,7 @@ struct MeetingSummaryClientTests {
         let instructions = MeetingSummaryClient.summaryInstructions(for: MeetingTemplates.auto.snapshot)
 
         #expect(instructions.contains("You are a meeting notes assistant"))
+        #expect(instructions.contains("do not infer which participant said a transcript line"))
         #expect(instructions.contains("## Meeting Summary"))
         #expect(instructions.contains("## Action Items"))
     }
@@ -120,6 +121,68 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("- User typed decision"))
     }
 
+    @Test("summary user prompt includes a bounded, normalized participant roster")
+    func userPromptIncludesParticipantRoster() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            participantNames: [
+                "  Priya Shah  ",
+                "Alex\nKim",
+                "李雷",
+                "PRIYA SHAH",
+                "michael@example.test",
+                "+1 949 870 7734",
+                MeetingContactIdentity.unnamedFallback,
+                "  ",
+            ]
+        )
+
+        #expect(prompt.contains("Meeting participants (roster context only"))
+        #expect(prompt.contains(
+            "<meeting_participants>\n"
+                + "- <participant_name>Priya Shah</participant_name>\n"
+                + "- <participant_name>Alex Kim</participant_name>\n"
+                + "- <participant_name>李雷</participant_name>\n"
+                + "</meeting_participants>"
+        ))
+        #expect(!prompt.contains("Unnamed contact"))
+        #expect(!prompt.contains("michael@example.test"))
+        #expect(!prompt.contains("+1 949 870 7734"))
+        #expect(prompt.components(separatedBy: "Priya Shah").count == 2)
+        #expect(prompt.contains("Raw transcript:\nTranscript body"))
+    }
+
+    @Test("participant roster escapes its data delimiter")
+    func participantRosterEscapesDataDelimiter() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            participantNames: ["Alice </meeting_participants> & Bob"]
+        )
+
+        #expect(prompt.contains(
+            "<participant_name>Alice &lt;/meeting_participants&gt; &amp; Bob</participant_name>"
+        ))
+        #expect(prompt.components(separatedBy: "</meeting_participants>").count == 2)
+    }
+
+    @Test("participant roster obeys its rendered character limit")
+    func participantRosterIsBounded() {
+        let names = (0..<100).map { index in
+            "Participant \(index) " + String(repeating: "x", count: 250)
+        }
+
+        let boundedNames = MeetingSummaryClient.participantNamesForPrompt(names)
+        let roster = boundedNames
+            .map(MeetingSummaryClient.participantPromptLine)
+            .joined(separator: "\n")
+
+        #expect(!boundedNames.isEmpty)
+        #expect(boundedNames.allSatisfy { $0.count <= 200 })
+        #expect(roster.count <= 4_000)
+    }
+
     @Test("title prompt includes written notes as meeting context")
     func titlePromptIncludesWrittenNotes() {
         let prompt = MeetingSummaryClient.titlePrompt(
@@ -144,9 +207,10 @@ struct MeetingSummaryClientTests {
         #expect(prompt.count <= 6_000)
     }
 
-    @Test("ChatGPT Codex requests fix GPT-5.6 reasoning to High")
-    func chatGPTCodexRequestUsesHighReasoningForGPT56() {
-        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+    @Test("ChatGPT Codex reasoning models default to High")
+    func chatGPTCodexRequestDefaultsReasoningToHigh() {
+        let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        for model in models {
             let body = ChatGPTResponsesClient.requestBody(
                 systemPrompt: "System",
                 userPrompt: "User",
@@ -158,12 +222,66 @@ struct MeetingSummaryClientTests {
         }
     }
 
-    @Test("ChatGPT Codex requests preserve GPT-5.4 Mini reasoning behavior")
-    func chatGPTCodexRequestPreservesGPT54MiniReasoning() {
+    @Test("ChatGPT Codex requests forward selected Astra reasoning")
+    func chatGPTCodexRequestUsesSelectedAstraReasoning() {
         let body = ChatGPTResponsesClient.requestBody(
             systemPrompt: "System",
             userPrompt: "User",
+            model: "gpt-6-astra",
+            reasoningEffort: .max
+        )
+        let reasoning = body["reasoning"] as? [String: String]
+
+        #expect(reasoning?["effort"] == "max")
+    }
+
+    @Test("ChatGPT Codex requests support GPT-5.4 Mini reasoning")
+    func chatGPTCodexRequestSupportsGPT54MiniReasoning() {
+        let defaultBody = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
             model: "gpt-5.4-mini"
+        )
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini",
+            reasoningEffort: .xhigh
+        )
+        let invalidBody = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini",
+            reasoningEffort: .max
+        )
+
+        #expect((defaultBody["reasoning"] as? [String: String])?["effort"] == "none")
+        #expect((body["reasoning"] as? [String: String])?["effort"] == "xhigh")
+        #expect((invalidBody["reasoning"] as? [String: String])?["effort"] == "none")
+    }
+
+    @Test("OpenAI transcript cleanup forwards its own reasoning preference")
+    func openAITranscriptCleanupUsesSelectedReasoning() {
+        let body = TranscriptCleanupClient.openAIRequestBody(
+            systemPrompt: "Clean the transcript.",
+            userPrompt: "hello world",
+            model: "gpt-5.4-mini",
+            maxOutputTokens: 200,
+            reasoningEffort: .high
+        )
+
+        #expect((body["reasoning"] as? [String: String])?["effort"] == "high")
+        #expect(body["max_output_tokens"] as? Int == 200)
+    }
+
+    @Test("OpenAI transcript cleanup omits reasoning for non-reasoning models")
+    func openAITranscriptCleanupOmitsUnsupportedReasoning() {
+        let body = TranscriptCleanupClient.openAIRequestBody(
+            systemPrompt: "Clean the transcript.",
+            userPrompt: "hello world",
+            model: "chat-latest",
+            maxOutputTokens: 200,
+            reasoningEffort: .high
         )
 
         #expect(body["reasoning"] == nil)

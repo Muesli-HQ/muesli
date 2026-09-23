@@ -19,6 +19,16 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      ComputerUseExecutorTests
+      ComputerUseObservationCaptureTests
+      ComputerUseObservationTests
+      ComputerUsePlannerModelTests
+      ComputerUsePlannerRequestTests
+      ComputerUsePlannerResponseTests
+      ComputerUsePlannerRuntimeTests
+      ComputerUseRunDiagnosticsTests
+      ComputerUseToolRegistryTests
+      ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
@@ -33,6 +43,8 @@ case "${shard}" in
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
+      NotchIndicatorTests
+      RecordingIndicatorStyleTests
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
@@ -79,6 +91,8 @@ case "${shard}" in
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       QuilTransformationTests
+      QuilAvailabilityGateTests
+      QuilDirectAudioTests
       BackendOptionTests
       OpenAIDictationProviderTests
       OpenRouterTranscriptionClientTests
@@ -113,10 +127,12 @@ case "${shard}" in
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
+      MeetingContactResolverTests
       MeetingDetectorTests
       MeetingParticipantStoreTests
       MeetingProcessingStageTests
       MeetingRecordingWriterTests
+      MeetingRecordingTranscriberTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests
       MeetingFollowUpPolicyTests
@@ -132,6 +148,8 @@ case "${shard}" in
       MeetingTemplateResolutionTests
       MeetingTemplatesDefaultFallbackTests
       RouteAwareMeetingMicRecorderTests
+      CalendarEventQueryTests
+      CalendarMonitorLifecycleTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )
@@ -148,6 +166,12 @@ if [[ "${list_filters}" == true ]]; then
 fi
 
 args=(--package-path native/MuesliNative)
+if [[ "${shard}" == meetings ]]; then
+  # Concurrent suites can starve the utility-priority caption tasks on small
+  # runners. Serialize test cases, preserving concurrency exercised inside each
+  # test, rather than weakening their deadlines or changing production QoS.
+  args+=(--no-parallel)
+fi
 if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi

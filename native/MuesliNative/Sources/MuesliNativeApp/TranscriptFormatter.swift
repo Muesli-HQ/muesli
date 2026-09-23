@@ -13,7 +13,8 @@ enum TranscriptFormatter {
         micSegments: [SpeechSegment],
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
-        meetingStart: Date
+        meetingStart: Date,
+        conservativeSpeakerAttribution: Bool = false
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
@@ -33,7 +34,9 @@ enum TranscriptFormatter {
             }
 
             taggedSystem = systemSegments.map { segment in
-                let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                let speaker = conservativeSpeakerAttribution
+                    ? recordedSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                    : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
         } else {
@@ -101,6 +104,21 @@ enum TranscriptFormatter {
     }
 
     /// Find the best-matching speaker for an ASR segment by time overlap with diarization segments.
+    private static func recordedSpeaker(
+        for segment: SpeechSegment,
+        in diarizationSegments: [TimedSpeakerSegment],
+        labelMap: [String: String]
+    ) -> String {
+        // File ASR may only provide window-level timestamps. Do not invent word
+        // alignment or assign a mixed-speaker window entirely to its loudest voice.
+        let speakers = Set(diarizationSegments.filter {
+            min(Double($0.endTimeSeconds), segment.end) > max(Double($0.startTimeSeconds), segment.start)
+        }.map(\.speakerId))
+        if speakers.count > 1 { return "Multiple speakers" }
+        guard let id = speakers.first else { return "Unknown speaker" }
+        return labelMap[id] ?? "Unknown speaker"
+    }
+
     private static func findSpeaker(
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment],

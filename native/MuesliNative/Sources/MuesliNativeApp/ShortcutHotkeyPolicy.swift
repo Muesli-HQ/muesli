@@ -3,12 +3,13 @@ import AppKit
 enum ShortcutHotkeyUpdateResult: Equatable {
     case updated(notice: String?)
     case conflict(message: String)
+    case unavailable(message: String)
 
     var message: String? {
         switch self {
         case .updated(let notice):
             return notice
-        case .conflict(let message):
+        case .conflict(let message), .unavailable(let message):
             return message
         }
     }
@@ -17,7 +18,7 @@ enum ShortcutHotkeyUpdateResult: Equatable {
         switch self {
         case .updated:
             return true
-        case .conflict:
+        case .conflict, .unavailable:
             return false
         }
     }

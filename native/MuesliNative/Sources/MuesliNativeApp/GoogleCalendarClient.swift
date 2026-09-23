@@ -3,7 +3,7 @@ import MuesliCore
 
 // MARK: - Shared Calendar Event Model
 
-struct UnifiedCalendarEvent: Identifiable, Equatable {
+struct UnifiedCalendarEvent: Identifiable, Equatable, Sendable {
     let id: String
     let title: String
     let startDate: Date
@@ -18,7 +18,7 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     var meetingURL: URL? = nil
     var attendees: [CalendarAttendee] = []
 
-    enum CalendarSource: String {
+    enum CalendarSource: String, Sendable {
         case eventKit
         case googleCalendar
 

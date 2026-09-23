@@ -384,6 +384,16 @@ struct IndicatorFrameSizeTests {
         #expect(long.height > short.height)
     }
 
+    @Test("CUA instruction fits the rendered text field at wrap boundaries", arguments: [300.0, 420.0, 1200.0])
+    @MainActor
+    func computerUseTranscriptFitsRenderedTextField(screenWidth: Double) {
+        let transcript = "Open my Twitter and go to Muesli's page by swapping the profiles, then find the latest post and read every reply while keeping the final words of this command visible in the floating bubble."
+        let heights = FloatingIndicatorController.computerUseTranscriptTextHeightsForTesting(
+            transcript: transcript, screenWidth: screenWidth
+        )
+        #expect(heights.allocated >= heights.required)
+    }
+
     @Test("Quill instruction pill reserves room for its progress spinner")
     @MainActor
     func quillInstructionPillIncludesProgressChrome() {
@@ -580,6 +590,22 @@ struct FloatingMeetingTranscriptTests {
 
 @Suite("Floating indicator pointer interaction")
 struct FloatingIndicatorPointerInteractionTests {
+    @MainActor
+    @Test("loading pill accepts pointer input across its full bounds and defers updates during drag")
+    func loadingPillDragging() throws {
+        let indicator = makeIndicator()
+        defer { indicator.close() }
+        indicator.showLoading("Transcribing audio…")
+        let frame = try #require(indicator.currentFrame)
+        let bounds = NSRect(origin: .zero, size: frame.size)
+        #expect(indicator.pointerInteractiveRect(in: bounds) == bounds)
+        indicator.pointerInteractionBegan()
+        indicator.showLoading("Generating a much longer summary stage…")
+        #expect(indicator.currentFrame == frame)
+        indicator.hideLoading() // A cancelled import must not reappear on mouse-up.
+        indicator.pointerInteractionEnded()
+    }
+
     @Test("small pointer movement remains a click while deliberate movement drags")
     func dragThreshold() {
         let start = NSPoint(x: 100, y: 100)

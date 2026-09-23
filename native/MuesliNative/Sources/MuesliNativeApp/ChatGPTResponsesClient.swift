@@ -69,7 +69,12 @@ enum ChatGPTResponsesTransport {
             request.setValue("Muesli/\(appVersion)", forHTTPHeaderField: "User-Agent")
             request.setValue(sessionID.uuidString.lowercased(), forHTTPHeaderField: "session_id")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        var supportedBody = body
+        if backend == .codex {
+            // ChatGPT's Codex endpoint rejects this public Responses API field.
+            supportedBody.removeValue(forKey: "max_output_tokens")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: supportedBody)
         return request
     }
 }
@@ -80,6 +85,7 @@ enum ChatGPTResponsesClient {
         userPrompt: String,
         model: String,
         maxOutputTokens: Int? = nil,
+        reasoningEffort: ReasoningEffort? = nil,
         logCategory: String
     ) async throws -> String {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
@@ -87,7 +93,8 @@ enum ChatGPTResponsesClient {
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             model: model,
-            maxOutputTokens: maxOutputTokens
+            maxOutputTokens: maxOutputTokens,
+            reasoningEffort: reasoningEffort
         )
 
         let request = try ChatGPTResponsesTransport.makeRequest(
@@ -129,7 +136,8 @@ enum ChatGPTResponsesClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        maxOutputTokens: Int? = nil
+        maxOutputTokens: Int? = nil,
+        reasoningEffort: ReasoningEffort? = nil
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -141,7 +149,7 @@ enum ChatGPTResponsesClient {
                 "content": [["type": "input_text", "text": userPrompt]],
             ] as [String: Any]],
         ]
-        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+        if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {
             body["reasoning"] = ["effort": effort]
         }
         if let maxOutputTokens, maxOutputTokens > 0 {

@@ -47,6 +47,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
     case dictation
     case streaming
     case postProcessing
+    case quill
 
     var id: String { rawValue }
 
@@ -55,6 +56,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
         case .dictation: return "Dictation"
         case .streaming: return "Live Meetings"
         case .postProcessing: return "Cleanup"
+        case .quill: return "Quill"
         }
     }
 }
@@ -116,13 +118,6 @@ enum SparkleUpdateStatus: Equatable {
     case upToDate
     case disabled(message: String)
     case failed(message: String)
-}
-
-enum GoogleCalendarListLoadState: Equatable {
-    case idle
-    case loading
-    case loaded
-    case failed(String)
 }
 
 enum ICloudBridgeState: Equatable {
@@ -199,6 +194,9 @@ final class AppState {
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
     var liveMeetingTranscript: String = ""
+    var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
+    var modelFileMutationCount = 0
+    var activeAudioImportCount = 0
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
@@ -215,14 +213,9 @@ final class AppState {
     var openRouterSummaryCatalogState: OpenRouterModelCatalogLoadState = .idle
     var openRouterTranscriptionModels: [SummaryModelPreset] = []
     var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
-    var isGoogleCalendarAvailable: Bool = false
-    var isGoogleCalendarVerified: Bool = false
-    var isGoogleCalendarAuthenticated: Bool = false
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
     var availableEventKitCalendars: [AvailableCalendar] = []
-    var availableGoogleCalendars: [GoogleCalendarSummary] = []
-    var googleCalendarListLoadState: GoogleCalendarListLoadState = .idle
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
     var iCloudSyncStatus: String?

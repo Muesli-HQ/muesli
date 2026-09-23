@@ -444,7 +444,7 @@ git add "$APPCAST_PATH"
 if git diff --cached --quiet; then
   echo "  No preprod appcast changes to commit."
 else
-  git commit -m "Update preprod appcast for v${VERSION}"
+  git commit --signoff -m "Update preprod appcast for v${VERSION}"
   git push origin HEAD
   echo "  Pushed preprod appcast update."
 fi
