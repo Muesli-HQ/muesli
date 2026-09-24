@@ -7,7 +7,7 @@ enum MeetingRecordingStartOrigin: Equatable {
     case scheduledMeetingPrompt
     case joinAndRecord
 
-    var enablesMeetingAutoStop: Bool {
+    var tracksMeetingSource: Bool {
         switch self {
         case .manual:
             return false
@@ -17,7 +17,14 @@ enum MeetingRecordingStartOrigin: Equatable {
     }
 
     var signalLossResponse: MeetingSignalLossResponse {
-        enablesMeetingAutoStop ? .autoStopAfterWarning : .none
+        switch self {
+        case .manual:
+            return .none
+        case .detectedPrompt:
+            return .warnOnly
+        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+            return .warnOnly
+        }
     }
 
     func signalLossSource(
@@ -36,12 +43,12 @@ enum MeetingRecordingStartOrigin: Equatable {
 enum MeetingSignalLossResponse: Equatable {
     case none
     case warnOnly
-    case autoStopAfterWarning
 }
 
 struct MeetingSignalLossPromptState: Equatable {
     private(set) var isPromptSuppressed = false
     private(set) var isDismissedForRecording = false
+    private(set) var lastTranscriptActivityAt: Date?
 
     var canPresentPrompt: Bool {
         !isPromptSuppressed && !isDismissedForRecording
@@ -50,6 +57,16 @@ struct MeetingSignalLossPromptState: Equatable {
     mutating func resetForRecording() {
         isPromptSuppressed = false
         isDismissedForRecording = false
+        lastTranscriptActivityAt = nil
+    }
+
+    mutating func noteTranscriptActivity(now: Date) {
+        lastTranscriptActivityAt = now
+    }
+
+    func hasRecentTranscriptActivity(now: Date, quietPeriod: TimeInterval) -> Bool {
+        guard let lastTranscriptActivityAt else { return false }
+        return now.timeIntervalSince(lastTranscriptActivityAt) < quietPeriod
     }
 
     mutating func markPromptPresented() {
