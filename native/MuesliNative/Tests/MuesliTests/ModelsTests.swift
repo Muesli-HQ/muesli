@@ -1372,6 +1372,38 @@ struct AppConfigTests {
         #expect(invalid.transcriptCleanupReasoningEffort == nil)
     }
 
+    @Test("dictation trigger mode defaults to hold when absent")
+    func dictationTriggerModeDefaultsToHoldWhenAbsent() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(decoded.dictationTriggerMode == .holdToRecord)
+    }
+
+    @Test("hybrid dictation trigger mode survives encode/decode round-trip")
+    func dictationTriggerModeHybridRoundTrip() throws {
+        var config = AppConfig()
+        config.dictationTriggerMode = .hybrid
+
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(json?["dictation_trigger_mode"] as? String == "hybrid")
+        #expect(decoded.dictationTriggerMode == .hybrid)
+    }
+
+    @Test("dictation trigger copy matches hold and hybrid")
+    func dictationTriggerCopyMatchesHoldAndHybrid() {
+        #expect(DictationTriggerMode.holdToRecord.idleHoverPrompt(hotkeyLabel: "Fn") == "Hold Fn to dictate")
+        #expect(DictationTriggerMode.hybrid.idleHoverPrompt(hotkeyLabel: "Fn") == "Tap or hold Fn to dictate")
+        #expect(DictationTriggerMode.holdToRecord.emptyStatePrompt(hotkeyLabel: "Fn") == "Hold Fn to start dictating")
+        #expect(DictationTriggerMode.hybrid.emptyStatePrompt(hotkeyLabel: "Fn") == "Tap or hold Fn to start dictating")
+        #expect(
+            DictationTriggerMode.holdToRecord.settingsSubtitle(doubleTapEnabled: false)
+                == "Hold to record, release to transcribe."
+        )
+    }
+
     @Test("JSON coding keys use snake_case")
     func snakeCaseKeys() throws {
         var config = AppConfig()
@@ -1406,6 +1438,7 @@ struct AppConfigTests {
         #expect(json["has_completed_onboarding"] != nil)
         #expect(json["onboarding_use_case"] != nil)
         #expect(json["enable_push_to_talk"] != nil)
+        #expect(json["dictation_trigger_mode"] != nil)
         #expect(json["user_name"] != nil)
         #expect(json["default_meeting_template_id"] != nil)
         #expect(json["meeting_recording_save_policy"] != nil)
@@ -2852,6 +2885,225 @@ struct HotkeyMonitorTests {
         monitor.handleFlagsChanged(keyCode: 63, flags: [])
 
         #expect(events == ["prepare", "start", "stop"])
+    }
+
+    @Test("hybrid short tap starts hands-free immediately")
+    @MainActor
+    func hybridShortTapStartsHandsFreeImmediately() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var toggleStartCount = 0
+        var cancelCount = 0
+        monitor.onArm = {}
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onCancel = { cancelCount += 1 }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(toggleStartCount == 1)
+        #expect(cancelCount == 0)
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("hybrid second tap stops instead of treating double-press as start")
+    @MainActor
+    func hybridSecondTapStopsInsteadOfDoublePressStart() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onArm = {}
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onToggleStop = { toggleStopCount += 1 }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        scheduler.advance(by: 0.10)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+
+        #expect(toggleStartCount == 1)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("hybrid hold past start delay still uses push-to-talk")
+    @MainActor
+    func hybridHoldPastStartDelayStillUsesPushToTalk() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.15, startDelay: 0.25, doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onToggleStart = { events.append("toggle") }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.26)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("hybrid other key before start cancels without transcribing")
+    @MainActor
+    func hybridOtherKeyBeforeStartCancelsWithoutTranscribing() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.15, startDelay: 0.25)
+        monitor.hybridTapEnabled = true
+        var events: [String] = []
+        monitor.onArm = { events.append("arm") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleKeyDown(keyCode: 8)
+
+        #expect(events == ["arm", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("hybrid tap after prepare still starts hands-free")
+    @MainActor
+    func hybridTapAfterPrepareStillStartsHandsFree() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.15, startDelay: 0.25)
+        monitor.hybridTapEnabled = true
+        var events: [String] = []
+        monitor.onArm = { events.append("arm") }
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.18)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(events == ["arm", "prepare", "toggle"])
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("hybrid tap at a low threshold still starts hands-free")
+    @MainActor
+    func hybridTapAtLowThresholdStillStartsHandsFree() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var toggleStartCount = 0
+        var cancelCount = 0
+        monitor.onArm = {}
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onCancel = { cancelCount += 1 }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.01)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(toggleStartCount == 1)
+        #expect(cancelCount == 0)
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("hybrid tap longer than a low hold threshold still starts hands-free")
+    @MainActor
+    func hybridTapLongerThanLowThresholdStillStartsHandsFree() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        monitor.configureTriggerThreshold(milliseconds: 50)
+        var events: [String] = []
+        monitor.onArm = { events.append("arm") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.12)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(!events.contains("start"))
+        #expect(events.last == "toggle")
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("rejected hybrid toggle start rolls back so the next tap retries")
+    @MainActor
+    func rejectedHybridToggleStartRollsBackSoNextTapRetries() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.hybridTapEnabled = true
+        var events: [String] = []
+        monitor.onArm = {}
+        monitor.onToggleStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+        var shouldReject = true
+        monitor.onToggleStart = {
+            events.append("toggle")
+            if shouldReject { monitor.cancelToggleMode() }
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(events == ["toggle"])
+        #expect(!monitor.isToggleRecording)
+
+        shouldReject = false
+        scheduler.advance(by: 0.5)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(events == ["toggle", "toggle"])
+        #expect(monitor.isToggleRecording)
+    }
+}
+
+@Suite("DictationHotkeyTapPolicy")
+struct DictationHotkeyTapPolicyTests {
+    @Test("hold keeps the dictation double-press")
+    func holdKeepsDictationDoublePress() {
+        let policy = DictationHotkeyTapPolicy(triggerMode: .holdToRecord, handsFreeEnabled: true)
+
+        #expect(policy.dictationDoubleTapEnabled)
+        #expect(!policy.dictationHybridTapEnabled)
+        #expect(policy.quilDoubleTapEnabled)
+        #expect(policy.computerUseDoubleTapEnabled)
+    }
+
+    @Test("hybrid disables the dictation double-press but keeps Quill and CUA hands-free")
+    func hybridDisablesDictationDoublePressOnly() {
+        let policy = DictationHotkeyTapPolicy(triggerMode: .hybrid, handsFreeEnabled: true)
+
+        #expect(!policy.dictationDoubleTapEnabled)
+        #expect(policy.dictationHybridTapEnabled)
+        #expect(policy.quilDoubleTapEnabled)
+        #expect(policy.computerUseDoubleTapEnabled)
+    }
+
+    @Test("hands-free off clears every double-press but leaves hybrid alone")
+    func handsFreeOffClearsDoublePress() {
+        let hold = DictationHotkeyTapPolicy(triggerMode: .holdToRecord, handsFreeEnabled: false)
+        #expect(!hold.dictationDoubleTapEnabled)
+        #expect(!hold.dictationHybridTapEnabled)
+        #expect(!hold.quilDoubleTapEnabled)
+        #expect(!hold.computerUseDoubleTapEnabled)
+
+        let hybrid = DictationHotkeyTapPolicy(triggerMode: .hybrid, handsFreeEnabled: false)
+        #expect(!hybrid.dictationDoubleTapEnabled)
+        #expect(hybrid.dictationHybridTapEnabled)
+        #expect(!hybrid.quilDoubleTapEnabled)
+        #expect(!hybrid.computerUseDoubleTapEnabled)
     }
 }
 

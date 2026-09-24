@@ -4,7 +4,7 @@ import MuesliNativeApp
 @available(macOS 13.0, *)
 struct StartDictationIntent: AppIntent {
     static var title: LocalizedStringResource = "Start Dictation"
-    static var description = IntentDescription("Starts hands-free Muesli dictation, same as double-tapping the dictation hotkey.")
+    static var description = IntentDescription("Starts hands-free Muesli dictation.")
     // Ask the system to launch Muesli before performing so the in-process
     // controller exists; without this a closed app makes the wait time out.
     static var openAppWhenRun: Bool { true }

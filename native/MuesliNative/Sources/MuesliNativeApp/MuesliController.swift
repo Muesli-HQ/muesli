@@ -383,9 +383,9 @@ public final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
-    private let hotkeyMonitor = HotkeyMonitor()
-    private let computerUseHotkeyMonitor = HotkeyMonitor()
-    private let quilHotkeyMonitor = HotkeyMonitor()
+    let hotkeyMonitor = HotkeyMonitor()
+    let computerUseHotkeyMonitor = HotkeyMonitor()
+    let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
     private let computerUseRecorder = RouteAwareDictationRecorder()
     private let quilRecorder = RouteAwareDictationRecorder()
@@ -745,14 +745,8 @@ public final class MuesliController: NSObject {
         )
         cleanupHistoricalMeetingWaveformCacheFilesIfNeeded()
 
-        hotkeyMonitor.onArm = { [weak self] in self?.handleArm() }
-        hotkeyMonitor.onPrepare = { [weak self] in self?.handlePrepare() }
-        hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
-        hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
-        hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
-        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
-        hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
-        hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        configureDictationHotkeyCallbacks()
+        applyDictationHotkeyMonitorPolicy()
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -1725,9 +1719,7 @@ public final class MuesliController: NSObject {
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
         indicator.refreshIcon()
-        hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
-        computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
-        quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        applyDictationHotkeyMonitorPolicy()
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
         }
@@ -4636,6 +4628,7 @@ public final class MuesliController: NSObject {
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
+            config.dictationTriggerMode = .holdToRecord
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -8903,6 +8896,33 @@ public final class MuesliController: NSObject {
         startQuilHotkeyMonitorIfNeeded(permissions: permissions)
     }
 
+    func configureDictationHotkeyCallbacks() {
+        hotkeyMonitor.onArm = { [weak self] in self?.handleArm() }
+        hotkeyMonitor.onPrepare = { [weak self] in self?.handlePrepare() }
+        hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
+        hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
+        hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
+        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleDictationToggleStartRequest() }
+        hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
+    }
+
+    private func handleDictationToggleStartRequest() {
+        guard !handleToggleStart() else { return }
+        hotkeyMonitor.cancelToggleMode()
+        handleCancel()
+    }
+
+    func applyDictationHotkeyMonitorPolicy() {
+        let policy = DictationHotkeyTapPolicy(
+            triggerMode: config.dictationTriggerMode,
+            handsFreeEnabled: config.enableDoubleTapDictation
+        )
+        hotkeyMonitor.doubleTapEnabled = policy.dictationDoubleTapEnabled
+        hotkeyMonitor.hybridTapEnabled = policy.dictationHybridTapEnabled
+        computerUseHotkeyMonitor.doubleTapEnabled = policy.computerUseDoubleTapEnabled
+        quilHotkeyMonitor.doubleTapEnabled = policy.quilDoubleTapEnabled
+    }
+
     private func configureHotkeyMonitorTiming() {
         hotkeyMonitor.configureTriggerThreshold(milliseconds: config.hotkeyTriggerThresholdMS)
         computerUseHotkeyMonitor.configureTriggerThreshold(milliseconds: config.computerUseHotkeyTriggerThresholdMS)
@@ -8926,6 +8946,7 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.stop()
             return
         }
+        applyDictationHotkeyMonitorPolicy()
         guard !hotkeyMonitor.isRunning else { return }
         hotkeyMonitor.configure(config.dictationHotkey)
         hotkeyMonitor.start()
