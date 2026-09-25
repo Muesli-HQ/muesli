@@ -144,6 +144,9 @@ final class BodhanMLXDecoder {
         var ids = prompt, position = 0, tokens: [Int] = []
         var cache: [KV]? = nil
         var ended = false
+        // MLX weights retain 1024 position rows and the KV cache grows dynamically.
+        // The 10-token romanized prompt plus 512 generated tokens fits this table;
+        // the diagnostic CoreML export has a separate fixed 512-position cache.
         for _ in 0..<outputMode.maximumGeneratedTokens {
             if Task<Never,Never>.isCancelled { throw CancellationError() }
             let (logits,nextCache) = BodhanProfiling.measure("MLXStepGraph") { step(ids,position,cross,cache) }

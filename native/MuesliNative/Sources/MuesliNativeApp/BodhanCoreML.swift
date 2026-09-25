@@ -28,7 +28,8 @@ final class BodhanCoreML {
         let prompts: [String: [Int]]
         let mixed_prompts: [String: [Int]]?
 
-        /// The exported decoder has a fixed vocabulary and at most 512 cached positions.
+        /// Both decoder runtimes share this vocabulary and prompt validation.
+        /// The 512-position cache limit belongs to the CoreML export, not the MLX decoder.
         func validate(vocabularySize: Int = 7152) throws {
             func valid(_ prompt: [Int]) -> Bool {
                 (4...256).contains(prompt.count) && prompt.allSatisfy { (0..<vocabularySize).contains($0) }
