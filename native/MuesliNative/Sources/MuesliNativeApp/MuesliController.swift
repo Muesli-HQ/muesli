@@ -2878,6 +2878,27 @@ public final class MuesliController: NSObject {
         selectBackend(option, makePrimaryDictationModel: false)
     }
 
+    func setSettingFromUI(_ id: String, value: String) {
+        Task { @MainActor in
+            do { try await applySetting(id, value: value) }
+            catch { presentErrorAlert(title: "Setting could not be changed", message: error.localizedDescription) }
+        }
+    }
+
+    func applySetting(_ id: String, value: String) async throws {
+        let definitions = settingsDefinitions()
+        _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
+            snapshots: definitions.map { $0.snapshot(config: config) }, config: { self.config },
+            persistedConfig: {
+                try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            })
+    }
+
+    func selectPrimaryDictationModelForComputerUse(_ option: BackendOption) {
+        guard canChangePrimaryDictationModel() else { return }
+        selectBackend(option, makePrimaryDictationModel: true)
+    }
+
     private func selectBackend(
         _ option: BackendOption,
         makePrimaryDictationModel: Bool
@@ -9843,24 +9864,14 @@ public final class MuesliController: NSObject {
         meetingMonitor.refreshState()
     }
 
-    /// Denial must release an already armed session before any permission UI.
-    func ensureComputerUseScreenRecordingAccess(isGranted: Bool) -> Bool {
-        guard isGranted else {
-            handleComputerUseCancel()
-            return false
-        }
-        return true
-    }
-
-    private func handleComputerUseStart() {
-        guard canStartComputerUseCommand else { return }
-        guard ensureComputerUseScreenRecordingAccess(isGranted: CGPreflightScreenCaptureAccess()) else {
+    private func requestDesktopComputerUseScreenAccess() -> Bool {
+        guard CGPreflightScreenCaptureAccess() else {
             if !hasRequestedComputerUseScreenRecordingAccess {
                 hasRequestedComputerUseScreenRecordingAccess = true
                 // macOS owns this prompt and its Open System Settings action.
                 // Opening Settings ourselves as well leaves the prompt behind.
                 _ = CGRequestScreenCaptureAccess()
-                return
+                return false
             }
             // A denied request may no longer produce a system prompt. Offer a
             // Settings shortcut on a subsequent attempt, without requesting again.
@@ -9874,8 +9885,13 @@ public final class MuesliController: NSObject {
                     NSWorkspace.shared.open(url)
                 }
             }
-            return
+            return false
         }
+        return true
+    }
+
+    private func handleComputerUseStart() {
+        guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         indicator.instructionMode = .computerUse
         meetingMonitor.suppressWhileActive()
@@ -9908,7 +9924,7 @@ public final class MuesliController: NSObject {
         handleComputerUseStop()
     }
 
-    private func handleComputerUseCancel() {
+    func handleComputerUseCancel() {
         fputs("[cua] cancel\n", stderr)
         guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .computerUse) else {
             fputs("[cua] ignoring cleanup while dictation owns interactive audio\n", stderr)
@@ -10177,6 +10193,8 @@ public final class MuesliController: NSObject {
             self.syncAppState()
         }
         activeComputerUseTrace = runTrace
+        runTrace.record(ComputerUseTraceEvent(kind: "routing", title: "Understanding command",
+                                            body: "Choosing Muesli settings or desktop tools.", status: "running"))
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
@@ -10191,7 +10209,18 @@ public final class MuesliController: NSObject {
         }
 
         let result: ComputerUsePlannerRuntimeResult
-        if CGPreflightScreenCaptureAccess() {
+        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+            appState.settingsAppleSpeechLanguages = await AppleSpeechLanguageOption.supportedOptions()
+        }
+        let settingsResult = await ComputerUseSettings.run(
+            command: transcript, settings: settingsDefinitions(),
+            config: { self.config }, persistedConfig: {
+                try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            })
+        guard computerUseCommandTaskID == taskID, !Task.isCancelled else { return }
+        if let settingsResult {
+            result = settingsResult
+        } else if requestDesktopComputerUseScreenAccess() {
             result = await runtime.run(command: transcript)
         } else {
             result = ComputerUsePlannerRuntimeResult(

@@ -4,14 +4,6 @@ import SwiftUI
 import MuesliCore
 import TelemetryDeck
 
-private struct MeetingDetectionAppOption: Identifiable {
-    let bundleID: String
-    let name: String
-    let icon: String
-
-    var id: String { bundleID }
-}
-
 private struct MicrophoneOption: Identifiable {
     let uid: String?
     let label: String
@@ -97,46 +89,6 @@ private struct ICloudLinkedDeviceRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(device.platformLabel) \(device.name), linked")
-    }
-}
-
-private enum OnDeviceCleanupModel: Identifiable {
-    case gguf(PostProcessorOption)
-    case gemma4(Gemma4LiteRTModel)
-
-    var id: String {
-        switch self {
-        case let .gguf(option): option.id
-        case let .gemma4(model): model.repoID
-        }
-    }
-
-    var label: String {
-        switch self {
-        case let .gguf(option): option.label
-        case let .gemma4(model): model.label
-        }
-    }
-
-    var quilLabel: String {
-        switch self {
-        case let .gguf(option): option.quilLabel
-        case let .gemma4(model): model.label
-        }
-    }
-
-    var quilBackend: TranscriptCleanupBackendOption {
-        switch self {
-        case .gguf: .local
-        case .gemma4: .gemma4LiteRT
-        }
-    }
-
-    var quilModelID: String {
-        switch self {
-        case let .gguf(option): option.id
-        case let .gemma4(model): model.repoID
-        }
     }
 }
 
@@ -239,18 +191,7 @@ struct SettingsView: View {
     private let controlWidth: CGFloat = 220
     // Wider controls keep model/provider selections visually consistent in Settings.
     private let meetingControlWidth: CGFloat = 275
-    private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
-        MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "company.thebrowser.Browser", name: "Arc", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.apple.Safari", name: "Safari", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.microsoft.edgemac", name: "Edge", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.brave.Browser", name: "Brave", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.tinyspeck.slackmacgap", name: "Slack", icon: "message.fill"),
-        MeetingDetectionAppOption(bundleID: "us.zoom.xos", name: "Zoom", icon: "video.fill"),
-        MeetingDetectionAppOption(bundleID: "com.microsoft.teams2", name: "Teams", icon: "person.2.fill"),
-        MeetingDetectionAppOption(bundleID: "com.apple.FaceTime", name: "FaceTime", icon: "video.fill"),
-        MeetingDetectionAppOption(bundleID: "net.whatsapp.WhatsApp", name: "WhatsApp", icon: "phone.fill"),
-    ]
+
 
     private var dictationBackendOptions: [BackendOption] {
         guard appState.dictationProvider.isHosted else {
@@ -645,16 +586,6 @@ struct SettingsView: View {
         return options
     }
 
-    private static let accentPresets: [(hex: String, name: String)] = [
-        ("2563eb", "Blue"),
-        ("ef4444", "Red"),
-        ("f59e0b", "Amber"),
-        ("10b981", "Green"),
-        ("8b5cf6", "Purple"),
-        ("ec4899", "Pink"),
-        ("1e1e2e", "Dark"),
-    ]
-
     private func screenContextDescription(includesScreenOCR: Bool) -> String {
         if !accessibilityGranted {
             return "Grant Accessibility, then toggle again if needed."
@@ -774,9 +705,7 @@ struct SettingsView: View {
             settingsSection("General") {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     settingsRow("Launch at login") {
-                        settingsSwitch(isOn: appState.config.launchAtLogin) { newValue in
-                            controller.setLaunchAtLogin(newValue)
-                        }
+                        settingsControl("launch_at_login")
                     }
                     if appState.launchAtLoginRegistrationState == .requiresApproval {
                         launchAtLoginApprovalPrompt
@@ -784,9 +713,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Open dashboard on launch") {
-                    settingsSwitch(isOn: appState.config.openDashboardOnLaunch) { newValue in
-                        controller.updateConfig { $0.openDashboardOnLaunch = newValue }
-                    }
+                    settingsControl("open_dashboard")
                 }
             }
 
@@ -1027,14 +954,7 @@ struct SettingsView: View {
     private var dictationModelSettingsSection: some View {
         settingsSection("Speech Recognition") {
             settingsRow("Provider", controlWidth: meetingControlWidth) {
-                settingsMenu(
-                    selection: appState.dictationProvider.label,
-                    options: DictationProvider.allCases.map(\.label)
-                ) { label in
-                    if let provider = DictationProvider.allCases.first(where: { $0.label == label }) {
-                        controller.selectDictationProvider(provider)
-                    }
-                }
+                settingsControl("dictation_provider")
             }
             .id(FeatureTourTarget.dictationProviderSetting.rawValue)
             .featureTourTarget(.dictationProviderSetting)
@@ -1047,16 +967,8 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
             }
             settingsRow(appState.dictationProvider.isHosted ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
-                if let displayedDictationBackend {
-                    settingsMenu(
-                        selection: displayedDictationBackend.label,
-                        options: dictationBackendOptions.map(\.label),
-                        disabledOptions: disabledDictationBackendLabels
-                    ) { label in
-                        if let option = dictationBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectBackend(option)
-                        }
-                    }
+                if displayedDictationBackend != nil {
+                    settingsControl(appState.dictationProvider.isHosted ? "dictation_fallback_model" : "dictation_model")
                 } else {
                     Text("No compatible model installed")
                         .foregroundStyle(.secondary)
@@ -1110,10 +1022,7 @@ struct SettingsView: View {
         if controller.hostedDictationModelVisibility.shows(.openAI) {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.openaiDictationModel,
-                    presets: openAIDictationModelPresets
-                ) { controller.selectOpenAIDictationModel($0) }
+                settingsControl("openai_dictation_model")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Connection", controlWidth: meetingControlWidth) {
@@ -1212,16 +1121,7 @@ struct SettingsView: View {
                 description: "Only affects Muesli. Changes apply immediately.",
                 controlWidth: meetingControlWidth
             ) {
-                let options = meetingMicrophoneOptions
-                FixedWidthPopUp(
-                    selection: selectedMeetingMicrophoneLabel,
-                    options: options.map(\.label),
-                    onSelectIndex: { index in
-                        guard options.indices.contains(index) else { return }
-                        controller.selectMeetingInputDeviceUID(options[index].uid)
-                        loadCachedAudioInputDevices()
-                    }
-                )
+                settingsControl("meeting_microphone")
                 .frame(height: 24)
             }
             Divider().background(MuesliTheme.surfaceBorder)
@@ -1230,9 +1130,7 @@ struct SettingsView: View {
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth
             ) {
-                settingsSwitch(isOn: appState.config.showMeetingTranscriptOnIndicatorHover) { newValue in
-                    controller.updateConfig { $0.showMeetingTranscriptOnIndicatorHover = newValue }
-                }
+                settingsControl("meeting_hover_transcript")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
@@ -1241,22 +1139,7 @@ struct SettingsView: View {
                 controlWidth: meetingControlWidth
             ) {
                 if !downloadedMeetingLiveCaptionBackends.isEmpty {
-                    settingsMenu(
-                        selection: selectedMeetingLiveCaptionLabel,
-                        options: downloadedMeetingLiveCaptionBackends.map(\.settingsLabel) + ["Off"]
-                    ) { label in
-                        guard label != "Off" else {
-                            controller.updateConfig { $0.enableLiveStreamingPartials = false }
-                            return
-                        }
-                        guard let backend = downloadedMeetingLiveCaptionBackends.first(where: { $0.settingsLabel == label }) else {
-                            return
-                        }
-                        controller.updateConfig {
-                            $0.meetingLiveCaptionBackend = backend.rawValue
-                            $0.enableLiveStreamingPartials = true
-                        }
-                    }
+                    settingsControl("live_transcript")
                 } else {
                     Text("Download from Models")
                         .font(.system(size: 12, weight: .medium))
@@ -1280,14 +1163,7 @@ struct SettingsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    settingsMenu(
-                        selection: selectedMeetingBackendLabel,
-                        options: meetingBackendOptions.map(\.label)
-                    ) { label in
-                        if let option = meetingBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectMeetingTranscriptionBackend(option)
-                        }
-                    }
+                    settingsControl("meeting_model")
                 }
             }
             if usesUnifiedMeetingTranscript {
@@ -1324,9 +1200,7 @@ struct SettingsView: View {
     private var dictationCleanupSettingsSection: some View {
         settingsSection("Dictation Cleanup") {
             settingsRow("AI transcript cleanup") {
-                settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
-                    controller.setPostProcessorEnabled(newValue)
-                }
+                settingsControl("transcript_cleanup")
             }
             if appState.config.enablePostProcessor {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1341,14 +1215,7 @@ struct SettingsView: View {
                     description: cleanupBackendDescription,
                     controlWidth: meetingControlWidth
                 ) {
-                    settingsMenu(
-                        selection: selectedCleanupBackendLabel,
-                        options: cleanupBackendOptions.map(\.label)
-                    ) { label in
-                        if let option = cleanupBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectPostProcessorBackend(option)
-                        }
-                    }
+                    settingsControl("cleanup_source")
                 }
                 .id(FeatureTourTarget.cloudCleanupSetting.rawValue)
                 .featureTourTarget(.cloudCleanupSetting)
@@ -1361,19 +1228,7 @@ struct SettingsView: View {
                             }
                             .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {
-                            FixedWidthPopUp(
-                                selection: selectedOnDeviceCleanupModelLabel,
-                                options: onDeviceCleanupModels.map(\.label),
-                                onSelectIndex: { index in
-                                    guard onDeviceCleanupModels.indices.contains(index) else { return }
-                                    switch onDeviceCleanupModels[index] {
-                                    case let .gguf(option):
-                                        controller.selectPostProcessor(option)
-                                    case let .gemma4(model):
-                                        controller.selectGemma4PostProcessor(model)
-                                    }
-                                }
-                            )
+                            settingsControl("cleanup_on_device_model")
                             .frame(height: 24)
                         }
                     }
@@ -1396,9 +1251,7 @@ struct SettingsView: View {
                 "Rewrite selected text",
                 description: "Highlight text to transform it. With no selection, Quill generates and pastes at the cursor."
             ) {
-                settingsSwitch(isOn: appState.config.enableQuilMode) { newValue in
-                    _ = controller.updateQuilModeEnabled(newValue)
-                }
+                settingsControl("quill")
             }
             if let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
                 isEnabled: appState.config.enableQuilMode
@@ -1414,30 +1267,11 @@ struct SettingsView: View {
                     "Play Quill sounds",
                     description: "Play the activation and release cues for Quill mode."
                 ) {
-                    settingsSwitch(isOn: appState.config.quilSoundEnabled) { newValue in
-                        controller.updateConfig { $0.quilSoundEnabled = newValue }
-                    }
+                    settingsControl("quill_sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model source", controlWidth: meetingControlWidth) {
-                    settingsMenu(
-                        selection: selectedQuilModelSource.label,
-                        options: QuilModelSourceOption.all.map(\.label)
-                    ) { label in
-                        guard let source = QuilModelSourceOption.all.first(where: { $0.label == label }) else {
-                            return
-                        }
-                        if source == .localModels {
-                            if !selectedQuilBackend.isOnDevice {
-                                selectQuilLocalModel(quilLocalModels.first)
-                            }
-                        } else if let backend = source.hostedBackend {
-                            controller.updateConfig {
-                                $0.quilBackend = backend.backend
-                                $0.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
-                            }
-                        }
-                    }
+                    settingsControl("quill_source")
                 }
                 if selectedQuilBackend.isOnDevice {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -1448,14 +1282,7 @@ struct SettingsView: View {
                             }
                             .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {
-                            FixedWidthPopUp(
-                                selection: selectedQuilLocalModelLabel,
-                                options: quilLocalModels.map(\.quilLabel),
-                                onSelectIndex: { index in
-                                    guard quilLocalModels.indices.contains(index) else { return }
-                                    selectQuilLocalModel(quilLocalModels[index])
-                                }
-                            )
+                            settingsControl("quill_local_model")
                             .frame(height: 24)
                         }
                     }
@@ -1466,17 +1293,6 @@ struct SettingsView: View {
         }
         .id(FeatureTourTarget.quillSettings.rawValue)
         .featureTourTarget(.quillSettings)
-    }
-
-    private func selectQuilLocalModel(_ model: OnDeviceCleanupModel?) {
-        controller.updateConfig {
-            let resolved = model ?? .gguf(PostProcessorOption.defaultQuilOption)
-            $0.quilBackend = resolved.quilBackend.backend
-            $0.quilModel = resolved.quilModelID
-        }
-        if appState.config.enableQuilMode {
-            _ = controller.ensureQuilModelIsAvailable()
-        }
     }
 
     @ViewBuilder
@@ -1535,33 +1351,15 @@ struct SettingsView: View {
     }
 
     private var cohereLanguageMenu: some View {
-        settingsMenu(
-            selection: selectedCohereLanguage.label,
-            options: CohereTranscribeLanguage.allCases.map(\.label)
-        ) { label in
-            guard let language = CohereTranscribeLanguage.allCases.first(where: { $0.label == label }) else { return }
-            controller.selectCohereLanguage(language)
-        }
+        settingsControl("cohere_language")
     }
 
     private var nemotron35LanguageMenu: some View {
-        settingsMenu(
-            selection: selectedNemotron35Language.label,
-            options: Nemotron35Language.allCases.map(\.label)
-        ) { label in
-            guard let language = Nemotron35Language.allCases.first(where: { $0.label == label }) else { return }
-            Task { await controller.setNemotron35Language(language) }
-        }
+        settingsControl("nemotron_language")
     }
 
     private var whisperLanguageMenu: some View {
-        settingsMenu(
-            selection: selectedWhisperLanguage.label,
-            options: WhisperKitLanguage.allCases.map(\.label)
-        ) { label in
-            guard let language = WhisperKitLanguage.allCases.first(where: { $0.label == label }) else { return }
-            controller.selectWhisperLanguage(language)
-        }
+        settingsControl("whisper_language")
     }
 
     @ViewBuilder
@@ -1579,15 +1377,7 @@ struct SettingsView: View {
     }
 
     private func indicLanguageMenu(model: String) -> some View {
-        let languages = BodhanLanguage.choices(for: model)
-        return FixedWidthPopUp(
-            selection: selectedBodhanLanguage.supported(for: model).label,
-            options: languages.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0, index < languages.count else { return }
-                controller.selectBodhanLanguage(languages[index])
-            }
-        )
+        return settingsControl("bodhan_language")
         .frame(height: 24)
     }
 
@@ -1601,22 +1391,13 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorChatGPTModel,
-                    presets: SummaryModelPreset.chatGPTTranscriptCleanupModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_chatgpt_model")
             }
             let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
             if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Thinking", controlWidth: meetingControlWidth) {
-                    settingsReasoningSlider(
-                        model: model,
-                        preferred: appState.config.transcriptCleanupReasoningEffort,
-                        accessibilityLabel: "Transcript cleanup thinking"
-                    ) { effort in
-                        controller.updateConfig { $0.transcriptCleanupReasoningEffort = effort }
-                    }
+                    settingsControl("cleanup_thinking")
                 }
             }
         case .some(.openAI):
@@ -1631,22 +1412,13 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorOpenAIModel,
-                    presets: SummaryModelPreset.openAIModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_openai_model")
             }
             let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
             if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Thinking", controlWidth: meetingControlWidth) {
-                    settingsReasoningSlider(
-                        model: model,
-                        preferred: appState.config.transcriptCleanupReasoningEffort,
-                        accessibilityLabel: "Transcript cleanup thinking"
-                    ) { effort in
-                        controller.updateConfig { $0.transcriptCleanupReasoningEffort = effort }
-                    }
+                    settingsControl("cleanup_thinking")
                 }
             }
             keyStatusRow(key: appState.config.openAIAPIKey)
@@ -1657,10 +1429,7 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Model preset", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorOpenRouterModel,
-                    presets: SummaryModelPreset.openRouterModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_openrouter_model")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
@@ -1715,14 +1484,7 @@ struct SettingsView: View {
     private var cleanupPromptSettings: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             settingsRow("Cleanup preset", controlWidth: meetingControlWidth) {
-                FixedWidthPopUp(
-                    selection: selectedCleanupPromptName,
-                    options: cleanupPromptPresets.map(\.name),
-                    onSelectIndex: { index in
-                        guard index >= 0, index < cleanupPromptPresets.count else { return }
-                        controller.selectTranscriptCleanupPrompt(id: cleanupPromptPresets[index].id)
-                    }
-                )
+                settingsControl("cleanup_preset")
                 .frame(height: 24)
             }
 
@@ -1768,14 +1530,7 @@ struct SettingsView: View {
                 description: "Remote summaries may send transcripts, notes, screen context, and participant names.",
                 controlWidth: meetingControlWidth
             ) {
-                settingsMenu(
-                    selection: appState.selectedMeetingSummaryBackend.label,
-                    options: MeetingSummaryBackendOption.all.map(\.label)
-                ) { label in
-                    if let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) {
-                        controller.selectMeetingSummaryBackend(option)
-                    }
-                }
+                settingsControl("summary_source")
             }
             Divider().background(MuesliTheme.surfaceBorder)
 
@@ -1785,10 +1540,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.chatGPTModel,
-                        presets: SummaryModelPreset.chatGPTModels
-                    ) { val in controller.updateConfig { $0.chatGPTModel = val } }
+                    settingsControl("summary_chatgpt_model")
                 }
                 let model = appState.config.chatGPTModel.isEmpty
                     ? (SummaryModelPreset.chatGPTModels.first?.id ?? "")
@@ -1796,13 +1548,7 @@ struct SettingsView: View {
                 if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
-                        settingsReasoningSlider(
-                            model: model,
-                            preferred: appState.config.meetingSummaryReasoningEffort,
-                            accessibilityLabel: "Meeting summary thinking"
-                        ) { effort in
-                            controller.updateConfig { $0.meetingSummaryReasoningEffort = effort }
-                        }
+                        settingsControl("summary_thinking")
                     }
                 }
             } else if appState.selectedMeetingSummaryBackend == .openAI {
@@ -1816,10 +1562,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.openAIModel,
-                        presets: SummaryModelPreset.openAIModels
-                    ) { val in controller.updateConfig { $0.openAIModel = val } }
+                    settingsControl("summary_openai_model")
                 }
                 let model = appState.config.openAIModel.isEmpty
                     ? (SummaryModelPreset.openAIModels.first?.id ?? "")
@@ -1827,13 +1570,7 @@ struct SettingsView: View {
                 if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
-                        settingsReasoningSlider(
-                            model: model,
-                            preferred: appState.config.meetingSummaryReasoningEffort,
-                            accessibilityLabel: "Meeting summary thinking"
-                        ) { effort in
-                            controller.updateConfig { $0.meetingSummaryReasoningEffort = effort }
-                        }
+                        settingsControl("summary_thinking")
                     }
                 }
                 keyStatusRow(key: appState.config.openAIAPIKey)
@@ -1897,13 +1634,7 @@ struct SettingsView: View {
     private func customLLMSettingsRows(model: String, onModelChange: @escaping (String) -> Void) -> some View {
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Format", controlWidth: meetingControlWidth) {
-            settingsMenu(
-                selection: CustomLLMFormat(rawValue: appState.config.customLLMFormat)?.label ?? CustomLLMFormat.openAI.label,
-                options: CustomLLMFormat.allCases.map(\.label)
-            ) { label in
-                guard let format = CustomLLMFormat.allCases.first(where: { $0.label == label }) else { return }
-                controller.updateConfig { $0.customLLMFormat = format.rawValue }
-            }
+            settingsControl("custom_llm_format")
         }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Endpoint", controlWidth: meetingControlWidth) {
@@ -1947,16 +1678,7 @@ struct SettingsView: View {
                     "Microphone",
                     description: "Automatic uses system input, or Mac mic with AirPods."
                 ) {
-                    let options = dictationMicrophoneOptions
-                    FixedWidthPopUp(
-                        selection: selectedDictationMicrophoneLabel,
-                        options: options.map(\.label),
-                        onSelectIndex: { index in
-                            guard index >= 0, index < options.count else { return }
-                            controller.selectDictationInputDeviceUID(options[index].uid)
-                            loadCachedAudioInputDevices()
-                        }
-                    )
+                    settingsControl("dictation_microphone")
                     .frame(height: 24)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1964,9 +1686,7 @@ struct SettingsView: View {
                     "Dictionary suggestions",
                     description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
                 ) {
-                    settingsSwitch(isOn: appState.config.enableDictionaryCorrectionPrompts) { newValue in
-                        handleDictionaryCorrectionPromptsToggle(newValue)
-                    }
+                    settingsControl("dictionary_suggestions")
                     .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
             }
@@ -1977,15 +1697,11 @@ struct SettingsView: View {
 
             settingsSection("Advanced") {
                 settingsRow("Pause media during dictation") {
-                    settingsSwitch(isOn: appState.config.pauseMediaDuringDictation) { newValue in
-                        controller.updateConfig { $0.pauseMediaDuringDictation = newValue }
-                    }
+                    settingsControl("pause_media")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Mute system audio during dictation") {
-                    settingsSwitch(isOn: appState.config.muteSystemAudioDuringDictation) { newValue in
-                        controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
-                    }
+                    settingsControl("mute_audio")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
@@ -1999,9 +1715,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
                 settingsRow("Enable planner", controlWidth: meetingControlWidth) {
-                    settingsSwitch(isOn: appState.config.enableComputerUsePlanner) { newValue in
-                        controller.updateConfig { $0.enableComputerUsePlanner = newValue }
-                    }
+                    settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Account", controlWidth: meetingControlWidth) {
@@ -2009,22 +1723,13 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.computerUsePlannerModel,
-                        presets: SummaryModelPreset.computerUsePlannerModels
-                    ) { val in controller.updateConfig { $0.computerUsePlannerModel = val } }
+                    settingsControl("cua_model")
                 }
                 let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
                 if !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
-                        settingsReasoningSlider(
-                            model: plannerModel,
-                            preferred: appState.config.computerUseReasoningEffort,
-                            accessibilityLabel: "Computer use thinking"
-                        ) { effort in
-                            controller.updateConfig { $0.computerUseReasoningEffort = effort }
-                        }
+                        settingsControl("cua_thinking")
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -2058,9 +1763,7 @@ struct SettingsView: View {
 
             settingsSection("Meeting Notes") {
                 settingsRow("Default template", controlWidth: meetingControlWidth) {
-                    meetingTemplateMenu(selectionID: appState.config.defaultMeetingTemplateID) { id in
-                        controller.updateDefaultMeetingTemplate(id: id)
-                    }
+                    settingsControl("meeting_template")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Summary retries", controlWidth: meetingControlWidth) {
@@ -2091,30 +1794,16 @@ struct SettingsView: View {
 
             settingsSection("Recording") {
                 settingsRow("Auto-record calendar meetings") {
-                    settingsSwitch(isOn: appState.config.autoRecordMeetings) { newValue in
-                        controller.updateConfig { $0.autoRecordMeetings = newValue }
-                    }
+                    settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
-                    settingsMenu(
-                        selection: recordingSaveLabel(for: appState.config.meetingRecordingSavePolicy),
-                        options: MeetingRecordingSavePolicy.allCases.map(recordingSaveLabel(for:))
-                    ) { label in
-                        guard let policy = recordingSavePolicy(for: label) else { return }
-                        controller.updateConfig { $0.meetingRecordingSavePolicy = policy }
-                    }
+                    settingsControl("recording_policy")
                 }
                 if appState.config.meetingRecordingSavePolicy != .never {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Recording format") {
-                        settingsMenu(
-                            selection: appState.config.resolvedMeetingRecordingFileFormat.displayName,
-                            options: MeetingRecordingFileFormat.allCases.map(recordingFileFormatLabel(for:))
-                        ) { label in
-                            guard let format = recordingFileFormat(for: label) else { return }
-                            controller.updateConfig { $0.meetingRecordingFileFormat = format.rawValue }
-                        }
+                        settingsControl("recording_format")
                     }
                     settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
@@ -2122,9 +1811,7 @@ struct SettingsView: View {
 
             settingsSection("Auto Export") {
                 settingsRow("Auto-export meetings") {
-                    settingsSwitch(isOn: appState.config.autoExportMarkdownEnabled) { newValue in
-                        controller.updateConfig { $0.autoExportMarkdownEnabled = newValue }
-                    }
+                    settingsControl("auto_export_meetings")
                 }
                 if appState.config.autoExportMarkdownEnabled {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -2133,24 +1820,11 @@ struct SettingsView: View {
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Content") {
-                        settingsMenu(
-                            selection: appState.config.resolvedAutoExportMarkdownContent.displayName,
-                            options: MeetingExportContent.allCases.map(\.displayName)
-                        ) { label in
-                            guard let index = MeetingExportContent.allCases.firstIndex(where: { $0.displayName == label }) else { return }
-                            let content = MeetingExportContent.allCases[index]
-                            controller.updateConfig { $0.autoExportMarkdownContent = content.rawValue }
-                        }
+                        settingsControl("export_content")
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("File format") {
-                        settingsMenu(
-                            selection: appState.config.resolvedAutoExportFileFormat.displayName,
-                            options: MeetingAutoExportFileFormat.allCases.map(\.displayName)
-                        ) { label in
-                            guard let format = MeetingAutoExportFileFormat.allCases.first(where: { $0.displayName == label }) else { return }
-                            controller.updateConfig { $0.autoExportFileFormat = format.rawValue }
-                        }
+                        settingsControl("export_format")
                     }
                 }
                 Text("Automatically saves each completed meeting to the chosen folder in the selected format.")
@@ -2161,9 +1835,7 @@ struct SettingsView: View {
 
             settingsSection("Meeting Notifications") {
                 settingsRow("Scheduled meetings") {
-                    settingsSwitch(isOn: appState.config.showScheduledMeetingNotifications) { newValue in
-                        controller.updateConfig { $0.showScheduledMeetingNotifications = newValue }
-                    }
+                    settingsControl("meeting_reminders")
                 }
                 settingsDescription("Show notifications for calendar meetings with a join link.")
 
@@ -2171,13 +1843,7 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
 
                     settingsRow("Reminder timing") {
-                        settingsMenu(
-                            selection: scheduledMeetingLeadTimeLabel(for: appState.config.scheduledMeetingNotificationLeadTime),
-                            options: ScheduledMeetingNotificationLeadTime.allCases.map(scheduledMeetingLeadTimeLabel(for:))
-                        ) { label in
-                            guard let leadTime = scheduledMeetingLeadTime(for: label) else { return }
-                            controller.updateConfig { $0.scheduledMeetingNotificationLeadTime = leadTime }
-                        }
+                        settingsControl("meeting_reminder_time")
                     }
                     settingsDescription("At start time avoids early calendar-only prompts before you join.")
                 }
@@ -2185,22 +1851,14 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
 
                 settingsRow("Default action") {
-                    settingsMenu(
-                        selection: appState.config.meetingJoinDefaultAction.buttonLabel,
-                        options: MeetingJoinDefaultAction.allCases.map(\.buttonLabel)
-                    ) { label in
-                        guard let action = meetingJoinDefaultAction(for: label) else { return }
-                        controller.updateConfig { $0.meetingJoinDefaultAction = action }
-                    }
+                    settingsControl("meeting_join_action")
                 }
                 settingsDescription("Primary button for notifications and Coming Up. Pick “Transcribe Only” if you join in another browser.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
                 settingsRow("Auto-detected meetings") {
-                    settingsSwitch(isOn: appState.config.showMeetingDetectionNotification) { newValue in
-                        controller.updateConfig { $0.showMeetingDetectionNotification = newValue }
-                    }
+                    settingsControl("meeting_detection")
                 }
                 settingsDescription("Show notifications when a call is detected from browser, camera, microphone, or app audio activity.")
 
@@ -2225,13 +1883,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
-                    settingsMenu(
-                        selection: selectedUpcomingMeetingsWindow.label,
-                        options: UpcomingMeetingsWindow.allCases.map(\.label)
-                    ) { label in
-                        guard let window = UpcomingMeetingsWindow.allCases.first(where: { $0.label == label }) else { return }
-                        controller.updateUpcomingMeetingsWindow(dayCount: window.dayCount)
-                    }
+                    settingsControl("upcoming_meetings")
                 }
                 settingsDescription("Controls how many calendar days appear in Coming Up, the menu bar, and scheduled meeting checks.")
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -2241,9 +1893,7 @@ struct SettingsView: View {
 
             settingsSection("Advanced") {
                 settingsRow("Enable post-meeting hook", controlWidth: meetingControlWidth) {
-                    settingsSwitch(isOn: appState.config.meetingHookEnabled) { newValue in
-                        controller.updateConfig { $0.meetingHookEnabled = newValue }
-                    }
+                    settingsControl("meeting_hook")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Hook script", controlWidth: meetingControlWidth) {
@@ -2267,8 +1917,7 @@ struct SettingsView: View {
             settingsSection("Recording indicator") {
                 RecordingIndicatorStylePicker(selection: appState.config.recordingIndicatorStyle,
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
-                    controller.updateConfig { $0.selectRecordingIndicatorStyle(style) }
-                    controller.refreshIndicatorVisibility()
+                    controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
                 .padding(.bottom, 12)
                 if appState.config.recordingIndicatorStyle == .notch {
@@ -2276,30 +1925,16 @@ struct SettingsView: View {
                     settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
                 } else {
                     settingsRow("Keep visible when idle") {
-                        settingsSwitch(isOn: appState.config.showFloatingIndicator) { newValue in
-                            controller.updateConfig { $0.showFloatingIndicator = newValue }
-                            controller.refreshIndicatorVisibility()
-                        }
+                        settingsControl("show_floating_indicator")
                     }
                     settingsDescription("When off, appears only during recording and processing.")
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Position") {
-                        let isCustom = appState.config.indicatorAnchor == .custom
-                        let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
-                        let options = (isCustom ? [customIndicatorPositionLabel] : [])
-                            + IndicatorAnchor.allCases.filter { $0 != .custom && $0 != .notch }.map(\.label)
-                        settingsMenu(selection: selection, options: options) { label in
-                            if label == customIndicatorPositionLabel { return }
-                            guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
-                            controller.updateConfig { $0.indicatorAnchor = anchor }
-                            controller.refreshIndicatorVisibility()
-                        }
+                        settingsControl("indicator_position")
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Show keyboard shortcut on hover") {
-                        settingsSwitch(isOn: appState.config.showHotkeyOnFloatingIndicator) { newValue in
-                            controller.updateConfig { $0.showHotkeyOnFloatingIndicator = newValue }
-                        }
+                        settingsControl("show_hotkey_hover")
                         .disabled(!appState.config.showFloatingIndicator)
                     }
                 }
@@ -2307,9 +1942,7 @@ struct SettingsView: View {
 
             settingsSection("Appearance") {
                 settingsRow("Dark mode") {
-                    settingsSwitch(isOn: appState.config.darkMode) { newValue in
-                        controller.updateConfig { $0.darkMode = newValue }
-                    }
+                    settingsControl("dark_mode")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
@@ -2317,9 +1950,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Show hotkey in menu bar") {
-                    settingsSwitch(isOn: appState.config.showHotkeyInMenuBar) { newValue in
-                        controller.updateConfig { $0.showHotkeyInMenuBar = newValue }
-                    }
+                    settingsControl("show_hotkey_menu")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Accent color") {
@@ -2327,15 +1958,11 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Play sound effects") {
-                    settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
-                        controller.updateConfig { $0.soundEnabled = newValue }
-                    }
+                    settingsControl("sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Show next meeting in menu bar") {
-                    settingsSwitch(isOn: appState.config.showNextMeetingInMenuBar) { newValue in
-                        controller.updateConfig { $0.showNextMeetingInMenuBar = newValue }
-                    }
+                    settingsControl("show_next_meeting")
                 }
             }
 
@@ -2364,10 +1991,10 @@ struct SettingsView: View {
 
     private var glassTintPicker: some View {
         HStack(spacing: 6) {
-            ForEach(Self.accentPresets, id: \.hex) { preset in
+            ForEach(MuesliSettings.accentPresets, id: \.hex) { preset in
                 let isSelected = appState.config.recordingColorHex.lowercased() == preset.hex
                 Button {
-                    controller.updateConfig { $0.recordingColorHex = preset.hex }
+                    controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
                         .fill(Color(hex: preset.hex))
@@ -2391,7 +2018,7 @@ struct SettingsView: View {
                 ForEach(MenuBarIconRenderer.options, id: \.id) { option in
                     let isSelected = appState.config.menuBarIcon == option.id
                     Button {
-                        controller.updateConfig { $0.menuBarIcon = option.id }
+                        controller.setSettingFromUI("menu_icon", value: option.id)
                     } label: {
                         Group {
                             if option.id == "muesli",
@@ -2658,26 +2285,8 @@ struct SettingsView: View {
 
     private var maraudersMapControl: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            settingsMenu(
-                selection: SoundController.labelForClip(
-                    id: appState.config.maraudersMapAudioClip,
-                    customPath: appState.config.maraudersMapCustomAudioPath
-                ),
-                options: SoundController.maraudersMapClipLabels
-            ) { label in
-                if label == "Custom\u{2026}" {
-                    pickCustomAudioFile()
-                } else if let preset = SoundController.maraudersMapPresets
-                    .first(where: { $0.label == label }) {
-                    SoundController.stopMaraudersMapClip()
-                    isPreviewingClip = false
-                    controller.updateConfig {
-                        $0.maraudersMapAudioClip = preset.id
-                        $0.maraudersMapCustomAudioPath = nil
-                    }
-                    controller.updateMaraudersMapAudioClip()
-                }
-            }
+            settingsControl("marauders_audio")
+            Button("Custom…") { pickCustomAudioFile() }
             Button {
                 if isPreviewingClip {
                     SoundController.stopMaraudersMapClip()
@@ -2914,9 +2523,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func screenContextControl(width: CGFloat? = nil) -> some View {
         if accessibilityGranted {
-            settingsSwitch(isOn: appState.config.enableScreenContext) { newValue in
-                handleScreenContextToggle(newValue)
-            }
+            settingsControl("app_context")
             .frame(width: width, alignment: .trailing)
         } else {
             Button {
@@ -2937,13 +2544,11 @@ struct SettingsView: View {
     @ViewBuilder
     private func dictationOCRContextControl(width: CGFloat? = nil) -> some View {
         if !appState.config.enableScreenContext {
-            settingsSwitch(isOn: false) { _ in }
+            settingsControl("ocr_context")
                 .frame(width: width, alignment: .trailing)
                 .disabled(true)
         } else if screenRecordingGranted {
-            settingsSwitch(isOn: appState.config.enableDictationOCRContext) { newValue in
-                controller.updateConfig { $0.enableDictationOCRContext = newValue }
-            }
+            settingsControl("ocr_context")
             .frame(width: width, alignment: .trailing)
         } else {
             Button {
@@ -2986,12 +2591,6 @@ struct SettingsView: View {
 
         clearPendingScreenContextEnable()
         return controller.requestScreenContextEnable()
-    }
-
-    private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
-        if controller.setDictionaryCorrectionPromptsFromToggle(enabled) == .needsAccessibilityPermission {
-            isShowingDictionaryAccessibilityPrompt = true
-        }
     }
 
     private func startPermissionMonitoring() {
@@ -3130,31 +2729,8 @@ struct SettingsView: View {
 
     // MARK: - Controls
 
-    @ViewBuilder
-    private func settingsSwitch(isOn: Bool, onChange: @escaping (Bool) -> Void) -> some View {
-        HStack {
-            Spacer()
-            Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
-                .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
-                .labelsHidden()
-        }
-    }
-
-    @ViewBuilder
-    private func settingsMenu(
-        selection: String,
-        options: [String],
-        disabledOptions: Set<String> = [],
-        onChange: @escaping (String) -> Void
-    ) -> some View {
-        FixedWidthPopUp(
-            selection: selection,
-            options: options,
-            disabledOptions: disabledOptions,
-            onChange: onChange
-        )
-            .frame(height: 24)
+    private func settingsControl(_ id: String) -> some View {
+        MuesliSettingControl(controller: controller, id: id)
     }
 
     @ViewBuilder
@@ -3199,7 +2775,7 @@ struct SettingsView: View {
                 GridItem(.flexible(), spacing: 8),
                 GridItem(.flexible(), spacing: 8),
             ], alignment: .leading, spacing: 8) {
-                ForEach(meetingDetectionAppOptions) { app in
+                ForEach(MuesliSettings.meetingDetectionAppOptions) { app in
                     mutedDetectionAppButton(app, isMuted: muted.contains(app.bundleID))
                 }
             }
@@ -3244,15 +2820,7 @@ struct SettingsView: View {
     }
 
     private func updateMutedMeetingDetectionApp(_ bundleID: String, isMuted: Bool) {
-        controller.updateConfig { config in
-            var muted = Set(config.mutedMeetingDetectionAppBundleIDs)
-            if isMuted {
-                muted.insert(bundleID)
-            } else {
-                muted.remove(bundleID)
-            }
-            config.mutedMeetingDetectionAppBundleIDs = muted.sorted()
-        }
+        controller.setSettingFromUI("mute_meeting_detection_" + bundleID, value: isMuted ? "on" : "off")
     }
 
     // MARK: - Calendars
@@ -3424,16 +2992,7 @@ struct SettingsView: View {
     }
 
     private func updateDisabledCalendar(_ calendarID: String, isDisabled: Bool) {
-        controller.updateConfig { config in
-            var disabled = Set(config.disabledCalendarIDs)
-            if isDisabled {
-                disabled.insert(calendarID)
-            } else {
-                disabled.remove(calendarID)
-            }
-            config.disabledCalendarIDs = disabled.sorted()
-        }
-        Task { await controller.refreshUpcomingCalendarEvents() }
+        controller.setSettingFromUI("calendar_" + calendarID, value: isDisabled ? "off" : "on")
     }
 
     @ViewBuilder
@@ -3630,82 +3189,6 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func meetingTemplateMenu(selectionID: String, onChange: @escaping (String) -> Void) -> some View {
-        let allItems: [(id: String, label: String)] = {
-            var items: [(String, String)] = [(MeetingTemplates.autoID, MeetingTemplates.auto.title)]
-            items += controller.builtInMeetingTemplates().map { ($0.id, $0.title) }
-            items += controller.customMeetingTemplates().map { ($0.id, $0.name) }
-            return items
-        }()
-        let selectedLabel = allItems.first(where: { $0.id == selectionID })?.label ?? "Auto"
-        FixedWidthPopUp(
-            selection: selectedLabel,
-            options: allItems.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0 && index < allItems.count else { return }
-                onChange(allItems[index].id)
-            }
-        )
-        .frame(height: 24)
-    }
-
-    @ViewBuilder
-    private func settingsModelMenu(currentModel: String, presets: [SummaryModelPreset], onChange: @escaping (String) -> Void) -> some View {
-        let menuPresets = SummaryModelPreset.menuPresets(presets, currentModel: currentModel)
-        let effectiveModel = currentModel.isEmpty ? (presets.first?.id ?? "") : currentModel
-        let selectedLabel = menuPresets.first(where: { $0.id == effectiveModel })?.label ?? menuPresets.first?.label ?? ""
-        FixedWidthPopUp(
-            selection: selectedLabel,
-            options: menuPresets.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0 && index < menuPresets.count else { return }
-                let selectedId = menuPresets[index].id
-                onChange(selectedId == presets.first?.id ? "" : selectedId)
-            }
-        )
-        .frame(height: 24)
-    }
-
-    @ViewBuilder
-    private func settingsReasoningSlider(
-        model: String,
-        preferred: ReasoningEffort?,
-        accessibilityLabel: String,
-        onChange: @escaping (ReasoningEffort) -> Void
-    ) -> some View {
-        let efforts = ReasoningEffortPolicy.selectableEfforts(for: model)
-        if let effectiveEffort = ReasoningEffortPolicy.resolvedEffort(
-            for: model,
-            preferred: preferred
-        ) {
-            HStack(spacing: 12) {
-                Slider(
-                    value: Binding(
-                        get: {
-                            Double(efforts.firstIndex(of: effectiveEffort) ?? 0)
-                        },
-                        set: { value in
-                            let index = min(max(Int(value.rounded()), 0), efforts.count - 1)
-                            onChange(efforts[index])
-                        }
-                    ),
-                    in: 0 ... Double(efforts.count - 1),
-                    step: 1
-                )
-                .tint(MuesliTheme.accent)
-                .accessibilityLabel(accessibilityLabel)
-                .accessibilityValue(effectiveEffort.label)
-
-                Text(effectiveEffort.label)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .frame(width: 80, alignment: .trailing)
-            }
-            .frame(height: 24)
-        }
-    }
-
-    @ViewBuilder
     private func settingsModelTextField(
         currentModel: String,
         placeholder: String,
@@ -3736,38 +3219,9 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else if !appState.openRouterSummaryModels.isEmpty {
-            let openRouterFreeModels = appState.openRouterSummaryModels
-            let configuredModel = appState.config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            let configuredPreset = openRouterFreeModels.first { $0.id == configuredModel }
-            let showsCustomSelection = isUsingCustomOpenRouterModel
-                || (!configuredModel.isEmpty && configuredPreset == nil)
-            let customLabel = configuredModel.isEmpty
-                ? "Custom model ID"
-                : "Custom: \(configuredModel)"
-            let menuPresets = showsCustomSelection
-                ? openRouterFreeModels + [SummaryModelPreset(id: configuredModel, label: customLabel)]
-                : openRouterFreeModels
-            let selectedLabel = showsCustomSelection
-                ? customLabel
-                : (configuredPreset?.label ?? openRouterFreeModels[0].label)
-
             HStack(spacing: 8) {
-                FixedWidthPopUp(
-                    selection: selectedLabel,
-                    options: menuPresets.map(\.label),
-                    onSelectIndex: { index in
-                        guard index >= 0 && index < menuPresets.count else { return }
-                        if showsCustomSelection && index == openRouterFreeModels.count {
-                            isUsingCustomOpenRouterModel = true
-                            return
-                        }
-                        isUsingCustomOpenRouterModel = false
-                        let selectedID = openRouterFreeModels[index].id
-                        controller.updateConfig {
-                            $0.openRouterModel = OpenRouterModelSelection.persistedModelID(for: selectedID)
-                        }
-                    }
-                )
+                settingsControl("summary_openrouter_model")
+                Button("Custom model ID") { isUsingCustomOpenRouterModel = true }
                 .frame(height: 24)
                 if case .failed = appState.openRouterSummaryCatalogState {
                     Button("Retry") {
@@ -3799,36 +3253,13 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var openRouterTranscriptionModelMenu: some View {
-        let placeholder = "Choose a model…"
-        let customOption = "Custom model ID"
-        let configured = OpenRouterTranscriptionClient.normalizedModel(
-            appState.config.openRouterDictationModel
-        )
         let presets = appState.openRouterTranscriptionModels
-        let configuredPreset = presets.first(where: { $0.id == configured })
-        let options = [placeholder] + presets.map(\.label) + [customOption]
-        let selected = isUsingCustomOpenRouterDictationModel
-            ? customOption
-            : (configured.isEmpty ? placeholder : (configuredPreset?.label ?? customOption))
-
         HStack(spacing: 8) {
             if appState.openRouterTranscriptionCatalogState == .loading, presets.isEmpty {
                 ProgressView().controlSize(.small)
             }
-            FixedWidthPopUp(
-                selection: selected,
-                options: options,
-                disabledOptions: [placeholder],
-                onSelectIndex: { index in
-                    guard index > 0 else { return }
-                    if index == options.count - 1 {
-                        isUsingCustomOpenRouterDictationModel = true
-                        return
-                    }
-                    isUsingCustomOpenRouterDictationModel = false
-                    controller.selectOpenRouterDictationModel(presets[index - 1].id)
-                }
-            )
+            settingsControl("openrouter_dictation_model")
+                Button("Custom model ID") { isUsingCustomOpenRouterDictationModel = true }
             .frame(height: 24)
 
             if case .failed = appState.openRouterTranscriptionCatalogState {
@@ -3893,67 +3324,6 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private func recordingSaveLabel(for policy: MeetingRecordingSavePolicy) -> String {
-        switch policy {
-        case .never:
-            return "Never"
-        case .prompt:
-            return "Ask every time"
-        case .always:
-            return "Always"
-        }
-    }
-
-    private func recordingSavePolicy(for label: String) -> MeetingRecordingSavePolicy? {
-        let policy = MeetingRecordingSavePolicy.allCases.first { recordingSaveLabel(for: $0) == label }
-        if policy == nil {
-            assertionFailure("Unexpected recording save label: \(label)")
-        }
-        return policy
-    }
-
-    private func recordingFileFormatLabel(for format: MeetingRecordingFileFormat) -> String {
-        format.displayName
-    }
-
-    private func recordingFileFormat(for label: String) -> MeetingRecordingFileFormat? {
-        let format = MeetingRecordingFileFormat.allCases.first { recordingFileFormatLabel(for: $0) == label }
-        if format == nil {
-            assertionFailure("Unexpected recording file format label: \(label)")
-        }
-        return format
-    }
-
-    private func scheduledMeetingLeadTimeLabel(for leadTime: ScheduledMeetingNotificationLeadTime) -> String {
-        switch leadTime {
-        case .atStart:
-            return "At start time"
-        case .oneMinute:
-            return "1 min before"
-        case .threeMinutes:
-            return "3 min before"
-        case .fiveMinutes:
-            return "5 min before"
-        }
-    }
-
-    private func scheduledMeetingLeadTime(for label: String) -> ScheduledMeetingNotificationLeadTime? {
-        let leadTime = ScheduledMeetingNotificationLeadTime.allCases.first {
-            scheduledMeetingLeadTimeLabel(for: $0) == label
-        }
-        if leadTime == nil {
-            assertionFailure("Unexpected scheduled meeting notification lead time label: \(label)")
-        }
-        return leadTime
-    }
-
-    private func meetingJoinDefaultAction(for label: String) -> MeetingJoinDefaultAction? {
-        let action = MeetingJoinDefaultAction.allCases.first { $0.buttonLabel == label }
-        if action == nil {
-            assertionFailure("Unexpected meeting join default action label: \(label)")
-        }
-        return action
-    }
 }
 
 // MARK: - Pastable Secure Field (NSViewRepresentable)

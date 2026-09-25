@@ -890,9 +890,9 @@ private final class FakeDictationRoute: DictationAudioRouting {
 
 // Reuse the fake recorder to exercise the controller without opening a microphone.
 extension ComputerUseRunDiagnosticsTests {
-    @Test("denied screen permission releases prepared CUA ownership before the next interaction")
+    @Test("cancelling a prepared CUA command releases ownership before the next interaction")
     @MainActor
-    func permissionDenialReleasesPreparedSession() throws {
+    func cancellationReleasesPreparedSession() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -911,7 +911,7 @@ extension ComputerUseRunDiagnosticsTests {
         #expect(controller.appState.dictationState == .preparing)
         #expect(!controller.canPrepareComputerUseCommand)
 
-        #expect(!controller.ensureComputerUseScreenRecordingAccess(isGranted: false))
+        controller.handleComputerUseCancel()
         harness.wait()
         #expect(!harness.manager.hasActiveSession)
         #expect(controller.appState.dictationState == .idle)
@@ -920,10 +920,9 @@ extension ComputerUseRunDiagnosticsTests {
         controller.handleComputerUsePrepare()
         harness.wait()
         #expect(harness.manager.hasActiveSession)
-        #expect(controller.ensureComputerUseScreenRecordingAccess(isGranted: true))
         #expect(harness.manager.hasActiveSession)
         #expect(harness.recorder.activateCalls == 2)
-        #expect(!controller.ensureComputerUseScreenRecordingAccess(isGranted: false))
+        controller.handleComputerUseCancel()
         harness.wait()
     }
 }
