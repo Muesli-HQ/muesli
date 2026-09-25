@@ -11,10 +11,11 @@ extension MuesliController {
         func add(_ id: String, _ label: String, _ choices: [Choice],
                  read: @escaping (AppConfig) -> String,
                  presentation: MuesliSetting.Presentation = .automatic,
+                 followUpSelections: [String: String] = [:],
                  unavailable: @escaping (String) -> String? = { _ in nil },
                  apply: @escaping (String) async throws -> Void) {
             settings.append(.init(id: id, label: label, choices: choices, read: read,
-                                  unavailable: unavailable, apply: apply, presentation: presentation))
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections))
         }
         func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>,
                     unavailable: @escaping (Bool) -> String? = { _ in nil },
@@ -281,7 +282,8 @@ extension MuesliController {
             }
         }
         add("quill_source", "Quill model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
-            read: { QuilModelSourceOption.resolved(for: .resolved($0.quilBackend)).id }, unavailable: { value in
+            read: { QuilModelSourceOption.resolved(for: .resolved($0.quilBackend)).id },
+            followUpSelections: [QuilModelSourceOption.localModels.id: "quill_local_model"], unavailable: { value in
                 value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
             }) { value in
             guard let source = QuilModelSourceOption.all.first(where: { $0.id == value }) else { return }

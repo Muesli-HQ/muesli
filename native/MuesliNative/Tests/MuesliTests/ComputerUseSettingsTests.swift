@@ -139,6 +139,7 @@ struct ComputerUseSettingsTests {
         }
         #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex FP16" } })
         #expect(!settings.contains { $0.id.localizedCaseInsensitiveContains("api_key") })
+        #expect(settings.first { $0.id == "quill_source" }?.followUpSelections[QuilModelSourceOption.localModels.id] == "quill_local_model")
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/MuesliNativeApp")
@@ -231,6 +232,47 @@ struct ComputerUseSettingsTests {
         #expect(ShortcutAssignment.meetingRecording.hotkey(for: "command+control+option+shift+k") != nil)
         #expect(ShortcutAssignment.dictation.combinationRules == nil)
         #expect(ShortcutAssignment.computerUse.combinationRules == nil)
+    }
+
+    @Test("source-only voice requests ask for a model without changing settings", arguments: [0, 1, 2])
+    func sourceFollowUp(optionCount: Int) async throws {
+        var config = AppConfig()
+        config.quilModel = "gemma"
+        var saved = config
+        var sourceWrites = 0
+        let source = MuesliSetting(id: "source", label: "Quill source",
+            choices: [.init(id: "local", label: "Local Models")], read: { _ in "local" },
+            unavailable: { _ in nil }, apply: { _ in sourceWrites += 1 },
+            followUpSelections: ["local": "model"])
+        let model = MuesliSetting(id: "model", label: "Local Quill model",
+            choices: Array([MuesliSetting.Choice(id: "qwen", label: "Qwen"), .init(id: "gemma", label: "Gemma")].prefix(optionCount)),
+            read: { $0.quilModel }, unavailable: { _ in nil }, apply: { value in
+                config.quilModel = value
+                saved = config
+            })
+        let result = await ComputerUseSettings.run(command: "Use local models for Quill", settings: [source, model],
+            config: { config }, persistedConfig: { saved }) { _, snapshots in
+                #expect(snapshots.first?.followUpSelections == ["local": "model"])
+                return ("set_muesli_setting", #"{"setting":"source","value":"local"}"#)
+            }
+        #expect(result?.status == .needsConfirmation)
+        #expect(sourceWrites == 0)
+        #expect(config.quilModel == "gemma")
+        #expect(saved.quilModel == "gemma")
+        if optionCount > 0 {
+            #expect(result?.message.contains("Which local Quill model") == true)
+            #expect(result?.message.contains("Qwen") == true)
+            if optionCount == 2 { #expect(result?.message.contains("Gemma") == true) }
+            let answer = await ComputerUseSettings.run(command: "Use Qwen for Quill", settings: [source, model],
+                config: { config }, persistedConfig: { saved }) { _, _ in
+                    ("set_muesli_setting", #"{"setting":"model","value":"qwen"}"#)
+                }
+            #expect(answer?.status == .done)
+            #expect(saved.quilModel == "qwen")
+            #expect(sourceWrites == 0)
+        } else {
+            #expect(result?.message.contains("No options are currently available") == true)
+        }
     }
 
     @Test("a new finite setting and option need no voice-specific registration")

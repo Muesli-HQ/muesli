@@ -38,6 +38,19 @@ enum ComputerUseSettings {
                 return result(.needsConfirmation, blocked.reason)
             case "set_muesli_setting":
                 let selection = try JSONDecoder().decode(Selection.self, from: Data(call.arguments.utf8))
+                if let setting = settings.first(where: { $0.id == selection.setting }),
+                   setting.choice(for: selection.value) != nil,
+                   let followUpID = setting.followUpSelections[selection.value] {
+                    guard let followUp = settings.first(where: { $0.id == followUpID }) else {
+                        throw Failure.rejected("The required follow-up setting is unavailable. Nothing was changed.")
+                    }
+                    let choices = followUp.choices.filter { followUp.unavailable($0.id) == nil }
+                    let label = followUp.label.prefix(1).lowercased() + followUp.label.dropFirst()
+                    let question = choices.isEmpty
+                        ? "No options are currently available for \(followUp.label). Check its requirements in Settings."
+                        : "Which \(label) would you like to use? Available options: \(choices.map(\.label).joined(separator: ", "))."
+                    return result(.needsConfirmation, question)
+                }
                 let message = try await MuesliSettings.apply(selection, settings: settings, snapshots: snapshots,
                                               config: config, persistedConfig: persistedConfig)
                 return result(.done, message)
@@ -78,6 +91,7 @@ enum ComputerUseSettings {
     'Floating pill' means the classic recording indicator; 'minimal' means minimal; 'notch' means notch.
     For shortcut assignments, Function means Fn, Control means Ctrl, and Command means Cmd. If a single modifier key has left/right choices and the user did not specify a side, ask which side. Assigning a shortcut does not enable its feature.
     'Toggle' or 'switch' a binary setting means the opposite of its current value; 'enable' means on; 'disable' means off.
+    When a choice has a followUpSelections entry and the user requests only that source, select that source choice so the app asks the follow-up question; never infer its model, even if only one is available or already selected. Select the follow-up setting directly only when the user explicitly names its option.
     If a model family has several variants, select it only if exactly one variant is available; if none are available explain that a download is required; if several are available ask which variant via settings_unavailable.
     For an unavailable, ambiguous, unsupported Muesli setting, a question, or multiple setting changes, use settings_unavailable with a brief explanation or clarifying question. Never use the desktop for these.
     For tasks about OTHER apps, websites, macOS System Settings, or computer use unrelated to Muesli settings, call continue_desktop_task. Do not change Muesli for such tasks.

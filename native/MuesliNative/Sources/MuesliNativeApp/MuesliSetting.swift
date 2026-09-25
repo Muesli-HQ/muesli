@@ -14,6 +14,7 @@ struct MuesliSetting {
         let choices: [Choice]
         let unavailable: [String: String]
         var shortcutCombination: ShortcutAssignment.CombinationRules? = nil
+        var followUpSelections: [String: String]? = nil
     }
     let id: String
     let label: String
@@ -23,6 +24,8 @@ struct MuesliSetting {
     let apply: (String) async throws -> Void
     var presentation: Presentation = .automatic
     var shortcutAssignment: ShortcutAssignment? = nil
+    // Source choices that require an explicit model choice in a voice command.
+    var followUpSelections: [String: String] = [:]
 
     func choice(for value: String) -> Choice? {
         if let choice = choices.first(where: { $0.id == value }) { return choice }
@@ -34,7 +37,7 @@ struct MuesliSetting {
         Snapshot(id: id, label: label, current: read(config), choices: choices,
                  unavailable: Dictionary(uniqueKeysWithValues: choices.compactMap { choice in
                      unavailable(choice.id).map { (choice.id, $0) }
-                 }), shortcutCombination: shortcutAssignment?.combinationRules)
+                 }), shortcutCombination: shortcutAssignment?.combinationRules, followUpSelections: followUpSelections.isEmpty ? nil : followUpSelections)
     }
 }
 
