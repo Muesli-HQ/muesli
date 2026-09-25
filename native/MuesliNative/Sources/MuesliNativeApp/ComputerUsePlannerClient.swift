@@ -63,13 +63,19 @@ enum ComputerUsePlannerClient {
         config: AppConfig
     ) async throws -> ComputerUsePlannerResponse {
         do {
-            return try await callChatGPTResponses(
+            let call = try await callTool(
                 systemPrompt: instructions,
                 userPrompt: requestPrompt(for: request),
                 imageDataURL: request.latestWindowState.screenshot?.imageDataURL,
                 model: plannerModel(for: config),
                 reasoningEffort: config.computerUseReasoningEffort
             )
+            do {
+                return try ComputerUsePlannerResponse.decodeNativeToolCall(name: call.name, arguments: call.arguments)
+            } catch {
+                throw ComputerUsePlannerError.invalidToolCall(name: call.name, arguments: call.arguments,
+                    message: ComputerUsePlannerResponse.decodingFailureDetail(error))
+            }
         } catch ChatGPTAuthError.notAuthenticated {
             throw ComputerUsePlannerError.notAuthenticated
         } catch let error as ComputerUsePlannerError {
@@ -93,20 +99,22 @@ enum ComputerUsePlannerClient {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func callChatGPTResponses(
+    static func callTool(
         systemPrompt: String,
         userPrompt: String,
         imageDataURL: String?,
         model: String,
-        reasoningEffort: ReasoningEffort?
-    ) async throws -> ComputerUsePlannerResponse {
+        reasoningEffort: ReasoningEffort?,
+        tools: [[String: Any]] = ComputerUseToolRegistry.nativeToolDefinitions()
+    ) async throws -> (name: String, arguments: String) {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
         let body = requestBody(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             imageDataURL: imageDataURL,
             model: model,
-            reasoningEffort: reasoningEffort
+            reasoningEffort: reasoningEffort,
+            tools: tools
         )
 
         let urlRequest = try ChatGPTResponsesTransport.makeRequest(
@@ -154,18 +162,7 @@ enum ComputerUsePlannerClient {
         }
 
         if let nativeToolCall = parsedNativeToolCall {
-            do {
-                return try ComputerUsePlannerResponse.decodeNativeToolCall(
-                    name: nativeToolCall.name,
-                    arguments: nativeToolCall.arguments
-                )
-            } catch {
-                throw ComputerUsePlannerError.invalidToolCall(
-                    name: nativeToolCall.name,
-                    arguments: nativeToolCall.arguments,
-                    message: ComputerUsePlannerResponse.decodingFailureDetail(error)
-                )
-            }
+            return nativeToolCall
         }
 
         let trimmedText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -198,7 +195,8 @@ enum ComputerUsePlannerClient {
         userPrompt: String,
         imageDataURL: String?,
         model: String,
-        reasoningEffort: ReasoningEffort? = nil
+        reasoningEffort: ReasoningEffort? = nil,
+        tools: [[String: Any]] = ComputerUseToolRegistry.nativeToolDefinitions()
     ) -> [String: Any] {
         var content: [[String: Any]] = [
             ["type": "input_text", "text": userPrompt],
@@ -211,7 +209,7 @@ enum ComputerUsePlannerClient {
             "store": false,
             "stream": true,
             "instructions": systemPrompt,
-            "tools": ComputerUseToolRegistry.nativeToolDefinitions(),
+            "tools": tools,
             "tool_choice": "required",
             "parallel_tool_calls": false,
             "input": [

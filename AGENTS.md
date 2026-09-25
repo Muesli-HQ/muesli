@@ -104,3 +104,19 @@ muesli_localvqe_runtime_is_complete /Applications/MuesliDevB.app/Contents/MacOS
 ```
 
 For cross-worktree reuse, prefer a pinned-ref- and architecture-specific runtime under `$HOME/Library/Caches/muesli-localvqe/` and pass it through `MUESLI_LOCALVQE_LIB_DIR`. Until the repository resolves that layout automatically, never copy an unvalidated partial dylib set between worktrees, and do not treat `/tmp/LocalVQE` as durable storage.
+
+## Finite Settings (UI and Voice)
+
+Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
+Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,
+readback, availability checks, and the existing controller setter. Render them
+with `MuesliSettingControl(controller:id:)` (or `settingsControl` in SettingsView).
+CUA automatically consumes every definition; do not add a separate voice mapping
+or command parser. Derive model choices from the model catalog/enum so new models
+are discovered automatically. Custom visual controls must use `setSettingFromUI`
+or `applySetting` for mutations. These share validation and save verification with
+voice commands. Freeform text, credentials, file pickers, and transient view
+filters are separate interactions and must not be exposed as arbitrary config writes.
+
+`ComputerUseSettingsTests` checks discovery of previously unknown settings and
+prevents independent toggle/menu bindings returning to the settings surfaces.
