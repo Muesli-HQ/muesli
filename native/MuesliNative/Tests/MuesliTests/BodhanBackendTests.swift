@@ -101,4 +101,43 @@ struct BodhanBackendTests {
         #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E2BLiteRT, inputFormat: .configurable))
     }
 
+    @Test("Output mode persists, defaults to mixed and remains native for Core")
+    func outputModes() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(missing.resolvedBodhanOutputMode == .mixed)
+        #expect(BodhanOutputMode.resolved("unknown") == .mixed)
+        for mode in BodhanOutputMode.allCases {
+            var config = AppConfig()
+            config.bodhanOutputMode = mode.rawValue
+            let restored = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+            #expect(restored.resolvedBodhanOutputMode == mode)
+            for model in BodhanModel.allCases {
+                #expect(mode.supported(for: model.rawValue) == (model.isCore ? .native : mode))
+            }
+        }
+        #expect(BodhanOutputMode.romanized.maximumGeneratedTokens >= 281)
+        #expect(BodhanOutputMode.mixed.maximumGeneratedTokens == 256)
+    }
+
+    @Test("Romanization derives the upstream task token without changing cached prompts")
+    func romanizedPrompt() throws {
+        guard #available(macOS 15, *) else { return }
+        var pieces = [String](repeating: "", count: 32)
+        pieces[8] = "<|itn|>"; pieces[9] = "<|noitn|>"
+        pieces[10] = "<|romanized|>"; pieces[11] = "<|noromanized|>"
+        let native = [7, 4, 18, 20, 20, 5, 9, 11, 13, 15]
+        var mixed = native; mixed[6] = 8
+        let tokenizer = BodhanCoreML.Tokenizer(pieces: pieces, special_count: 24, eos_id: 3,
+            prompts: ["hi": native], mixed_prompts: ["hi": mixed])
+        var romanized = native; romanized[7] = 10
+        #expect(try tokenizer.prompt(language: "hi", mode: .native) == native)
+        #expect(try tokenizer.prompt(language: "hi", mode: .mixed) == mixed)
+        #expect(try tokenizer.prompt(language: "hi", mode: .romanized) == romanized)
+        #expect(tokenizer.prompts["hi"] == native)
+        pieces[10] = ""
+        let unsupported = BodhanCoreML.Tokenizer(pieces: pieces, special_count: 24, eos_id: 3,
+            prompts: ["hi": native], mixed_prompts: nil)
+        #expect(throws: (any Error).self) { try unsupported.prompt(language: "hi", mode: .romanized) }
+    }
+
 }

@@ -3143,6 +3143,10 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func selectBodhanOutputMode(_ mode: BodhanOutputMode) {
+        updateConfig { $0.bodhanOutputMode = mode.rawValue }
+    }
+
     func selectBodhanLanguage(_ language: BodhanLanguage) {
         updateConfig {
             $0.bodhanLanguage = language.rawValue
@@ -5778,6 +5782,7 @@ public final class MuesliController: NSObject {
                     backend: backend,
                     cohereLanguage: snapshot.resolvedCohereLanguage,
                     bodhanLanguage: snapshot.resolvedBodhanLanguage,
+                    bodhanOutputMode: snapshot.resolvedBodhanOutputMode,
                     whisperLanguage: snapshot.resolvedWhisperLanguage,
                     qwen3AsrLanguage: snapshot.resolvedQwen3AsrLanguage,
                     parakeetLanguage: snapshot.resolvedParakeetLanguage,
@@ -9540,6 +9545,7 @@ public final class MuesliController: NSObject {
                         backend: dictationBackend,
                         cohereLanguage: configSnapshot.resolvedCohereLanguage,
                         bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
+                        bodhanOutputMode: configSnapshot.resolvedBodhanOutputMode,
                         whisperLanguage: configSnapshot.resolvedWhisperLanguage,
                         qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
                         parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
@@ -9984,6 +9990,7 @@ public final class MuesliController: NSObject {
                     backend: self.selectedBackend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     bodhanLanguage: self.config.resolvedBodhanLanguage,
+                    bodhanOutputMode: self.config.resolvedBodhanOutputMode,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     parakeetLanguage: self.config.resolvedParakeetLanguage,
@@ -11538,6 +11545,7 @@ public final class MuesliController: NSObject {
             )
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let bodhanTranscriptionLanguage = config.resolvedBodhanLanguage
+        let bodhanTranscriptionOutputMode = config.resolvedBodhanOutputMode
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
@@ -11590,6 +11598,7 @@ public final class MuesliController: NSObject {
                             backend: fallbackBackend,
                             cohereLanguage: transcriptionLanguage,
                             bodhanLanguage: bodhanTranscriptionLanguage,
+                            bodhanOutputMode: bodhanTranscriptionOutputMode,
                             whisperLanguage: whisperTranscriptionLanguage,
                             qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                             parakeetLanguage: self.config.resolvedParakeetLanguage,
@@ -11609,6 +11618,7 @@ public final class MuesliController: NSObject {
                         backend: transcriptionBackend,
                         cohereLanguage: transcriptionLanguage,
                         bodhanLanguage: bodhanTranscriptionLanguage,
+                        bodhanOutputMode: bodhanTranscriptionOutputMode,
                         whisperLanguage: whisperTranscriptionLanguage,
                         qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                         parakeetLanguage: self.config.resolvedParakeetLanguage,

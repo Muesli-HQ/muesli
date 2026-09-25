@@ -941,6 +941,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -968,6 +969,7 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -1000,6 +1002,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1011,6 +1014,7 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -1025,6 +1029,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1037,6 +1042,7 @@ actor TranscriptionCoordinator {
                 backend: backend,
                 cohereLanguage: cohereLanguage,
                 bodhanLanguage: bodhanLanguage,
+                bodhanOutputMode: bodhanOutputMode,
                 whisperLanguage: whisperLanguage,
                 qwen3AsrLanguage: qwen3AsrLanguage,
                 parakeetLanguage: parakeetLanguage,
@@ -1050,6 +1056,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1074,6 +1081,7 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -1430,6 +1438,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
         bodhanLanguage: BodhanLanguage,
+        bodhanOutputMode: BodhanOutputMode,
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
         parakeetLanguage: ParakeetLanguage,
@@ -1450,7 +1459,7 @@ actor TranscriptionCoordinator {
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "bodhan":
-            return try await transcribeWithBodhan(url: url, modelID: backend.model, language: bodhanLanguage)
+            return try await transcribeWithBodhan(url: url, modelID: backend.model, language: bodhanLanguage, outputMode: bodhanOutputMode)
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
@@ -1595,11 +1604,12 @@ actor TranscriptionCoordinator {
     private func transcribeWithBodhan(
         url: URL,
         modelID: String,
-        language: BodhanLanguage
+        language: BodhanLanguage,
+        outputMode: BodhanOutputMode
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             BodhanLogging.logVerbose("transcribing with Bodhan (\(language.rawValue)): \(url.lastPathComponent)")
-            let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language)
+            let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language, outputMode: outputMode)
             BodhanLogging.logVerbose("Bodhan result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

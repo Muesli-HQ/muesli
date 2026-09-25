@@ -175,6 +175,7 @@ enum AudioFileImportController {
             backend: backend,
             cohereLanguage: config.resolvedCohereLanguage,
             bodhanLanguage: config.resolvedBodhanLanguage,
+            bodhanOutputMode: config.resolvedBodhanOutputMode,
             whisperLanguage: config.resolvedWhisperLanguage,
             parakeetLanguage: config.resolvedParakeetLanguage,
             appleSpeechLanguage: config.resolvedAppleSpeechLanguage,

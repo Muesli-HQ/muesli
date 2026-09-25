@@ -94,7 +94,7 @@ final class BodhanMLXDecoder {
         return (linear(norm(x,"final_layer_norm"),"lm_head"),next)
     }
     func generate(acoustic: MLMultiArray, length: Int, tokenizer: BodhanCoreML.Tokenizer,
-                  language: String?, mixed: Bool, frontendSeconds: Double, encoderSeconds: Double,
+                  language: String?, outputMode: BodhanOutputMode, frontendSeconds: Double, encoderSeconds: Double,
                   encoderPolicy: String) throws -> BodhanCoreML.Result {
         try tokenizer.validate()
         let crossStart = Date()
@@ -137,13 +137,14 @@ final class BodhanMLXDecoder {
             let scores = logits[0,2]; eval(scores)
             chosen = tokenizer.prompts.keys.sorted().max { scores[tokenizer.prompts[$0]![3]].item(Float.self) < scores[tokenizer.prompts[$1]![3]].item(Float.self) }
         }
-        guard let chosen, let prompt = (mixed ? tokenizer.mixed_prompts : tokenizer.prompts)?[chosen] else {
+        guard let chosen else {
             throw NSError(domain:"BodhanASR",code:7,userInfo:[NSLocalizedDescriptionKey:"Missing language prompt."])
         }
+        let prompt = try tokenizer.prompt(language: chosen, mode: outputMode)
         var ids = prompt, position = 0, tokens: [Int] = []
         var cache: [KV]? = nil
         var ended = false
-        for _ in 0..<256 {
+        for _ in 0..<outputMode.maximumGeneratedTokens {
             if Task<Never,Never>.isCancelled { throw CancellationError() }
             let (logits,nextCache) = BodhanProfiling.measure("MLXStepGraph") { step(ids,position,cross,cache) }
             let next = argMax(logits[0,ids.count-1],axis:-1)

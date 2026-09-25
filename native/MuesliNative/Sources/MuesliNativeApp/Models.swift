@@ -1714,6 +1714,7 @@ struct AppConfig: Codable {
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
+    var bodhanOutputMode: String = BodhanOutputMode.mixed.rawValue
     var bodhanLanguage: String = BodhanLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
@@ -1858,6 +1859,7 @@ struct AppConfig: Codable {
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
         // Retained wire key for existing language preferences and synced configs.
+        case bodhanOutputMode = "bodhan_output_mode"
         case bodhanLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
@@ -2011,6 +2013,7 @@ struct AppConfig: Codable {
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
+        bodhanOutputMode = BodhanOutputMode.resolved(try? c.decode(String.self, forKey: .bodhanOutputMode)).rawValue
         bodhanLanguage = BodhanLanguage.resolvedCode(try? c.decode(String.self, forKey: .bodhanLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
@@ -2230,6 +2233,8 @@ struct AppConfig: Codable {
     var resolvedDictationProvider: DictationProvider {
         DictationProvider.resolved(dictationProvider)
     }
+
+    var resolvedBodhanOutputMode: BodhanOutputMode { BodhanOutputMode.resolved(bodhanOutputMode) }
 
     var resolvedBodhanLanguage: BodhanLanguage {
         BodhanLanguage.resolved(bodhanLanguage)
