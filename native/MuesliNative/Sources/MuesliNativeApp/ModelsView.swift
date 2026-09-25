@@ -1396,6 +1396,24 @@ struct ModelsView: View {
                         .disabled(isDownloading || incompatibilityReason != nil)
                     }
                 }
+                if BodhanModel(rawValue: option.model)?.isCore == false {
+                    HStack(spacing: MuesliTheme.spacing12) {
+                        Text("Output").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(width: 64, alignment: .leading)
+                        Picker("Output script", selection: Binding(
+                            get: { appState.config.resolvedBodhanOutputMode },
+                            set: { controller.selectBodhanOutputMode($0) }
+                        )) {
+                            ForEach(BodhanOutputMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: 220, alignment: .leading)
+                        .disabled(incompatibilityReason != nil)
+                        .help("Native script, mixed Indic and English scripts, or all Latin letters.")
+                    }
+                }
+
             }
 
             if option.backend == BackendOption.qwen3Asr.backend {

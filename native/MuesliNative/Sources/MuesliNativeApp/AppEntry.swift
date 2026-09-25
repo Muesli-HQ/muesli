@@ -24,7 +24,7 @@ public enum MuesliAppEntry {
                     var rows: [[String: Any]] = []
                     for _ in 0..<2 {
                         let call = Date()
-                        let result = try await transcriber.transcribe(wavURL: URL(fileURLWithPath: audio), modelID: model, language: .automatic)
+                        let result = try await transcriber.transcribe(wavURL: URL(fileURLWithPath: audio), modelID: model, language: .automatic, outputMode: BodhanOutputMode.resolved(ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_MODE"]))
                         rows.append(["text": result.text, "processingSeconds": result.processingTime,
                                      "callSeconds": Date().timeIntervalSince(call)])
                     }
@@ -52,10 +52,15 @@ public enum MuesliAppEntry {
                 try runtime.warmupEncoderShapes()
                 let lengths = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_LENGTHS"]?
                     .split(separator: ",").compactMap { Double($0) } ?? []
+                // The explicit mode matches the preparation benchmark; retain the legacy
+                // mixed flag and native default for existing raw-benchmark scripts.
+                let outputMode = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_MODE"]
+                    .map { BodhanOutputMode.resolved($0) }
+                    ?? (ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_MIXED"] == "1" ? .mixed : .native)
                 for index in 0..<(lengths.isEmpty ? 3 : lengths.count) {
                     let input = lengths.isEmpty ? samples : Array(samples.prefix(Int(lengths[index]*16000)))
                     results.append(try runtime.transcribe(samples: input, language: "hi",
-                        mixedScript: ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_MIXED"] == "1"))
+                        outputMode: outputMode))
                 }
                 try JSONEncoder().encode(results).write(to: URL(fileURLWithPath: output), options: .atomic)
             } catch {

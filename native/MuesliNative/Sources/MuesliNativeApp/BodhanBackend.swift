@@ -2,6 +2,15 @@ import Foundation
 import FluidAudio
 import MuesliCore
 
+enum BodhanOutputMode: String, CaseIterable, Codable, Sendable {
+    case native, mixed, romanized
+    var label: String { rawValue.capitalized }
+    static func resolved(_ raw: String?) -> Self { raw.flatMap(Self.init(rawValue:)) ?? .mixed }
+    func supported(for model: String) -> Self { BodhanModel(rawValue: model)?.isCore == false ? self : .native }
+    // Romanized Indic text takes more subword tokens; retain the existing budget for other modes.
+    var maximumGeneratedTokens: Int { self == .romanized ? 512 : 256 }
+}
+
 enum BodhanLanguage: String, CaseIterable, Codable, Sendable {
     case automatic = "auto"
     case english = "en"
@@ -145,17 +154,17 @@ enum BodhanTranscriptMerger {
 
 @available(macOS 15, *)
 protocol BodhanRuntime: AnyObject {
-    func warmup(mixedScript: Bool) async throws
-    func transcribe(samples: [Float], language: String?, mixedScript: Bool) throws -> BodhanCoreML.Result
+    func warmup(outputMode: BodhanOutputMode) async throws
+    func transcribe(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> BodhanCoreML.Result
 }
 
 @available(macOS 15, *)
 extension BodhanCoreML: BodhanRuntime {
-    func warmup(mixedScript: Bool) async throws {
+    func warmup(outputMode: BodhanOutputMode) async throws {
         try Task.checkCancellation()
         try warmupEncoderShapes()
         try Task.checkCancellation()
-        _ = try transcribe(samples: [Float](repeating: 0, count: 8000), language: "hi", mixedScript: mixedScript)
+        _ = try transcribe(samples: [Float](repeating: 0, count: 8000), language: "hi", outputMode: outputMode)
     }
 }
 
@@ -232,10 +241,10 @@ actor BodhanTranscriber {
             progress?(0.95, warming.message)
             progressSnapshot?(warming)
             if warmupTask == nil {
-                let mixed = model.mixedScript
+                let mode: BodhanOutputMode = model.isCore ? .native : .mixed
                 warmupTask = Task {
                     BodhanLogging.logVerbose("background warmup started")
-                    try await runtime.warmup(mixedScript: mixed)
+                    try await runtime.warmup(outputMode: mode)
                     try Task.checkCancellation()
                     BodhanLogging.logVerbose("background warmup complete")
                 }
@@ -256,7 +265,7 @@ actor BodhanTranscriber {
     }
 
     func transcribe(wavURL: URL, modelID: String = BodhanModel.flex.rawValue,
-                    language: BodhanLanguage = .defaultLanguage) async throws -> (text: String, processingTime: Double) {
+                    language: BodhanLanguage = .defaultLanguage, outputMode: BodhanOutputMode = .mixed) async throws -> (text: String, processingTime: Double) {
         try await prepare(modelID: modelID)
         guard let runtime, let model else { throw CancellationError() }
         let language = language.supported(for: modelID)
@@ -269,7 +278,7 @@ actor BodhanTranscriber {
             try Task.checkCancellation()
             let end = min(offset + 28 * 16000, samples.count)
             let result = try runtime.transcribe(samples: Array(samples[offset..<end]),
-                language: language == .automatic ? nil : language.rawValue, mixedScript: model.mixedScript)
+                language: language == .automatic ? nil : language.rawValue, outputMode: outputMode.supported(for: modelID))
             transcripts.append(result.text)
             recordBodhanTiming(result, modelID: modelID, audioSeconds: Double(end - offset) / 16000)
             BodhanLogging.logVerbose("Bodhan language=\(result.language), tokens=\(result.tokens), encoder=\(result.encoderSeconds)s, decode=\(result.decodeSeconds)s")

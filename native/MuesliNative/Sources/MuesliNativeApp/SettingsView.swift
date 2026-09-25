@@ -1083,6 +1083,7 @@ struct SettingsView: View {
                 settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu(model: displayedDictationBackend?.model ?? "")
                 }
+                bodhanOutputMenu(model: displayedDictationBackend?.model ?? "")
             }
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1310,6 +1311,7 @@ struct SettingsView: View {
                 settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
+                bodhanOutputMenu(model: appState.selectedMeetingTranscriptionBackend.model)
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
@@ -1559,6 +1561,20 @@ struct SettingsView: View {
         ) { label in
             guard let language = WhisperKitLanguage.allCases.first(where: { $0.label == label }) else { return }
             controller.selectWhisperLanguage(language)
+        }
+    }
+
+    @ViewBuilder
+    private func bodhanOutputMenu(model: String) -> some View {
+        if BodhanModel(rawValue: model)?.isCore == false {
+            settingsRow("Bodhan output", controlWidth: meetingControlWidth) {
+                Picker("Output script", selection: Binding(
+                    get: { appState.config.resolvedBodhanOutputMode },
+                    set: { controller.selectBodhanOutputMode($0) }
+                )) {
+                    ForEach(BodhanOutputMode.allCases, id: \.self) { mode in Text(mode.label).tag(mode) }
+                }.labelsHidden().pickerStyle(.menu)
+            }
         }
     }
 
