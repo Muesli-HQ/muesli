@@ -37,7 +37,7 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 | Feature | What you can do |
 |---|---|
 | **Quill** | Ask a question, rewrite selected text, or create text at the cursor with your voice. |
-| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. |
+| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. Bodhan Flex also offers romanized output in Latin letters. |
 | **Live meeting transcripts** | Use Apple Speech on macOS 26+. Live transcription is off by default. |
 | **Re-summarize meetings** | Choose a different summary model for a saved meeting. |
 | **BYOK dictation** | Use OpenAI or OpenRouter when you want hosted transcription. Local by default. |
@@ -64,7 +64,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 ## Features
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech, and experimental Gemma 4 E2B.
+- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech (Flex includes native, mixed-script, and romanized output), and experimental Gemma 4 E2B.
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
 - **Quill voice writing and answers** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
@@ -360,7 +360,7 @@ Important meeting fields:
 | SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Bodhan Core | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 25 languages, including English; auto-detect | Final transcription |
-| Bodhan Flex | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 27 languages, including English; auto-detect | Final transcription |
+| Bodhan Flex | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 27 languages, including English; auto-detect; native, mixed-script, or romanized output | Final transcription |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
 | Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
 | Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
