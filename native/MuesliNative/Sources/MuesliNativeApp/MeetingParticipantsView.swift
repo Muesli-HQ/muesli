@@ -9,21 +9,23 @@ extension Notification.Name {
 struct MeetingParticipantsView: View {
     let meetingID: Int64
     let controller: MuesliController
+    let onCreateNewContact: () -> Void
     let compactDiscardAction: (() -> Void)?
 
     @State private var participants: [MeetingParticipant] = []
     @State private var isContactPickerPresented = false
-    @State private var isNewContactPresented = false
     @State private var isPeoplePopoverPresented = false
     @State private var errorMessage: String?
 
     init(
         meetingID: Int64,
         controller: MuesliController,
+        onCreateNewContact: @escaping () -> Void,
         compactDiscardAction: (() -> Void)? = nil
     ) {
         self.meetingID = meetingID
         self.controller = controller
+        self.onCreateNewContact = onCreateNewContact
         self.compactDiscardAction = compactDiscardAction
     }
 
@@ -58,11 +60,6 @@ struct MeetingParticipantsView: View {
             guard notification.object as? Int64 == meetingID else { return }
             Task { await reload() }
         }
-        .sheet(isPresented: $isNewContactPresented) {
-            NewMeetingContactView { participant in
-                Task { await attach(participant) }
-            }
-        }
         .alert("Couldn't Update People", isPresented: errorBinding) {
             Button("OK", role: .cancel) {
                 errorMessage = nil
@@ -75,31 +72,40 @@ struct MeetingParticipantsView: View {
     @ViewBuilder
     private var participantControl: some View {
         if let compactDiscardAction {
-            Menu {
+            HStack(spacing: 5) {
                 Button {
-                    presentPeoplePopoverAfterMenuDismisses()
+                    isPeoplePopoverPresented.toggle()
                 } label: {
-                    Label("Add people…", systemImage: "person.2")
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(MuesliTheme.backgroundRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
+                .buttonStyle(.plain)
+                .help("Add people to this meeting")
+                .accessibilityLabel("Add people to this meeting")
+                .accessibilityIdentifier("meeting.people.add")
 
-                Divider()
-
-                Button("Discard meeting", role: .destructive) {
-                    compactDiscardAction()
+                Menu {
+                    Button("Discard meeting", role: .destructive) {
+                        compactDiscardAction()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(MuesliTheme.backgroundRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .frame(width: 28, height: 28)
-                    .background(MuesliTheme.backgroundRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More recording actions")
+                .accessibilityLabel("More recording actions")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More recording actions")
-            .accessibilityLabel("More recording actions")
         } else {
             Button {
                 isPeoplePopoverPresented.toggle()
@@ -270,18 +276,11 @@ struct MeetingParticipantsView: View {
         }
     }
 
-    private func presentPeoplePopoverAfterMenuDismisses() {
-        Task { @MainActor in
-            await Task.yield()
-            isPeoplePopoverPresented = true
-        }
-    }
-
     private func createNewContact() {
         isPeoplePopoverPresented = false
         Task { @MainActor in
             await Task.yield()
-            isNewContactPresented = true
+            onCreateNewContact()
         }
     }
 
