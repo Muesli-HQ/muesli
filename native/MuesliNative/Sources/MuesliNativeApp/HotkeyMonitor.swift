@@ -52,6 +52,11 @@ final class HotkeyMonitor {
     var onCancel: (() -> Void)?
     var onToggleStart: (() -> Void)?
     var onToggleStop: (() -> Void)?
+    private(set) var modifierActivation: DictationActivationMode = .hold
+    private var modifierGesture = ModifierToggleGesture()
+    private var otherModifiersDown: Set<UInt16> = []
+    private var typingKeysDown: Set<UInt16> = []
+
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var combinationActivation: CombinationActivation = .toggle
@@ -109,6 +114,14 @@ final class HotkeyMonitor {
         self.now = now
     }
 
+    func configureModifierActivation(_ mode: DictationActivationMode) {
+        guard modifierActivation != mode else { return }
+        finishActiveSessionBeforeReconfigure()
+        cancelCurrentSession()
+        modifierActivation = mode
+        if isRunning { snapshotPhysicalKeys() }
+    }
+
     func configureTriggerThreshold(milliseconds: Int) {
         finishActiveSessionBeforeReconfigure()
         prepareDelay = HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: milliseconds)
@@ -126,6 +139,7 @@ final class HotkeyMonitor {
 
     func start() {
         guard !isRunning else { return }
+        snapshotPhysicalKeys()
 
         // Carbon registration itself does not require listen access, but the
         // companion global Escape monitor does.
@@ -249,17 +263,18 @@ final class HotkeyMonitor {
 
     /// Call externally to stop toggle mode (e.g., from floating indicator click)
     func stopToggleMode() {
-        if toggleActive {
-            toggleActive = false
+        let wasToggleActive = toggleActive
+        cancelCurrentSession()
+        if wasToggleActive {
             fputs("[hotkey] toggle stopped externally\n", stderr)
             onToggleStop?()
         }
     }
 
-    /// Cancel toggle mode without triggering onToggleStop (discard path)
+    /// Cancel toggle mode without triggering onToggleStop (discard path).
     func cancelToggleMode() {
-        if toggleActive {
-            toggleActive = false
+        if toggleActive || (modifierActivation == .toggle && !isCombinationMode) {
+            cancelCurrentSession()
             fputs("[hotkey] toggle cancelled externally\n", stderr)
         }
     }
@@ -272,6 +287,7 @@ final class HotkeyMonitor {
         sessionGeneration &+= 1
         cancelTimers()
         targetKeyDown = false
+        modifierGesture.reset()
         otherKeyPressed = false
         armed = false
         prepared = false
@@ -281,6 +297,22 @@ final class HotkeyMonitor {
         combinationTriggered = false
         lastTapWasShort = false
         lastTapUpTime = nil
+    }
+
+    /// Seed keys held before the monitors attached. During delivery, use only
+    /// captured event state: current HID state may belong to a later gesture.
+    private func snapshotPhysicalKeys() {
+        otherModifiersDown.removeAll()
+        typingKeysDown.removeAll()
+        guard modifierActivation == .toggle, !isCombinationMode else { return }
+        for keyCode in UInt16(0)..<128 where keyCode != targetKeyCode && keyCode != 57 {
+            guard CGEventSource.keyState(.hidSystemState, key: keyCode) else { continue }
+            if Self.modifierFlag(for: keyCode).isEmpty {
+                typingKeysDown.insert(keyCode)
+            } else {
+                otherModifiersDown.insert(keyCode)
+            }
+        }
     }
 
     var isRunning: Bool {
@@ -305,6 +337,8 @@ final class HotkeyMonitor {
             handleFlagsChanged(keyCode: event.keyCode, flags: event.modifierFlags)
         case .keyDown:
             handleKeyDown(keyCode: event.keyCode)
+        case .keyUp:
+            handleKeyUp(keyCode: event.keyCode)
         default:
             break
         }
@@ -539,10 +573,21 @@ final class HotkeyMonitor {
             return true
         }
 
+        // Keep held-key state accurate across focus changes without admitting
+        // a fresh selected-modifier start in Muesli's own text editor.
+        if modifierActivation == .toggle, !isCombinationMode {
+            if type == .keyDown || type == .keyUp { return true }
+            if type == .flagsChanged && keyCode != targetKeyCode { return true }
+        }
+
         return type == .keyDown && keyCode == 53
     }
 
-    func handleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags) {
+    func handleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags, physicalKeyDown: Bool? = nil) {
+        if modifierActivation == .toggle {
+            handleToggleFlagsChanged(keyCode: keyCode, flags: flags, physicalKeyDown: physicalKeyDown)
+            return
+        }
         if keyCode == targetKeyCode {
             let isDown = isModifierDown(keyCode: targetKeyCode, flags: flags)
             if isDown {
@@ -644,6 +689,106 @@ final class HotkeyMonitor {
         }
     }
 
+    private func handleToggleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags, physicalKeyDown: Bool?) {
+        // A captured family-up or side-up flag also retires stale opposite
+        // entries after an ambiguous two-sided gesture.
+        otherModifiersDown = Set(otherModifiersDown.filter {
+            Self.sideState(keyCode: $0, flags: flags) ?? isModifierDown(keyCode: $0, flags: flags)
+        })
+        let sideState = Self.sideState(keyCode: keyCode, flags: flags)
+        let isDown = physicalKeyDown
+            ?? sideState
+            ?? isModifierDown(keyCode: keyCode, flags: flags)
+        guard keyCode == targetKeyCode else {
+            if isDown { otherModifiersDown.insert(keyCode) }
+            else { otherModifiersDown.remove(keyCode) }
+            modifierGesture.chord()
+            return
+        }
+
+        if physicalKeyDown == nil, sideState == nil, isDown,
+           otherModifiersDown.contains(where: { Self.modifierFlag(for: $0) == Self.modifierFlag(for: keyCode) }) {
+            // Without side bits an opposite-side hold makes this edge
+            // ambiguous. Suppress the cycle instead of guessing down/up.
+            targetKeyDown = false
+            modifierGesture.reset()
+            return
+        }
+
+        if isDown {
+            guard !modifierGesture.isDown else { return }
+            modifierGesture.press()
+            targetKeyDown = true
+            let otherFlags = flags.intersection([.command, .control, .option, .shift, .function])
+                .subtracting(Self.modifierFlag(for: targetKeyCode))
+            let oppositeSideHeld = flags.rawValue & Self.oppositeSideMask(for: targetKeyCode) != 0
+            if !otherFlags.isEmpty || oppositeSideHeld || !otherModifiersDown.isEmpty || !typingKeysDown.isEmpty {
+                modifierGesture.chord()
+            }
+            return
+        }
+
+        targetKeyDown = false
+        guard modifierGesture.release() else { return }
+        toggleActive.toggle()
+        // Reset the gesture before calling out: callbacks can cancel or
+        // reconfigure the monitor synchronously.
+        if toggleActive { onToggleStart?() }
+        else { onToggleStop?() }
+    }
+
+    private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags {
+        switch keyCode {
+        case 55, 54: return .command
+        case 56, 60: return .shift
+        case 58, 61: return .option
+        case 59, 62: return .control
+        case 63: return .function
+        default: return []
+        }
+    }
+
+    // Device-dependent masks from Apple's IOLLEvent.h. NSEvent retains these
+    // low bits even when the device-independent flag is shared by both sides.
+    private static func sideMask(for keyCode: UInt16) -> UInt {
+        switch keyCode {
+        case 59: return 0x01
+        case 56: return 0x02
+        case 60: return 0x04
+        case 55: return 0x08
+        case 54: return 0x10
+        case 58: return 0x20
+        case 61: return 0x40
+        case 62: return 0x2000
+        default: return 0
+        }
+    }
+
+    private static func oppositeSideMask(for keyCode: UInt16) -> UInt {
+        switch keyCode {
+        case 59: return sideMask(for: 62)
+        case 62: return sideMask(for: 59)
+        case 56: return sideMask(for: 60)
+        case 60: return sideMask(for: 56)
+        case 55: return sideMask(for: 54)
+        case 54: return sideMask(for: 55)
+        case 58: return sideMask(for: 61)
+        case 61: return sideMask(for: 58)
+        default: return 0
+        }
+    }
+
+    private static func sideState(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool? {
+        let ownMask = sideMask(for: keyCode)
+        let familyMask = ownMask | oppositeSideMask(for: keyCode)
+        guard ownMask != 0, flags.rawValue & familyMask != 0 else { return nil }
+        return flags.rawValue & ownMask != 0
+    }
+
+    func handleKeyUp(keyCode: UInt16) {
+        typingKeysDown.remove(keyCode)
+    }
+
     private func isModifierDown(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         switch keyCode {
         case 55, 54: return flags.contains(.command)
@@ -658,10 +803,17 @@ final class HotkeyMonitor {
     func handleKeyDown(keyCode: UInt16) {
         // Escape cancels any active recording
         if keyCode == 53 {
+            modifierGesture.chord()
             if toggleActive || active || armed || prepared || armCancelWorkItem != nil {
                 cancelCurrentSession()
                 onCancel?()
             }
+            return
+        }
+
+        if modifierActivation == .toggle {
+            typingKeysDown.insert(keyCode)
+            modifierGesture.chord()
             return
         }
 

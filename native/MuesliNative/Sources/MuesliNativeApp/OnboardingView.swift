@@ -527,9 +527,15 @@ struct OnboardingView: View {
     private var dictationTestSubtitle: AttributedString {
         let markdown: String
         if isSelectedModelReadyForDictationTest {
-            markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
-                ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
-                : "Hold **\(selectedHotkey.label)** and say something, then release.\nYour words should appear below."
+            if selectedHotkey.isCombination {
+                markdown = "Hold **\(selectedHotkey.label)** to start, then hold it again to finish.\nYour words should appear below."
+            } else if appState.config.dictationActivationMode == .toggle {
+                markdown = "Tap **\(selectedHotkey.label)** and say something, then tap again to finish.\nYour words should appear below."
+            } else {
+                markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
+                    ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
+                    : "Hold **\(selectedHotkey.label)** and say something, then release.\nYour words should appear below."
+            }
         } else {
             markdown = dictationTestPreparationSubtitleMarkdown
         }
@@ -1395,7 +1401,11 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
+                Text(selectedHotkey.isCombination
+                    ? "Hold your shortcut to start recording, then hold it again to transcribe."
+                    : appState.config.dictationActivationMode == .toggle
+                        ? "Choose the key you'll tap to dictate. Tap to start recording, then tap again to transcribe."
+                        : "Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -1558,7 +1568,11 @@ struct OnboardingView: View {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Listening... release \(selectedHotkey.label) when done")
+                            Text(selectedHotkey.isCombination
+                                ? "Listening... hold \(selectedHotkey.label) again when done"
+                                : appState.config.dictationActivationMode == .toggle
+                                    ? "Listening... tap \(selectedHotkey.label) again when done"
+                                    : "Listening... release \(selectedHotkey.label) when done")
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textSecondary)
                         }
@@ -1566,7 +1580,9 @@ struct OnboardingView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "keyboard")
                                 .font(.system(size: 14))
-                            Text("Hold \(selectedHotkey.label) to start")
+                            Text(!selectedHotkey.isCombination && appState.config.dictationActivationMode == .toggle
+                                ? "Tap \(selectedHotkey.label) to start"
+                                : "Hold \(selectedHotkey.label) to start")
                                 .font(MuesliTheme.body())
                         }
                         .foregroundStyle(MuesliTheme.textTertiary)

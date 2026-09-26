@@ -750,9 +750,14 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
         hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
-        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
+        hotkeyMonitor.onToggleStart = { [weak self] in
+            guard let self else { return }
+            if !self.handleToggleStart() {
+                self.hotkeyMonitor.cancelCurrentSession()
+            }
+        }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
-        hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -1725,7 +1730,7 @@ public final class MuesliController: NSObject {
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
         indicator.refreshIcon()
-        hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
@@ -4453,7 +4458,7 @@ public final class MuesliController: NSObject {
             return result
         }
         updateConfig { $0.dictationHotkey = hotkey }
-        hotkeyMonitor.configure(hotkey)
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         configureComputerUseHotkeyMonitor()
         return result
     }
@@ -4634,6 +4639,7 @@ public final class MuesliController: NSObject {
     func resetShortcutDefaults() {
         updateConfig { config in
             config.dictationHotkey = .default
+            config.dictationActivationMode = .hold
             config.quilHotkey = .quilDefault
             config.enableQuilMode = false
             config.computerUseHotkey = .computerUseDefault
@@ -4645,7 +4651,7 @@ public final class MuesliController: NSObject {
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
-        hotkeyMonitor.configure(.default)
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
@@ -4823,9 +4829,14 @@ public final class MuesliController: NSObject {
     }
 
     func startHotkeyMonitor(keyCode: UInt16? = nil) {
-        if let keyCode {
-            hotkeyMonitor.configure(keyCode: keyCode)
+        var monitorConfig = config
+        if let keyCode, keyCode != config.dictationHotkey.keyCode {
+            monitorConfig.dictationHotkey = HotkeyConfig(
+                keyCode: keyCode,
+                label: HotkeyConfig.label(for: keyCode) ?? "Shortcut"
+            )
         }
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: monitorConfig)
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
     }
@@ -4995,7 +5006,7 @@ public final class MuesliController: NSObject {
             }
         }
         selectBackend(backend)
-        hotkeyMonitor.configure(keyCode: hotkey.keyCode)
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         configureComputerUseHotkeyMonitor()
         clearDictationTestLifecycle()
 
@@ -8908,6 +8919,23 @@ public final class MuesliController: NSObject {
         startQuilHotkeyMonitorIfNeeded(permissions: permissions)
     }
 
+    /// Applying an unchanged shortcut must not end a recording during an
+    /// unrelated settings refresh. Enablement and permissions stay with the
+    /// existing startup policy; this helper only configures dictation gestures.
+    static func configureDictationHotkeyMonitor(_ monitor: HotkeyMonitor, config: AppConfig) {
+        monitor.configureModifierActivation(config.dictationActivationMode)
+        monitor.doubleTapEnabled = config.enableDoubleTapDictation
+        let hotkey = config.dictationHotkey
+        if hotkey.isCombination {
+            if monitor.combinationModifiers != hotkey.resolvedCombinationModifiers
+                || monitor.combinationKeyCode != hotkey.combinationKeyCode {
+                monitor.configure(hotkey)
+            }
+        } else if monitor.isCombinationMode || monitor.targetKeyCode != hotkey.keyCode {
+            monitor.configure(hotkey)
+        }
+    }
+
     private func configureHotkeyMonitorTiming() {
         hotkeyMonitor.configureTriggerThreshold(milliseconds: config.hotkeyTriggerThresholdMS)
         computerUseHotkeyMonitor.configureTriggerThreshold(milliseconds: config.computerUseHotkeyTriggerThresholdMS)
@@ -8931,8 +8959,8 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.stop()
             return
         }
+        Self.configureDictationHotkeyMonitor(hotkeyMonitor, config: config)
         guard !hotkeyMonitor.isRunning else { return }
-        hotkeyMonitor.configure(config.dictationHotkey)
         hotkeyMonitor.start()
     }
 
@@ -11230,6 +11258,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleToggleStop() {
+        hotkeyMonitor.cancelCurrentSession()
         fputs("[muesli-native] toggle dictation stop\n", stderr)
         indicator.isToggleDictation = false
         handleStop()
