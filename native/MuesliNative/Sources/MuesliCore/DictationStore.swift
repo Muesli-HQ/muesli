@@ -27,6 +27,7 @@ public struct MeetingThreadNavigation: Equatable, Sendable {
 public final class DictationStore {
     private static let targetApplicationBackfillMigration = "dictation_target_application_from_app_context_v1"
     private static let quillStatisticsBackfillMigration = "quill_statistics_spoken_instruction_v1"
+    private static let wbcsCacheVersion: Int32 = 1
     public static let defaultTombstoneRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
     private static let iso8601Formatter = ISO8601DateFormatter()
@@ -337,6 +338,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
+        try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
@@ -389,6 +391,31 @@ public final class DictationStore {
         );
         CREATE INDEX IF NOT EXISTS idx_insights_daily_tokens_token
             ON insights_daily_tokens(token_id, day);
+        """, db: db)
+    }
+
+    private func migrateWordsBeforeCodeSwitchCache(db: OpaquePointer?) throws {
+        // At most one run-length row per live dictation. No transcript text is
+        // copied, and updates or deletion discard its derived contribution.
+        try exec("""
+        CREATE TABLE IF NOT EXISTS wbcs_record_cache (
+            dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            run_lengths BLOB NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS wbcs_cache_invalidate_update
+        AFTER UPDATE OF raw_text, source, deleted_at ON dictations
+        WHEN OLD.raw_text IS NOT NEW.raw_text
+          OR OLD.source IS NOT NEW.source
+          OR OLD.deleted_at IS NOT NEW.deleted_at
+        BEGIN
+            DELETE FROM wbcs_record_cache WHERE dictation_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS wbcs_cache_invalidate_delete
+        AFTER DELETE ON dictations
+        BEGIN
+            DELETE FROM wbcs_record_cache WHERE dictation_id = OLD.id;
+        END;
         """, db: db)
     }
 
@@ -1726,6 +1753,188 @@ public final class DictationStore {
         sqlite3_bind_int64(statement, 1, id)
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return optionalStringColumn(statement, index: 0)
+    }
+
+    /// Median English words in runs that end at a detected language switch.
+    /// Generated Quill output is excluded because it is not what was spoken.
+    public func wordsBeforeCodeSwitch(
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil
+    ) throws -> Double? {
+        try wordsBeforeCodeSwitch(
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication,
+            analyze: WordsBeforeCodeSwitch.runLengths(in:)
+        )
+    }
+
+    func wordsBeforeCodeSwitch(
+        fromDate: String?,
+        toDate: String?,
+        origin: RecordOriginFilter,
+        targetApplication: DictationTargetApplication?,
+        analyze: (String) -> [Int]
+    ) throws -> Double? {
+        for _ in 0..<3 {
+            let pass = try wordsBeforeCodeSwitchPass(
+                fromDate: fromDate,
+                toDate: toDate,
+                origin: origin,
+                targetApplication: targetApplication,
+                analyze: analyze
+            )
+            if !pass.needsRetry { return pass.median }
+        }
+        // Under continuous edits, leave the card empty instead of displaying an
+        // incomplete median. A later stats refresh will try again.
+        return nil
+    }
+
+    private func wordsBeforeCodeSwitchPass(
+        fromDate: String?,
+        toDate: String?,
+        origin: RecordOriginFilter,
+        targetApplication: DictationTargetApplication?,
+        analyze: (String) -> [Int]
+    ) throws -> (median: Double?, needsRetry: Bool) {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let filter = historyFilterConditions(
+            alias: nil,
+            dateColumn: "timestamp",
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication
+        )
+        let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(source, ''))) <> 'quil'"]
+        let predicate = conditions.joined(separator: " AND ")
+        let decoder = JSONDecoder()
+        var lengths: [Int] = []
+        var missingIDs: [Int64] = []
+
+        // The common path reads only IDs and cached run lengths, not transcripts.
+        do {
+            let sql = """
+            SELECT dictations.id, c.run_lengths
+            FROM dictations
+            LEFT JOIN wbcs_record_cache c
+              ON c.dictation_id = dictations.id AND c.version = \(Self.wbcsCacheVersion)
+            WHERE \(predicate)
+            ORDER BY dictations.id DESC
+            """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(statement) }
+            for (index, value) in filter.boundValues.enumerated() {
+                sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
+            }
+            var step = sqlite3_step(statement)
+            while step == SQLITE_ROW {
+                if Task<Never, Never>.isCancelled { return (nil, false) }
+                if let blob = optionalDataColumn(statement, index: 1),
+                   let cached = try? decoder.decode([Int].self, from: blob),
+                   cached.allSatisfy({ $0 > 0 }) {
+                    lengths += cached
+                } else {
+                    missingIDs.append(sqlite3_column_int64(statement, 0))
+                }
+                step = sqlite3_step(statement)
+            }
+            guard step == SQLITE_DONE else { throw lastError(db) }
+        }
+
+        guard !missingIDs.isEmpty else {
+            return (WordsBeforeCodeSwitch.median(of: lengths), false)
+        }
+        let textSQL = "SELECT COALESCE(raw_text, '') FROM dictations WHERE id = ? AND \(predicate)"
+        var textStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, textSQL, -1, &textStatement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(textStatement) }
+        let saveSQL = """
+        INSERT INTO wbcs_record_cache(dictation_id, version, run_lengths)
+        SELECT id, ?, ? FROM dictations
+        WHERE id = ? AND COALESCE(raw_text, '') = ? AND \(predicate)
+        ON CONFLICT(dictation_id) DO UPDATE SET
+            version = excluded.version, run_lengths = excluded.run_lengths
+        """
+        var saveStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, saveSQL, -1, &saveStatement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(saveStatement) }
+        let encoder = JSONEncoder()
+        var pending: [(id: Int64, text: String, lengths: [Int])] = []
+        var needsRetry = false
+        func savePending() throws {
+            guard !pending.isEmpty else { return }
+            // Keep the write lock only for a short batch, never during language analysis.
+            try exec("BEGIN IMMEDIATE", db: db)
+            do {
+                var savedLengths: [Int] = []
+                for record in pending {
+                    let blob = try encoder.encode(record.lengths)
+                    sqlite3_reset(saveStatement)
+                    sqlite3_clear_bindings(saveStatement)
+                    sqlite3_bind_int(saveStatement, 1, Self.wbcsCacheVersion)
+                    bindOptionalBlob(blob, at: 2, statement: saveStatement)
+                    sqlite3_bind_int64(saveStatement, 3, record.id)
+                    sqlite3_bind_text(saveStatement, 4, (record.text as NSString).utf8String, -1, nil)
+                    for (index, value) in filter.boundValues.enumerated() {
+                        sqlite3_bind_text(saveStatement, Int32(index + 5), (value as NSString).utf8String, -1, nil)
+                    }
+                    guard sqlite3_step(saveStatement) == SQLITE_DONE else { throw lastError(db) }
+                    // A concurrent edit makes the conditional INSERT select no row.
+                    if sqlite3_changes(db) > 0 {
+                        savedLengths += record.lengths
+                    } else {
+                        needsRetry = true
+                    }
+                }
+                sqlite3_reset(saveStatement)
+                try exec("COMMIT", db: db)
+                lengths += savedLengths
+                pending.removeAll(keepingCapacity: true)
+            } catch {
+                sqlite3_reset(saveStatement)
+                _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                throw error
+            }
+        }
+        for id in missingIDs {
+            if Task<Never, Never>.isCancelled { return (nil, false) }
+            sqlite3_reset(textStatement)
+            sqlite3_clear_bindings(textStatement)
+            sqlite3_bind_int64(textStatement, 1, id)
+            for (index, value) in filter.boundValues.enumerated() {
+                sqlite3_bind_text(textStatement, Int32(index + 2), (value as NSString).utf8String, -1, nil)
+            }
+            let textStep = sqlite3_step(textStatement)
+            if textStep == SQLITE_DONE { return (nil, true) }
+            guard textStep == SQLITE_ROW else { throw lastError(db) }
+            let text = stringColumn(textStatement, index: 0)
+            sqlite3_reset(textStatement)
+
+            let recordLengths = analyze(text)
+            if Task<Never, Never>.isCancelled { return (nil, false) }
+            pending.append((id: id, text: text, lengths: recordLengths))
+            if pending.count == 64 {
+                try savePending()
+                if needsRetry { return (nil, true) }
+            }
+        }
+        if Task<Never, Never>.isCancelled { return (nil, false) }
+        try savePending()
+        guard !needsRetry else { return (nil, true) }
+        return (WordsBeforeCodeSwitch.median(of: lengths), false)
     }
 
     public func dictationStats(
