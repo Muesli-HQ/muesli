@@ -119,23 +119,23 @@ struct BackendOption: Equatable {
     static let bodhanCore = BackendOption(
         backend: "bodhan", model: BodhanModel.core.rawValue,
         label: "Bodhan Core FP16", sizeLabel: "~2.46 GB FP16",
-        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
+        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too, so WBCS is unavailable. Detects the language automatically, or use the language picker.", recommended: false
     )
     static let bodhanFlex = BackendOption(
         backend: "bodhan", model: BodhanModel.flex.rawValue,
         label: "Bodhan Flex FP16", sizeLabel: "~2.46 GB FP16",
-        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
+        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Mixed mode supports WBCS on new dictations; Romanized switches may be missed. Also formats spoken numbers.", recommended: false
     )
 
     static let bodhanCoreInt8 = BackendOption(
         backend: "bodhan", model: BodhanModel.coreInt8.rawValue,
         label: "Bodhan Core INT8", sizeLabel: "~1.27 GB",
-        description: "A smaller download of Core for Indian-language speech in its native script. Detects language automatically. Uses less space; transcription can differ slightly from FP16.", recommended: false
+        description: "A smaller download of Core for Indian-language speech in its native script. WBCS is unavailable because English is written in that script too. Detects language automatically; transcription can differ from FP16.", recommended: false
     )
     static let bodhanFlexInt8 = BackendOption(
         backend: "bodhan", model: BodhanModel.flexInt8.rawValue,
         label: "Bodhan Flex INT8", sizeLabel: "~1.27 GB",
-        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Uses less space; transcription can differ slightly from FP16.", recommended: false
+        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Mixed mode supports WBCS on new dictations; Romanized switches may be missed. Transcription can differ from FP16.", recommended: false
     )
     static let bodhanFamily: [BackendOption] = [.bodhanCore, .bodhanCoreInt8, .bodhanFlex, .bodhanFlexInt8]
 

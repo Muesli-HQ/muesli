@@ -90,7 +90,7 @@ struct StatsHeaderView: View {
                     iconColor: MuesliTheme.accent,
                     value: formattedWBCS,
                     label: "WBCS",
-                    accessibilityHint: "Words Before Code Switch: median English words before a detected language switch",
+                    accessibilityHint: "Words Before Code Switch: median English words before a switch in new Bodhan Flex Mixed dictations; estimated from transcript, so Romanized switches may be missed",
                     action: nil
                 )
             }

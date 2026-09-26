@@ -1972,7 +1972,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Words before code switch",
-                    description: "Show the median English words spoken before switching languages. Estimated locally from saved dictations."
+                    description: "New Bodhan Flex dictations in Mixed mode only. Bodhan labels an audio window, not each word; WBCS estimates switches from transcript script changes. Romanized switches may be missed."
                 ) {
                     settingsSwitch(isOn: appState.config.enableWordsBeforeCodeSwitch) { newValue in
                         controller.updateConfig { $0.enableWordsBeforeCodeSwitch = newValue }
