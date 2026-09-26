@@ -71,6 +71,12 @@ struct ModelsView: View {
     }
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -169,6 +175,7 @@ struct ModelsView: View {
         } message: {
             Text("Live meetings will fall back to standard chunk-by-chunk captions until this model is downloaded again.")
         }
+
     }
 
     private var modelsCategorySelection: Binding<ModelsCategory> {
@@ -1319,7 +1326,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    MuesliSettingControl(controller: controller, id: "bodhan_language")
+                    MuesliSettingControl(controller: controller, id: "bodhan_language",
+                        allowedChoiceIDs: Set(BodhanLanguage.choices(for: option.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1347,15 +1355,7 @@ struct ModelsView: View {
                     HStack(spacing: MuesliTheme.spacing12) {
                         Text("Output").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                             .frame(width: 64, alignment: .leading)
-                        Picker("Output script", selection: Binding(
-                            get: { appState.config.resolvedBodhanOutputMode },
-                            set: { controller.selectBodhanOutputMode($0) }
-                        )) {
-                            ForEach(BodhanOutputMode.allCases, id: \.self) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: 220, alignment: .leading)
+                        MuesliSettingControl(controller: controller, id: "bodhan_output").frame(maxWidth: 220, alignment: .leading)
                         .disabled(incompatibilityReason != nil)
                         .help("Native script, mixed Indic and English scripts, or all Latin letters.")
                     }

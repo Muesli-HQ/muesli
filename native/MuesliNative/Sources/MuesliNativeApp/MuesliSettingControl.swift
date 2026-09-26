@@ -5,15 +5,22 @@ import SwiftUI
 struct MuesliSettingControl: View {
     let controller: MuesliController
     let id: String
+    var allowedChoiceIDs: Set<String>? = nil
+    @Environment(\.muesliSettingDefinitions) private var definitions
     @State private var errorMessage: String?
     @State private var isApplying = false
 
     var body: some View {
         Group {
-            if let setting = controller.settingsDefinitions().first(where: { $0.id == id }) {
-                let state = setting.snapshot(config: controller.appState.config)
+            if let setting = definitions.first(where: { $0.id == id }) {
+                let state = filteredSnapshot(setting)
                 if Set(state.choices.map(\.id)) == ["on", "off"] {
                     HStack {
+                        if state.current == "off", state.unavailable["on"] != nil,
+                           let requestPermission = setting.requestPermission {
+                            Button("Grant access", action: requestPermission)
+                                .help(state.unavailable["on"] ?? "Grant the required permissions")
+                        }
                         Spacer()
                         Toggle("", isOn: Binding(get: { state.current == "on" }, set: { apply($0 ? "on" : "off") }))
                             .toggleStyle(.switch)
@@ -68,6 +75,13 @@ struct MuesliSettingControl: View {
             } message: { Text(errorMessage ?? "") }
     }
 
+    private func filteredSnapshot(_ setting: MuesliSetting) -> MuesliSetting.Snapshot {
+        let state = setting.snapshot(config: controller.appState.config)
+        guard let allowedChoiceIDs else { return state }
+        return .init(id: state.id, label: state.label, current: state.current,
+            choices: state.choices.filter { allowedChoiceIDs.contains($0.id) }, unavailable: state.unavailable)
+    }
+
     private func apply(_ value: String) {
         isApplying = true
         Task { @MainActor in
@@ -75,5 +89,15 @@ struct MuesliSettingControl: View {
             do { try await controller.applySetting(id, value: value) }
             catch { errorMessage = error.localizedDescription }
         }
+    }
+}
+
+private struct MuesliSettingDefinitionsKey: EnvironmentKey {
+    static let defaultValue: [MuesliSetting] = []
+}
+extension EnvironmentValues {
+    var muesliSettingDefinitions: [MuesliSetting] {
+        get { self[MuesliSettingDefinitionsKey.self] }
+        set { self[MuesliSettingDefinitionsKey.self] = newValue }
     }
 }

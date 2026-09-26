@@ -12,16 +12,20 @@ extension MuesliController {
                  read: @escaping (AppConfig) -> String,
                  presentation: MuesliSetting.Presentation = .automatic,
                  followUpSelections: [String: String] = [:],
+                 discovery: MuesliSetting.Discovery? = nil,
+                 voiceRestriction: String? = nil,
+                 requestPermission: (() -> Void)? = nil,
                  unavailable: @escaping (String) -> String? = { _ in nil },
                  apply: @escaping (String) async throws -> Void) {
-            settings.append(.init(id: id, label: label, choices: choices, read: read,
-                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections))
+            settings.append(.init(publicDiscovery: discovery, id: id, label: label, choices: choices, read: read,
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission))
         }
         func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>,
+                    requestPermission: (() -> Void)? = nil,
                     unavailable: @escaping (Bool) -> String? = { _ in nil },
                     apply: ((Bool) throws -> Void)? = nil) {
             add(id, label, [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
-                read: { $0[keyPath: key] ? "on" : "off" },
+                read: { $0[keyPath: key] ? "on" : "off" }, requestPermission: requestPermission,
                 unavailable: { unavailable($0 == "on") }) { value in
                 if let apply { try apply(value == "on") }
                 else { self.updateConfig { $0[keyPath: key] = value == "on" } }
@@ -84,13 +88,13 @@ extension MuesliController {
         textMenu("accent_color", "Accent color", MuesliSettings.accentPresets.map { .init(id: $0.hex, label: $0.name) }, \.recordingColorHex)
 
         toggle("cua_planner", "Computer use model planner", \.enableComputerUsePlanner)
-        func checkShortcut(_ result: ShortcutHotkeyUpdateResult, enabled: Bool) throws {
+        func checkShortcut(_ result: ShortcutHotkeyUpdateResult) throws {
             if !result.didUpdate {
                 throw MuesliSettings.Failure.rejected(result.message ?? "This shortcut could not be changed.")
             }
-            if let message = self.independentShortcutPermissionMessageIfNeeded(isEnabled: enabled) {
-                throw MuesliSettings.Failure.rejected(message)
-            }
+        }
+        func shortcutPermission(_ enabled: Bool) -> String? {
+            self.settingsShortcutPermission(enabled: enabled, pushToTalk: false)
         }
         for target in ShortcutAssignment.allCases {
             settings.append(MuesliSetting(id: target.settingID, label: target.label,
@@ -107,9 +111,9 @@ extension MuesliController {
                     }
                 }, shortcutAssignment: target))
         }
-        toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0), enabled: $0) }
-        toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0), enabled: $0) }
-        toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk) { enabled in
+        toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
+        toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
+        toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in
             if self.updatePushToTalkEnabled(enabled, requestPermissions: enabled) == .needsPermissions {
                 throw MuesliSettings.Failure.rejected("Push to talk needs permission. Complete setup in Settings before using the shortcut.")
             }
@@ -117,10 +121,12 @@ extension MuesliController {
         toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
         presets("cua_model", "Computer use planner model", SummaryModelPreset.computerUsePlannerModels, \.computerUsePlannerModel)
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
+               requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
             _ = self.setDictionaryCorrectionPromptsFromToggle($0)
         }
         toggle("app_context", "App context", \.enableScreenContext,
+               requestPermission: { _ = self.requestScreenContextEnable() },
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable app context." : nil }) { enabled in
             if enabled { _ = self.requestScreenContextEnable() }
             else { self.updateConfig { $0.enableScreenContext = false; $0.enableDictationOCRContext = false } }
@@ -159,12 +165,12 @@ extension MuesliController {
         textMenu("cohere_language", "Cohere language", CohereTranscribeLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.cohereLanguage)
         textMenu("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.whisperLanguage)
         add("bodhan_language", "Bodhan language", BodhanLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
-            read: { $0.bodhanLanguage }, unavailable: { value in
-                guard let language = BodhanLanguage(rawValue: value) else { return "Unknown language." }
-                let models = [self.config.sttModel, self.config.meetingTranscriptionModel].filter { BodhanModel(rawValue: $0) != nil }
-                return models.allSatisfy { BodhanLanguage.choices(for: $0).contains(language) } ? nil : "This language requires Bodhan Flex. Change the selected Bodhan model first."
-            }) { value in
+            read: { $0.bodhanLanguage }) { value in
                 if let language = BodhanLanguage(rawValue: value) { self.selectBodhanLanguage(language) }
+            }
+        add("bodhan_output", "Bodhan Flex output script", BodhanOutputMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.resolvedBodhanOutputMode.rawValue }) { value in
+                if let mode = BodhanOutputMode(rawValue: value) { self.selectBodhanOutputMode(mode) }
             }
         add("nemotron_language", "Nemotron language", Nemotron35Language.allCases.map { .init(id: $0.rawValue, label: $0.label) },
             read: { $0.nemotron35Language }) { value in
@@ -182,13 +188,14 @@ extension MuesliController {
         }
 
         toggle("transcript_cleanup", "AI transcript cleanup", \.enablePostProcessor, apply: setPostProcessorEnabled)
-        toggle("quill", "Quill rewrite selected text", \.enableQuilMode) { try checkShortcut(self.updateQuilModeEnabled($0), enabled: $0) }
+        toggle("quill", "Quill rewrite selected text", \.enableQuilMode, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateQuilModeEnabled($0)) }
         add("cleanup_source", "Cleanup source", TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }.map { .init(id: $0.backend, label: $0.label) },
             read: { TranscriptCleanupBackendOption.resolved($0.postProcessorBackend).isOnDevice ? TranscriptCleanupBackendOption.local.backend : $0.postProcessorBackend }) { value in
                 self.selectPostProcessorBackend(.resolved(value))
             }
         add("cleanup_preset", "Cleanup prompt preset", TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts).map { .init(id: $0.id, label: $0.name) },
-            read: { $0.activeTranscriptCleanupPromptId }) { self.selectTranscriptCleanupPrompt(id: $0) }
+            read: { $0.activeTranscriptCleanupPromptId },
+            voiceRestriction: "Prompt settings can only be changed manually in Settings.") { self.selectTranscriptCleanupPrompt(id: $0) }
         presets("cleanup_chatgpt_model", "ChatGPT cleanup model", SummaryModelPreset.chatGPTTranscriptCleanupModels, \.postProcessorChatGPTModel) {
             self.updatePostProcessorModel($0, for: .hosted(.chatGPT))
         }
@@ -291,7 +298,7 @@ extension MuesliController {
                 if let backend = source.hostedBackend {
                     $0.quilBackend = backend.backend
                     $0.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
-                } else if let model = localQuill.first {
+                } else if let model = localQuill.first(where: { $0.quilModelID == self.config.quilModel && $0.quilBackend.backend == self.config.quilBackend }) ?? localQuill.first {
                     $0.quilBackend = model.quilBackend.backend
                     $0.quilModel = model.quilModelID
                 }
@@ -330,7 +337,8 @@ extension MuesliController {
         for calendar in appState.availableEventKitCalendars {
             add("calendar_" + calendar.id, "Include calendar: " + calendar.sourceTitle + " / " + calendar.title,
                 [.init(id: "on", label: "Included"), .init(id: "off", label: "Hidden")],
-                read: { $0.disabledCalendarIDs.contains(calendar.id) ? "off" : "on" }) { value in
+                read: { $0.disabledCalendarIDs.contains(calendar.id) ? "off" : "on" },
+                discovery: .init(id: "calendars", label: "Include or hide calendars")) { value in
                 self.updateConfig {
                     var disabled = Set($0.disabledCalendarIDs)
                     if value == "off" { disabled.insert(calendar.id) } else { disabled.remove(calendar.id) }

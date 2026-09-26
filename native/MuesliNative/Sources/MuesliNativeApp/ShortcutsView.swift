@@ -15,6 +15,12 @@ struct ShortcutsView: View {
     @State private var meetingRecordingShortcutMessage: String?
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 Text("Shortcuts")
@@ -55,10 +61,23 @@ struct ShortcutsView: View {
         .onChange(of: appState.config.enablePushToTalk) { _, enabled in
             if !enabled, recordingTarget == .dictation { stopRecording() }
         }
+        .onChange(of: appState.config.enableComputerUseHotkey) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .computerUse { stopRecording() }
+        }
+        .onChange(of: appState.config.enableQuilMode) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .quil { stopRecording() }
+        }
+        .onChange(of: appState.config.enableMeetingRecordingHotkey) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .meetingRecording { stopRecording() }
+        }
         .onDisappear {
             controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             stopRecording()
         }
+
     }
 
     private var isPushToTalkEnabled: Bool {
@@ -420,6 +439,12 @@ struct ShortcutsView: View {
     }
 
     private func reconcileIndependentShortcutState() {
+        let meetingMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableMeetingRecordingHotkey)
+        if let meetingMessage { meetingRecordingShortcutMessage = meetingMessage }
+        else if meetingRecordingShortcutMessage == ShortcutFeatureEnablementPolicy.missingPermissionsMessage {
+            meetingRecordingShortcutMessage = nil
+        }
         let permissionMessage = ShortcutFeatureEnablementPolicy.missingPermissionsMessage
         let computerUsePermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
             isEnabled: appState.config.enableComputerUseHotkey

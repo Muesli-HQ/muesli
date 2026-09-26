@@ -527,6 +527,8 @@ public final class MuesliController: NSObject {
     private var computerUseCommandStartedAt: Date?
     private var pendingComputerUseStopStartedAt: Date?
     private var pendingComputerUseStopSessionID: UUID?
+    private let computerUseQuestionPresenter = ComputerUseQuestionPresenter()
+    private var computerUseSettingsTaskID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
     private var hasRequestedComputerUseScreenRecordingAccess = false
@@ -2878,6 +2880,20 @@ public final class MuesliController: NSObject {
         selectBackend(option, makePrimaryDictationModel: false)
     }
 
+    func settingsShortcutPermission(enabled: Bool, pushToTalk: Bool,
+                                    permissions: OnboardingPermissionSnapshot? = nil) -> String? {
+        guard enabled else { return nil }
+        let snapshot = permissions ?? currentOnboardingPermissionSnapshot()
+        let allowed = pushToTalk
+            ? PushToTalkEnablementPolicy.PermissionProfile.resolved(for: config.resolvedOnboardingUseCase).hasRequiredPermissions(snapshot)
+            : ShortcutFeatureEnablementPolicy.hasRequiredPermissions(snapshot)
+        return allowed ? nil : "Grant the required microphone, Accessibility and Input Monitoring permissions in Settings first."
+    }
+
+    func requestSettingsPermissions() {
+        requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
+    }
+
     func setSettingFromUI(_ id: String, value: String) {
         Task { @MainActor in
             do { try await applySetting(id, value: value) }
@@ -2888,7 +2904,7 @@ public final class MuesliController: NSObject {
     func applySetting(_ id: String, value: String) async throws {
         let definitions = settingsDefinitions()
         _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
-            snapshots: definitions.map { $0.snapshot(config: config) }, config: { self.config },
+            snapshots: definitions.map { $0.snapshot(config: config) }, source: .manualUI, config: { self.config },
             persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
             })
@@ -9932,6 +9948,10 @@ public final class MuesliController: NSObject {
             return
         }
         computerUseCommandTask?.cancel()
+        computerUseQuestionPresenter.cancel()
+        // Let the settings executor verify a setter that may already have committed.
+        // It returns promptly on cancellation while thinking or asking a question.
+        if let settingsTaskID = computerUseSettingsTaskID, settingsTaskID == computerUseCommandTaskID { return }
         activeComputerUseTrace?.finish(status: "cancelled", message: "Stopped by the user.")
         activeComputerUseTrace = nil
         indicator.setComputerUseCancellationAvailable(false)
@@ -10195,10 +10215,10 @@ public final class MuesliController: NSObject {
         activeComputerUseTrace = runTrace
         runTrace.record(ComputerUseTraceEvent(kind: "routing", title: "Understanding command",
                                             body: "Choosing Muesli settings or desktop tools.", status: "running"))
-        let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
+        let runtime = ComputerUsePlannerRuntime(config: config, onStatus: { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
-        }
+        })
         runtime.onEvent = { [weak self] event in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
@@ -10209,15 +10229,26 @@ public final class MuesliController: NSObject {
         }
 
         let result: ComputerUsePlannerRuntimeResult
-        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
-            appState.settingsAppleSpeechLanguages = await AppleSpeechLanguageOption.supportedOptions()
-        }
+        computerUseSettingsTaskID = taskID
         let settingsResult = await ComputerUseSettings.run(
             command: transcript, settings: settingsDefinitions(),
             config: { self.config }, persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            }, refresh: { self.settingsDefinitions() }, prepare: { id in
+                if id == "apple_speech_language", #available(macOS 26.0, *),
+                   AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+                    self.appState.settingsAppleSpeechLanguages = await AppleSpeechLanguageOption.supportedOptions()
+                }
+            }, ask: { question in
+                self.presentComputerUseFloatingStatus("Waiting for your answer")
+                runTrace.record(ComputerUseTraceEvent(kind: "question", title: "Question",
+                    body: question.question, status: "waiting"))
+                let answer = try await self.computerUseQuestionPresenter.ask(question)
+                self.presentComputerUseFloatingStatus("Thinking...")
+                return answer
             })
-        guard computerUseCommandTaskID == taskID, !Task.isCancelled else { return }
+        if computerUseSettingsTaskID == taskID { computerUseSettingsTaskID = nil }
+        guard computerUseCommandTaskID == taskID else { return }
         if let settingsResult {
             result = settingsResult
         } else if requestDesktopComputerUseScreenAccess() {
