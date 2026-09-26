@@ -161,8 +161,6 @@ struct SettingsView: View {
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
-    @State private var isUsingCustomOpenRouterModel = false
-    @State private var isUsingCustomOpenRouterDictationModel = false
     @State private var hasRefreshedMeetingCalendarSources = false
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
@@ -394,6 +392,12 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -551,6 +555,7 @@ struct SettingsView: View {
                 )
             }
         }
+
     }
 
     private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
@@ -1058,8 +1063,7 @@ struct SettingsView: View {
             settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.openRouterDictationModel,
-                    placeholder: "provider/model",
-                    onBeginEditing: { isUsingCustomOpenRouterDictationModel = true }
+                    placeholder: "provider/model"
                 ) { controller.selectOpenRouterDictationModel($0) }
             }
         }
@@ -1392,20 +1396,14 @@ struct SettingsView: View {
     private func bodhanOutputMenu(model: String) -> some View {
         if BodhanModel(rawValue: model)?.isCore == false {
             settingsRow("Bodhan output", controlWidth: meetingControlWidth) {
-                settingsMenu(
-                    selection: appState.config.resolvedBodhanOutputMode.label,
-                    options: BodhanOutputMode.allCases.map(\.label)
-                ) { label in
-                    guard let mode = BodhanOutputMode.allCases.first(where: { $0.label == label }) else { return }
-                    controller.selectBodhanOutputMode(mode)
-                }
-                .accessibilityLabel("Output script")
+                settingsControl("bodhan_output")
             }
         }
     }
 
     private func indicLanguageMenu(model: String) -> some View {
-        return settingsControl("bodhan_language")
+        return MuesliSettingControl(controller: controller, id: "bodhan_language",
+            allowedChoiceIDs: Set(BodhanLanguage.choices(for: model).map(\.rawValue)))
         .frame(height: 24)
     }
 
@@ -1762,8 +1760,7 @@ struct SettingsView: View {
                 settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
                     settingsModelTextField(
                         currentModel: appState.config.openRouterModel,
-                        placeholder: "provider/model",
-                        onBeginEditing: { isUsingCustomOpenRouterModel = true }
+                        placeholder: "provider/model"
                     ) { val in controller.updateConfig { $0.openRouterModel = val } }
                 }
             }
@@ -1880,9 +1877,9 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Timeout", controlWidth: meetingControlWidth) {
+                settingsRow("Execution timeout", controlWidth: meetingControlWidth) {
                     integerInput(
-                        label: "Computer use timeout",
+                        label: "Computer use execution timeout",
                         value: Binding(
                             get: { max(appState.config.computerUseTimeoutSeconds, 1) },
                             set: { newValue in
@@ -1892,7 +1889,7 @@ struct SettingsView: View {
                         range: 1...600,
                         step: 15,
                         unit: { $0 == 1 ? "second" : "seconds" }
-                    )
+                    ).help("Limits desktop observation and actions. Model thinking and time spent answering questions are excluded.")
                 }
             }
         }
@@ -2400,10 +2397,6 @@ struct SettingsView: View {
                     if appState.hasStoredOpenRouterCredential {
                         Button {
                             openRouterSignInError = controller.signOutOpenRouter()
-                            if openRouterSignInError == nil && !appState.isOpenRouterAuthenticated {
-                                isUsingCustomOpenRouterModel = false
-                                isUsingCustomOpenRouterDictationModel = false
-                            }
                         } label: {
                             Text(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect")
                                 .font(.system(size: 10))
@@ -3484,7 +3477,6 @@ struct SettingsView: View {
         } else if !appState.openRouterSummaryModels.isEmpty {
             HStack(spacing: 8) {
                 settingsControl("summary_openrouter_model")
-                Button("Custom model ID") { isUsingCustomOpenRouterModel = true }
                 .frame(height: 24)
                 if case .failed = appState.openRouterSummaryCatalogState {
                     Button("Retry") {
@@ -3522,7 +3514,6 @@ struct SettingsView: View {
                 ProgressView().controlSize(.small)
             }
             settingsControl("openrouter_dictation_model")
-                Button("Custom model ID") { isUsingCustomOpenRouterDictationModel = true }
             .frame(height: 24)
 
             if case .failed = appState.openRouterTranscriptionCatalogState {
