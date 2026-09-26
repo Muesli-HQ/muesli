@@ -53,7 +53,6 @@ case "${shard}" in
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
-      WordsBeforeCodeSwitchCacheTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests

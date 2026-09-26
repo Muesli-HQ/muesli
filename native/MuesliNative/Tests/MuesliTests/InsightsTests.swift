@@ -86,6 +86,60 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == 3)
     }
 
+    @Test("WBCS persists every record beyond the former in-memory limit")
+    func wordsBeforeCodeSwitchPersistentHistory() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        WITH RECURSIVE records(id) AS (
+            SELECT 1 UNION ALL SELECT id + 1 FROM records WHERE id < 2050
+        )
+        INSERT INTO dictations(timestamp, raw_text, word_count, source)
+        SELECT '2026-09-26T00:00:00Z', 'I नमस्ते', 2, 'dictation' FROM records
+        """)
+        var firstPassAnalyses = 0
+        #expect(try store.wordsBeforeCodeSwitch(
+            fromDate: nil, toDate: nil, origin: .all, targetApplication: nil,
+            analyze: { _ in firstPassAnalyses += 1; return [1] }
+        ) == 1)
+        #expect(firstPassAnalyses == 2050)
+        #expect(try wbcsCacheCount(store) == 2050)
+
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        var repeatAnalyses = 0
+        #expect(try reopened.wordsBeforeCodeSwitch(
+            fromDate: nil, toDate: nil, origin: .all, targetApplication: nil,
+            analyze: { _ in repeatAnalyses += 1; return [99] }
+        ) == 1)
+        #expect(repeatAnalyses == 0)
+    }
+
+    @Test("WBCS invalidates persisted runs after same-count edits, source changes, and deletion")
+    func wordsBeforeCodeSwitchPersistentInvalidation() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let id = try store.insertDictation(
+            text: "I think नमस्ते", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        #expect(try wbcsCacheCount(store) == 1)
+
+        try executeWBCTestSQL(store, "UPDATE dictations SET raw_text = 'I नमस्ते again' WHERE id = \(id)")
+        #expect(try wbcsCacheCount(store) == 0)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        #expect(try reopened.wordsBeforeCodeSwitch() == 1)
+        #expect(try wbcsCacheCount(store) == 1)
+
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'quil' WHERE id = \(id)")
+        #expect(try wbcsCacheCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'dictation' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == 1)
+        try executeWBCTestSQL(store, "DELETE FROM dictations WHERE id = \(id)")
+        #expect(try wbcsCacheCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
     @Test("WBCS refreshes after sync even when word and session counts are unchanged")
     @MainActor
     func wordsBeforeCodeSwitchRevision() {
@@ -655,5 +709,34 @@ struct InsightsTests {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw NSError(domain: "InsightsTests", code: 3) }
         return (Int(sqlite3_column_int(statement, 0)), Int(sqlite3_column_int(statement, 1)))
+    }
+
+    private func executeWBCTestSQL(_ store: DictationStore, _ sql: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 10)
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 11,
+                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
+    }
+
+    private func wbcsCacheCount(_ store: DictationStore) throws -> Int {
+        var db: OpaquePointer?
+        guard sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 12)
+        }
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM wbcs_record_cache", -1, &statement, nil) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 13)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw NSError(domain: "InsightsTests", code: 14)
+        }
+        return Int(sqlite3_column_int(statement, 0))
     }
 }
