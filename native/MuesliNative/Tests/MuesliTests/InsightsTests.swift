@@ -141,8 +141,8 @@ struct InsightsTests {
         #expect(try wbcsMeasurementCount(store) == 2050)
     }
 
-    @Test("Editing or deleting a dictation removes its Bodhan measurement")
-    func wordsBeforeCodeSwitchPersistentInvalidation() throws {
+    @Test("Transcript edits preserve the spoken measurement; deletion removes it")
+    func wordsBeforeCodeSwitchPersistsAcrossTextEdits() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_784_092_800)
         let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
@@ -152,11 +152,41 @@ struct InsightsTests {
             startedAt: now.addingTimeInterval(-2), endedAt: now,
             bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
         )
+        // An installation of the earlier PR revision can have this trigger.
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER bodhan_wbcs_invalidate_update AFTER UPDATE OF raw_text ON dictations
+        BEGIN DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = NEW.id; END
+        """)
+        try store.migrateIfNeeded()
         #expect(try store.wordsBeforeCodeSwitch() == 2)
         try executeWBCTestSQL(store, "UPDATE dictations SET raw_text = 'I घर again' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        #expect(try store.bodhanWBCSMeasurement(dictationID: id)?.languageSamples == [sample])
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'quil' WHERE id = \(id)")
         #expect(try store.wordsBeforeCodeSwitch() == nil)
-        #expect(try store.bodhanWBCSMeasurement(dictationID: id) == nil)
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'dictation' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        try store.deleteDictation(id: id)
         #expect(try wbcsMeasurementCount(store) == 0)
+    }
+
+    @Test("A failed optional measurement write leaves the dictation in history")
+    func measurementFailureKeepsDictation() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER reject_bodhan_measurement BEFORE INSERT ON bodhan_wbcs_measurements
+        BEGIN SELECT RAISE(ABORT, 'injected measurement failure'); END
+        """)
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
+            languageCode: "hi", wasAutoDetected: true)
+        let id = try store.insertDictation(
+            text: "I went घर", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        #expect(try store.dictation(id: id)?.rawText == "I went घर")
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
     @Test("WBCS refreshes after sync even when word and session counts are unchanged")

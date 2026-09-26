@@ -396,10 +396,12 @@ public final class DictationStore {
 
     private func migrateWordsBeforeCodeSwitchCache(db: OpaquePointer?) throws {
         // Only new Bodhan dictations have the window labels needed for this
-        // measurement. The former transcript-derived cache is not backfilled.
+        // measurement. It describes original speech, so later text edits do
+        // not invalidate it. The former transcript cache is not backfilled.
         try exec("""
         DROP TRIGGER IF EXISTS wbcs_cache_invalidate_update;
         DROP TRIGGER IF EXISTS wbcs_cache_invalidate_delete;
+        DROP TRIGGER IF EXISTS bodhan_wbcs_invalidate_update;
         DROP TABLE IF EXISTS wbcs_record_cache;
         CREATE TABLE IF NOT EXISTS bodhan_wbcs_measurements (
             dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
@@ -407,11 +409,9 @@ public final class DictationStore {
             language_samples BLOB NOT NULL,
             run_lengths BLOB
         );
-        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_update
-        AFTER UPDATE OF raw_text, source, deleted_at ON dictations
-        WHEN OLD.raw_text IS NOT NEW.raw_text
-          OR OLD.source IS NOT NEW.source
-          OR OLD.deleted_at IS NOT NEW.deleted_at
+        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_soft_delete
+        AFTER UPDATE OF deleted_at ON dictations
+        WHEN NEW.deleted_at IS NOT NULL
         BEGIN
             DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = NEW.id;
         END;
@@ -437,28 +437,27 @@ public final class DictationStore {
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        if bodhanMeasurement != nil { try exec("BEGIN IMMEDIATE", db: db) }
-        do {
-            let id = try insertDictation(
-                text: text,
-                durationSeconds: durationSeconds,
-                appContext: appContext,
-                source: source,
-                targetAppName: targetAppName,
-                targetAppBundleID: targetAppBundleID,
-                startedAt: startedAt,
-                endedAt: endedAt,
-                db: db
-            )
-            if let bodhanMeasurement {
+        let id = try insertDictation(
+            text: text,
+            durationSeconds: durationSeconds,
+            appContext: appContext,
+            source: source,
+            targetAppName: targetAppName,
+            targetAppBundleID: targetAppBundleID,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            db: db
+        )
+        if let bodhanMeasurement {
+            do {
                 try insertBodhanWBCSMeasurement(bodhanMeasurement, dictationID: id, db: db)
-                try exec("COMMIT", db: db)
+            } catch {
+                // WBCS is optional; a measurement failure must not discard
+                // a completed dictation from history.
+                fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
             }
-            return id
-        } catch {
-            if bodhanMeasurement != nil { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil) }
-            throw error
         }
+        return id
     }
 
     private func insertBodhanWBCSMeasurement(

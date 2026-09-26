@@ -982,6 +982,9 @@ actor TranscriptionCoordinator {
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
+        // WBCS describes the original Bodhan transcription of spoken words.
+        // Cleanup and custom-word replacement can change displayed text, so
+        // preserve the ASR measurement separately from that final text.
         let bodhanMeasurement = result.bodhanMeasurement
         result = removeArtifacts(result)
         if !result.text.isEmpty {
