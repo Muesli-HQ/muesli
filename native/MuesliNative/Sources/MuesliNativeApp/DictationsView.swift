@@ -71,6 +71,7 @@ struct DictationsView: View {
                 wbcsToDate: appState.dictationToDate,
                 wbcsOrigin: appState.dictationOriginFilter,
                 wbcsTargetApplication: appState.dictationApplicationFilter,
+                wbcsRevision: appState.iCloudLastSyncedAt,
                 onSelect: { controller.openInsights(section: $0) }
             )
 

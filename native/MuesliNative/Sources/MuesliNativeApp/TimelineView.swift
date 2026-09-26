@@ -51,6 +51,11 @@ struct TimelineView: View {
                 showsMeetingStat: true,
                 tracksInsightsFeatureTour: true,
                 showsWordsBeforeCodeSwitch: appState.config.enableWordsBeforeCodeSwitch,
+                wbcsFromDate: appState.timelineFromDate,
+                wbcsToDate: appState.timelineToDate,
+                wbcsOrigin: appState.timelineOriginFilter,
+                wbcsTargetApplication: appState.timelineApplicationFilter,
+                wbcsRevision: appState.iCloudLastSyncedAt,
                 onSelect: { controller.openInsights(section: $0) }
             )
 

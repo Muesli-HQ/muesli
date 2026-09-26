@@ -31,13 +31,18 @@ enum WordsBeforeCodeSwitch {
         tokenizer.string = text
         var words: [String] = []
         tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            guard !Task<Never, Never>.isCancelled else { return false }
             let word = String(text[range])
             if word.rangeOfCharacter(from: .letters) != nil {
                 words.append(word)
             }
             return true
         }
-        let languages = words.indices.map { classify(words: words, at: $0) }
+        var languages: [Language] = []
+        for index in words.indices {
+            guard !Task<Never, Never>.isCancelled else { return [] }
+            languages.append(classify(words: words, at: index))
+        }
         return runLengths(for: languages)
     }
 
@@ -82,12 +87,12 @@ enum WordsBeforeCodeSwitch {
 
         let end = min(words.count, index + 4)
         let window = words[index..<end].map { $0.lowercased() }
-        if window.dropFirst().contains(where: {
+        let boundary = window.dropFirst().firstIndex(where: {
             englishCues.contains($0) || romanizedHindiCues.contains($0)
-        }) {
-            return .uncertain
-        }
-        let phrase = window.joined(separator: " ")
+        }) ?? window.endIndex
+        // A later known cue bounds the phrase; it must not hide an earlier
+        // foreign word, such as "bonjour merci oui" before "the".
+        let phrase = window[..<boundary].joined(separator: " ")
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(phrase)
         let hypotheses = recognizer.languageHypotheses(withMaximum: 3)

@@ -1747,7 +1747,7 @@ public final class DictationStore {
             targetApplication: targetApplication
         )
         let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(source, ''))) <> 'quil'"]
-        let sql = "SELECT raw_text FROM dictations WHERE \(conditions.joined(separator: " AND "))"
+        let sql = "SELECT id, raw_text FROM dictations WHERE \(conditions.joined(separator: " AND "))"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw lastError(db)
@@ -1761,7 +1761,12 @@ public final class DictationStore {
         var step = sqlite3_step(statement)
         while step == SQLITE_ROW {
             if Task<Never, Never>.isCancelled { return nil }
-            lengths += WordsBeforeCodeSwitch.runLengths(in: stringColumn(statement, index: 0))
+            guard let recordLengths = WordsBeforeCodeSwitchCache.shared.runLengths(
+                databaseURL: databaseURL,
+                recordID: sqlite3_column_int64(statement, 0),
+                text: stringColumn(statement, index: 1)
+            ) else { return nil }
+            lengths += recordLengths
             step = sqlite3_step(statement)
         }
         guard step == SQLITE_DONE else { throw lastError(db) }

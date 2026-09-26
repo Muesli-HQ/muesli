@@ -11,11 +11,12 @@ struct StatsHeaderView: View {
     var wbcsToDate: String? = nil
     var wbcsOrigin: RecordOriginFilter = .all
     var wbcsTargetApplication: DictationTargetApplication? = nil
+    var wbcsRevision: Date? = nil
     let onSelect: (InsightsSection) -> Void
     @State private var wbcsMedian: Double?
 
-    private var wbcsQueryID: String {
-        "\(showsWordsBeforeCodeSwitch):\(dictationStats.totalSessions):\(dictationStats.totalWords):\(wbcsFromDate ?? ""):\(wbcsToDate ?? ""):\(wbcsOrigin.rawValue):\(wbcsTargetApplication?.id ?? "")"
+    var wbcsQueryID: String {
+        "\(showsWordsBeforeCodeSwitch):\(dictationStats.totalSessions):\(dictationStats.totalWords):\(wbcsFromDate ?? ""):\(wbcsToDate ?? ""):\(wbcsOrigin.rawValue):\(wbcsTargetApplication?.id ?? ""):\(wbcsRevision?.timeIntervalSince1970.description ?? "")"
     }
 
     @ViewBuilder
@@ -43,9 +44,17 @@ struct StatsHeaderView: View {
                     targetApplication: targetApplication
                 )
             }
-            defer { worker.cancel() }
-            let result = await worker.value
+            let result = await Self.awaitWBCSWorker(worker)
             if !Task.isCancelled { wbcsMedian = result }
+        }
+    }
+
+    /// Propagates view-task cancellation to the background database scan.
+    nonisolated static func awaitWBCSWorker(_ worker: Task<Double?, Never>) async -> Double? {
+        await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
         }
     }
 

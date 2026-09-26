@@ -62,6 +62,62 @@ struct InsightsTests {
         #expect(WordsBeforeCodeSwitch.runLengths(in: "I think yeh bahut accha hai") == [2])
         #expect(WordsBeforeCodeSwitch.runLengths(in: "I think नमस्ते") == [2])
         #expect(WordsBeforeCodeSwitch.median(of: [2, 3]) == 2.5)
+        #expect(WordsBeforeCodeSwitch.runLengths(in: "I bonjour merci oui the") == [1])
+        #expect(WordsBeforeCodeSwitch.runLengths(in: "you should gracias the") == [2])
+    }
+
+    @Test("WBCS applies history filters and excludes deleted cached records")
+    func wordsBeforeCodeSwitchFilters() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let id = try store.insertDictation(text: "I नमस्ते", durationSeconds: 10,
+            targetAppName: "Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now.addingTimeInterval(-10), endedAt: now)
+        try store.insertDictation(text: "I think we नमस्ते", durationSeconds: 10,
+            source: "ios", startedAt: now.addingTimeInterval(-110), endedAt: now.addingTimeInterval(-100))
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        #expect(try store.wordsBeforeCodeSwitch(origin: .fromIPhone) == 3)
+        #expect(try store.wordsBeforeCodeSwitch(targetApplication:
+            DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")) == 1)
+        let boundary = ISO8601DateFormatter().string(from: now.addingTimeInterval(-50))
+        #expect(try store.wordsBeforeCodeSwitch(fromDate: boundary) == 1)
+        #expect(try store.wordsBeforeCodeSwitch(toDate: boundary) == 3)
+        try store.deleteDictation(id: id)
+        #expect(try store.wordsBeforeCodeSwitch() == 3)
+    }
+
+    @Test("WBCS refreshes after sync even when word and session counts are unchanged")
+    @MainActor
+    func wordsBeforeCodeSwitchRevision() {
+        var header = StatsHeaderView(
+            dictationStats: DictationStats(totalWords: 10, totalSessions: 1,
+                averageWordsPerSession: 10, averageWPM: 60, currentStreakDays: 1, longestStreakDays: 1),
+            meetingStats: MeetingStats(totalWords: 0, totalMeetings: 0, averageWPM: 0),
+            showsWordsBeforeCodeSwitch: true,
+            onSelect: { _ in }
+        )
+        let original = header.wbcsQueryID
+        header.wbcsRevision = Date(timeIntervalSince1970: 100)
+        #expect(header.wbcsQueryID != original)
+        let synced = header.wbcsQueryID
+        header.wbcsFromDate = "2026-09-01"
+        #expect(header.wbcsQueryID != synced)
+    }
+
+    @Test("WBCS view cancellation reaches the detached worker")
+    func wordsBeforeCodeSwitchCancellation() async {
+        let worker = Task.detached { () -> Double? in
+            do {
+                try await Task.sleep(for: .seconds(2))
+                return 42
+            } catch {
+                return nil
+            }
+        }
+        let parent = Task { await StatsHeaderView.awaitWBCSWorker(worker) }
+        parent.cancel()
+        #expect(await parent.value == nil)
+        #expect(worker.isCancelled)
     }
 
     @Test("empty history returns a complete zero-filled range")
