@@ -111,12 +111,31 @@ Define persistent toggles and selection menus once in `MuesliSettingsDefinitions
 Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,
 readback, availability checks, and the existing controller setter. Render them
 with `MuesliSettingControl(controller:id:)` (or `settingsControl` in SettingsView).
-CUA automatically consumes every definition; do not add a separate voice mapping
+CUA automatically consumes every voice-eligible definition; do not add a separate voice mapping
 or command parser. Derive model choices from the model catalog/enum so new models
 are discovered automatically. Custom visual controls must use `setSettingFromUI`
 or `applySetting` for mutations. These share validation and save verification with
 voice commands. Freeform text, credentials, file pickers, and transient view
 filters are separate interactions and must not be exposed as arbitrary config writes.
+
+System/AI instruction prompt changes are manual-only, including cleanup prompt
+preset selection. Set `voiceRestriction` on the canonical definition for any
+prompt control. Voice catalogs exclude restricted definitions, and the shared
+executor defaults to `.voice` and rejects them even with forged snapshots.
+Only the actual Settings UI entry point supplies `.manualUI`; never take the
+mutation source from model arguments. A refused prompt request must terminate
+with the manual-only result, not request voice approval or fall back to desktop
+clicking. A router's settings classification is not permission to mutate it.
+
+The planner initially receives only public setting IDs and labels. Detailed choices
+and current values are supplied by `inspect_muesli_setting` only for the relevant
+setting. Dynamic settings with private names/IDs must declare a static
+`publicDiscovery` group (for example, calendars). Do not restore the full catalog
+to every CUA prompt. `ask_user_question` keeps the current command alive and must
+revalidate choices after the answer. Permission callbacks are manual UI affordances;
+voice mutations must pass their prerequisites before invoking the setter.
+Settings surfaces share definitions through `muesliSettingDefinitions`; individual
+controls must not construct the full catalog on each render.
 
 `ComputerUseSettingsTests` checks discovery of previously unknown settings and
 prevents independent toggle/menu bindings returning to the settings surfaces.
