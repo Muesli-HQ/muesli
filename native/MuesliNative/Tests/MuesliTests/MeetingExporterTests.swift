@@ -31,6 +31,27 @@ struct MeetingExporterTests {
 
     // MARK: - Markdown composition
 
+    @Test("metadataHeader includes title, date, duration, words, template")
+    func metadataHeaderIncludesFields() {
+        let meeting = makeMeeting()
+        let header = MeetingExporter.metadataHeader(for: meeting)
+
+        #expect(header.contains("# Weekly Standup"))
+        #expect(header.contains("**Date:** \(MeetingBrowserLogic.formatStartTime(meeting.startTime))"))
+        #expect(header.contains("**Duration:** 30 minutes"))
+        #expect(header.contains("**Words:** 42"))
+        #expect(header.contains("**Template:** Default"))
+    }
+
+    @Test("metadataHeader uses override wordCount when provided")
+    func metadataHeaderWithCustomWordCount() {
+        let meeting = makeMeeting(wordCount: 42)
+        let header = MeetingExporter.metadataHeader(for: meeting, wordCount: 100)
+
+        #expect(header.contains("**Words:** 100"))
+        #expect(!header.contains("**Words:** 42"))
+    }
+
     @Test("Notes export includes metadata header and formatted notes")
     func notesMarkdownIncludesMetadata() {
         let meeting = makeMeeting()
@@ -102,6 +123,53 @@ struct MeetingExporterTests {
         let md = MeetingExporter.buildMarkdown(meeting: meeting, content: .notes)
 
         #expect(md.contains("**Duration:** 1h 30m"))
+    }
+
+    @Test("Copy notes with structured notes includes metadata header and notes")
+    func copyStructuredNotes() {
+        let meeting = makeMeeting()
+        let body = MeetingDetailView.notesCopyContent(for: meeting)
+        let wordCount = body.components(separatedBy: CharacterSet.whitespaces).filter { !$0.isEmpty }.count
+        let copied = MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount)
+            + body
+
+        #expect(copied.contains("# Weekly Standup"))
+        #expect(copied.contains("**Date:**"))
+        #expect(copied.contains("**Duration:** 30 minutes"))
+        #expect(copied.contains("**Words:**"))
+        #expect(copied.contains("## Key Points"))
+        #expect(copied.contains("**Action item:** Ship export feature"))
+        #expect(!copied.filter { $0 == "#" }.count > 1) // No duplicate title
+    }
+
+    @Test("Copy raw transcript notes excludes embedded title, adds metadata header")
+    func copyRawTranscriptNotes() {
+        let meeting = makeMeeting(formattedNotes: "## Raw Transcript\nsome text")
+        let body = MeetingDetailView.notesCopyContent(for: meeting)
+        let wordCount = body.components(separatedBy: CharacterSet.whitespaces).filter { !$0.isEmpty }.count
+        let copied = MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount)
+            + body
+
+        #expect(copied.contains("# Weekly Standup"))
+        #expect(copied.contains("**Date:**"))
+        #expect(copied.contains("## Raw Transcript"))
+        #expect(copied.contains("[00:00:05] You: Hello everyone"))
+        let titleCount = copied.components(separatedBy: "# Weekly Standup").count - 1
+        #expect(titleCount == 1) // Exactly one title heading
+    }
+
+    @Test("Copy transcript includes metadata header with proper multiline word count")
+    func copyTranscript() {
+        let meeting = makeMeeting()
+        let transcript = meeting.rawTranscript
+        let wordCount = transcript.components(separatedBy: CharacterSet.whitespaces).filter { !$0.isEmpty }.count
+        let copied = MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount)
+            + transcript
+
+        #expect(copied.contains("# Weekly Standup"))
+        #expect(copied.contains("**Date:**"))
+        #expect(copied.contains("**Duration:** 30 minutes"))
+        #expect(copied.contains("[00:00:05] You: Hello everyone"))
     }
 
     // MARK: - HTML rendering
