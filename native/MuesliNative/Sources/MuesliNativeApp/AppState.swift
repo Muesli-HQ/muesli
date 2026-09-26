@@ -200,6 +200,7 @@ final class AppState {
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var liveMeetingMicrophoneLabel = "You"
     var liveMeetingPartialYou: String = ""
     var liveMeetingPartialOthers: String = ""
     var activeMeetingAudioWarning: ActiveMeetingAudioWarning?

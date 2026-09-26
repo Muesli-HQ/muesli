@@ -3,6 +3,80 @@ import Foundation
 import MuesliCore
 
 enum TranscriptFormatter {
+    /// Authoritative segments retain source/session keys independently of human labels.
+    /// A mixed ASR window stays unknown rather than assigning all its words to one voice.
+    static func structured(
+        micSegments: [SpeechSegment], systemSegments: [SpeechSegment],
+        diarizationSegments: [TimedSpeakerSegment], micDiarizationSegments: [TimedSpeakerSegment],
+        meetingStart: Date, session: UUID, enrollmentEnabled: Bool,
+        systemSource: MeetingSpeakerSource = .system
+    ) -> MeetingSpeakerState {
+        let clock = DateFormatter()
+        clock.locale = Locale(identifier: "en_US_POSIX")
+        clock.timeZone = .current
+        clock.dateFormat = "HH:mm:ss"
+        var evidence: [MeetingSpeakerKey: MeetingSpeakerEvidence] = [:]
+        let echoLikeSystemSpeakers: Set<String>
+        if !enrollmentEnabled && systemSource == .system {
+            // Keep both source transcripts, but do not treat a matching, overlapping
+            // system utterance as proof of a second voice for one-to-one naming.
+            echoLikeSystemSpeakers = Set(systemSegments
+                .filter { system in micSegments.contains { Self.isOverlappingTextEcho($0, system) } }
+                .flatMap { system in
+                    diarizationSegments.filter {
+                        min(Double($0.endTimeSeconds), system.end) > max(Double($0.startTimeSeconds), system.start)
+                    }.map(\.speakerId)
+                })
+        } else {
+            echoLikeSystemSpeakers = []
+        }
+        func segments(_ speech: [SpeechSegment], source: MeetingSpeakerSource, diarization: [TimedSpeakerSegment]) -> [MeetingSpeakerSegment] {
+            speech.map { segment in
+                let overlapping = diarization.filter {
+                    min(Double($0.endTimeSeconds), segment.end) > max(Double($0.startTimeSeconds), segment.start)
+                }
+                let ids = Set(overlapping.map(\.speakerId))
+                let cluster: String
+                let proof: MeetingSpeakerEvidence
+                if source == .microphone && !enrollmentEnabled {
+                    cluster = "source:microphone"
+                    proof = .sourceFallback
+                } else if ids.count == 1, let id = ids.first {
+                    cluster = "cluster:" + id
+                    proof = !enrollmentEnabled && source == .system
+                        && Set(diarization.map(\.speakerId)).count == 1
+                        && !echoLikeSystemSpeakers.contains(id)
+                        ? .supportedNonOwner : .unknown
+                } else {
+                    cluster = ids.isEmpty ? "source:unverified" : "source:mixed"
+                    proof = .unknown
+                }
+                let key = MeetingSpeakerKey(session: session, source: source, clusterID: cluster)
+                evidence[key] = proof
+                return MeetingSpeakerSegment(key: key, start: segment.start, end: segment.end,
+                    timestamp: clock.string(from: meetingStart.addingTimeInterval(segment.start)), text: segment.text)
+            }
+        }
+        let all = (segments(micSegments, source: .microphone, diarization: micDiarizationSegments)
+            + segments(systemSegments, source: systemSource, diarization: diarizationSegments)).sorted {
+                $0.start == $1.start ? $0.key < $1.key : $0.start < $1.start
+            }
+        var seen = Set<MeetingSpeakerKey>()
+        let candidates = all.compactMap { segment -> MeetingSpeakerCandidate? in
+            guard seen.insert(segment.key).inserted else { return nil }
+            return .init(key: segment.key, evidence: evidence[segment.key] ?? .unknown)
+        }
+        return MeetingSpeakerState(session: session, segments: all,
+            assignments: MeetingSpeakerIdentityPolicy.resolve(speakers: candidates, participants: []), candidates: candidates)
+    }
+
+    private static func isOverlappingTextEcho(_ mic: SpeechSegment, _ system: SpeechSegment) -> Bool {
+        let micWords = mic.text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let systemWords = system.text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard micWords.count >= 3, micWords == systemWords else { return false }
+        return min(mic.end, system.end) > max(mic.start, system.start)
+    }
+
     /// Backward-compatible merge without diarization.
     static func merge(micSegments: [SpeechSegment], systemSegments: [SpeechSegment], meetingStart: Date) -> String {
         merge(micSegments: micSegments, systemSegments: systemSegments, diarizationSegments: nil, meetingStart: meetingStart)

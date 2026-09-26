@@ -110,6 +110,12 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      VoiceProfileStoreTests
+      OwnerVoiceEnrollmentTests
+      OwnerVoiceMatcherTests
+      MeetingSpeakerIdentityPolicyTests
+      MeetingSpeakerStateTests
+      MeetingSpeakerRenderingTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests

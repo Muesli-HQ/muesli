@@ -74,7 +74,8 @@ private struct LiveTranscriptSection: View {
                 new: appState.liveMeetingTranscript
             ),
             partialYou: appState.liveMeetingPartialYou,
-            partialOthers: appState.liveMeetingPartialOthers
+            partialOthers: appState.liveMeetingPartialOthers,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel
         )
     }
 }
@@ -117,6 +118,7 @@ struct MeetingDetailView: View {
     @State private var showFolderPopover = false
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
+    @State private var speakerState: MeetingSpeakerState?
     @State private var threadContext: MeetingThreadContext?
 
     init(
@@ -156,12 +158,22 @@ struct MeetingDetailView: View {
                 }
                 .background(MuesliTheme.backgroundBase)
                 .onAppear {
+                    speakerState = try? controller.meetingSpeakerState(meetingID: meeting.id)
                     threadContext = controller.meetingThreadContext(for: meeting.id)
                     if controller.canUseSummaryProvider(.openRouter) {
                         controller.loadOpenRouterModels(.text)
                     }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .meetingSpeakerIdentityDidChange)) { notification in
+                    if notification.object as? Int64 == meeting.id {
+                        speakerState = try? controller.meetingSpeakerState(meetingID: meeting.id)
+                    }
+                }
+                .onChange(of: meeting.rawTranscript) { _, _ in
+                    speakerState = try? controller.meetingSpeakerState(meetingID: meeting.id)
+                }
                 .onChange(of: meeting.id) { _, _ in
+                    speakerState = try? controller.meetingSpeakerState(meetingID: meeting.id)
                     syncLocalState(with: meeting)
                 }
                 .onChange(of: meeting.status) { _, _ in
@@ -682,13 +694,20 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
+                if speakerState?.summaryIsStale == true {
+                    Text("Speaker labels changed. Re-summarize to update these notes.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                if documentMode == .transcript {
+                    MeetingSpeakerCorrectionsView(meeting: meeting, controller: controller, state: speakerState)
+                }
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting))
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, speakerState: speakerState)
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -2095,12 +2114,13 @@ struct TranscriptChatMessage: Identifiable, Equatable {
     let timestamp: String?
     let speaker: String?
     let text: String
+    var speakerKey: String? = nil
 
     var isUser: Bool {
         speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame
     }
 
-    static func messages(from transcript: String, startingAt firstID: Int = 0) -> [TranscriptChatMessage] {
+    static func messages(from transcript: String, startingAt firstID: Int = 0, knownSpeakers: [String: String] = [:]) -> [TranscriptChatMessage] {
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
         let rawLines = normalized
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -2110,39 +2130,47 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         for rawLine in rawLines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
-            let parsed = parseLine(line, id: firstID + messages.count)
+            let parsed = parseLine(line, id: firstID + messages.count, knownSpeakers: knownSpeakers)
             messages.append(parsed)
         }
 
         return messages
     }
 
-    private static func parseLine(_ line: String, id: Int) -> TranscriptChatMessage {
+    private static func parseLine(_ line: String, id: Int, knownSpeakers: [String: String]) -> TranscriptChatMessage {
         if line.hasPrefix("["),
            let timestampEnd = line.firstIndex(of: "]") {
             let timestamp = String(line[line.index(after: line.startIndex)..<timestampEnd])
             let remainderStart = line.index(after: timestampEnd)
             let remainder = line[remainderStart...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let speakerText = splitSpeakerAndText(remainder)
+            let speakerText = splitSpeakerAndText(remainder, knownSpeakers: knownSpeakers)
             return TranscriptChatMessage(
                 id: id,
                 timestamp: timestamp.isEmpty ? nil : timestamp,
                 speaker: speakerText.speaker,
-                text: speakerText.text
+                text: speakerText.text,
+                speakerKey: speakerText.speaker.flatMap { knownSpeakers[$0] }
             )
         }
 
-        let speakerText = splitSpeakerAndText(line)
+        let speakerText = splitSpeakerAndText(line, knownSpeakers: knownSpeakers)
         return TranscriptChatMessage(
             id: id,
             timestamp: nil,
             speaker: speakerText.speaker,
-            text: speakerText.text
+            text: speakerText.text,
+                speakerKey: speakerText.speaker.flatMap { knownSpeakers[$0] }
         )
     }
 
-    private static func splitSpeakerAndText(_ text: String) -> (speaker: String?, text: String) {
+    private static func splitSpeakerAndText(_ text: String, knownSpeakers: [String: String]) -> (speaker: String?, text: String) {
+        // Only explicit labels may contain colons or exceed the legacy limit.
+        for label in knownSpeakers.keys.sorted(by: { $0.count == $1.count ? $0 < $1 : $0.count > $1.count }) {
+            if text.hasPrefix(label + ":") {
+                return (label, String(text.dropFirst(label.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
         guard let separator = text.firstIndex(of: ":") else {
             return (nil, text)
         }
@@ -2159,6 +2187,7 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
     private static func isLikelySpeakerLabel(_ label: String) -> Bool {
         guard !label.isEmpty, label.count <= 32 else { return false }
+        if label.localizedCaseInsensitiveCompare("Microphone") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
@@ -2172,11 +2201,30 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
-    @State private var messages: [TranscriptChatMessage]
+    var speakerState: MeetingSpeakerState?
+    @State private var messages: [TranscriptChatMessage] = []
+    @State private var cachedTranscript: String?
+    @State private var cachedRevision: String?
 
-    init(transcript: String) {
-        self.transcript = transcript
-        _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
+    private var stateRevision: String {
+        guard let state = speakerState else { return "legacy" }
+        return "\(state.session):\(state.generation):\(state.lastGeneratedHash):\(state.isAuthoritative)"
+    }
+
+    private func refreshMessages() {
+        guard cachedTranscript != transcript || cachedRevision != stateRevision else { return }
+        if let state = speakerState, state.matches(transcript) {
+            let prefix = TranscriptChatMessage.messages(from: state.literalPrefix)
+            messages = prefix + state.segments.enumerated().map { index, segment in
+                TranscriptChatMessage(id: prefix.count + index, timestamp: segment.timestamp,
+                    speaker: state.assignments[segment.key]?.label ?? "Unknown speaker", text: segment.text,
+                    speakerKey: segment.key.storageID)
+            }
+        } else {
+            messages = TranscriptChatMessage.messages(from: transcript)
+        }
+        cachedTranscript = transcript
+        cachedRevision = stateRevision
     }
 
     var body: some View {
@@ -2199,9 +2247,9 @@ private struct MeetingTranscriptView: View {
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .onChange(of: transcript) { _, newTranscript in
-            messages = TranscriptChatMessage.messages(from: newTranscript)
-        }
+        .onAppear { refreshMessages() }
+        .onChange(of: transcript) { _, _ in refreshMessages() }
+        .onChange(of: stateRevision) { _, _ in refreshMessages() }
     }
 }
 
