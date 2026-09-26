@@ -719,6 +719,9 @@ public final class MuesliController: NSObject {
         MuesliController.current = self
         do {
             try dictationStore.migrateIfNeeded()
+            if !config.enableWordsBeforeCodeSwitch {
+                try dictationStore.clearWordsBeforeCodeSwitchCache()
+            }
             try dictationStore.markRunningComputerUseTracesInterrupted()
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
@@ -1606,8 +1609,27 @@ public final class MuesliController: NSObject {
         let previousComputerUseHotkeyTriggerThresholdMS = config.computerUseHotkeyTriggerThresholdMS
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
+        let previousEnableWordsBeforeCodeSwitch = config.enableWordsBeforeCodeSwitch
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
         mutate(&config)
+        if previousEnableWordsBeforeCodeSwitch, !config.enableWordsBeforeCodeSwitch {
+            let databaseURL = dictationStore.resolvedDatabaseURL
+            Task.detached(priority: .utility) {
+                let store = DictationStore(databaseURL: databaseURL)
+                for attempt in 0..<3 {
+                    do {
+                        try store.clearWordsBeforeCodeSwitchCache()
+                        return
+                    } catch {
+                        if attempt == 2 {
+                            fputs("[muesli-native] WBCS cache clear failed: \(error)\n", stderr)
+                        } else {
+                            try? await Task.sleep(for: .milliseconds(200))
+                        }
+                    }
+                }
+            }
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()

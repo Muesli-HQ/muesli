@@ -130,6 +130,10 @@ struct InsightsTests {
         #expect(try reopened.wordsBeforeCodeSwitch() == 1)
         #expect(try wbcsCacheCount(store) == 1)
 
+        try store.clearWordsBeforeCodeSwitchCache()
+        #expect(try wbcsCacheCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == 1)
+
         try executeWBCTestSQL(store, "UPDATE dictations SET source = 'quil' WHERE id = \(id)")
         #expect(try wbcsCacheCount(store) == 0)
         #expect(try store.wordsBeforeCodeSwitch() == nil)
@@ -140,7 +144,7 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
-    @Test("WBCS does not save a transcript changed during analysis")
+    @Test("WBCS retries a transcript changed during analysis")
     func wordsBeforeCodeSwitchConcurrentEdit() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_784_092_800)
@@ -149,22 +153,25 @@ struct InsightsTests {
             startedAt: now.addingTimeInterval(-2), endedAt: now
         )
         var updateError: Error?
+        var didUpdate = false
         let stale = try store.wordsBeforeCodeSwitch(
             fromDate: nil, toDate: nil, origin: .all, targetApplication: nil,
-            analyze: { _ in
-                do {
-                    try executeWBCTestSQL(store,
-                        "UPDATE dictations SET raw_text = 'I नमस्ते again' WHERE id = \(id)")
-                } catch {
-                    updateError = error
+            analyze: { text in
+                if !didUpdate {
+                    didUpdate = true
+                    do {
+                        try executeWBCTestSQL(store,
+                            "UPDATE dictations SET raw_text = 'I नमस्ते again' WHERE id = \(id)")
+                    } catch {
+                        updateError = error
+                    }
                 }
-                return [2]
+                return text == "I think नमस्ते" ? [2] : [1]
             }
         )
         #expect(updateError == nil)
-        #expect(stale == nil)
-        #expect(try wbcsCacheCount(store) == 0)
-        #expect(try store.wordsBeforeCodeSwitch() == 1)
+        #expect(stale == 1)
+        #expect(try wbcsCacheCount(store) == 1)
     }
 
     @Test("WBCS refreshes after sync even when word and session counts are unchanged")

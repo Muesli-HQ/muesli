@@ -417,6 +417,12 @@ public final class DictationStore {
         """, db: db)
     }
 
+    public func clearWordsBeforeCodeSwitchCache() throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("DELETE FROM wbcs_record_cache", db: db)
+    }
+
     @discardableResult
     public func insertDictation(
         text: String,
@@ -1777,6 +1783,28 @@ public final class DictationStore {
         targetApplication: DictationTargetApplication?,
         analyze: (String) -> [Int]
     ) throws -> Double? {
+        for _ in 0..<3 {
+            let pass = try wordsBeforeCodeSwitchPass(
+                fromDate: fromDate,
+                toDate: toDate,
+                origin: origin,
+                targetApplication: targetApplication,
+                analyze: analyze
+            )
+            if !pass.needsRetry { return pass.median }
+        }
+        // Under continuous edits, leave the card empty instead of displaying an
+        // incomplete median. A later stats refresh will try again.
+        return nil
+    }
+
+    private func wordsBeforeCodeSwitchPass(
+        fromDate: String?,
+        toDate: String?,
+        origin: RecordOriginFilter,
+        targetApplication: DictationTargetApplication?,
+        analyze: (String) -> [Int]
+    ) throws -> (median: Double?, needsRetry: Bool) {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let filter = historyFilterConditions(
@@ -1813,7 +1841,7 @@ public final class DictationStore {
             }
             var step = sqlite3_step(statement)
             while step == SQLITE_ROW {
-                if Task<Never, Never>.isCancelled { return nil }
+                if Task<Never, Never>.isCancelled { return (nil, false) }
                 if let blob = optionalDataColumn(statement, index: 1),
                    let cached = try? decoder.decode([Int].self, from: blob),
                    cached.allSatisfy({ $0 > 0 }) {
@@ -1826,7 +1854,9 @@ public final class DictationStore {
             guard step == SQLITE_DONE else { throw lastError(db) }
         }
 
-        guard !missingIDs.isEmpty else { return WordsBeforeCodeSwitch.median(of: lengths) }
+        guard !missingIDs.isEmpty else {
+            return (WordsBeforeCodeSwitch.median(of: lengths), false)
+        }
         let textSQL = "SELECT COALESCE(raw_text, '') FROM dictations WHERE id = ? AND \(predicate)"
         var textStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, textSQL, -1, &textStatement, nil) == SQLITE_OK else {
@@ -1847,6 +1877,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(saveStatement) }
         let encoder = JSONEncoder()
         var pending: [(id: Int64, text: String, lengths: [Int])] = []
+        var needsRetry = false
         func savePending() throws {
             guard !pending.isEmpty else { return }
             // Keep the write lock only for a short batch, never during language analysis.
@@ -1866,7 +1897,11 @@ public final class DictationStore {
                     }
                     guard sqlite3_step(saveStatement) == SQLITE_DONE else { throw lastError(db) }
                     // A concurrent edit makes the conditional INSERT select no row.
-                    if sqlite3_changes(db) > 0 { savedLengths += record.lengths }
+                    if sqlite3_changes(db) > 0 {
+                        savedLengths += record.lengths
+                    } else {
+                        needsRetry = true
+                    }
                 }
                 sqlite3_reset(saveStatement)
                 try exec("COMMIT", db: db)
@@ -1879,7 +1914,7 @@ public final class DictationStore {
             }
         }
         for id in missingIDs {
-            if Task<Never, Never>.isCancelled { return nil }
+            if Task<Never, Never>.isCancelled { return (nil, false) }
             sqlite3_reset(textStatement)
             sqlite3_clear_bindings(textStatement)
             sqlite3_bind_int64(textStatement, 1, id)
@@ -1887,19 +1922,23 @@ public final class DictationStore {
                 sqlite3_bind_text(textStatement, Int32(index + 2), (value as NSString).utf8String, -1, nil)
             }
             let textStep = sqlite3_step(textStatement)
-            if textStep == SQLITE_DONE { continue }
+            if textStep == SQLITE_DONE { return (nil, true) }
             guard textStep == SQLITE_ROW else { throw lastError(db) }
             let text = stringColumn(textStatement, index: 0)
             sqlite3_reset(textStatement)
 
             let recordLengths = analyze(text)
-            if Task<Never, Never>.isCancelled { return nil }
+            if Task<Never, Never>.isCancelled { return (nil, false) }
             pending.append((id: id, text: text, lengths: recordLengths))
-            if pending.count == 64 { try savePending() }
+            if pending.count == 64 {
+                try savePending()
+                if needsRetry { return (nil, true) }
+            }
         }
-        if Task<Never, Never>.isCancelled { return nil }
+        if Task<Never, Never>.isCancelled { return (nil, false) }
         try savePending()
-        return WordsBeforeCodeSwitch.median(of: lengths)
+        guard !needsRetry else { return (nil, true) }
+        return (WordsBeforeCodeSwitch.median(of: lengths), false)
     }
 
     public func dictationStats(
