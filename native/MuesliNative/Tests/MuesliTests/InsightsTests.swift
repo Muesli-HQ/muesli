@@ -15,6 +15,55 @@ struct InsightsTests {
         return store
     }
 
+    @Test("WBCS counts every completed English stretch and uses the true median")
+    func wordsBeforeCodeSwitchMedian() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "I think yeh bahut accha hai then we should नमस्ते",
+            durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10),
+            endedAt: now
+        )
+        try store.insertDictation(
+            text: "I think we should yeh bahut accha hai",
+            durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-20),
+            endedAt: now.addingTimeInterval(-10)
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == 3)
+    }
+
+    @Test("WBCS excludes unfinished runs and generated Quill text")
+    func wordsBeforeCodeSwitchExclusions() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "I think we should continue speaking English",
+            durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10),
+            endedAt: now
+        )
+        try store.insertQuilDictation(
+            outputText: "I think नमस्ते",
+            originalText: "original",
+            instruction: "summarize",
+            backend: "test",
+            model: "test",
+            durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-20),
+            endedAt: now.addingTimeInterval(-10)
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
+    @Test("WBCS recognizes Romanized Hindi and script switches")
+    func wordsBeforeCodeSwitchLanguages() {
+        #expect(WordsBeforeCodeSwitch.runLengths(in: "I think yeh bahut accha hai") == [2])
+        #expect(WordsBeforeCodeSwitch.runLengths(in: "I think नमस्ते") == [2])
+        #expect(WordsBeforeCodeSwitch.median(of: [2, 3]) == 2.5)
+    }
+
     @Test("empty history returns a complete zero-filled range")
     func emptyHistory() throws {
         let store = try makeStore()

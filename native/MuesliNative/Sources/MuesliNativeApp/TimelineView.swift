@@ -50,6 +50,7 @@ struct TimelineView: View {
                 meetingStats: appState.meetingStats,
                 showsMeetingStat: true,
                 tracksInsightsFeatureTour: true,
+                showsWordsBeforeCodeSwitch: appState.config.enableWordsBeforeCodeSwitch,
                 onSelect: { controller.openInsights(section: $0) }
             )
 

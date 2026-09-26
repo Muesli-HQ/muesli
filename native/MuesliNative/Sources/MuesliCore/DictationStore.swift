@@ -1728,6 +1728,46 @@ public final class DictationStore {
         return optionalStringColumn(statement, index: 0)
     }
 
+    /// Median English words in runs that end at a detected language switch.
+    /// Generated Quill output is excluded because it is not what was spoken.
+    public func wordsBeforeCodeSwitch(
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil
+    ) throws -> Double? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let filter = historyFilterConditions(
+            alias: nil,
+            dateColumn: "timestamp",
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication
+        )
+        let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(source, ''))) <> 'quil'"]
+        let sql = "SELECT raw_text FROM dictations WHERE \(conditions.joined(separator: " AND "))"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in filter.boundValues.enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
+        }
+
+        var lengths: [Int] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if Task<Never, Never>.isCancelled { return nil }
+            lengths += WordsBeforeCodeSwitch.runLengths(in: stringColumn(statement, index: 0))
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw lastError(db) }
+        return WordsBeforeCodeSwitch.median(of: lengths)
+    }
+
     public func dictationStats(
         fromDate: String? = nil,
         toDate: String? = nil,

@@ -1969,6 +1969,15 @@ struct SettingsView: View {
                     }
                     .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Words before code switch",
+                    description: "Show the median English words spoken before switching languages. Estimated locally from saved dictations."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableWordsBeforeCodeSwitch) { newValue in
+                        controller.updateConfig { $0.enableWordsBeforeCodeSwitch = newValue }
+                    }
+                }
             }
 
             dictationCleanupSettingsSection

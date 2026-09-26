@@ -66,6 +66,11 @@ struct DictationsView: View {
                 dictationStats: appState.filteredDictationStats,
                 meetingStats: appState.meetingStats,
                 showsMeetingStat: false,
+                showsWordsBeforeCodeSwitch: appState.config.enableWordsBeforeCodeSwitch,
+                wbcsFromDate: appState.dictationFromDate,
+                wbcsToDate: appState.dictationToDate,
+                wbcsOrigin: appState.dictationOriginFilter,
+                wbcsTargetApplication: appState.dictationApplicationFilter,
                 onSelect: { controller.openInsights(section: $0) }
             )
 

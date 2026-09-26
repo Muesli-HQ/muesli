@@ -1779,6 +1779,7 @@ struct AppConfig: Codable {
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
     var enableDictionaryCorrectionPrompts: Bool = false
+    var enableWordsBeforeCodeSwitch: Bool = false
     var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
@@ -1884,6 +1885,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case enableWordsBeforeCodeSwitch = "enable_words_before_code_switch"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case quilHotkeyTriggerThresholdMS = "quil_hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
@@ -2065,6 +2067,7 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        enableWordsBeforeCodeSwitch = (try? c.decode(Bool.self, forKey: .enableWordsBeforeCodeSwitch)) ?? defaults.enableWordsBeforeCodeSwitch
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )
