@@ -15,6 +15,12 @@ struct ShortcutsView: View {
     @State private var meetingRecordingShortcutMessage: String?
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 Text("Shortcuts")
@@ -52,10 +58,26 @@ struct ShortcutsView: View {
             reconcilePushToTalkState(permissions: snapshot.onboardingSnapshot)
             reconcileIndependentShortcutState()
         }
+        .onChange(of: appState.config.enablePushToTalk) { _, enabled in
+            if !enabled, recordingTarget == .dictation { stopRecording() }
+        }
+        .onChange(of: appState.config.enableComputerUseHotkey) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .computerUse { stopRecording() }
+        }
+        .onChange(of: appState.config.enableQuilMode) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .quil { stopRecording() }
+        }
+        .onChange(of: appState.config.enableMeetingRecordingHotkey) { _, enabled in
+            reconcileIndependentShortcutState()
+            if !enabled, recordingTarget == .meetingRecording { stopRecording() }
+        }
         .onDisappear {
             controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             stopRecording()
         }
+
     }
 
     private var isPushToTalkEnabled: Bool {
@@ -68,12 +90,7 @@ struct ShortcutsView: View {
         ).missingPermissionsMessage
     }
 
-    private enum ShortcutTarget {
-        case dictation
-        case computerUse
-        case quil
-        case meetingRecording
-    }
+    private typealias ShortcutTarget = ShortcutAssignment
 
     private var dictationShortcutSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
@@ -91,10 +108,7 @@ struct ShortcutsView: View {
                     Text(isPushToTalkEnabled ? "On" : "Off")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
-                    Toggle("Push to Talk", isOn: Binding(
-                        get: { isPushToTalkEnabled },
-                        set: updatePushToTalkEnabled
-                    ))
+                    MuesliSettingControl(controller: controller, id: "push_to_talk")
                     .toggleStyle(.switch)
                     .tint(MuesliTheme.accent)
                     .labelsHidden()
@@ -135,16 +149,7 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { appState.config.enableComputerUseHotkey },
-                    set: { newValue in
-                        let result = controller.updateComputerUseHotkeyEnabled(newValue)
-                        computerUseShortcutMessage = result.message
-                        if result.didUpdate {
-                            dictationShortcutMessage = nil
-                        }
-                    }
-                ))
+                MuesliSettingControl(controller: controller, id: "cua_shortcut")
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
@@ -189,13 +194,7 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { appState.config.enableMeetingRecordingHotkey },
-                    set: { newValue in
-                        let result = controller.updateMeetingRecordingHotkeyEnabled(newValue)
-                        meetingRecordingShortcutMessage = result.message
-                    }
-                ))
+                MuesliSettingControl(controller: controller, id: "meeting_shortcut")
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
@@ -248,13 +247,7 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { appState.config.enableQuilMode },
-                    set: { newValue in
-                        let result = controller.updateQuilModeEnabled(newValue)
-                        quilShortcutMessage = result.message
-                    }
-                ))
+                MuesliSettingControl(controller: controller, id: "quill")
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
@@ -337,16 +330,7 @@ struct ShortcutsView: View {
     }
 
     private func hotkey(for target: ShortcutTarget) -> HotkeyConfig {
-        switch target {
-        case .dictation:
-            return appState.config.dictationHotkey
-        case .computerUse:
-            return appState.config.computerUseHotkey
-        case .quil:
-            return appState.config.quilHotkey
-        case .meetingRecording:
-            return appState.config.meetingRecordingHotkey
-        }
+        appState.config[keyPath: target.keyPath]
     }
 
     private func thresholdInput(
@@ -425,18 +409,7 @@ struct ShortcutsView: View {
         .buttonStyle(.plain)
     }
 
-    private func updatePushToTalkEnabled(_ enabled: Bool) {
-        if !enabled, recordingTarget == .dictation {
-            stopRecording()
-        }
-        let result = controller.updatePushToTalkEnabled(enabled, requestPermissions: enabled)
-        switch result {
-        case .alreadyEnabled, .enabled, .disabled:
-            dictationShortcutMessage = nil
-        case .needsPermissions:
-            dictationShortcutMessage = pushToTalkPermissionMessage
-        }
-    }
+
 
     private func reconcilePushToTalkState(
         permissions: OnboardingPermissionSnapshot? = nil
@@ -466,6 +439,12 @@ struct ShortcutsView: View {
     }
 
     private func reconcileIndependentShortcutState() {
+        let meetingMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableMeetingRecordingHotkey)
+        if let meetingMessage { meetingRecordingShortcutMessage = meetingMessage }
+        else if meetingRecordingShortcutMessage == ShortcutFeatureEnablementPolicy.missingPermissionsMessage {
+            meetingRecordingShortcutMessage = nil
+        }
         let permissionMessage = ShortcutFeatureEnablementPolicy.missingPermissionsMessage
         let computerUsePermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
             isEnabled: appState.config.enableComputerUseHotkey
@@ -509,12 +488,7 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { appState.config.enableDoubleTapDictation },
-                    set: { newValue in
-                        controller.updateConfig { $0.enableDoubleTapDictation = newValue }
-                    }
-                ))
+                MuesliSettingControl(controller: controller, id: "double_tap_dictation")
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
@@ -571,9 +545,8 @@ struct ShortcutsView: View {
                 let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
                 let modifierCount = [NSEvent.ModifierFlags.command, .control, .option, .shift]
                     .filter { mods.contains($0) }.count
-                let allowsCombination = target == .meetingRecording || target == .quil
-                guard allowsCombination,
-                      (target != .quil || modifierCount == 1),
+                guard target.maximumModifiers > 0,
+                      modifierCount <= target.maximumModifiers,
                       modifierCount > 0,
                       HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
                     return event
@@ -608,19 +581,15 @@ struct ShortcutsView: View {
     }
 
     private func commitShortcut(_ config: HotkeyConfig, for target: ShortcutTarget) {
-        let result: ShortcutHotkeyUpdateResult
-        switch target {
-        case .dictation:
-            result = controller.updateDictationHotkey(config)
-        case .computerUse:
-            result = controller.updateComputerUseHotkey(config)
-        case .quil:
-            result = controller.updateQuilHotkey(config)
-        case .meetingRecording:
-            result = controller.updateMeetingRecordingHotkey(config)
-        }
-        setShortcutMessage(result.message, for: target)
         stopRecording()
+        Task { @MainActor in
+            do {
+                try await controller.applySetting(target.settingID, value: ShortcutAssignment.value(for: config))
+                setShortcutMessage(ShortcutHotkeyPolicy.commonGlobalShortcutWarning(for: config), for: target)
+            } catch {
+                setShortcutMessage(error.localizedDescription, for: target)
+            }
+        }
     }
 
     private func clearShortcutMessage(for target: ShortcutTarget) {

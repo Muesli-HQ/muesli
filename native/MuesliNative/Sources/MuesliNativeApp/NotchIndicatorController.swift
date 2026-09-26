@@ -116,7 +116,8 @@ struct NotchIndicatorGeometry: Equatable {
 
 @MainActor
 private final class NotchIndicatorPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    var acceptsKeyboardInput = false
+    override var canBecomeKey: Bool { acceptsKeyboardInput }
     override var canBecomeMain: Bool { false }
 }
 
@@ -138,6 +139,7 @@ final class NotchIndicatorController {
     private var icon = NSImage()
     private var accent = RecordingIndicatorPalette.accent(hex: "")
     private var instructionPanel: NSPanel?
+    private var question: ComputerUseQuestionSession?
     private var instruction: String?
     private var instructionStatus = ""
     private var appName = ""
@@ -173,7 +175,7 @@ final class NotchIndicatorController {
     func show(on screen: NSScreen, title: String, detail: String,
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
-              appName: String = "", appIcon: NSImage? = nil) -> Bool {
+              appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         requiresReview = false
         outcome = nil
@@ -191,6 +193,8 @@ final class NotchIndicatorController {
             return true
         }
         self.icon = icon
+        if self.question?.id != question?.id { expanded = true }
+        self.question = question
         self.instruction = instruction
         self.instructionStatus = instructionStatus
         self.appName = appName
@@ -242,6 +246,7 @@ final class NotchIndicatorController {
         instructionPanel?.orderOut(nil)
         instructionPanel?.contentView = nil
         instruction = nil
+        question = nil
         dismissActivity?.cancel()
         dismissActivity = nil
         visibility = NotchActivityVisibility()
@@ -306,7 +311,7 @@ final class NotchIndicatorController {
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
-            hasInstruction: instruction != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome,
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome,
             onToggleInstruction: { [weak self] in
                 guard let self else { return }
                 self.expanded.toggle()
@@ -322,7 +327,8 @@ final class NotchIndicatorController {
     }
 
     private func renderInstruction() {
-        guard let geometry, let instruction, !instruction.isEmpty, expanded, visibility.active else {
+        guard let geometry, expanded, visibility.active,
+              question != nil || instruction?.isEmpty == false else {
             instructionPanel?.orderOut(nil)
             instructionPanel?.contentView = nil
             return
@@ -339,8 +345,23 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             instructionPanel = panel
         }
+        (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if let question {
+            let size = ComputerUseQuestionLayout.size(in: screenBounds)
+            let frame = CGRect(x: min(max(geometry.cutout.midX - size.width / 2, screenBounds.minX), screenBounds.maxX - size.width),
+                y: max(screenBounds.minY, geometry.cutout.minY - size.height), width: size.width, height: size.height)
+            let view = ComputerUseQuestionView(session: question, notch: true,
+                onCollapse: { [weak self] in self?.expanded = false; self?.render() }, accent: Color(nsColor: accent))
+            if let hosting = instructionPanel?.contentView as? NSHostingView<ComputerUseQuestionView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
+        if instructionPanel?.isKeyWindow == true { instructionPanel?.resignKey() }
         let frame = geometry.instructionFrame(in: screenBounds, requiresReview: requiresReview)
-        let view = NotchLiveInstructionView(instruction: instruction, status: instructionStatus,
+        let view = NotchLiveInstructionView(instruction: instruction ?? "", status: instructionStatus,
             appName: appName, appIcon: appIcon, accent: Color(nsColor: accent),
             requiresReview: requiresReview, outcome: outcome,
             onReview: { [weak self] in self?.onReview?(); self?.hide() },

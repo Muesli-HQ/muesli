@@ -542,6 +542,28 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "blocked")
     }
 
+    @Test("thinking is excluded from the execution budget; actions still exhaust it", arguments: [false, true])
+    @MainActor
+    func executionOnlyTimeout(slowAction: Bool) async {
+        var clock: TimeInterval = 0
+        var calls = 0
+        let runtime = ComputerUsePlannerRuntime(config: AppConfig(), timeoutSeconds: 10, now: { clock },
+            observe: { _, _, _ in Self.observation() },
+            plan: { _ in
+                clock += 100 // much longer than the execution allowance
+                calls += 1
+                return ComputerUsePlannerResponse(toolCall: calls == 1
+                    ? ComputerUseToolCall(tool: .launchApp, appName: "Chrome")
+                    : ComputerUseToolCall(tool: .finish, reason: "Done"))
+            }, execute: { _, _ in
+                clock += slowAction ? 11 : 1
+                return .executed("Opened Chrome")
+            })
+        let result = await runtime.run(command: "Open Chrome")
+        #expect(result.status == (slowAction ? .timedOut : .done))
+        #expect(calls == (slowAction ? 1 : 2))
+    }
+
     @Test("timeout produces timed out runtime result")
     @MainActor
     func timeoutProducesTimedOutResult() async {

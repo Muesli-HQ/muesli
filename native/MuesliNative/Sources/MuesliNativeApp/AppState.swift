@@ -215,6 +215,7 @@ final class AppState {
     var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
+    var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
