@@ -10243,7 +10243,11 @@ public final class MuesliController: NSObject {
                 self.presentComputerUseFloatingStatus("Waiting for your answer")
                 runTrace.record(ComputerUseTraceEvent(kind: "question", title: "Question",
                     body: question.question, status: "waiting"))
-                let answer = try await self.computerUseQuestionPresenter.ask(question)
+                let answer = try await self.computerUseQuestionPresenter.ask(question, present: { session in
+                    self.indicator.showComputerUseQuestion(session, config: self.config)
+                }, dismiss: {
+                    self.indicator.hideComputerUseQuestion()
+                })
                 self.presentComputerUseFloatingStatus("Thinking...")
                 return answer
             })

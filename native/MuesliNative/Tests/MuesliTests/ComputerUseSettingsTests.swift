@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import MuesliCore
 import Testing
 @testable import MuesliNativeApp
@@ -542,6 +543,122 @@ struct ComputerUseSettingsTests {
             }
         #expect(result?.status == .failed)
         #expect(h.applies == 0)
+    }
+
+    @Test("question session completes once and dismisses before resuming")
+    func questionSessionLifecycle() async throws {
+        let presenter = ComputerUseQuestionPresenter()
+        var dismissals = 0
+        let answer = try await presenter.ask(.init(question: "Choose", options: ["A", "B"]), present: { session in
+            session.text = "  A  "
+            session.answer(session.text)
+            session.answer("B")
+            session.cancel()
+        }, dismiss: { dismissals += 1 })
+        #expect(answer == "A")
+        #expect(dismissals == 1)
+        presenter.cancel()
+        #expect(dismissals == 1)
+    }
+
+    @Test("Stop dismisses a suspended indicator question exactly once")
+    func questionSessionStop() async {
+        let presenter = ComputerUseQuestionPresenter()
+        let (ready, signal) = AsyncStream<Bool>.makeStream()
+        var dismissals = 0
+        let task = Task { @MainActor in
+            try await presenter.ask(.init(question: "Choose", options: ["A", "B"]), present: { _ in
+                signal.yield(true); signal.finish()
+            }, dismiss: { dismissals += 1 })
+        }
+        for await _ in ready { break }
+        task.cancel()
+        do { _ = try await task.value; Issue.record("Expected cancellation") }
+        catch { #expect(error is CancellationError) }
+        #expect(dismissals == 1)
+    }
+
+    @Test("floating question reuses the indicator window and restores its position", arguments: [RecordingIndicatorStyle.classic, .minimal])
+    func floatingQuestion(style: RecordingIndicatorStyle) throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        defer { indicator.close() }
+        var config = AppConfig()
+        config.selectRecordingIndicatorStyle(style)
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: screen.visibleFrame.midX, y: screen.visibleFrame.minY + 60)
+        indicator.showComputerUseTranscript("Use local models for Quill", config: config)
+        let original = try #require(indicator.currentFrame)
+        var cancelled = 0
+        let session = ComputerUseQuestionSession(question: .init(question: "Which model?", options: ["A", "B"])) { _ in
+            cancelled += 1
+            indicator.hideComputerUseQuestion()
+        }
+        indicator.showComputerUseQuestion(session, config: config)
+        let panel = try #require(NSApplication.shared.windows.first {
+            ($0.contentView as? NSHostingView<ComputerUseQuestionView>)?.rootView.session.id == session.id
+        })
+        #expect(screen.visibleFrame.contains(panel.frame))
+        #expect(panel.frame.height == ComputerUseQuestionLayout.size(in: screen.visibleFrame).height)
+        #expect(panel.canBecomeKey)
+        session.text = "My answer"
+        indicator.setTranscribingTitle("Waiting for your answer", config: config)
+        #expect((panel.contentView as? NSHostingView<ComputerUseQuestionView>)?.rootView.session.text == "My answer")
+        indicator.showComputerUseTranscript("Use local models for Quill", config: config)
+        indicator.hideComputerUseQuestion()
+        #expect(!(panel.contentView is NSHostingView<ComputerUseQuestionView>))
+        #expect(indicator.currentFrame == original)
+        #expect(cancelled == 0)
+        indicator.showComputerUseQuestion(session, config: config)
+        indicator.close()
+        #expect(cancelled == 1)
+        #expect(indicator.currentFrame == nil)
+    }
+
+    @Test("notch question keeps typed input through collapse and status refresh")
+    func notchQuestion() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.main)
+        let indicator = NotchIndicatorController(resolveGeometry: { screen in
+            NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+        })
+        defer { indicator.hide() }
+        let session = ComputerUseQuestionSession(question: .init(question: "Which model?", options: ["A", "B"])) { _ in }
+        func show(_ question: ComputerUseQuestionSession?) {
+            #expect(indicator.show(on: screen, title: "Computer use", detail: "Waiting", recording: false,
+                paused: false, meeting: false, handsFree: false, active: true, icon: NSImage(), accent: .green,
+                instruction: "Use local models for Quill", question: question))
+        }
+        show(session)
+        let panel = try #require(NSApplication.shared.windows.first {
+            ($0.contentView as? NSHostingView<ComputerUseQuestionView>)?.rootView.session.id == session.id
+        })
+        #expect(panel.canBecomeKey)
+        session.text = "Keep my answer"
+        (panel.contentView as? NSHostingView<ComputerUseQuestionView>)?.rootView.onCollapse?()
+        #expect(!panel.isVisible)
+        show(session)
+        #expect(!panel.isVisible) // A status update must not undo the user's collapse.
+        show(nil)
+        show(session)
+        #expect(panel.isVisible)
+        #expect((panel.contentView as? NSHostingView<ComputerUseQuestionView>)?.rootView.session.text == "Keep my answer")
+        show(nil)
+        #expect(!panel.canBecomeKey)
+        #expect(panel.contentView is NSHostingView<NotchLiveInstructionView>)
+    }
+
+    @Test("expanded questions stay within each screen's usable area")
+    func questionPlacement() {
+        for screen in [CGRect(x: 0, y: 0, width: 1440, height: 870), CGRect(x: -1920, y: 50, width: 1920, height: 1000)] {
+            for center in [CGPoint(x: screen.minX, y: screen.minY), CGPoint(x: screen.maxX, y: screen.maxY)] {
+                let frame = ComputerUseQuestionLayout.floatingFrame(anchor: CGRect(origin: center, size: .zero), in: screen)
+                #expect(screen.contains(frame))
+            }
+        }
     }
 
 }

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import QuartzCore
 import Foundation
 import MuesliCore
@@ -165,6 +166,9 @@ private final class IdleShortcutPillView: NSView {
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private let notchIndicator = NotchIndicatorController()
+    private var question: ComputerUseQuestionSession?
+    private var questionReturnFrame: CGRect?
+    private var questionHostingView: NSHostingView<ComputerUseQuestionView>?
     private var panel: NSPanel?
     private var containerView: NSView?
     private var contentView: HoverIndicatorView?
@@ -558,6 +562,46 @@ final class FloatingIndicatorController: NSObject {
         setState(.transcribing, config: config)
     }
 
+    func showComputerUseQuestion(_ session: ComputerUseQuestionSession, config: AppConfig) {
+        question = session
+        setState(.transcribing, config: config)
+    }
+
+    func hideComputerUseQuestion() {
+        guard question != nil || questionHostingView != nil else { return }
+        question = nil
+        restoreFloatingQuestionSurface()
+        if let config = lastLoadedConfig { setState(state, config: config) }
+    }
+
+    private func restoreFloatingQuestionSurface() {
+        guard questionHostingView != nil else { return }
+        if panel?.isKeyWindow == true { panel?.resignKey() }
+        panel?.contentView = containerView
+        if let questionReturnFrame { panel?.setFrame(questionReturnFrame, display: true) }
+        questionHostingView = nil
+        questionReturnFrame = nil
+    }
+
+    private func renderFloatingQuestion(_ question: ComputerUseQuestionSession, config: AppConfig) {
+        if panel == nil { createPanel(config: config) }
+        guard let panel, let screen = NSScreen.main else { question.cancel(); return }
+        stopWaveformAnimation()
+        hoverExitWorkItem?.cancel()
+        let view = ComputerUseQuestionView(session: question,
+            accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: config.recordingColorHex)))
+        if let hosting = questionHostingView { hosting.rootView = view }
+        else {
+            questionReturnFrame = panel.frame
+            questionHostingView = NSHostingView(rootView: view)
+            panel.contentView = questionHostingView
+        }
+        panel.ignoresMouseEvents = false
+        panel.setFrame(ComputerUseQuestionLayout.floatingFrame(anchor: questionReturnFrame ?? panel.frame,
+            in: screen.visibleFrame), display: true)
+        panel.orderFrontRegardless()
+    }
+
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
         instructionMode = .computerUse
         notchInstruction = Self.normalizedInstructionTranscript(transcript)
@@ -602,6 +646,11 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .transcribing, let question {
+            self.question = nil
+            restoreFloatingQuestionSurface()
+            question.cancel()
+        }
         if state == .idle {
             instructionMode = nil
             notchInstruction = nil
@@ -651,13 +700,18 @@ final class FloatingIndicatorController: NSObject {
                     (instructionMode == .computerUse ? NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "Computer use") ?? Self.idleIndicatorIcon(config: config) : Self.idleIndicatorIcon(config: config)),
                 accent: RecordingIndicatorPalette.accent(hex: config.recordingColorHex),
                 instruction: notchInstruction, instructionStatus: instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle,
-                appName: instructionAppName, appIcon: instructionAppIcon) {
+                appName: instructionAppName, appIcon: instructionAppIcon, question: question) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 return
             }
         }
         notchIndicator.hide()
+        if let question {
+            renderFloatingQuestion(question, config: config)
+            return
+        }
+        restoreFloatingQuestionSurface()
         if config.indicatorAnchor == .notch && state == .idle {
             // Notch's non-notched-display fallback is activity-only too.
             close()
@@ -1176,6 +1230,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func close() {
+        let pendingQuestion = question
+        question = nil
+        questionHostingView = nil
+        questionReturnFrame = nil
         notchIndicator.hide()
         stopWaveformAnimation()
         powerProvider = nil
@@ -1198,6 +1256,7 @@ final class FloatingIndicatorController: NSObject {
         isShowingLoading = false
         deferredLoadingMessage = nil
         meetingTranscriptPanel.close()
+        pendingQuestion?.cancel()
     }
 
     private func setMeetingTranscriptPanelHovered(_ hovered: Bool) {
