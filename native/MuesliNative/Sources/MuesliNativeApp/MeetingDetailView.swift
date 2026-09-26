@@ -243,6 +243,17 @@ struct MeetingDetailView: View {
         }
     }
 
+    @MainActor
+    private func createMeetingContact(meetingID: Int64) {
+        let controller = controller
+        appState.meetingContactCreationRequest = MeetingContactCreationRequest(
+            meetingID: meetingID
+        ) { meetingID, participant in
+            try await controller.attachMeetingParticipant(meetingID: meetingID, participant: participant)
+            NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: meetingID)
+        }
+    }
+
     @ViewBuilder
     private func header(_ meeting: MeetingRecord) -> some View {
         if usesCompactQuickNotes {
@@ -363,7 +374,9 @@ struct MeetingDetailView: View {
                     compactFormattingToolbar
                         .disabled(!canEditManualNotes(for: meeting))
                 } else {
-                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                    MeetingParticipantsView(meetingID: meeting.id, controller: controller, onCreateNewContact: {
+                        createMeetingContact(meetingID: meeting.id)
+                    })
                         .frame(maxWidth: 150)
                 }
                 Spacer(minLength: 0)
@@ -396,6 +409,9 @@ struct MeetingDetailView: View {
                 MeetingParticipantsView(
                     meetingID: meeting.id,
                     controller: controller,
+                    onCreateNewContact: {
+                        createMeetingContact(meetingID: meeting.id)
+                    },
                     compactDiscardAction: {
                         controller.discardMeetingWithConfirmation()
                     }
@@ -526,7 +542,10 @@ struct MeetingDetailView: View {
                 .frame(height: 20)
             MeetingParticipantsView(
                 meetingID: meeting.id,
-                controller: controller
+                controller: controller,
+                onCreateNewContact: {
+                    createMeetingContact(meetingID: meeting.id)
+                }
             )
         }
     }
