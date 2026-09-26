@@ -215,6 +215,10 @@ actor TranscriptionCoordinator {
         await fluidTranscriber.shutdown(ifLoadedVersion: version)
     }
 
+    func unloadOrukeetTranscriber() async {
+        await fluidTranscriber.shutdownOrukeet()
+    }
+
     func unloadParakeetUnifiedTranscriber() async {
         await parakeetUnifiedTranscriber.shutdown()
     }
@@ -589,12 +593,16 @@ actor TranscriptionCoordinator {
 
         switch backend.backend {
         case "fluidaudio":
-            let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
-            try await fluidTranscriber.loadModels(
-                version: version,
-                progress: progress,
-                progressSnapshot: progressSnapshot
-            )
+            if backend == .orukeet {
+                try await fluidTranscriber.loadOrukeet(progress: progress, progressSnapshot: progressSnapshot)
+            } else {
+                let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
+                try await fluidTranscriber.loadModels(
+                    version: version,
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
+            }
         case "parakeet-unified":
             try await parakeetUnifiedTranscriber.loadModels(
                 progress: progress,
