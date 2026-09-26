@@ -593,6 +593,8 @@ public final class MuesliController: NSObject {
     /// Prior transcript captured when resuming a finished meeting, keyed by meeting id.
     /// Present only while a resume is in flight; consumed at stop to merge old + new
     /// transcript, and cleared on success or restored-on-failure.
+    private var voiceLabelInvalidationTask: Task<[Int64], Error>?
+    private var pendingResumeSpeakerState: [Int64: MeetingSpeakerState] = [:]
     private var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
     private var ckSyncEngine: MuesliCKSyncEngine?
@@ -609,6 +611,13 @@ public final class MuesliController: NSObject {
     private var bridgeDiscoveryFollowUpPending = false
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
+    lazy var ownerVoice = OwnerVoiceController(
+        coordinator: transcriptionCoordinator,
+        supportDirectory: configStore.supportDirectory(),
+        captureIsActive: { [weak self] in self?.isInteractiveAudioActivityInProgress ?? true },
+        onChange: { [weak self] generation in self?.ownerVoiceProfileDidChange(generation: generation) }
+    )
+
     private var hasStarted = false
 
     init(
@@ -682,6 +691,7 @@ public final class MuesliController: NSObject {
         self.indicator = FloatingIndicatorController(configStore: configStore)
         ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
+        _ = ownerVoice // Validates local storage and removes interrupted enrollment audio at startup.
         dictationAudioSessionManager.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleDictationAudioSessionEvent(event)
@@ -5677,6 +5687,7 @@ public final class MuesliController: NSObject {
                     selectedTemplateKind: templateSnapshot.kind,
                     selectedTemplatePrompt: templateSnapshot.prompt
                 )
+                try self.markMeetingSpeakerSummaryCurrent(meetingID: meeting.id, transcript: meeting.rawTranscript)
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                     self.syncAppState()
@@ -5819,6 +5830,11 @@ public final class MuesliController: NSObject {
                 }
                 try Task.checkCancellation()
                 rawTranscript = diarization.transcript
+                let speakerState = transcription.segments.isEmpty ? nil : await coordinator.speakerState(
+                    micSegments: [], systemSegments: transcription.segments,
+                    systemDiarization: diarization.segments, micDiarization: [],
+                    meetingStart: AudioFileImportController.importedTranscriptTimelineStart(), systemSource: .mixed)
+                if let speakerState { rawTranscript = speakerState.renderedTranscript() }
                 self.appState.meetingRetranscriptions[meeting.id]?.warning = diarization.warning
 
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
@@ -5850,6 +5866,8 @@ public final class MuesliController: NSObject {
 
                 do {
                     try Task.checkCancellation()
+                    let speakerState = self.currentSpeakerState(speakerState, summarizedTranscript: rawTranscript)
+                    rawTranscript = speakerState?.renderedTranscript() ?? rawTranscript
                     try self.dictationStore.updateMeetingTranscriptAndSummary(
                         id: meeting.id,
                         rawTranscript: rawTranscript,
@@ -5857,8 +5875,14 @@ public final class MuesliController: NSObject {
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        expectedRawTranscript: meeting.rawTranscript,
+                        speakerState: speakerState
                     )
+                    if speakerState != nil {
+                        // Reconciliation may add contact names, but cannot undo a committed re-transcription.
+                        try? self.reconcileMeetingSpeakerNames(meetingID: meeting.id)
+                    }
                 } catch {
                     if error is CancellationError { throw error }
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
@@ -5900,6 +5924,145 @@ public final class MuesliController: NSObject {
 
     // MARK: - Meeting Editing
 
+    func meetingSpeakerState(meetingID: Int64) throws -> MeetingSpeakerState? {
+        try dictationStore.meetingSpeakerState(meetingID: meetingID)
+    }
+
+    func meetingIdentityRoles(meetingID: Int64) throws -> [String: MeetingParticipantRole] {
+        try dictationStore.meetingParticipantRoles(meetingID: meetingID)
+    }
+
+    private func speakerIdentityParticipants(meetingID: Int64) throws -> [MeetingIdentityParticipant] {
+        let roles = try dictationStore.meetingParticipantRoles(meetingID: meetingID)
+        return try dictationStore.listMeetingParticipants(meetingID: meetingID).map {
+            MeetingIdentityParticipant(id: $0.participantIdentifier, name: $0.displayName, role: roles[$0.participantIdentifier] ?? .unknown)
+        }
+    }
+
+    private func resolvedSpeakerState(_ state: MeetingSpeakerState, meetingID: Int64) throws -> MeetingSpeakerState {
+        try Self.resolvedSpeakerState(state, meetingID: meetingID, store: dictationStore)
+    }
+
+    private nonisolated static func resolvedSpeakerState(_ state: MeetingSpeakerState, meetingID: Int64,
+                                                        store: DictationStore) throws -> MeetingSpeakerState {
+        var updated = state
+        let roles = try store.meetingParticipantRoles(meetingID: meetingID)
+        let participants = try store.listMeetingParticipants(meetingID: meetingID).map {
+            MeetingIdentityParticipant(id: $0.participantIdentifier, name: $0.displayName,
+                                       role: roles[$0.participantIdentifier] ?? .unknown)
+        }
+        let ids = Set(participants.map(\.id))
+        var manual = updated.assignments.filter { $0.value.evidence == .manual }
+        for key in manual.keys {
+            if let id = manual[key]?.participantID, !ids.contains(id) { manual[key]?.needsParticipantReview = true }
+        }
+        updated.assignments = MeetingSpeakerIdentityPolicy.resolve(speakers: updated.candidates, participants: participants, manual: manual)
+        return updated
+    }
+
+    func markMeetingSpeakerSummaryCurrent(meetingID: Int64, transcript: String) throws {
+        try dictationStore.markSpeakerSummaryCurrent(
+            meetingID: meetingID,
+            transcriptHash: MeetingSpeakerState.hash(transcript)
+        )
+        NotificationCenter.default.post(name: .meetingSpeakerIdentityDidChange, object: meetingID)
+    }
+
+    private func reconcileMeetingSpeakerNames(meetingID: Int64) throws {
+        guard let state = try dictationStore.meetingSpeakerState(meetingID: meetingID), state.isAuthoritative else { return }
+        let updated = try resolvedSpeakerState(state, meetingID: meetingID)
+        if try dictationStore.renderSpeakerStateIfCurrent(meetingID: meetingID, state: updated) == .updated {
+            scheduleICloudSyncAfterLocalChange()
+            syncAppState()
+            historyWindowController?.reload()
+            NotificationCenter.default.post(name: .meetingSpeakerIdentityDidChange, object: meetingID)
+        }
+    }
+
+    func setMeetingIdentityRole(meetingID: Int64, participantID: String, role: MeetingParticipantRole) throws {
+        try dictationStore.setMeetingParticipantRole(meetingID: meetingID, participantID: participantID, role: role)
+        try reconcileMeetingSpeakerNames(meetingID: meetingID)
+    }
+
+    func assignMeetingSpeaker(meetingID: Int64, key: MeetingSpeakerKey, participantID: String?,
+                              isOwner: Bool = false, automatic: Bool = false, retainName: Bool = false) throws {
+        guard var state = try dictationStore.meetingSpeakerState(meetingID: meetingID), state.isAuthoritative,
+              state.segments.contains(where: { $0.key == key }) else { throw MeetingSpeakerCorrectionError.editedTranscript }
+        if automatic {
+            state.assignments[key] = nil
+        } else if retainName, var assignment = state.assignments[key] {
+            assignment.participantID = nil
+            assignment.needsParticipantReview = false
+            assignment.evidence = .manual
+            state.assignments[key] = assignment
+        } else if isOwner {
+            state.assignments[key] = .init(label: "You", evidence: .manual, isOwner: true)
+        } else {
+            guard let person = try speakerIdentityParticipants(meetingID: meetingID).first(where: { $0.id == participantID }) else {
+                throw MeetingSpeakerCorrectionError.removedParticipant
+            }
+            state.assignments[key] = .init(label: person.name, evidence: .manual, participantID: person.id)
+        }
+        state = try resolvedSpeakerState(state, meetingID: meetingID)
+        guard try dictationStore.renderSpeakerStateIfCurrent(meetingID: meetingID, state: state) == .updated else {
+            throw MeetingSpeakerCorrectionError.editedTranscript
+        }
+        scheduleICloudSyncAfterLocalChange()
+        NotificationCenter.default.post(name: .meetingSpeakerIdentityDidChange, object: meetingID)
+        syncAppState()
+        historyWindowController?.reload()
+    }
+
+    private func currentSpeakerState(_ original: MeetingSpeakerState?, summarizedTranscript: String) -> MeetingSpeakerState? {
+        guard var state = original else { return nil }
+        if state.requiresVoiceInvalidation(for: ownerVoice.profile?.id) {
+            state.invalidateVoiceEvidence()
+            state.assignments = MeetingSpeakerIdentityPolicy.resolve(speakers: state.candidates, participants: [],
+                manual: state.assignments.filter { $0.value.evidence == .manual })
+        }
+        state.summaryIsStale = state.summaryIsStale || state.renderedTranscript() != summarizedTranscript
+        return state
+    }
+
+    private func ownerVoiceProfileDidChange(generation: UInt64) {
+        for id in pendingResumeSpeakerState.keys { pendingResumeSpeakerState[id]?.invalidateVoiceEvidence() }
+        voiceLabelInvalidationTask?.cancel()
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let profileID = ownerVoice.profile?.id
+        let task = Task.detached(priority: .utility) {
+            let store = DictationStore(databaseURL: databaseURL)
+            var changed: [Int64] = []
+            for id in try store.speakerStateMeetingIDs() {
+                try Task.checkCancellation()
+                guard var state = try store.meetingSpeakerState(meetingID: id), state.isAuthoritative,
+                      state.requiresVoiceInvalidation(for: profileID) else { continue }
+                state.invalidateVoiceEvidence()
+                state = try Self.resolvedSpeakerState(state, meetingID: id, store: store)
+                try Task.checkCancellation()
+                if try store.renderSpeakerStateIfCurrent(meetingID: id, state: state) == .updated { changed.append(id) }
+            }
+            return changed
+        }
+        voiceLabelInvalidationTask = task
+        Task { [weak self] in
+            do {
+                let changed = try await task.value
+                guard let self, self.ownerVoice.generation.accepts(generation) else { return }
+                self.voiceLabelInvalidationTask = nil
+                for id in changed { NotificationCenter.default.post(name: .meetingSpeakerIdentityDidChange, object: id) }
+                self.scheduleICloudSyncAfterLocalChange()
+                self.syncAppState()
+                self.historyWindowController?.reload()
+            } catch is CancellationError {
+                // A newer profile lifecycle owns the remaining invalidation work.
+            } catch {
+                guard let self, self.ownerVoice.generation.accepts(generation) else { return }
+                self.voiceLabelInvalidationTask = nil
+                self.presentErrorAlert(title: "Speaker labels", message: "Speaker labels could not be updated. Reopen the meeting to retry.")
+            }
+        }
+    }
+
     func meetingParticipants(meetingID: Int64) async throws -> [MeetingParticipant] {
         await waitForCalendarAttendeePersistence(meetingID: meetingID)
         let databaseURL = dictationStore.resolvedDatabaseURL
@@ -5928,6 +6091,7 @@ public final class MuesliController: NSObject {
                 participant: participant
             )
         }.value
+        try reconcileMeetingSpeakerNames(meetingID: meetingID)
     }
 
     func removeMeetingParticipant(
@@ -5941,6 +6105,7 @@ public final class MuesliController: NSObject {
                 participantIdentifier: participantIdentifier
             )
         }.value
+        try reconcileMeetingSpeakerNames(meetingID: meetingID)
     }
 
     private func persistCalendarAttendees(
@@ -5951,7 +6116,8 @@ public final class MuesliController: NSObject {
         persistCalendarParticipants(
             attendees.map(\.participantDraft),
             meetingID: meetingID,
-            mode: mode
+            mode: mode,
+            roles: Dictionary(attendees.map { ($0.id, $0.identityRole) }, uniquingKeysWith: { first, _ in first })
         )
     }
 
@@ -5979,7 +6145,8 @@ public final class MuesliController: NSObject {
     private func persistCalendarParticipants(
         _ participants: [MeetingParticipantDraft],
         meetingID: Int64,
-        mode: CalendarAttendeePersistenceMode
+        mode: CalendarAttendeePersistenceMode,
+        roles: [String: MeetingParticipantRole] = [:]
     ) {
         guard mode == .reconcile || !participants.isEmpty else { return }
 
@@ -6002,6 +6169,9 @@ public final class MuesliController: NSObject {
                         participants: participants
                     )
                 }
+                for (id, role) in roles {
+                    try store.setMeetingParticipantRole(meetingID: meetingID, participantID: id, role: role, onlyIfUnspecified: true)
+                }
                 return true
             } catch {
                 fputs(
@@ -6021,6 +6191,7 @@ public final class MuesliController: NSObject {
             }
             self.calendarAttendeePersistenceTasks.removeValue(forKey: meetingID)
             if didPersist {
+                try? self.reconcileMeetingSpeakerNames(meetingID: meetingID)
                 NotificationCenter.default.post(
                     name: .meetingParticipantsDidChange,
                     object: meetingID
@@ -6947,6 +7118,8 @@ public final class MuesliController: NSObject {
 
         let priorTranscript: String
         do {
+            let state = try dictationStore.meetingSpeakerState(meetingID: meetingID)
+            if state?.matches(meeting.rawTranscript) == true { pendingResumeSpeakerState[meetingID] = state }
             priorTranscript = try dictationStore.prepareMeetingForResume(id: meetingID)
         } catch {
             fputs("[muesli-native] failed to prepare meeting resume \(meetingID): \(error)\n", stderr)
@@ -7188,8 +7361,11 @@ public final class MuesliController: NSObject {
         selectedTemplateID: String?,
         selectedTemplateName: String?,
         selectedTemplateKind: MeetingTemplateKind?,
-        selectedTemplatePrompt: String?
+        selectedTemplatePrompt: String?,
+        speakerState: MeetingSpeakerState? = nil
     ) throws -> Int64 {
+        let speakerState = currentSpeakerState(speakerState, summarizedTranscript: rawTranscript)
+        let rawTranscript = speakerState?.renderedTranscript() ?? rawTranscript
         let meetingID = try dictationStore.insertMeeting(
             title: title,
             calendarEventID: calendarEventID,
@@ -7204,8 +7380,13 @@ public final class MuesliController: NSObject {
             selectedTemplateName: selectedTemplateName,
             selectedTemplateKind: selectedTemplateKind,
             selectedTemplatePrompt: selectedTemplatePrompt,
-            source: .audioImport
+            source: .audioImport,
+            speakerState: speakerState
         )
+        if speakerState != nil {
+            // Initial state commits with the transcript; participant-name reconciliation is optional enrichment.
+            try? reconcileMeetingSpeakerNames(meetingID: meetingID)
+        }
         scheduleICloudSyncAfterLocalChange()
         meetingHookDispatcher.dispatchCompletedMeetingHook(
             meetingID: meetingID,
@@ -7314,6 +7495,7 @@ public final class MuesliController: NSObject {
         endDate: Date?,
         previousMeetingNotes: String? = nil
     ) async throws {
+        ownerVoice.cancelForCaptureStart()
         statusBarController?.setStatus("Meeting transcription will start shortly.")
         statusBarController?.refresh()
         try Task.checkCancellation()
@@ -7334,6 +7516,7 @@ public final class MuesliController: NSObject {
             let meetingSession = capture.session
             let transcriptGeneration = UUID()
             meetingSession.previousMeetingNotes = previousMeetingNotes
+            appState.liveMeetingMicrophoneLabel = ownerVoice.profile == nil ? "You" : "Microphone"
 
             do {
                 meetingSession.manualNotesProvider = { [weak self] in
@@ -7394,7 +7577,8 @@ public final class MuesliController: NSObject {
                         self.indicator.updateMeetingTranscript(
                             transcript: self.appState.liveMeetingTranscript,
                             partialYou: self.appState.liveMeetingPartialYou,
-                            partialOthers: self.appState.liveMeetingPartialOthers
+                            partialOthers: self.appState.liveMeetingPartialOthers,
+                            microphoneLabel: self.appState.liveMeetingMicrophoneLabel
                         )
                     }
                 }
@@ -7405,7 +7589,7 @@ public final class MuesliController: NSObject {
                             ownerID: meetingID,
                             generation: transcriptGeneration
                         ) else { return }
-                        if speaker == "You" {
+                        if speaker == "You" || speaker == "Microphone" {
                             guard self.appState.liveMeetingPartialYou != tail else { return }
                             self.appState.liveMeetingPartialYou = tail
                         } else {
@@ -7418,7 +7602,8 @@ public final class MuesliController: NSObject {
                         self.indicator.updateMeetingTranscript(
                             transcript: self.appState.liveMeetingTranscript,
                             partialYou: self.appState.liveMeetingPartialYou,
-                            partialOthers: self.appState.liveMeetingPartialOthers
+                            partialOthers: self.appState.liveMeetingPartialOthers,
+                            microphoneLabel: self.appState.liveMeetingMicrophoneLabel
                         )
                     }
                 }
@@ -7847,6 +8032,7 @@ public final class MuesliController: NSObject {
             updateMeetingStatusAndScheduleSync(id: id, status: .completed)
         }
         pendingResumePriorTranscript[id] = nil
+        pendingResumeSpeakerState[id] = nil
         if activeMeetingAudioWarning?.meetingID == id {
             activeMeetingAudioWarning = nil
         }
@@ -8144,6 +8330,7 @@ public final class MuesliController: NSObject {
                 } else if let liveMeetingID {
                     // Resume merged + persisted successfully — drop the prior-transcript marker.
                     self.pendingResumePriorTranscript[liveMeetingID] = nil
+                    self.pendingResumeSpeakerState[liveMeetingID] = nil
                 }
                 self.reconcileFinishedMeetingPresentation()
                 self.endMeetingActivity()
@@ -8216,6 +8403,8 @@ public final class MuesliController: NSObject {
         existingMeetingID: Int64? = nil,
         preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
+        let speakerState = currentSpeakerState(result.speakerState, summarizedTranscript: result.rawTranscript)
+        let rawTranscript = speakerState?.renderedTranscript() ?? result.rawTranscript
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error
@@ -8232,7 +8421,7 @@ public final class MuesliController: NSObject {
                 startTime: result.startTime,
                 endTime: result.endTime,
                 durationSeconds: durationOverride,
-                rawTranscript: result.rawTranscript,
+                rawTranscript: rawTranscript,
                 formattedNotes: result.formattedNotes,
                 micAudioPath: nil,
                 systemAudioPath: nil,
@@ -8241,7 +8430,9 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
                 selectedTemplatePrompt: result.templateSnapshot.prompt,
-                visualContext: result.visualContext
+                visualContext: result.visualContext,
+                expectedRawTranscript: result.expectedPriorTranscript,
+                speakerState: speakerState
             )
             meetingID = existingMeetingID
             clearCachedMeetingManualNotes(id: existingMeetingID)
@@ -8252,7 +8443,7 @@ public final class MuesliController: NSObject {
                 calendarEventID: result.calendarEventID,
                 startTime: result.startTime,
                 endTime: result.endTime,
-                rawTranscript: result.rawTranscript,
+                rawTranscript: rawTranscript,
                 formattedNotes: result.formattedNotes,
                 micAudioPath: nil,
                 systemAudioPath: nil,
@@ -8261,8 +8452,13 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
                 selectedTemplatePrompt: result.templateSnapshot.prompt,
-                visualContext: result.visualContext
+                visualContext: result.visualContext,
+                speakerState: speakerState
             )
+        }
+        if let speakerState {
+            // The first write is already durable; roster enrichment must not suppress completion hooks.
+            try? reconcileMeetingSpeakerNames(meetingID: meetingID)
         }
         scheduleICloudSyncAfterLocalChange()
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
@@ -8338,9 +8534,12 @@ public final class MuesliController: NSObject {
         meetingID: Int64?
     ) async -> MeetingSessionResult {
         guard let meetingID,
-              let prior = pendingResumePriorTranscript[meetingID] else {
+              let capturedPrior = pendingResumePriorTranscript[meetingID] else {
             return result
         }
+        let prior = meeting(id: meetingID)?.rawTranscript ?? capturedPrior
+        var combinedState = result.speakerState?.appending(prior: pendingResumeSpeakerState[meetingID],
+            priorTranscript: prior, separator: MeetingResumePolicy.resumeSeparator)
         let manualNotes = manualNotesForLiveMeeting(id: meetingID)
         let combined = MeetingResumePolicy.combinedResumeTranscript(
             prior: prior,
@@ -8363,7 +8562,9 @@ public final class MuesliController: NSObject {
                 durationSeconds: accumulatedDuration,
                 rawTranscript: combined,
                 formattedNotes: originalMeeting?.formattedNotes ?? result.formattedNotes,
-                visualContext: mergedVisualContext
+                visualContext: mergedVisualContext,
+                speakerState: combinedState,
+                expectedPriorTranscript: prior
             )
         }
 
@@ -8380,6 +8581,7 @@ public final class MuesliController: NSObject {
                 participantNames: participantNames,
                 visualContext: mergedVisualContext
             )
+            combinedState?.markSummaryCurrent(for: combined)
         } catch {
             fputs("[muesli-native] resume summary regeneration failed: \(error.localizedDescription)\n", stderr)
             regeneratedNotes = MeetingSummaryClient.summaryFailureNotes(
@@ -8394,7 +8596,9 @@ public final class MuesliController: NSObject {
             durationSeconds: accumulatedDuration,
             rawTranscript: combined,
             formattedNotes: regeneratedNotes,
-            visualContext: mergedVisualContext
+            visualContext: mergedVisualContext,
+            speakerState: combinedState,
+            expectedPriorTranscript: prior
         )
     }
 
@@ -10992,6 +11196,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleStart() {
+        ownerVoice.cancelForCaptureStart()
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
@@ -11179,6 +11384,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) -> Bool {
+        ownerVoice.cancelForCaptureStart()
         if shouldRejectDictationForComputerUseActivity() { return false }
         guard canBeginDictationInteraction else { return false }
         guard ensureDictationBackendReady() else { return false }

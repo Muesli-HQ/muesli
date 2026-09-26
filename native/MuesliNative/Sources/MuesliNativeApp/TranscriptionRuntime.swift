@@ -130,6 +130,9 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var diarizerVoiceModelIdentity: String?
+    private var ownerVoiceProfile: OwnerVoiceProfile?
+    private var ownerVoiceGeneration: UInt64 = 0
     private var isDiarizerLoadInProgress = false
     private var activeDiarizerLoadID: UUID?
     private var diarizerLoadTask: Task<Void, Never>?
@@ -820,6 +823,7 @@ actor TranscriptionCoordinator {
             let diarizer = DiarizerManager()
             diarizer.initialize(models: models)
             diarizerManager = diarizer
+            diarizerVoiceModelIdentity = try? OwnerVoiceExtractor.modelIdentity()
             diarizerDiagnostics.ready(context, startedAt: startedAt)
             fputs(
                 "[muesli-native] Speaker diarization loaded (compute: \(policy.computePolicy.rawValue))\n",
@@ -1124,12 +1128,86 @@ actor TranscriptionCoordinator {
         return result
     }
 
-    func getVadManager() -> VadManager? {
-        vadManager
+    func setOwnerVoiceProfile(_ profile: OwnerVoiceProfile?, generation: UInt64) {
+        guard generation >= ownerVoiceGeneration else { return }
+        ownerVoiceGeneration = generation
+        ownerVoiceProfile = profile
     }
 
-    func getDiarizerManager() -> DiarizerManager? {
-        diarizerManager
+    func ownerVoiceModelIdentity() -> String? { diarizerVoiceModelIdentity }
+    func ownerVoiceIsEnrolled() -> Bool { ownerVoiceProfile != nil }
+    func isDiarizationAvailable() -> Bool { diarizerManager?.isAvailable == true }
+
+    func speakerState(micSegments: [SpeechSegment], systemSegments: [SpeechSegment],
+                      systemDiarization: [TimedSpeakerSegment], micDiarization: [TimedSpeakerSegment],
+                      meetingStart: Date, systemSource: MeetingSpeakerSource = .system) -> MeetingSpeakerState {
+        let profile = ownerVoiceProfile
+        var state = TranscriptFormatter.structured(micSegments: micSegments, systemSegments: systemSegments,
+            diarizationSegments: systemDiarization, micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart, session: UUID(), enrollmentEnabled: profile != nil, systemSource: systemSource)
+        guard let profile else { return state }
+        state.voiceGeneration = ownerVoiceGeneration
+        state.voiceProfileID = profile.id
+        guard profile.modelIdentity == diarizerVoiceModelIdentity else { return state }
+        let matcher = OwnerVoiceMatcher(profile: profile)
+        var evidence: [MeetingSpeakerKey: [OwnerVoiceWindow]] = [:]
+        for candidate in state.candidates {
+            let segments = candidate.key.source == .microphone ? micDiarization : systemDiarization
+            guard candidate.key.clusterID.hasPrefix("cluster:") else { continue }
+            let id = String(candidate.key.clusterID.dropFirst(8))
+            let cluster = segments.filter { $0.speakerId == id }
+            let windows = Dictionary(grouping: cluster, by: { Int($0.startTimeSeconds / 10) })
+            evidence[candidate.key] = windows.keys.sorted().compactMap { window in
+                guard let parts = windows[window], let best = parts.max(by: {
+                    ($0.endTimeSeconds - $0.startTimeSeconds) < ($1.endTimeSeconds - $1.startTimeSeconds)
+                }), best.qualityScore.isFinite, best.qualityScore >= 0.5 else { return nil }
+                let overlaps = parts.contains { part in segments.contains { other in
+                    other.speakerId != id && min(other.endTimeSeconds, part.endTimeSeconds) > max(other.startTimeSeconds, part.startTimeSeconds)
+                } }
+                let duration = parts.reduce(Double(0)) { $0 + Double($1.endTimeSeconds - $1.startTimeSeconds) }
+                return OwnerVoiceWindow(embedding: best.embedding, speechSeconds: min(10, duration), hasOverlap: overlaps)
+            }
+        }
+        for source in [MeetingSpeakerSource.microphone, systemSource] {
+            let keys = state.candidates.map(\.key).filter { $0.source == source }
+            let owners = keys.filter { matcher.match(windows: evidence[$0] ?? []) == .owner }
+            for index in state.candidates.indices where state.candidates[index].key.source == source {
+                let key = state.candidates[index].key
+                let result = matcher.match(windows: evidence[key] ?? [])
+                if result == .owner, owners.count == 1 {
+                    let score = matcher.score(windows: evidence[key] ?? [])
+                    let alternatives = keys.filter { $0 != key }.map { matcher.score(windows: evidence[$0] ?? []) }.max() ?? -1
+                    if score - alternatives >= matcher.alternativeMargin { state.candidates[index].evidence = .voiceVerified }
+                } else if result == .nonOwner { state.candidates[index].evidence = .supportedNonOwner }
+            }
+        }
+        state.assignments = MeetingSpeakerIdentityPolicy.resolve(speakers: state.candidates, participants: [])
+        return state
+    }
+
+    func extractOwnerVoice(samples: [Float]) async throws -> OwnerVoiceWindow {
+        guard !samples.isEmpty, samples.count <= 160_000, let vadManager else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        let speech = try await vadManager.segmentSpeechAudio(samples, config: VadSegmentationConfig(maxSpeechDuration: 10, speechPadding: 0))
+        try Task.checkCancellation()
+        let clean = speech.flatMap { $0 }
+        guard !clean.isEmpty else { return OwnerVoiceWindow(embedding: [], speechSeconds: 0, hasOverlap: false) }
+        guard let manager = diarizerManager, manager.isAvailable else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        // The manager is coordinator-owned. No await while mutable speaker state is swapped.
+        let session = RecordedAudioDiarizationSession(manager: manager)
+        let result = try session.withSpeakerState { manager in
+            try manager.performCompleteDiarization(clean, sampleRate: 16_000)
+        }
+        let mixed = Set(result.segments.map(\.speakerId)).count != 1
+        let embedding = mixed ? [] : try manager.extractSpeakerEmbedding(from: clean)
+        return OwnerVoiceWindow(embedding: embedding, speechSeconds: Double(clean.count) / 16_000, hasOverlap: mixed)
+    }
+
+    func getVadManager() -> VadManager? {
+        vadManager
     }
 
     func shutdown() async {

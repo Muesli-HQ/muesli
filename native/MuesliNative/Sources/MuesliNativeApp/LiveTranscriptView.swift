@@ -6,7 +6,7 @@ import Observation
 import SwiftUI
 
 enum LiveTranscriptCopyContent {
-    static func text(transcript: String, partialYou: String, partialOthers: String) -> String {
+    static func text(transcript: String, partialYou: String, partialOthers: String, microphoneLabel: String = "You") -> String {
         var sections: [String] = []
         let committed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !committed.isEmpty {
@@ -18,7 +18,7 @@ enum LiveTranscriptCopyContent {
         }
         let you = partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
         if !you.isEmpty {
-            sections.append("You: \(you)")
+            sections.append("\(microphoneLabel): \(you)")
         }
         return sections.joined(separator: "\n")
     }
@@ -156,6 +156,7 @@ struct LiveTranscriptFeedView: View {
     var horizontalPadding: CGFloat
     var topPadding: CGFloat
     var bottomPadding: CGFloat
+    var microphoneLabel: String = "You"
     var onOpen: (() -> Void)? = nil
 
     private var trimmedPartialYou: String {
@@ -197,10 +198,10 @@ struct LiveTranscriptFeedView: View {
                 }
                 if !trimmedPartialYou.isEmpty {
                     LiveTranscriptBubble(
-                        speaker: "You",
+                        speaker: microphoneLabel,
                         timestamp: nil,
                         lines: [trimmedPartialYou],
-                        isUser: true,
+                        isUser: microphoneLabel == "You",
                         isPartial: true,
                         onOpen: onOpen
                     )
@@ -222,6 +223,7 @@ struct LiveTranscriptView: View {
     /// outside the durable transcript until their chunk is committed.
     var partialYou: String = ""
     var partialOthers: String = ""
+    var microphoneLabel: String = "You"
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
 
@@ -229,7 +231,8 @@ struct LiveTranscriptView: View {
         LiveTranscriptCopyContent.text(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            microphoneLabel: microphoneLabel
         )
     }
 
@@ -243,7 +246,8 @@ struct LiveTranscriptView: View {
                         partialOthers: presentation.partialOthers,
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
+                        bottomPadding: MuesliTheme.spacing8,
+                        microphoneLabel: microphoneLabel
                     )
                     .textSelection(.enabled)
                 }

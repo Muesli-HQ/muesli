@@ -2089,6 +2089,11 @@ struct SettingsView: View {
                 }
             }
 
+            settingsSection("Your voice") {
+                OwnerVoiceSettingsView(voice: controller.ownerVoice,
+                    captureActive: appState.isMeetingRecording || appState.isMeetingStarting || appState.dictationState != .idle)
+            }
+
             settingsSection("Recording") {
                 settingsRow("Auto-record calendar meetings") {
                     settingsSwitch(isOn: appState.config.autoRecordMeetings) { newValue in

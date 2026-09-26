@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MuesliCore
+import SQLite3
 @testable import MuesliNativeApp
 
 @MainActor
@@ -75,6 +76,29 @@ struct MeetingHookIntegrationTests {
         #expect(try store.meeting(id: persistence.meetingID) != nil)
     }
 
+    @Test("speaker state persistence failure rolls back completion and does not dispatch hook")
+    func speakerStateFailureRollsBackBeforeHook() throws {
+        let store = try makeStore()
+        let spy = MeetingHookDispatcherSpy()
+        let controller = makeController(store: store, dispatcher: spy)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER fail_speaker_state BEFORE INSERT ON meeting_speaker_state BEGIN SELECT RAISE(ABORT, 'fixture'); END;"
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        var result = makeMeetingResult()
+        var speakerState = MeetingSpeakerState(session: UUID(), segments: [], assignments: [:])
+        speakerState.literalPrefix = result.rawTranscript
+        result.speakerState = speakerState
+
+        #expect(throws: (any Error).self) {
+            try controller.persistCompletedMeetingResultAndDispatchHook(result, preparedRecordingSave: .none)
+        }
+
+        #expect(try store.recentMeetings(limit: 10).isEmpty)
+        #expect(spy.invocations.isEmpty)
+    }
+
     @Test("duplicate calendar metadata does not block persistence or hooks")
     func duplicateCalendarMetadataDoesNotBlockPersistence() throws {
         let store = try makeStore()
@@ -143,6 +167,38 @@ struct MeetingHookIntegrationTests {
         #expect(record.source == .audioImport)
     }
 
+    @Test("successful re-summary refreshes the speaker detail view")
+    func summaryFreshnessPostsRefresh() throws {
+        let store = try makeStore()
+        let controller = makeController(store: store, dispatcher: MeetingHookDispatcherSpy())
+        let transcript = "Summary refresh fixture"
+        let now = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Summary fixture",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: transcript,
+            formattedNotes: "Old summary",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        var state = MeetingSpeakerState(session: UUID(), segments: [], assignments: [:])
+        state.literalPrefix = transcript
+        state.summaryIsStale = true
+        #expect(try store.saveInitialSpeakerState(meetingID: meetingID, state: state, rendered: transcript) == .updated)
+        let refreshedMeetingID = SummaryRefreshCapture()
+        let token = NotificationCenter.default.addObserver(forName: .meetingSpeakerIdentityDidChange, object: nil, queue: nil) { notification in
+            refreshedMeetingID.set(notification.object as? Int64)
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        try controller.markMeetingSpeakerSummaryCurrent(meetingID: meetingID, transcript: transcript)
+
+        #expect(refreshedMeetingID.get() == meetingID)
+        #expect(try store.meetingSpeakerState(meetingID: meetingID)?.summaryIsStale == false)
+    }
+
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
         MuesliController(
             runtime: RuntimePaths(
@@ -188,6 +244,23 @@ struct MeetingHookIntegrationTests {
             systemRecordingURL: nil,
             templateSnapshot: MeetingTemplates.auto.snapshot
         )
+    }
+}
+
+private final class SummaryRefreshCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var meetingID: Int64?
+
+    func set(_ value: Int64?) {
+        lock.lock()
+        meetingID = value
+        lock.unlock()
+    }
+
+    func get() -> Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return meetingID
     }
 }
 
