@@ -70,7 +70,7 @@ struct WordsBeforeCodeSwitchCacheTests {
         #expect(cache.runLengths(databaseURL: databaseURL, recordID: 1, text: "sample", analyze: { _ in [7] }) == [7])
     }
 
-    @Test("Entry and retained-run limits preserve admitted analyses")
+    @Test("Entry and retained-run limits favor newer analyses")
     func boundedStorage() {
         for cache in [
             WordsBeforeCodeSwitchCache(maximumEntries: 1),
@@ -83,7 +83,12 @@ struct WordsBeforeCodeSwitchCacheTests {
                     return [1, 2]
                 }
             }
-            #expect(calls == 2)
+            #expect(calls == 3)
+            _ = cache.runLengths(databaseURL: databaseURL, recordID: 2, text: "sample") { _ in
+                calls += 1
+                return [1, 2]
+            }
+            #expect(calls == 3)
         }
     }
 
@@ -100,6 +105,15 @@ struct WordsBeforeCodeSwitchCacheTests {
             }
         }
         #expect(calls == 8)
+        _ = cache.runLengths(databaseURL: databaseURL, recordID: 6, text: "new") { _ in
+            calls += 1
+            return [6]
+        }
+        _ = cache.runLengths(databaseURL: databaseURL, recordID: 6, text: "new") { _ in
+            calls += 1
+            return [6]
+        }
+        #expect(calls == 9)
     }
 
     @Test("Oversized content changes remove stale entries and remain uncached")

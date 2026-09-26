@@ -1747,7 +1747,7 @@ public final class DictationStore {
             targetApplication: targetApplication
         )
         let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(source, ''))) <> 'quil'"]
-        let sql = "SELECT id, raw_text FROM dictations WHERE \(conditions.joined(separator: " AND "))"
+        let sql = "SELECT id, raw_text FROM dictations WHERE \(conditions.joined(separator: " AND ")) ORDER BY id DESC"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw lastError(db)
