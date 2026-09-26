@@ -130,10 +130,6 @@ struct InsightsTests {
         #expect(try reopened.wordsBeforeCodeSwitch() == 1)
         #expect(try wbcsCacheCount(store) == 1)
 
-        try store.clearWordsBeforeCodeSwitchCache()
-        #expect(try wbcsCacheCount(store) == 0)
-        #expect(try store.wordsBeforeCodeSwitch() == 1)
-
         try executeWBCTestSQL(store, "UPDATE dictations SET source = 'quil' WHERE id = \(id)")
         #expect(try wbcsCacheCount(store) == 0)
         #expect(try store.wordsBeforeCodeSwitch() == nil)

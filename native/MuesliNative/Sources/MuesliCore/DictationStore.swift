@@ -395,6 +395,8 @@ public final class DictationStore {
     }
 
     private func migrateWordsBeforeCodeSwitchCache(db: OpaquePointer?) throws {
+        // At most one run-length row per live dictation. No transcript text is
+        // copied, and updates or deletion discard its derived contribution.
         try exec("""
         CREATE TABLE IF NOT EXISTS wbcs_record_cache (
             dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
@@ -415,12 +417,6 @@ public final class DictationStore {
             DELETE FROM wbcs_record_cache WHERE dictation_id = OLD.id;
         END;
         """, db: db)
-    }
-
-    public func clearWordsBeforeCodeSwitchCache() throws {
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
-        try exec("DELETE FROM wbcs_record_cache", db: db)
     }
 
     @discardableResult
