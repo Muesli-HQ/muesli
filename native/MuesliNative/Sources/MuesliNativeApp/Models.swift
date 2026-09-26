@@ -1692,8 +1692,14 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum DictationActivationMode: String, Codable {
+    case hold
+    case toggle
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var dictationActivationMode: DictationActivationMode = .hold
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
     var enableQuilMode: Bool = false
@@ -1838,6 +1844,7 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case dictationActivationMode = "dictation_activation_mode"
         case enablePushToTalk = "enable_push_to_talk"
         case quilHotkey = "quil_hotkey"
         case enableQuilMode = "enable_quil_mode"
@@ -1983,6 +1990,8 @@ struct AppConfig: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        dictationActivationMode = (try? c.decode(DictationActivationMode.self, forKey: .dictationActivationMode))
+            ?? defaults.dictationActivationMode
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode

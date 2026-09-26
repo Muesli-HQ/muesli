@@ -1,3 +1,7 @@
+---
+last_edited: 2026-09-26
+---
+
 <p align="center">
   <img src="assets/muesli-readme-og.jpg" alt="Muesli - Speech that is free, Speech that is yours" width="900" />
 </p>
@@ -45,7 +49,7 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 This release also adds S1-mini English cleanup, Apple Shortcuts and Siri actions, clearer macOS calendar management, and iCloud reconnection recovery. [Read the full 0.8.4 release notes](docs/release-notes/0.8.4.md).
 
 ### Dictation
-Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
+Hold your hotkey → speak → release → transcribed text is pasted at your cursor. For hands-free recording, double-tap to start and tap again to finish. In **Settings → Shortcuts → Dictation**, choose **Tap to toggle** to start and finish with standalone single taps instead. Hold to talk remains the default. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
 
 By default, dictation uses an on-device model. You can instead opt into OpenAI Speech-to-Text with your own API key, which streams microphone audio directly to OpenAI over a Realtime WebSocket, or connect OpenRouter and explicitly choose a transcription model. OpenRouter dictation sends the completed recording through OpenRouter to the selected upstream model. Muesli retains the local recording only long enough to fall back to a compatible installed on-device model if the hosted request fails; streaming-only models are excluded from fallback.
 
@@ -65,7 +69,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
 - **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech (Flex includes native, mixed-script, and romanized output), and experimental Gemma 4 E2B.
-- **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
+- **Hold-to-talk & hands-free** — Hold a modifier for quick dictation, double-tap for sustained recording, or select Tap to toggle for single-tap start and finish.
 - **Quill voice writing and answers** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
