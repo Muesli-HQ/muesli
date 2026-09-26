@@ -467,20 +467,20 @@ public final class DictationStore {
     ) throws {
         let sql = """
         INSERT INTO bodhan_wbcs_measurements(dictation_id, version, language_samples, run_lengths)
-        VALUES (?, ?, ?, ?)
+        SELECT id, ?, ?, ? FROM dictations WHERE id = ? AND deleted_at IS NULL
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(statement) }
         let encoder = JSONEncoder()
-        sqlite3_bind_int64(statement, 1, dictationID)
-        sqlite3_bind_int(statement, 2, Self.wbcsMeasurementVersion)
-        bindOptionalBlob(try encoder.encode(measurement.languageSamples), at: 3, statement: statement)
+        sqlite3_bind_int(statement, 1, Self.wbcsMeasurementVersion)
+        bindOptionalBlob(try encoder.encode(measurement.languageSamples), at: 2, statement: statement)
         if let runLengths = measurement.runLengths {
-            bindOptionalBlob(try encoder.encode(runLengths), at: 4, statement: statement)
+            bindOptionalBlob(try encoder.encode(runLengths), at: 3, statement: statement)
         } else {
-            sqlite3_bind_null(statement, 4)
+            sqlite3_bind_null(statement, 3)
         }
+        sqlite3_bind_int64(statement, 4, dictationID)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 

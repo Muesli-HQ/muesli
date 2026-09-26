@@ -189,6 +189,25 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
+    @Test("Clearing history before a measurement write leaves no language samples")
+    func clearedDictationRejectsLateMeasurement() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER clear_new_dictation AFTER INSERT ON dictations
+        BEGIN UPDATE dictations SET deleted_at = 123 WHERE id = NEW.id; END
+        """)
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
+            languageCode: "hi", wasAutoDetected: true)
+        _ = try store.insertDictation(
+            text: "I went घर", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        #expect(try wbcsMeasurementCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
     @Test("WBCS refreshes after sync even when word and session counts are unchanged")
     @MainActor
     func wordsBeforeCodeSwitchRevision() {
