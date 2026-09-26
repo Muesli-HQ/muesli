@@ -140,6 +140,33 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
+    @Test("WBCS does not save a transcript changed during analysis")
+    func wordsBeforeCodeSwitchConcurrentEdit() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let id = try store.insertDictation(
+            text: "I think नमस्ते", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now
+        )
+        var updateError: Error?
+        let stale = try store.wordsBeforeCodeSwitch(
+            fromDate: nil, toDate: nil, origin: .all, targetApplication: nil,
+            analyze: { _ in
+                do {
+                    try executeWBCTestSQL(store,
+                        "UPDATE dictations SET raw_text = 'I नमस्ते again' WHERE id = \(id)")
+                } catch {
+                    updateError = error
+                }
+                return [2]
+            }
+        )
+        #expect(updateError == nil)
+        #expect(stale == nil)
+        #expect(try wbcsCacheCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == 1)
+    }
+
     @Test("WBCS refreshes after sync even when word and session counts are unchanged")
     @MainActor
     func wordsBeforeCodeSwitchRevision() {

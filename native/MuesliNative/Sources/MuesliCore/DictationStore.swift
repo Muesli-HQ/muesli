@@ -1846,6 +1846,38 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(saveStatement) }
         let encoder = JSONEncoder()
+        var pending: [(id: Int64, text: String, lengths: [Int])] = []
+        func savePending() throws {
+            guard !pending.isEmpty else { return }
+            // Keep the write lock only for a short batch, never during language analysis.
+            try exec("BEGIN IMMEDIATE", db: db)
+            do {
+                var savedLengths: [Int] = []
+                for record in pending {
+                    let blob = try encoder.encode(record.lengths)
+                    sqlite3_reset(saveStatement)
+                    sqlite3_clear_bindings(saveStatement)
+                    sqlite3_bind_int(saveStatement, 1, Self.wbcsCacheVersion)
+                    bindOptionalBlob(blob, at: 2, statement: saveStatement)
+                    sqlite3_bind_int64(saveStatement, 3, record.id)
+                    sqlite3_bind_text(saveStatement, 4, (record.text as NSString).utf8String, -1, nil)
+                    for (index, value) in filter.boundValues.enumerated() {
+                        sqlite3_bind_text(saveStatement, Int32(index + 5), (value as NSString).utf8String, -1, nil)
+                    }
+                    guard sqlite3_step(saveStatement) == SQLITE_DONE else { throw lastError(db) }
+                    // A concurrent edit makes the conditional INSERT select no row.
+                    if sqlite3_changes(db) > 0 { savedLengths += record.lengths }
+                }
+                sqlite3_reset(saveStatement)
+                try exec("COMMIT", db: db)
+                lengths += savedLengths
+                pending.removeAll(keepingCapacity: true)
+            } catch {
+                sqlite3_reset(saveStatement)
+                _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                throw error
+            }
+        }
         for id in missingIDs {
             if Task<Never, Never>.isCancelled { return nil }
             sqlite3_reset(textStatement)
@@ -1862,21 +1894,11 @@ public final class DictationStore {
 
             let recordLengths = analyze(text)
             if Task<Never, Never>.isCancelled { return nil }
-            let blob = try encoder.encode(recordLengths)
-            sqlite3_reset(saveStatement)
-            sqlite3_clear_bindings(saveStatement)
-            sqlite3_bind_int(saveStatement, 1, Self.wbcsCacheVersion)
-            bindOptionalBlob(blob, at: 2, statement: saveStatement)
-            sqlite3_bind_int64(saveStatement, 3, id)
-            sqlite3_bind_text(saveStatement, 4, (text as NSString).utf8String, -1, nil)
-            for (index, value) in filter.boundValues.enumerated() {
-                sqlite3_bind_text(saveStatement, Int32(index + 5), (value as NSString).utf8String, -1, nil)
-            }
-            guard sqlite3_step(saveStatement) == SQLITE_DONE else { throw lastError(db) }
-            // An edit between reading and saving invalidates this result. The
-            // predicate and text comparison prevent persisting or using it.
-            if sqlite3_changes(db) > 0 { lengths += recordLengths }
+            pending.append((id: id, text: text, lengths: recordLengths))
+            if pending.count == 64 { try savePending() }
         }
+        if Task<Never, Never>.isCancelled { return nil }
+        try savePending()
         return WordsBeforeCodeSwitch.median(of: lengths)
     }
 
