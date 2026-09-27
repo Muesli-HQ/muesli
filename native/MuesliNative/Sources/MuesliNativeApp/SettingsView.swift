@@ -2096,6 +2096,16 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Identify Phone app callers (experimental)") {
+                    settingsSwitch(isOn: appState.config.identifyPhoneCallers, accessibilityLabel: "Identify Phone app callers") { newValue in
+                        controller.updateConfig { $0.identifyPhoneCallers = newValue }
+                    }
+                }
+                settingsDescription("Uses Accessibility to read the number or email shown for an active call in the macOS 26 Phone app when Phone is frontmost as recording starts. Stays on this Mac.")
+                if appState.config.identifyPhoneCallers && !accessibilityGranted {
+                    settingsDescription("Grant Accessibility access in System Settings → Privacy & Security.")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsMenu(
                         selection: recordingSaveLabel(for: appState.config.meetingRecordingSavePolicy),
@@ -3131,13 +3141,22 @@ struct SettingsView: View {
     // MARK: - Controls
 
     @ViewBuilder
-    private func settingsSwitch(isOn: Bool, onChange: @escaping (Bool) -> Void) -> some View {
+    private func settingsSwitch(
+        isOn: Bool,
+        accessibilityLabel: String? = nil,
+        onChange: @escaping (Bool) -> Void
+    ) -> some View {
         HStack {
             Spacer()
-            Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
+            let toggle = Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
+            if let accessibilityLabel {
+                toggle.accessibilityLabel(accessibilityLabel)
+            } else {
+                toggle
+            }
         }
     }
 

@@ -1343,6 +1343,19 @@ struct AppConfigTests {
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
     }
 
+    @Test("Phone caller identification defaults off and round-trips")
+    func identifyPhoneCallersDefaultsOffAndRoundTrips() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(missing.identifyPhoneCallers == false)
+
+        var config = AppConfig()
+        config.identifyPhoneCallers = true
+        let data = try JSONEncoder().encode(config)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains(#""identify_phone_callers":true"#))
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).identifyPhoneCallers == true)
+    }
+
     @Test("Automatic diagnostic issue prompts default off when absent")
     func automaticDiagnosticIssuePromptsDefaultOffWhenAbsent() throws {
         let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))

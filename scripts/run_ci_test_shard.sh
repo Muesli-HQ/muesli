@@ -18,6 +18,9 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CallerHandleNormalizerTests
+      CallerStoreTests
+      CallerSummaryFilterTests
       DictationStoreTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
@@ -111,6 +114,9 @@ case "${shard}" in
   meetings)
     filters=(
       AudioAttributionServiceTests
+      PhoneCallerParserTests
+      PhoneCallerAXReaderTests
+      CallerIdentityCoordinatorTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
       MeetingCaptureLifecycleTests

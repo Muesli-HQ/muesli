@@ -415,6 +415,45 @@ public final class MuesliController: NSObject {
     private let dictationLatencyLogWriter = DictationLatencyLogWriter(
         url: AppIdentity.supportDirectoryURL.appendingPathComponent("dictation-latency.log")
     )
+    private var retiredCallerAttachments: [Int64: CallerAttachment] = [:]
+    private let callerDetachTasks = CallerDetachTaskRegistry()
+    private lazy var callerIdentity: CallerIdentityCoordinator = {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return CallerIdentityCoordinator(
+            isEnabled: { [weak self] in self?.config.identifyPhoneCallers ?? false },
+            capture: {
+                await Task.detached(priority: .utility) {
+                    PhoneCallerAXReader(client: SystemCallerAXClient()).capture()
+                }.value
+            },
+            attach: { handle, meetingID in
+                await Task.detached(priority: .utility) {
+                    do {
+                        return try DictationStore(databaseURL: databaseURL).attachCaller(handle, toMeetingID: meetingID)
+                    } catch {
+                        let code = (error as NSError).code
+                        fputs("[callers] attach failed code=\(code)\n", stderr)
+                        return .meetingMissing
+                    }
+                }.value
+            },
+            didAttach: { meetingID in
+                NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: meetingID)
+            },
+            rollBack: { personID, meetingID in
+                await Task.detached(priority: .utility) {
+                    do {
+                        try DictationStore(databaseURL: databaseURL).detachCaller(personID: personID, fromMeetingID: meetingID)
+                    } catch {
+                        fputs("[callers] rollback failed code=\((error as NSError).code)\n", stderr)
+                    }
+                }.value
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: meetingID)
+                }
+            }
+        )
+    }()
     private lazy var diagnosticIncidentReporter = DiagnosticIncidentReporter(
         appState: appState,
         automaticPromptEnabled: { [weak self] in
@@ -1099,6 +1138,7 @@ public final class MuesliController: NSObject {
         meetingNotification.close()
         dictationCorrectionMonitor.cancel()
         if let capture = meetingCapture {
+            retireCallerLookup(owner: ObjectIdentifier(capture.session))
             capture.session.discard()
             resolveLiveMeetingAfterStopFailure(id: capture.id)
         }
@@ -1607,7 +1647,13 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let wasIdentifyingPhoneCallers = config.identifyPhoneCallers
         mutate(&config)
+        if wasIdentifyingPhoneCallers, !config.identifyPhoneCallers {
+            for attachment in callerIdentity.retireAll() {
+                retiredCallerAttachments[attachment.meetingID] = attachment
+            }
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()
@@ -5910,11 +5956,84 @@ public final class MuesliController: NSObject {
 
     private func summaryParticipantNames(meetingID: Int64) async -> [String] {
         do {
-            return try await meetingParticipants(meetingID: meetingID).map(\.displayName)
+            return Self.summaryParticipantNames(from: try await meetingParticipants(meetingID: meetingID))
         } catch {
             fputs("[summary] failed to load participants for meeting \(meetingID): \(error.localizedDescription)\n", stderr)
             return []
         }
+    }
+
+    func callerPerson(id: UUID) async throws -> CallerPerson? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).callerPerson(id: id)
+        }.value
+    }
+
+    func callerHistory(personID: UUID) async throws -> [CallerHistoryEntry] {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).callerHistory(personID: personID)
+        }.value
+    }
+
+    func callerHistory(personID: UUID, limit: Int, offset: Int) async throws -> [CallerHistoryEntry] {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).callerHistory(
+                personID: personID,
+                limit: limit,
+                offset: offset
+            )
+        }.value
+    }
+
+    func renameCallerPerson(id: UUID, displayName: String?) async throws {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let meetingIDs = try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).renameCallerPerson(id: id, displayName: displayName)
+        }.value
+        for meetingID in meetingIDs {
+            NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: meetingID)
+        }
+    }
+
+    /// Retires a lookup, keeping its rollback separate from other meetings that
+    /// may still be finalizing in the background.
+    private func retireCallerLookup(owner: ObjectIdentifier) {
+        if let attachment = callerIdentity.retire(owner: owner) {
+            retiredCallerAttachments[attachment.meetingID] = attachment
+        }
+    }
+
+    private func detachCaller(_ attachment: CallerAttachment) {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        callerDetachTasks.enqueue(meetingID: attachment.meetingID) { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try DictationStore(databaseURL: databaseURL).detachCaller(
+                        personID: attachment.personID,
+                        fromMeetingID: attachment.meetingID
+                    )
+                }.value
+                if self?.retiredCallerAttachments[attachment.meetingID] == attachment {
+                    self?.retiredCallerAttachments[attachment.meetingID] = nil
+                }
+                NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: attachment.meetingID)
+                return true
+            } catch {
+                fputs("[callers] detach failed code=\((error as NSError).code)\n", stderr)
+                return false
+            }
+        }
+    }
+
+    /// Callers identified from a phone call stay on this Mac: their names and
+    /// numbers never go into summary prompts.
+    nonisolated static func summaryParticipantNames(from participants: [MeetingParticipant]) -> [String] {
+        participants
+            .filter { !$0.participantIdentifier.hasPrefix(DictationStore.callerParticipantPrefix) }
+            .map(\.displayName)
     }
 
     func attachMeetingParticipant(
@@ -6622,6 +6741,9 @@ public final class MuesliController: NSObject {
     }
 
     private func discardMeetingStateForTermination() {
+        if let session = meetingCapture?.session {
+            retireCallerLookup(owner: ObjectIdentifier(session))
+        }
         meetingCapture?.session.discard()
 
         clearLiveMeetingTranscript()
@@ -7314,6 +7436,23 @@ public final class MuesliController: NSObject {
         endDate: Date?,
         previousMeetingNotes: String? = nil
     ) async throws {
+        // Only read Phone caller data when the user starts recording from Phone.
+        let phoneAppWasFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            == PhoneCallerAXReader<SystemCallerAXClient>.phoneBundleID
+        if let attachment = retiredCallerAttachments[meetingID],
+           !callerDetachTasks.pendingMeetingIDs.contains(meetingID) {
+            detachCaller(attachment)
+        }
+        if callerDetachTasks.pendingMeetingIDs.contains(meetingID) {
+            guard await callerDetachTasks.wait(for: meetingID) else {
+                throw NSError(
+                    domain: "MuesliCallerDetach",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not safely reuse this meeting because its previous caller link could not be removed."]
+                )
+            }
+        }
+        retiredCallerAttachments[meetingID] = nil
         statusBarController?.setStatus("Meeting transcription will start shortly.")
         statusBarController?.refresh()
         try Task.checkCancellation()
@@ -7536,6 +7675,11 @@ public final class MuesliController: NSObject {
                 try checkMeetingStartStillCurrent(owner)
                 guard meetingSession.capturePhase.isRecording else { throw CancellationError() }
                 activeMeetingAutoStop.markRecordingStarted(now: Date())
+                callerIdentity.captureSucceeded(
+                    owner: owner,
+                    meetingID: meetingID,
+                    phoneAppWasFrontmost: phoneAppWasFrontmost
+                )
                 meetingMonitor.suppressWhileActive()
                 meetingMonitor.refreshState()
                 statusBarController?.setStatus("Meeting: \(title)")
@@ -7756,6 +7900,7 @@ public final class MuesliController: NSObject {
     private func discardMeetingRecording(resolution: MeetingDiscardResolution = .discardRecording) {
         guard let capture = meetingCapture, capture.session.capturePhase.isRecording else { return }
         let meetingID = capture.id
+        retireCallerLookup(owner: ObjectIdentifier(capture.session))
         meetingStartAttempt?.task.cancel()
         meetingStartAttempt = nil
         meetingRecordingHotkeyMonitor.cancelToggleMode()
@@ -7805,6 +7950,9 @@ public final class MuesliController: NSObject {
                 keepManualNotesAfterDiscard(id: id)
             }
         }
+        if let attachment = retiredCallerAttachments[id] {
+            detachCaller(attachment)
+        }
         finishDiscardMeetingRecording()
     }
 
@@ -7847,6 +7995,10 @@ public final class MuesliController: NSObject {
             updateMeetingStatusAndScheduleSync(id: id, status: .completed)
         }
         pendingResumePriorTranscript[id] = nil
+        // A caller read during the resumed audio belongs to audio that was just thrown away.
+        if let attachment = retiredCallerAttachments[id] {
+            detachCaller(attachment)
+        }
         if activeMeetingAudioWarning?.meetingID == id {
             activeMeetingAudioWarning = nil
         }
@@ -7876,6 +8028,9 @@ public final class MuesliController: NSObject {
         if activeMeetingAudioWarning?.meetingID == id {
             activeMeetingAudioWarning = nil
         }
+        if let attachment = retiredCallerAttachments[id] {
+            detachCaller(attachment)
+        }
         syncAppState()
     }
 
@@ -7899,6 +8054,11 @@ public final class MuesliController: NSObject {
             updateMeetingStatusAndScheduleSync(id: id, status: .failed)
             clearCachedMeetingManualNotes(id: id)
             clearCachedMeetingTitle(id: id)
+        }
+        if hasRetainedAudio {
+            retiredCallerAttachments[id] = nil
+        } else if let attachment = retiredCallerAttachments[id] {
+            detachCaller(attachment)
         }
         if activeMeetingAudioWarning?.meetingID == id {
             activeMeetingAudioWarning = nil
@@ -8101,6 +8261,9 @@ public final class MuesliController: NSObject {
                     )
                 }
                 completedMeetingID = persistenceResult.meetingID
+                if let liveMeetingID {
+                    self.retiredCallerAttachments[liveMeetingID] = nil
+                }
                 if let path = preparedRecordingSave.path {
                     try? FileManager.default.removeItem(at: MeetingRecordingRecoveryReference.url(for: URL(fileURLWithPath: path)))
                 }
@@ -8165,6 +8328,7 @@ public final class MuesliController: NSObject {
     }
 
     private func beginMeetingCaptureShutdown(session: MeetingSession) {
+        retireCallerLookup(owner: ObjectIdentifier(session))
         guard meetingCapture?.session === session else { return }
         session.beginStoppingCapture()
         meetingMonitor.suppressWhileActive()
@@ -8172,6 +8336,7 @@ public final class MuesliController: NSObject {
     }
 
     private func completeMeetingCaptureShutdown(owner: ObjectIdentifier) {
+        retireCallerLookup(owner: owner)
         guard let capture = meetingCapture, ObjectIdentifier(capture.session) == owner else { return }
         meetingCapture = nil
         meetingMonitor.resumeAfterCooldown()

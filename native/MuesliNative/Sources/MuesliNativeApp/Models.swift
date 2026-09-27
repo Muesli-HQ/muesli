@@ -1733,6 +1733,7 @@ struct AppConfig: Codable {
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
+    var identifyPhoneCallers: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -1878,6 +1879,7 @@ struct AppConfig: Codable {
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case identifyPhoneCallers = "identify_phone_callers"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -2052,6 +2054,7 @@ struct AppConfig: Codable {
             (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
             ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        identifyPhoneCallers = (try? c.decode(Bool.self, forKey: .identifyPhoneCallers)) ?? defaults.identifyPhoneCallers
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))
