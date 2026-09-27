@@ -36,8 +36,9 @@ struct StatsHeaderView: View {
             let toDate = wbcsToDate
             let origin = wbcsOrigin
             let targetApplication = wbcsTargetApplication
+            let databaseURL = MuesliPaths.defaultDatabaseURL(appName: AppIdentity.supportDirectoryName)
             let worker = Task.detached(priority: .utility) {
-                try? DictationStore().wordsBeforeCodeSwitch(
+                try? DictationStore(databaseURL: databaseURL).wordsBeforeCodeSwitch(
                     fromDate: fromDate,
                     toDate: toDate,
                     origin: origin,
