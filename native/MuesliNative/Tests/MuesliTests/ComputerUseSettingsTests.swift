@@ -449,6 +449,9 @@ struct ComputerUseSettingsTests {
             #expect(controller.settingsShortcutPermission(enabled: true, pushToTalk: pushToTalk, permissions: granted) == nil)
         }
         #expect(settings.first { $0.id == "dictionary_suggestions" }?.requestPermission != nil)
+        let phoneCallerSetting = try #require(settings.first { $0.id == "identify_phone_callers" })
+        #expect(phoneCallerSetting.choices.map(\.id) == ["on", "off"])
+        #expect(phoneCallerSetting.requestPermission != nil)
         #expect(settings.first { $0.id == "cua_shortcut" }?.requestPermission != nil)
         #expect(settings.first { $0.id == "bodhan_output" }?.choices.map(\.id) == BodhanOutputMode.allCases.map(\.rawValue))
         #expect(settings.first { $0.id == "bodhan_language" }?.choices.map(\.id) == BodhanLanguage.allCases.map(\.rawValue))
