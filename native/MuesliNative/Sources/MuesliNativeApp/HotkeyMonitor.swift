@@ -54,6 +54,7 @@ final class HotkeyMonitor {
     var onToggleStop: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
+    var hybridTapEnabled: Bool = false
     var combinationActivation: CombinationActivation = .toggle
     var registersCombinationGlobally = false
 
@@ -563,7 +564,8 @@ final class HotkeyMonitor {
                     }
 
                     // Check for double-tap
-                    if doubleTapEnabled,
+                    if !hybridTapEnabled,
+                       doubleTapEnabled,
                        lastTapWasShort,
                        let lastUp = lastTapUpTime,
                        now().timeIntervalSince(lastUp) < doubleTapWindow {
@@ -615,13 +617,13 @@ final class HotkeyMonitor {
                     onStop?()
                 } else if prepared {
                     prepared = false
-                    onCancel?()
-                } else if wasArmed {
-                    if doubleTapEnabled, lastTapWasShort {
-                        scheduleArmCancel()
+                    if hybridTapEnabled, lastTapWasShort {
+                        beginToggleFromTap()
                     } else {
                         onCancel?()
                     }
+                } else if wasArmed {
+                    followUpAfterShortArm(lastTapWasShort: lastTapWasShort)
                 }
             }
         } else if targetKeyDown && !toggleActive {
@@ -723,6 +725,25 @@ final class HotkeyMonitor {
         scheduleAfter(delays.start, start)
     }
 
+    private func followUpAfterShortArm(lastTapWasShort: Bool) {
+        if hybridTapEnabled, lastTapWasShort {
+            beginToggleFromTap()
+        } else if doubleTapEnabled, lastTapWasShort {
+            scheduleArmCancel()
+        } else {
+            onCancel?()
+        }
+    }
+
+    private func beginToggleFromTap() {
+        cancelTimers()
+        lastTapWasShort = false
+        lastTapUpTime = nil
+        toggleActive = true
+        fputs("[hotkey] hybrid tap → toggle start\n", stderr)
+        onToggleStart?()
+    }
+
     private func scheduleArmCancel() {
         armCancelWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -740,7 +761,7 @@ final class HotkeyMonitor {
     }
 
     private func timerDelays() -> (prepare: TimeInterval, start: TimeInterval) {
-        guard doubleTapEnabled else {
+        guard doubleTapEnabled || hybridTapEnabled else {
             return (prepareDelay, startDelay)
         }
         let guardedStartDelay = max(startDelay, HotkeyTriggerTiming.doubleTapTapGuardDelay)

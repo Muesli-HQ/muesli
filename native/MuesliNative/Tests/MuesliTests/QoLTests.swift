@@ -290,15 +290,24 @@ struct IndicatorFrameSizeTests {
     func idleHoverWidthFitsInstruction() {
         let standard = FloatingIndicatorController.idleHoverPillSize(
             hotkeyLabel: "Left Option",
-            screenWidth: 1200
+            screenWidth: 1200,
+            triggerMode: .holdToRecord
         )
         let combination = FloatingIndicatorController.idleHoverPillSize(
             hotkeyLabel: "Control Option Shift R",
-            screenWidth: 1200
+            screenWidth: 1200,
+            triggerMode: .holdToRecord
+        )
+
+        let hybrid = FloatingIndicatorController.idleHoverPillSize(
+            hotkeyLabel: "Left Option",
+            screenWidth: 1200,
+            triggerMode: .hybrid
         )
 
         #expect(standard.width >= 220)
         #expect(combination.width > standard.width)
+        #expect(hybrid.width > standard.width)
         #expect(combination.width <= 1168)
         #expect(standard.height == 36)
     }

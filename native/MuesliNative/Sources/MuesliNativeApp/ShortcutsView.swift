@@ -79,10 +79,12 @@ struct ShortcutsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Push to Talk")
+                    Text("Dictation")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Hold to record, release to transcribe")
+                    Text(appState.config.dictationTriggerMode.settingsSubtitle(
+                        doubleTapEnabled: appState.config.enableDoubleTapDictation
+                    ))
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -103,6 +105,20 @@ struct ShortcutsView: View {
 
             Divider()
                 .background(MuesliTheme.surfaceBorder)
+
+            Picker("Trigger", selection: Binding(
+                get: { appState.config.dictationTriggerMode },
+                set: { newValue in
+                    controller.updateConfig { $0.dictationTriggerMode = newValue }
+                }
+            )) {
+                ForEach(DictationTriggerMode.allCases, id: \.self) { mode in
+                    Text(mode.settingsTitle).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!isPushToTalkEnabled)
+            .opacity(isPushToTalkEnabled ? 1 : 0.55)
 
             pushToTalkControls
 
@@ -504,7 +520,11 @@ struct ShortcutsView: View {
                     Text("Hands-Free Mode")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Double-tap dictation, Quill, or CUA to start; tap again to stop")
+                    Text(
+                        appState.config.dictationTriggerMode == .hybrid
+                            ? "Double-tap Quill or CUA to start; tap again to stop. Dictation uses Hybrid instead."
+                            : "Double-tap dictation, Quill, or CUA to start; tap again to stop"
+                    )
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -550,6 +570,7 @@ struct ShortcutsView: View {
                 && !appState.config.enableQuilMode
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
+                && appState.config.dictationTriggerMode == .holdToRecord
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.quilHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds

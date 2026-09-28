@@ -1395,7 +1395,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
+                Text("Choose your dictation key. Hold to record and release to transcribe, or double-tap to go hands-free.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
