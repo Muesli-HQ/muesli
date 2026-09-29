@@ -206,13 +206,23 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
-            sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
-            sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            meetingsSection
-            sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-            sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-
-            Spacer()
+            // The navigation block scrolls so a long Meetings folder tree cannot
+            // push the header and footer out of the window, or raise the
+            // window's minimum height past the screen. A ScrollView has no
+            // intrinsic minimum height, unlike the plain stack it replaces.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
+                    sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
+                    meetingsSection
+                    sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
+                    sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollIndicators(.automatic)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: .infinity)
 
             modelPreparationStatus
             spreadTheWordSection
