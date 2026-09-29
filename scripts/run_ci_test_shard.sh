@@ -46,6 +46,7 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      SidebarFolderCollapseStoreTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       MeetingChunkCollectorTests
