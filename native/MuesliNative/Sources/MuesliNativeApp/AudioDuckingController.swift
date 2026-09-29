@@ -56,6 +56,10 @@ final class AudioDuckingController: AudioDuckingManaging {
         let element: AudioObjectPropertyElement
         let previousValue: Float32
         let attenuatedValue: Float32
+        /// Device-rounded read-back when it landed near the request.
+        /// Restore accepts either value so both rounding (settled away from
+        /// request) and intermediate async reads (settled at request) match.
+        let appliedValue: Float32?
     }
 
     private struct DeviceSnapshot {
@@ -180,16 +184,17 @@ final class AudioDuckingController: AudioDuckingManaging {
                     // Stale/async reads far from the request are ignored in
                     // favor of the requested value.
                     let applied = client.volume(deviceID: deviceID, element: element)
-                    let settled: Float32
+                    let settled: Float32?
                     if let applied, abs(applied - attenuated) <= 0.05 {
                         settled = applied
                     } else {
-                        settled = attenuated
+                        settled = nil
                     }
                     snapshot.volumeMutations.append(VolumeMutation(
                         element: element,
                         previousValue: volume,
-                        attenuatedValue: settled
+                        attenuatedValue: attenuated,
+                        appliedValue: settled
                     ))
                 } else {
                     attenuationFailed = true
@@ -228,7 +233,8 @@ final class AudioDuckingController: AudioDuckingManaging {
                         snapshot.volumeMutations.append(VolumeMutation(
                             element: element,
                             previousValue: volume,
-                            attenuatedValue: 0
+                            attenuatedValue: 0,
+                            appliedValue: nil
                         ))
                     }
                 }
@@ -292,7 +298,8 @@ final class AudioDuckingController: AudioDuckingManaging {
             }
             for mutation in snapshot.volumeMutations {
                 guard let current = client.volume(deviceID: snapshot.deviceID, element: mutation.element),
-                      abs(current - mutation.attenuatedValue) <= 0.001 else {
+                      abs(current - mutation.attenuatedValue) <= 0.001
+                        || (mutation.appliedValue.map { abs(current - $0) <= 0.001 } ?? false) else {
                     // User changed volume during dictation – treat as intentional
                     // and do not overwrite. See suggested implementation edge case.
                     continue
