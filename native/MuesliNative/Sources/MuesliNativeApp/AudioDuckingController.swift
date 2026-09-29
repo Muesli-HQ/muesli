@@ -155,7 +155,8 @@ final class AudioDuckingController: AudioDuckingManaging {
         // This keeps media audible at reduced level (e.g. 50%) and avoids
         // toggling the mute control, which is a distinct user preference.
         if let attenuationLevel = attenuationLevelForSession {
-            for element in client.volumeElements(for: deviceID) {
+            let volumeElements = client.volumeElements(for: deviceID)
+            for element in volumeElements {
                 guard let volume = client.volume(deviceID: deviceID, element: element),
                       volume > 0.0001 else { continue }
                 // Attenuation is proportional: reduce to `level` fraction of current.
@@ -174,9 +175,10 @@ final class AudioDuckingController: AudioDuckingManaging {
                     ))
                 }
             }
-            // Fallback only when attenuation actually wants reduction and no writable volume control exists.
-            // 100% (no reduction) should be no-op even on mute-only devices.
-            if attenuationLevel < 0.999, client.volumeElements(for: deviceID).isEmpty {
+            // Fallback to mute when attenuation wanted reduction but no volume
+            // mutation succeeded (mute-only device, or scalar read/write failed).
+            // 100% (no reduction) stays no-op even on mute-only devices.
+            if attenuationLevel < 1.0, snapshot.volumeMutations.isEmpty {
                 let muteElements = client.muteElements(for: deviceID)
                 for element in muteElements {
                     guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
