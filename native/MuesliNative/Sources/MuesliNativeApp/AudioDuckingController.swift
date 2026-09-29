@@ -175,10 +175,21 @@ final class AudioDuckingController: AudioDuckingManaging {
                 // Skip if attenuation would not change volume meaningfully.
                 guard abs(attenuated - volume) > 0.0001, attenuated < volume else { continue }
                 if client.setVolume(attenuated, deviceID: deviceID, element: element) {
+                    // Devices may round to the nearest supported step; record
+                    // what was actually applied so restore matching works.
+                    // Stale/async reads far from the request are ignored in
+                    // favor of the requested value.
+                    let applied = client.volume(deviceID: deviceID, element: element)
+                    let settled: Float32
+                    if let applied, abs(applied - attenuated) <= 0.05 {
+                        settled = applied
+                    } else {
+                        settled = attenuated
+                    }
                     snapshot.volumeMutations.append(VolumeMutation(
                         element: element,
                         previousValue: volume,
-                        attenuatedValue: attenuated
+                        attenuatedValue: settled
                     ))
                 } else {
                     attenuationFailed = true
