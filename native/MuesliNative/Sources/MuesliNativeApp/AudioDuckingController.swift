@@ -156,9 +156,16 @@ final class AudioDuckingController: AudioDuckingManaging {
         // toggling the mute control, which is a distinct user preference.
         if let attenuationLevel = attenuationLevelForSession {
             let volumeElements = client.volumeElements(for: deviceID)
+            // Tracks scalar I/O failures specifically, so an output that is
+            // already silent (intentional skip) is not treated like a device
+            // that needs the mute fallback.
+            var attenuationFailed = false
             for element in volumeElements {
-                guard let volume = client.volume(deviceID: deviceID, element: element),
-                      volume > 0.0001 else { continue }
+                guard let volume = client.volume(deviceID: deviceID, element: element) else {
+                    attenuationFailed = true
+                    continue
+                }
+                guard volume > 0.0001 else { continue }
                 // Attenuation is proportional: reduce to `level` fraction of current.
                 // e.g. level 0.5 halves volume (50%). Clamped above to 0...1.
                 // Avoid increasing volume if already below target absolute level:
@@ -173,12 +180,16 @@ final class AudioDuckingController: AudioDuckingManaging {
                         previousValue: volume,
                         attenuatedValue: attenuated
                     ))
+                } else {
+                    attenuationFailed = true
                 }
             }
-            // Fallback to mute when attenuation wanted reduction but no volume
-            // mutation succeeded (mute-only device, or scalar read/write failed).
-            // 100% (no reduction) stays no-op even on mute-only devices.
-            if attenuationLevel < 1.0, snapshot.volumeMutations.isEmpty {
+            // Fallback to mute when attenuation wanted reduction but could not
+            // scale anything: mute-only devices, or scalar read/write failures.
+            // Already-silent outputs stay untouched (no-op) so raising volume
+            // during dictation stays audible. 100% stays no-op everywhere.
+            if attenuationLevel < 1.0, snapshot.volumeMutations.isEmpty,
+               volumeElements.isEmpty || attenuationFailed {
                 let muteElements = client.muteElements(for: deviceID)
                 for element in muteElements {
                     guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
