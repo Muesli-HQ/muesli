@@ -105,13 +105,30 @@ struct PasteControllerTests {
 
     // MARK: - paste() clipboard restoration
 
+    @Test("custom shortcut reaches keyboard dispatch without changing clipboard safety")
+    func customPasteShortcut() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        let chord = try #require(PasteKeyChord(keyCode: 47, modifiers: .maskControl))
+        var dispatched: PasteShortcut?
+        PasteController.paste(text: "dictated", pasteboard: pasteboard, shortcut: .custom(chord),
+            requireStagedClipboardOwnership: true, simulatePasteAction: { shortcut in
+                dispatched = shortcut
+                return true
+            })
+        #expect(pasteboard.string(forType: .string) == "dictated")
+        let restored = await waitForClipboardString(in: pasteboard, expected: "original")
+        #expect(restored == "original")
+        #expect(dispatched == .custom(chord))
+    }
+
     @Test("paste with empty string is a no-op")
     func pasteEmptyIsNoOp() {
         let pasteboard = makePasteboard()
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "", pasteboard: pasteboard, simulatePasteAction: { _ in true })
 
         #expect(pasteboard.string(forType: .string) == "original")
     }
@@ -122,7 +139,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
 
         // Immediately after paste(), the clipboard holds the dictation text
         // (restoration happens asynchronously after ~500ms)
@@ -143,7 +160,7 @@ struct PasteControllerTests {
                 pasteboard: pasteboard,
                 requireStagedClipboardOwnership: true,
                 shouldDispatchPaste: { false },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     didSimulatePaste = true
                     return true
                 },
@@ -198,7 +215,7 @@ struct PasteControllerTests {
                     events.append("snapshot")
                     return expectedApplication
                 },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     events.append("command")
                     return true
                 },
@@ -222,7 +239,7 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "Quill replacement",
                 pasteboard: successfulPasteboard,
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     events.append("command")
                     return true
                 },
@@ -243,7 +260,7 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "Quill replacement",
                 pasteboard: failedPasteboard,
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     events.append("command")
                     return false
                 },
@@ -275,13 +292,14 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "Quill output",
                 pasteboard: pasteboard,
+                shortcut: .custom(PasteKeyChord(keyCode: 47, modifiers: .maskControl)!),
                 targetApplicationProvider: { expectedApplication },
                 dispatchStrategy: .targetApplicationPasteCommand,
                 targetPasteAction: { application in
                     #expect(application.processIdentifier == expectedApplication.processIdentifier)
                     return true
                 },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     didPostKeyboardShortcut = true
                     return true
                 },
@@ -339,7 +357,7 @@ struct PasteControllerTests {
                 dispatchStrategy: .targetApplicationPasteCommand,
                 retainStagedTextOnFailure: true,
                 targetPasteAction: { _ in false },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     didPostKeyboardShortcut = true
                     return true
                 },
@@ -375,7 +393,7 @@ struct PasteControllerTests {
                 text: "dictated text",
                 pasteboard: pasteboard,
                 targetApplicationProvider: { nil },
-                simulatePasteAction: { true },
+                simulatePasteAction: { _ in true },
                 onPasteFinished: { _ in
                     events.append("completion_bookkeeping")
                 },
@@ -439,7 +457,7 @@ struct PasteControllerTests {
                     pasteboard.setString("user-copied-during-delay", forType: .string)
                     return NSRunningApplication.current
                 },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     events.append("command")
                     return true
                 },
@@ -472,7 +490,7 @@ struct PasteControllerTests {
                     pasteboard.setString("newer-clipboard-content", forType: .string)
                     return NSRunningApplication.current
                 },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     events.append("command")
                     return true
                 },
@@ -498,7 +516,7 @@ struct PasteControllerTests {
                 text: "dictated text",
                 pasteboard: pasteboard,
                 targetApplicationProvider: { NSRunningApplication.current },
-                simulatePasteAction: { false },
+                simulatePasteAction: { _ in false },
                 onPasteFinished: { continuation.resume(returning: $0) }
             )
         }
@@ -514,7 +532,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("user-copied-text", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
 
         let restored = await waitForClipboardString(in: pasteboard, expected: "user-copied-text")
 
@@ -526,7 +544,7 @@ struct PasteControllerTests {
         let pasteboard = makePasteboard()
         pasteboard.clearContents()
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
 
         let restored = await waitForClipboardString(in: pasteboard, expected: nil)
 
@@ -548,7 +566,7 @@ struct PasteControllerTests {
         let countBefore = pasteboard.pasteboardItems?.count ?? 0
         #expect(countBefore == 2)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
 
         let (countAfter, texts) = await waitForClipboardItems(
             in: pasteboard,
@@ -566,7 +584,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
         try await Task.sleep(nanoseconds: 100_000_000)
 
         pasteboard.clearContents()

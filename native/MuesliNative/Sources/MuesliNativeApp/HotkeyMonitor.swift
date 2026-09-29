@@ -39,7 +39,31 @@ enum HotkeyTriggerTiming {
     }
 }
 
+/// A capture pause is not an enable request. Only listeners running before the
+/// pause may resume, and an explicit stop while paused revokes that permission.
+struct HotkeyCaptureSuspension {
+    private(set) var isSuspended = false
+    private var shouldResume = false
+
+    mutating func begin(wasRunning: Bool) {
+        guard !isSuspended else { return }
+        isSuspended = true
+        shouldResume = wasRunning
+    }
+
+    mutating func stopped() { shouldResume = false }
+
+    mutating func end() -> Bool {
+        guard isSuspended else { return false }
+        let resume = shouldResume
+        isSuspended = false
+        shouldResume = false
+        return resume
+    }
+}
+
 final class HotkeyMonitor {
+    private var captureSuspension = HotkeyCaptureSuspension()
     enum CombinationActivation {
         case toggle
         case pushToTalk
@@ -125,6 +149,7 @@ final class HotkeyMonitor {
     }
 
     func start() {
+        guard !captureSuspension.isSuspended else { return }
         guard !isRunning else { return }
 
         // Carbon registration itself does not require listen access, but the
@@ -164,6 +189,7 @@ final class HotkeyMonitor {
     }
 
     func stop() {
+        captureSuspension.stopped()
         finishActiveSessionBeforeReconfigure()
         cancelCurrentSession()
         if let globalMonitor {
@@ -285,6 +311,21 @@ final class HotkeyMonitor {
 
     var isRunning: Bool {
         globalMonitor != nil || localMonitor != nil || registeredHotKey != nil
+    }
+
+    var hasPendingOrActiveSession: Bool {
+        targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown
+    }
+
+    func suspendForShortcutCapture() {
+        guard !captureSuspension.isSuspended else { return }
+        let wasRunning = isRunning
+        stop()
+        captureSuspension.begin(wasRunning: wasRunning)
+    }
+
+    func resumeAfterShortcutCapture() {
+        if captureSuspension.end() { start() }
     }
 
     var isToggleRecording: Bool {
