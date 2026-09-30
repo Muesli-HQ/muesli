@@ -657,6 +657,7 @@ struct MeetingSummaryClientTests {
         let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
         let retained = MeetingSummaryClient.notesAfterFailedRegeneration(
             existingNotes: "## Decision\nShip Friday",
+            previousTranscript: "Old transcript",
             transcript: "New transcript",
             meetingTitle: "Launch review",
             error: error,
@@ -666,6 +667,7 @@ struct MeetingSummaryClientTests {
 
         let initialFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
             existingNotes: "",
+            previousTranscript: "Old transcript",
             transcript: "New transcript",
             meetingTitle: "Launch review",
             error: error,
@@ -683,15 +685,45 @@ struct MeetingSummaryClientTests {
         )
         let regeneratedFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
             existingNotes: previousFailure,
+            previousTranscript: "Old transcript",
             transcript: "New transcript",
             meetingTitle: "Launch review",
             error: error,
             manualNotes: "- Updated written note"
         )
         #expect(regeneratedFailure.contains("New transcript"))
-        #expect(regeneratedFailure.contains("- Updated written note"))
         #expect(!regeneratedFailure.contains("Old transcript"))
-        #expect(!regeneratedFailure.contains("- Old written note"))
+        #expect(regeneratedFailure.contains("- Old written note"))
+
+        let editedPrefix = previousFailure.replacingOccurrences(
+            of: "Muesli could not generate structured meeting notes.",
+            with: "My saved edit. Muesli could not generate structured meeting notes."
+        )
+        let regeneratedWithEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedPrefix,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(regeneratedWithEdit.contains("My saved edit."))
+        #expect(regeneratedWithEdit.contains("New transcript"))
+        #expect(!regeneratedWithEdit.contains("Old transcript"))
+
+        let editedTranscript = previousFailure.replacingOccurrences(
+            of: "## Raw Transcript\n\nOld transcript",
+            with: "## Raw Transcript\n\nCorrected old transcript"
+        )
+        let retainedTranscriptEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedTranscript,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(retainedTranscriptEdit == editedTranscript)
     }
 
     @Test("summary user prompt includes meeting context when provided")

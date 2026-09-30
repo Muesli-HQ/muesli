@@ -421,14 +421,22 @@ enum MeetingSummaryClient {
 
     static func notesAfterFailedRegeneration(
         existingNotes: String,
+        previousTranscript: String,
         transcript: String,
         meetingTitle: String,
         error: Error,
         manualNotes: String?
     ) -> String {
-        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !isSummaryFailureNotes(existingNotes) {
-            return existingNotes
+        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let marker = "\n\n## Raw Transcript\n\n"
+            guard isSummaryFailureNotes(existingNotes),
+                  let markerRange = existingNotes.range(of: marker, options: .backwards),
+                  String(existingNotes[markerRange.upperBound...]) == previousTranscript else {
+                return existingNotes
+            }
+            // Replace only the untouched transcript section. Everything before it may
+            // contain edits made to the saved failure note and must be preserved.
+            return String(existingNotes[..<markerRange.upperBound]) + transcript
         }
         return summaryFailureNotes(
             transcript: transcript,

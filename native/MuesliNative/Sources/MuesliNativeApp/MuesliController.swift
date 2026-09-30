@@ -5840,6 +5840,7 @@ public final class MuesliController: NSObject {
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
                 let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
                 let formattedNotes: String
+                var summaryFailureWarning: String?
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = .summarizing
                 self.appState.meetingRetranscriptions[meeting.id]?.message = "Re-summarizing…"
                 self.setMeetingProcessingStage(.summarizingNotes, processingID: processingID)
@@ -5858,21 +5859,16 @@ public final class MuesliController: NSObject {
                     fputs("[muesli-native] re-transcription summary generation failed: \(error)\n", stderr)
                     formattedNotes = MeetingSummaryClient.notesAfterFailedRegeneration(
                         existingNotes: meeting.formattedNotes,
+                        previousTranscript: meeting.rawTranscript,
                         transcript: rawTranscript,
                         meetingTitle: meeting.title,
                         error: error,
                         manualNotes: meeting.manualNotes
                     )
-                    let keptStructuredNotes = !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        && !MeetingSummaryClient.isSummaryFailureNotes(meeting.formattedNotes)
-                    let failureDetail = keptStructuredNotes
-                        ? "Existing notes were kept."
-                        : "Failure notes include the new transcript."
-                    let summaryWarning = "Summary could not be regenerated. \(failureDetail) \(error.localizedDescription)"
-                    let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
-                    self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, summaryWarning]
-                        .compactMap { $0 }
-                        .joined(separator: " ")
+                    let failureDetail = formattedNotes == meeting.formattedNotes
+                        ? "Existing notes were kept; the new transcript was saved separately."
+                        : "Failure notes were updated with the new transcript."
+                    summaryFailureWarning = "Summary could not be regenerated. \(failureDetail) \(error.localizedDescription)"
                 }
 
                 do {
@@ -5889,6 +5885,13 @@ public final class MuesliController: NSObject {
                 } catch {
                     if error is CancellationError { throw error }
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
+                }
+
+                if let summaryFailureWarning {
+                    let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
+                    self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, summaryFailureWarning]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
                 }
 
                 self.scheduleICloudSyncAfterLocalChange()
