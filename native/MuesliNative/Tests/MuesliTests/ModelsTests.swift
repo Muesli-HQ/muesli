@@ -974,6 +974,7 @@ struct MeetingSummaryBackendTests {
     func claudeCodeVisibility() throws {
         var config = AppConfig()
         config.claudeCodeExecutablePath = "/missing/muesli-test-claude"
+        #expect(MeetingSummaryBackendOption.selectable(config: config).contains(.anthropic))
         #expect(!MeetingSummaryBackendOption.selectable(config: config).contains(.claudeCode))
         #expect(MeetingSummaryBackendOption.selectable(config: config, selected: .claudeCode).contains(.claudeCode))
 

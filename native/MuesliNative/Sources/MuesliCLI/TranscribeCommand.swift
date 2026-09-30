@@ -1222,11 +1222,17 @@ enum CLISummaryClient {
                 title: title
             )
         case "anthropic":
-            let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+                savedValue: config.anthropicAPIKey
+            )
+            guard !key.isEmpty else {
                 throw CLISummaryError.unavailable("Anthropic summary settings are missing an API key.")
             }
-            let workspaceID = ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"] ?? config.anthropicWorkspaceID
+            let workspaceID = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"],
+                savedValue: config.anthropicWorkspaceID
+            )
             return try await anthropicSummary(
                 url: URL(string: "https://api.anthropic.com/v1/messages")!,
                 apiKey: key,

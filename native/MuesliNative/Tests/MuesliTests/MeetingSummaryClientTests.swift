@@ -5,6 +5,13 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("Anthropic blank environment values preserve saved credentials")
+    func anthropicEnvironmentFallback() {
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: nil, savedValue: " saved ") == "saved")
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: "  \n", savedValue: " saved ") == "saved")
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: " override\n", savedValue: " saved ") == "override")
+    }
+
     @Test("one-request choices preserve settings and route each provider's model",
           arguments: MeetingSummaryBackendOption.all)
     func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {

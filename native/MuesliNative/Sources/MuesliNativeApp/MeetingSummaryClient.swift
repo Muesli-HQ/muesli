@@ -1226,13 +1226,17 @@ enum MeetingSummaryClient {
     }
 
     static func resolvedAnthropicAPIKey(config: AppConfig) -> String {
-        (ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        AnthropicAPISettings.resolvedValue(
+            environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+            savedValue: config.anthropicAPIKey
+        )
     }
 
     static func resolvedAnthropicWorkspaceID(config: AppConfig) -> String {
-        (ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"] ?? config.anthropicWorkspaceID)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        AnthropicAPISettings.resolvedValue(
+            environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"],
+            savedValue: config.anthropicWorkspaceID
+        )
     }
 
     static func resolveLMStudioURL(config: AppConfig) -> URL? {
