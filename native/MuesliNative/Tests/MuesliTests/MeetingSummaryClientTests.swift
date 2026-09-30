@@ -24,6 +24,8 @@ struct MeetingSummaryClientTests {
             config: config,
             environment: ["OPENAI_API_KEY": " \n"]
         ) == "saved-key")
+        #expect(OpenAIAPISettings.resolvedAPIKey(environmentValue: " env-key\n", savedValue: " saved-key ") == "env-key")
+        #expect(OpenAIAPISettings.resolvedAPIKey(environmentValue: " \n", savedValue: " saved-key ") == "saved-key")
     }
 
     @Test("Anthropic Messages request sends trimmed credentials and optional workspace")

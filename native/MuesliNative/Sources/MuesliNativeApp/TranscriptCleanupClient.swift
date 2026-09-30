@@ -98,8 +98,7 @@ enum TranscriptCleanupClient {
         case .some(.chatGPT):
             return isChatGPTAuthenticated
         case .some(.openAI):
-            return !config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+            return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: config).isEmpty
         case .some(.anthropic):
             return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: config).isEmpty
         case .some(.openRouter):
@@ -319,8 +318,7 @@ enum TranscriptCleanupClient {
         maxOutputTokens: Int = defaultMaxOutputTokens,
         reasoningEffort: ReasoningEffort? = nil
     ) async throws -> String {
-        let key = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let apiKey = key.isEmpty ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "") : key
+        let apiKey = MeetingSummaryClient.resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else {
             throw TranscriptCleanupError.missingConfiguration("OpenAI API key is not configured.")
         }

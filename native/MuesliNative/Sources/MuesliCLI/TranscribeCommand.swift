@@ -1209,8 +1209,11 @@ enum CLISummaryClient {
                 executablePath: config.claudeCodeExecutablePath
             )
         case "openai":
-            let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = OpenAIAPISettings.resolvedAPIKey(
+                environmentValue: ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
+                savedValue: config.openAIAPIKey
+            )
+            guard !key.isEmpty else {
                 throw CLISummaryError.unavailable("OpenAI summary settings are missing an API key.")
             }
             return try await responsesSummary(

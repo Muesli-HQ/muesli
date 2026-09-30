@@ -1273,9 +1273,10 @@ enum MeetingSummaryClient {
         config: AppConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
-        let override = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let override, !override.isEmpty { return override }
-        return config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        OpenAIAPISettings.resolvedAPIKey(
+            environmentValue: environment["OPENAI_API_KEY"],
+            savedValue: config.openAIAPIKey
+        )
     }
 
     static func resolvedAnthropicAPIKey(config: AppConfig) -> String {
@@ -1419,7 +1420,7 @@ enum MeetingSummaryClient {
             return await generateTitleWithCustomLLM(transcript: excerpt, config: config)
         }
 
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        let apiKey = resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else { return nil }
         let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
         return await callChatCompletions(
