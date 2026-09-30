@@ -222,14 +222,25 @@ struct MeetingDetailView: View {
             Text(retranscriptionErrorMessage ?? "The saved recording could not be re-transcribed.")
         }
         .alert("Re-summarize Notes?", isPresented: transcriptResummaryPromptBinding) {
-            Button("Re-summarize") {
-                resummarizeAfterTranscriptEdit()
+            if hasApiKey {
+                Button("Re-summarize") {
+                    resummarizeAfterTranscriptEdit()
+                }
+            } else {
+                Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                    transcriptResummaryPromptMeetingID = nil
+                    controller.openHistoryWindow(tab: .settings)
+                }
             }
             Button("Not Now", role: .cancel) {
                 transcriptResummaryPromptMeetingID = nil
             }
         } message: {
-            Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            if hasApiKey {
+                Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            } else {
+                Text("Your transcript edits were saved. Configure \(appState.selectedMeetingSummaryBackend.label) to regenerate notes. Existing notes are kept.")
+            }
         }
         .alert("Delete Meeting", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {
