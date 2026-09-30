@@ -161,6 +161,7 @@ struct MeetingSummaryClientTests {
 
     @Test("OpenAI without a key fails instead of replacing existing notes")
     func openAIWithoutKeyPreservesNotes() async {
+        guard MeetingSummaryClient.resolvedOpenAIAPIKey(config: AppConfig()).isEmpty else { return }
         var config = AppConfig()
         config.openAIAPIKey = ""
         config.meetingSummaryBackend = "openai"
@@ -671,6 +672,24 @@ struct MeetingSummaryClientTests {
         #expect(initialFailure.contains("## Summary failed"))
         #expect(initialFailure.contains("New transcript"))
         #expect(initialFailure.contains("- Written note"))
+
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: "Old transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Old written note"
+        )
+        let regeneratedFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(regeneratedFailure.contains("New transcript"))
+        #expect(regeneratedFailure.contains("- Updated written note"))
+        #expect(!regeneratedFailure.contains("Old transcript"))
+        #expect(!regeneratedFailure.contains("- Old written note"))
     }
 
     @Test("summary user prompt includes meeting context when provided")

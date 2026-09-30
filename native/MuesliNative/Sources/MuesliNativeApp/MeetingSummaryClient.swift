@@ -426,7 +426,8 @@ enum MeetingSummaryClient {
         error: Error,
         manualNotes: String?
     ) -> String {
-        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !isSummaryFailureNotes(existingNotes) {
             return existingNotes
         }
         return summaryFailureNotes(
@@ -435,6 +436,11 @@ enum MeetingSummaryClient {
             error: error,
             manualNotes: manualNotes
         )
+    }
+
+    static func isSummaryFailureNotes(_ notes: String) -> Bool {
+        notes.hasPrefix("## Summary failed\n\n")
+            && notes.contains("\n\n## Raw Transcript\n\n")
     }
 
     static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil, previousMeetingNotes: String? = nil) -> String {

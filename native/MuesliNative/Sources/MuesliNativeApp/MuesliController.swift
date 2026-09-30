@@ -5863,13 +5863,16 @@ public final class MuesliController: NSObject {
                         error: error,
                         manualNotes: meeting.manualNotes
                     )
-                    if !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        let retainedNotesWarning = "Summary could not be regenerated. Existing notes were kept. \(error.localizedDescription)"
-                        let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
-                        self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, retainedNotesWarning]
-                            .compactMap { $0 }
-                            .joined(separator: " ")
-                    }
+                    let keptStructuredNotes = !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && !MeetingSummaryClient.isSummaryFailureNotes(meeting.formattedNotes)
+                    let failureDetail = keptStructuredNotes
+                        ? "Existing notes were kept."
+                        : "Failure notes include the new transcript."
+                    let summaryWarning = "Summary could not be regenerated. \(failureDetail) \(error.localizedDescription)"
+                    let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
+                    self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, summaryWarning]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
                 }
 
                 do {
