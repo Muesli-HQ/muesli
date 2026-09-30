@@ -5856,12 +5856,20 @@ public final class MuesliController: NSObject {
                 } catch {
                     try Task.checkCancellation()
                     fputs("[muesli-native] re-transcription summary generation failed: \(error)\n", stderr)
-                    formattedNotes = MeetingSummaryClient.summaryFailureNotes(
+                    formattedNotes = MeetingSummaryClient.notesAfterFailedRegeneration(
+                        existingNotes: meeting.formattedNotes,
                         transcript: rawTranscript,
                         meetingTitle: meeting.title,
                         error: error,
                         manualNotes: meeting.manualNotes
                     )
+                    if !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let retainedNotesWarning = "Summary could not be regenerated. Existing notes were kept. \(error.localizedDescription)"
+                        let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
+                        self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, retainedNotesWarning]
+                            .compactMap { $0 }
+                            .joined(separator: " ")
+                    }
                 }
 
                 do {

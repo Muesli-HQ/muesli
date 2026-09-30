@@ -24,7 +24,7 @@ enum MeetingSummaryError: LocalizedError {
 }
 
 enum AnthropicModelPolicy {
-    static let summaryMaxOutputTokens = 12_000
+    static let summaryMaxOutputTokens = AnthropicAPISettings.hostedSummaryMaxOutputTokens
     static let titleMaxOutputTokens = 1_024
     static let cleanupMaxOutputTokens = 12_000
 
@@ -417,6 +417,24 @@ enum MeetingSummaryClient {
         }
         sections.append("## Raw Transcript\n\n\(transcript)")
         return sections.joined(separator: "\n\n")
+    }
+
+    static func notesAfterFailedRegeneration(
+        existingNotes: String,
+        transcript: String,
+        meetingTitle: String,
+        error: Error,
+        manualNotes: String?
+    ) -> String {
+        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return existingNotes
+        }
+        return summaryFailureNotes(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            error: error,
+            manualNotes: manualNotes
+        )
     }
 
     static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil, previousMeetingNotes: String? = nil) -> String {
@@ -1245,11 +1263,13 @@ enum MeetingSummaryClient {
         return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
     }
 
-    static func resolvedOpenAIAPIKey(config: AppConfig) -> String {
-        let savedKey = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !savedKey.isEmpty { return savedKey }
-        return ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    static func resolvedOpenAIAPIKey(
+        config: AppConfig,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let override = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let override, !override.isEmpty { return override }
+        return config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func resolvedAnthropicAPIKey(config: AppConfig) -> String {

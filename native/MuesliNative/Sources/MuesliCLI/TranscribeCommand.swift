@@ -1392,7 +1392,7 @@ enum CLISummaryClient {
     private static func anthropicSummary(url: URL, apiKey: String, model: String, transcript: String, title: String, backend: String = "Custom LLM", workspaceID: String = "") async throws -> String {
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": backend == "Anthropic" ? AnthropicAPISettings.hostedSummaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
             "system": systemPrompt(),
             "messages": [
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],

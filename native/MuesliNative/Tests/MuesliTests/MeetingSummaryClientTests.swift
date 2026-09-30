@@ -12,6 +12,20 @@ struct MeetingSummaryClientTests {
         #expect(AnthropicAPISettings.resolvedValue(environmentValue: " override\n", savedValue: " saved ") == "override")
     }
 
+    @Test("OpenAI summary key keeps non-empty environment precedence")
+    func openAIEnvironmentPrecedence() {
+        var config = AppConfig()
+        config.openAIAPIKey = " saved-key "
+        #expect(MeetingSummaryClient.resolvedOpenAIAPIKey(
+            config: config,
+            environment: ["OPENAI_API_KEY": " env-key\n"]
+        ) == "env-key")
+        #expect(MeetingSummaryClient.resolvedOpenAIAPIKey(
+            config: config,
+            environment: ["OPENAI_API_KEY": " \n"]
+        ) == "saved-key")
+    }
+
     @Test("Anthropic Messages request sends trimmed credentials and optional workspace")
     func anthropicRequestHeadersAndBody() throws {
         let url = try #require(URL(string: "https://api.anthropic.com/v1/messages"))
@@ -633,6 +647,30 @@ struct MeetingSummaryClientTests {
         #expect(result.contains("## Summary failed"))
         #expect(result.contains("### Written notes"))
         #expect(result.contains("- Manual decision"))
+    }
+
+    @Test("failed regeneration preserves existing formatted notes")
+    func failedRegenerationKeepsExistingNotes() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let retained = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: "## Decision\nShip Friday",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Written note"
+        )
+        #expect(retained == "## Decision\nShip Friday")
+
+        let initialFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: "",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Written note"
+        )
+        #expect(initialFailure.contains("## Summary failed"))
+        #expect(initialFailure.contains("New transcript"))
+        #expect(initialFailure.contains("- Written note"))
     }
 
     @Test("summary user prompt includes meeting context when provided")
