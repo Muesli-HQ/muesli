@@ -14,6 +14,7 @@ struct OnboardingView: View {
     @State private var selectedCohereLanguage: CohereTranscribeLanguage
     @State private var summaryBackend: MeetingSummaryBackendOption = .chatGPT
     @State private var apiKey = ""
+    @State private var anthropicWorkspaceID = ""
     @State private var isSigningInChatGPT = false
     @State private var chatGPTSignInDone = false
     @State private var chatGPTSignInError: String?
@@ -165,6 +166,7 @@ struct OnboardingView: View {
         _summaryBackend = State(initialValue:
             initialSummaryBackend == .claudeCode && !claudeCodeInstalled ? .chatGPT : initialSummaryBackend
         )
+        _anthropicWorkspaceID = State(initialValue: appState.config.anthropicWorkspaceID)
         _modelDownloadProgress = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadProgress : nil)
         _modelDownloadStatus = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadStatus : nil)
         _micGranted = State(initialValue: initialMicGranted)
@@ -1678,6 +1680,10 @@ struct OnboardingView: View {
                     summaryBackend = .openAI
                     apiKey = ""
                 }
+                providerTab("Anthropic", selected: summaryBackend == .anthropic) {
+                    summaryBackend = .anthropic
+                    apiKey = ""
+                }
                 if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) != nil {
                     providerTab("Claude Code", selected: summaryBackend == .claudeCode) {
                         summaryBackend = .claudeCode
@@ -1699,7 +1705,7 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
-            .frame(width: ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil ? 320 : 420)
+            .frame(width: ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil ? 400 : 480)
 
             if summaryBackend == .chatGPT {
                 Text("Use your ChatGPT Plus or Pro subscription.")
@@ -1915,16 +1921,33 @@ struct OnboardingView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    if summaryBackend == .anthropic {
+                        Text("Use an Anthropic API key for Claude meeting summaries. This is separate from Claude Code sign-in.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
                     Text("API Key")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
 
                     PastableSecureField(
                         text: apiKey,
-                        placeholder: "sk-...",
+                        placeholder: summaryBackend == .anthropic ? "sk-ant-api..." : "sk-...",
                         onChange: { apiKey = $0 }
                     )
                     .frame(width: 320, height: 28)
+
+                    if summaryBackend == .anthropic {
+                        Text("Workspace ID (only for keys not scoped to one workspace)")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        PastableTextField(
+                            text: anthropicWorkspaceID,
+                            placeholder: "Optional workspace ID",
+                            onChange: { anthropicWorkspaceID = $0 }
+                        )
+                        .frame(width: 320, height: 28)
+                    }
 
                     HStack(spacing: 4) {
                         Circle()
@@ -2403,7 +2426,8 @@ struct OnboardingView: View {
             hotkey: selectedHotkey,
             onboardingUseCase: selectedUseCase,
             summaryBackend: summaryBackend,
-            apiKey: withKey ? apiKey : nil
+            apiKey: withKey ? apiKey : nil,
+            anthropicWorkspaceID: summaryBackend == .anthropic ? anthropicWorkspaceID : nil
         )
     }
 }

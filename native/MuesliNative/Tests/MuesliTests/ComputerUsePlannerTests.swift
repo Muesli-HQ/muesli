@@ -385,7 +385,7 @@ struct ComputerUsePlannerModelTests {
         config.chatGPTModel = "gpt-5.4-mini"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == ComputerUsePlannerClient.defaultModel)
-        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-sol")
+        #expect(ComputerUsePlannerClient.defaultModel == "gpt-6.1-sol")
 
         config.computerUsePlannerModel = "gpt-5.4"
 

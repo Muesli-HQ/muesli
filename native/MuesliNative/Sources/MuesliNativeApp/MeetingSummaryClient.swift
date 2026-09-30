@@ -131,12 +131,14 @@ enum MeetingSummaryRetryPolicy {
 enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
+    private static let anthropicURL = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let defaultLMStudioBaseURL = URL(string: "http://localhost:1234")!
-    private static let defaultOpenAIModel = "gpt-5.4-mini"
+    private static let defaultOpenAIModel = "gpt-6.1-sol"
+    private static let defaultAnthropicModel = "claude-sonnet-5-5"
     private static let defaultOpenRouterModel = "openrouter/free"
-    private static let defaultChatGPTModel = "gpt-5.4-mini"
+    private static let defaultChatGPTModel = "gpt-6.1-sol"
     private static let defaultOllamaModel = "qwen3.5"
     private static let defaultSummaryMaxOutputTokens = 2500
     private static let participantPromptNameCharacterLimit = 200
@@ -274,6 +276,30 @@ enum MeetingSummaryClient {
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
                 apiKeyOverride: openRouterAPIKeyOverride
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            let apiKey = resolvedAnthropicAPIKey(config: config)
+            guard !apiKey.isEmpty else {
+                return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            }
+            generatedNotes = try await summarizeWithAnthropicMessages(
+                backend: "Anthropic",
+                requestURL: anthropicURL,
+                apiKey: apiKey,
+                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                participantNames: participantNames,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes,
+                timeout: customLLMSummaryTimeout,
+                workspaceID: resolvedAnthropicWorkspaceID(config: config)
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
@@ -1023,7 +1049,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        workspaceID: String = ""
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -1049,6 +1076,9 @@ enum MeetingSummaryClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        if !workspaceID.isEmpty {
+            request.setValue(workspaceID, forHTTPHeaderField: "anthropic-workspace-id")
+        }
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         }
@@ -1195,6 +1225,16 @@ enum MeetingSummaryClient {
         return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
     }
 
+    static func resolvedAnthropicAPIKey(config: AppConfig) -> String {
+        (ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func resolvedAnthropicWorkspaceID(config: AppConfig) -> String {
+        (ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"] ?? config.anthropicWorkspaceID)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func resolveLMStudioURL(config: AppConfig) -> URL? {
         let rawURL = config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return resolveEndpointURL(
@@ -1280,6 +1320,21 @@ enum MeetingSummaryClient {
                 userPrompt: excerpt,
                 maxTokens: nil,
                 extraHeaders: ["X-OpenRouter-Title": AppIdentity.displayName]
+            )
+        }
+
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            let apiKey = resolvedAnthropicAPIKey(config: config)
+            guard !apiKey.isEmpty else { return nil }
+            return await callAnthropicMessages(
+                url: anthropicURL,
+                apiKey: apiKey,
+                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                systemPrompt: titleInstructions,
+                userPrompt: excerpt,
+                maxTokens: 100,
+                backend: "Anthropic",
+                workspaceID: resolvedAnthropicWorkspaceID(config: config)
             )
         }
 
@@ -1432,7 +1487,9 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        backend: String = "Custom LLM",
+        workspaceID: String = ""
     ) async -> String? {
         let body: [String: Any] = [
             "model": model,
@@ -1450,6 +1507,9 @@ enum MeetingSummaryClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        if !workspaceID.isEmpty {
+            request.setValue(workspaceID, forHTTPHeaderField: "anthropic-workspace-id")
+        }
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         }
@@ -1457,7 +1517,7 @@ enum MeetingSummaryClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+            try validateHTTPResponse(response, data: data, backend: backend)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 fputs("[summary] Anthropic title generation: invalid JSON response\n", stderr)
                 return nil

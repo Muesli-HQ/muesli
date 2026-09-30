@@ -10,7 +10,7 @@ struct MeetingSummaryClientTests {
     func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
         let config = AppConfig()
         let selected = provider.summaryConfiguration(from: config, model: "chosen/model")
-        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model",
+        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
                       "claude_code": "claude_code_model",
                       "openrouter": "openrouter_model", "ollama": "ollama_model",
                       "lmstudio": "lmstudio_model", "custom_llm": "custom_llm_model"]
@@ -60,6 +60,20 @@ struct MeetingSummaryClientTests {
 
         #expect(result.contains("## Raw Transcript"))
         #expect(result.contains("Hello world"))
+    }
+
+    @Test("Anthropic returns raw transcript when no API key is configured")
+    func anthropicFallbackWithoutKey() async throws {
+        guard ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil else { return }
+        var config = AppConfig()
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
+        let result = try await MeetingSummaryClient.summarize(
+            transcript: "Hello from Claude",
+            meetingTitle: "Test",
+            config: config
+        )
+        #expect(result.contains("## Raw Transcript"))
+        #expect(result.contains("Hello from Claude"))
     }
 
     @Test("summary instructions include built-in template structure")

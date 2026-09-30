@@ -3414,6 +3414,8 @@ public final class MuesliController: NSObject {
                 config.postProcessorChatGPTModel = model
             case .some(.openAI):
                 config.postProcessorOpenAIModel = model
+            case .some(.anthropic):
+                config.postProcessorAnthropicModel = model
             case .some(.openRouter):
                 config.postProcessorOpenRouterModel = model
             case .some(.ollama):
@@ -4955,7 +4957,8 @@ public final class MuesliController: NSObject {
         hotkey: HotkeyConfig,
         onboardingUseCase: OnboardingUseCase,
         summaryBackend: MeetingSummaryBackendOption?,
-        apiKey: String?
+        apiKey: String?,
+        anthropicWorkspaceID: String? = nil
     ) {
         var shouldRetainLegacyOpenRouterKey = false
         if summaryBackend == .openRouter,
@@ -4983,9 +4986,14 @@ public final class MuesliController: NSObject {
             if let summaryBackend {
                 config.meetingSummaryBackend = summaryBackend.backend
             }
+            if let anthropicWorkspaceID {
+                config.anthropicWorkspaceID = anthropicWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             if let apiKey, !apiKey.isEmpty {
                 if summaryBackend == .openAI {
                     config.openAIAPIKey = apiKey
+                } else if summaryBackend == .anthropic {
+                    config.anthropicAPIKey = apiKey
                 } else if summaryBackend == .openRouter,
                           shouldRetainLegacyOpenRouterKey {
                     // ConfigStore retries the migration and preserves this
@@ -5620,6 +5628,7 @@ public final class MuesliController: NSObject {
         switch provider {
         case .chatGPT: return appState.isChatGPTAuthenticated
         case .openAI: return !resolvedOpenAIAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: config).isEmpty
         case .openRouter:
             return appState.isOpenRouterAuthenticated || !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .ollama: return true
