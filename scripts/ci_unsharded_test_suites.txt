@@ -26,7 +26,6 @@ ICloudBridgeAppStateTests
 ICloudBridgeWorkingCopyTests
 ICloudSyncCallbackDeadlineTests
 InferenceGateTests
-InsightsTests
 LaunchAtLoginManagerTests
 MediaPlaybackControllerTests
 MeetingAutoStopPolicyTests

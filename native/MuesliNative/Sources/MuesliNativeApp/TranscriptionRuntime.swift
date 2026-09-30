@@ -11,6 +11,13 @@ struct SpeechSegment: Sendable {
 struct SpeechTranscriptionResult: Sendable {
     let text: String
     let segments: [SpeechSegment]
+    let bodhanMeasurement: BodhanWBCSMeasurement?
+
+    init(text: String, segments: [SpeechSegment], bodhanMeasurement: BodhanWBCSMeasurement? = nil) {
+        self.text = text
+        self.segments = segments
+        self.bodhanMeasurement = bodhanMeasurement
+    }
 }
 
 actor AppleSpeechUseLifecycle {
@@ -975,6 +982,10 @@ actor TranscriptionCoordinator {
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
+        // WBCS describes the original Bodhan transcription of spoken words.
+        // Cleanup and custom-word replacement can change displayed text, so
+        // preserve the ASR measurement separately from that final text.
+        let bodhanMeasurement = result.bodhanMeasurement
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
@@ -994,7 +1005,11 @@ actor TranscriptionCoordinator {
         if !final.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
         }
-        return final
+        return SpeechTranscriptionResult(
+            text: final.text,
+            segments: final.segments,
+            bodhanMeasurement: bodhanMeasurement
+        )
     }
 
     func transcribeMeeting(
@@ -1612,9 +1627,15 @@ actor TranscriptionCoordinator {
             let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language, outputMode: outputMode)
             BodhanLogging.logVerbose("Bodhan result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let canMeasureSwitches = outputMode.supportsWordsBeforeCodeSwitch(modelID: modelID)
+            let measurement = BodhanWBCSMeasurement(
+                languageSamples: result.languageSamples,
+                runLengths: canMeasureSwitches ? WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text) : nil
+            )
             return SpeechTranscriptionResult(
                 text: text,
-                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)],
+                bodhanMeasurement: measurement
             )
         } else {
             throw NSError(domain: "Muesli", code: 1, userInfo: [

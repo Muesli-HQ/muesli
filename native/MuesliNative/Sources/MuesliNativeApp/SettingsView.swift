@@ -2027,6 +2027,15 @@ struct SettingsView: View {
                     }
                     .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Words before code switch",
+                    description: "New Bodhan Flex dictations in Mixed mode only. WBCS uses the original transcription; Bodhan labels audio windows, not words. Romanized switches may be missed."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableWordsBeforeCodeSwitch) { newValue in
+                        controller.updateConfig { $0.enableWordsBeforeCodeSwitch = newValue }
+                    }
+                }
             }
 
             dictationCleanupSettingsSection

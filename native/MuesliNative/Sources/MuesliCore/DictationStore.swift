@@ -27,6 +27,7 @@ public struct MeetingThreadNavigation: Equatable, Sendable {
 public final class DictationStore {
     private static let targetApplicationBackfillMigration = "dictation_target_application_from_app_context_v1"
     private static let quillStatisticsBackfillMigration = "quill_statistics_spoken_instruction_v1"
+    private static let wbcsMeasurementVersion: Int32 = 1
     public static let defaultTombstoneRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
     private static let iso8601Formatter = ISO8601DateFormatter()
@@ -337,6 +338,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
+        try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
@@ -392,6 +394,35 @@ public final class DictationStore {
         """, db: db)
     }
 
+    private func migrateWordsBeforeCodeSwitchCache(db: OpaquePointer?) throws {
+        // Only new Bodhan dictations have the window labels needed for this
+        // measurement. It describes original speech, so later text edits do
+        // not invalidate it. The former transcript cache is not backfilled.
+        try exec("""
+        DROP TRIGGER IF EXISTS wbcs_cache_invalidate_update;
+        DROP TRIGGER IF EXISTS wbcs_cache_invalidate_delete;
+        DROP TRIGGER IF EXISTS bodhan_wbcs_invalidate_update;
+        DROP TABLE IF EXISTS wbcs_record_cache;
+        CREATE TABLE IF NOT EXISTS bodhan_wbcs_measurements (
+            dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            language_samples BLOB NOT NULL,
+            run_lengths BLOB
+        );
+        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_soft_delete
+        AFTER UPDATE OF deleted_at ON dictations
+        WHEN NEW.deleted_at IS NOT NULL
+        BEGIN
+            DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_delete
+        AFTER DELETE ON dictations
+        BEGIN
+            DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = OLD.id;
+        END;
+        """, db: db)
+    }
+
     @discardableResult
     public func insertDictation(
         text: String,
@@ -401,11 +432,12 @@ public final class DictationStore {
         targetAppName: String? = nil,
         targetAppBundleID: String? = nil,
         startedAt: Date,
-        endedAt: Date
+        endedAt: Date,
+        bodhanMeasurement: BodhanWBCSMeasurement? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        return try insertDictation(
+        let id = try insertDictation(
             text: text,
             durationSeconds: durationSeconds,
             appContext: appContext,
@@ -416,6 +448,40 @@ public final class DictationStore {
             endedAt: endedAt,
             db: db
         )
+        if let bodhanMeasurement {
+            do {
+                try insertBodhanWBCSMeasurement(bodhanMeasurement, dictationID: id, db: db)
+            } catch {
+                // WBCS is optional; a measurement failure must not discard
+                // a completed dictation from history.
+                fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
+            }
+        }
+        return id
+    }
+
+    private func insertBodhanWBCSMeasurement(
+        _ measurement: BodhanWBCSMeasurement,
+        dictationID: Int64,
+        db: OpaquePointer?
+    ) throws {
+        let sql = """
+        INSERT INTO bodhan_wbcs_measurements(dictation_id, version, language_samples, run_lengths)
+        SELECT id, ?, ?, ? FROM dictations WHERE id = ? AND deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        let encoder = JSONEncoder()
+        sqlite3_bind_int(statement, 1, Self.wbcsMeasurementVersion)
+        bindOptionalBlob(try encoder.encode(measurement.languageSamples), at: 2, statement: statement)
+        if let runLengths = measurement.runLengths {
+            bindOptionalBlob(try encoder.encode(runLengths), at: 3, statement: statement)
+        } else {
+            sqlite3_bind_null(statement, 3)
+        }
+        sqlite3_bind_int64(statement, 4, dictationID)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     @discardableResult
@@ -1726,6 +1792,77 @@ public final class DictationStore {
         sqlite3_bind_int64(statement, 1, id)
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return optionalStringColumn(statement, index: 0)
+    }
+
+    /// Median of saved English runs from Bodhan Flex Mixed dictations only.
+    /// Existing dictations without a Bodhan measurement do not contribute.
+    public func wordsBeforeCodeSwitch(
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil
+    ) throws -> Double? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let filter = historyFilterConditions(
+            alias: "d",
+            dateColumn: "timestamp",
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication
+        )
+        let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(d.source, ''))) <> 'quil'"]
+        let sql = """
+        SELECT m.run_lengths
+        FROM dictations d
+        JOIN bodhan_wbcs_measurements m
+          ON m.dictation_id = d.id AND m.version = \(Self.wbcsMeasurementVersion)
+        WHERE \(conditions.joined(separator: " AND ")) AND m.run_lengths IS NOT NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in filter.boundValues.enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
+        }
+        let decoder = JSONDecoder()
+        var lengths: [Int] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if Task<Never, Never>.isCancelled { return nil }
+            if let data = optionalDataColumn(statement, index: 0),
+               let recordLengths = try? decoder.decode([Int].self, from: data),
+               recordLengths.allSatisfy({ $0 > 0 }) {
+                lengths += recordLengths
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw lastError(db) }
+        return WordsBeforeCodeSwitch.median(of: lengths)
+    }
+
+    /// The per-window language chosen by Bodhan, plus optional Flex Mixed WBCS runs.
+    public func bodhanWBCSMeasurement(dictationID: Int64) throws -> BodhanWBCSMeasurement? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT m.language_samples, m.run_lengths
+        FROM bodhan_wbcs_measurements m
+        JOIN dictations d ON d.id = m.dictation_id
+        WHERE m.dictation_id = ? AND m.version = \(Self.wbcsMeasurementVersion)
+          AND d.deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, dictationID)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let sampleData = optionalDataColumn(statement, index: 0),
+              let samples = try? JSONDecoder().decode([BodhanLanguageSample].self, from: sampleData)
+        else { return nil }
+        let runs = optionalDataColumn(statement, index: 1).flatMap { try? JSONDecoder().decode([Int].self, from: $0) }
+        return BodhanWBCSMeasurement(languageSamples: samples, runLengths: runs)
     }
 
     public func dictationStats(
