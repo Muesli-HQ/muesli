@@ -1,8 +1,113 @@
+import AppKit
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Computer Use executor", .serialized)
 struct ComputerUseExecutorTests {
+    @Test("failed paste dispatch returns failure and restores the clipboard")
+    @MainActor
+    func pasteDispatchFailure() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        var attempted = false
+        let result = await ComputerUseToolExecutor.pasteText(
+            "dictated", shortcut: .automatic, pasteboard: pasteboard,
+            targetApplicationProvider: { nil },
+            simulatePasteAction: { shortcut in
+                attempted = true
+                #expect(shortcut == .automatic)
+                // Model the dispatch guard when both layout lookups lack a V mapping.
+                return PasteKeyboardLayout.commandChord(for: "v", translate: { _, _ in nil }) != nil
+            }
+        )
+        #expect(attempted)
+        #expect(result.status == .failed)
+        #expect(result.message.contains("could not be dispatched"))
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("successful custom paste remains executed with or without app attribution", arguments: [true, false])
+    @MainActor
+    func pasteDispatchSuccess(hasAttribution: Bool) async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let shortcut = PasteShortcut.custom(try #require(PasteKeyChord(keyCode: 9, modifiers: .maskControl)))
+        var attempted = false
+        let result = await ComputerUseToolExecutor.pasteText(
+            "dictated", shortcut: shortcut, pasteboard: pasteboard,
+            targetApplicationProvider: { hasAttribution ? NSRunningApplication.current : nil },
+            simulatePasteAction: { received in
+                attempted = true
+                #expect(received == shortcut)
+                #expect(pasteboard.string(forType: .string) == "dictated")
+                return true
+            }
+        )
+        #expect(attempted)
+        #expect(result == .executed("Pasted text"))
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("empty paste fails without waiting for a callback or touching the clipboard")
+    @MainActor
+    func emptyPaste() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let result = await ComputerUseToolExecutor.pasteText(
+            "", shortcut: .automatic, pasteboard: pasteboard,
+            simulatePasteAction: { _ in Issue.record("Empty input must not dispatch"); return true }
+        )
+        #expect(result.status == .failed)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("cancelled paste returns cancelled without dispatching")
+    @MainActor
+    func cancelledPaste() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await ComputerUseToolExecutor.pasteText(
+                "dictated", shortcut: .automatic, pasteboard: pasteboard,
+                simulatePasteAction: { _ in Issue.record("Cancelled input must not dispatch"); return true }
+            )
+        }
+        #expect(await task.value.status == .cancelled)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("cancellation after dispatch does not report success or prevent clipboard restoration")
+    @MainActor
+    func cancelledAfterPasteDispatch() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        var cancelPaste: () -> Void = {}
+        let task = Task { @MainActor in
+            await ComputerUseToolExecutor.pasteText(
+                "dictated", shortcut: .automatic, pasteboard: pasteboard,
+                targetApplicationProvider: { nil },
+                simulatePasteAction: { _ in
+                    cancelPaste()
+                    return true
+                }
+            )
+        }
+        cancelPaste = { task.cancel() }
+        #expect(await task.value.status == .cancelled)
+        // Restoration is owned by PasteController, independently of task cancellation.
+        for _ in 0..<40 {
+            if pasteboard.string(forType: .string) == "original" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
     @Test("maps common app aliases to bundle identifiers")
     @MainActor
     func commonAppAliases() {
