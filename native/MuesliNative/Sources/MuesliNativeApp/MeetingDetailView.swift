@@ -1175,8 +1175,14 @@ struct MeetingDetailView: View {
             }
 
             Menu {
-                Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
-                    beginSummary(for: meeting)
+                if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
+                    Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                        beginSummary(for: meeting)
+                    }
+                } else {
+                    Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                        controller.openHistoryWindow(tab: .settings)
+                    }
                 }
                 Divider()
                 ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
@@ -1596,7 +1602,7 @@ struct MeetingDetailView: View {
             } else {
                 Image(systemName: "key.fill")
                     .foregroundStyle(MuesliTheme.accent)
-                Text("Add your API key in Settings to generate meeting notes")
+                Text("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings to generate meeting notes")
                     .font(MuesliTheme.callout())
                     .foregroundStyle(MuesliTheme.textSecondary)
                 Spacer()
@@ -1638,26 +1644,7 @@ struct MeetingDetailView: View {
     }
 
     private var hasApiKey: Bool {
-        let config = appState.config
-        if appState.selectedMeetingSummaryBackend == .chatGPT {
-            return appState.isChatGPTAuthenticated
-        } else if appState.selectedMeetingSummaryBackend == .openAI {
-            return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
-        } else if appState.selectedMeetingSummaryBackend == .anthropic {
-            return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: config).isEmpty
-        } else if appState.selectedMeetingSummaryBackend == .ollama {
-            return true
-        } else if appState.selectedMeetingSummaryBackend == .claudeCode {
-            return ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil
-        } else if appState.selectedMeetingSummaryBackend == .lmStudio {
-            return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
-        } else if appState.selectedMeetingSummaryBackend == .customLLM {
-            return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
-        } else {
-            return !OpenRouterCredentialResolver.resolvedAPIKey(
-                legacyAPIKey: config.openRouterAPIKey
-            ).isEmpty
-        }
+        controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend)
     }
 
     private var primarySummaryActionLabel: String {

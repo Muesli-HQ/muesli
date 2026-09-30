@@ -1398,16 +1398,13 @@ enum CLISummaryClient {
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
         ]
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 300
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !workspaceID.isEmpty {
-            request.setValue(workspaceID.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "anthropic-workspace-id")
-        }
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let request = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: 300
+        )
         let data = try await send(request: request, backend: backend)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]] else {

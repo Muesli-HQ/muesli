@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum TranscriptCleanupError: LocalizedError {
     case missingConfiguration(String)
@@ -143,6 +144,7 @@ enum TranscriptCleanupClient {
             backend: backend,
             model: model,
             config: config,
+            maxOutputTokens: backend.llmBackend == .anthropic ? AnthropicModelPolicy.cleanupMaxOutputTokens : nil,
             reasoningEffort: config.transcriptCleanupReasoningEffort,
             logCategory: "postproc"
         )
@@ -473,25 +475,22 @@ enum TranscriptCleanupClient {
         backend: String = "Custom LLM",
         workspaceID: String = ""
     ) async throws -> String {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": maxOutputTokens,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userPrompt]],
         ]
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = requestTimeout
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !workspaceID.isEmpty {
-            request.setValue(workspaceID, forHTTPHeaderField: "anthropic-workspace-id")
+        if backend == "Anthropic", let effort = AnthropicModelPolicy.briefTaskEffort(for: model) {
+            body["output_config"] = ["effort": effort]
         }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedKey.isEmpty {
-            request.setValue(trimmedKey, forHTTPHeaderField: "x-api-key")
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let request = try AnthropicAPIRequest.make(
+            url: requestURL,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: requestTimeout
+        )
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTPResponse(response, data: data, backend: backend)

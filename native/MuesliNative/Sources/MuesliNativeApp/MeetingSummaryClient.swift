@@ -3,12 +3,15 @@ import MuesliCore
 import os
 
 enum MeetingSummaryError: LocalizedError {
+    case notConfigured(backend: String)
     case backendFailed(backend: String, statusCode: Int?, message: String)
     case emptyResponse(backend: String)
     case requestFailed(backend: String, underlying: Error)
 
     var errorDescription: String? {
         switch self {
+        case let .notConfigured(backend):
+            return "\(backend) is not configured for meeting summaries. Connect it in Settings and try again."
         case let .backendFailed(backend, statusCode, message):
             let statusText = statusCode.map { " Status \($0)." } ?? ""
             return "\(backend) could not generate meeting notes.\(statusText) \(message) The selected model may be unavailable or retired."
@@ -16,6 +19,21 @@ enum MeetingSummaryError: LocalizedError {
             return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
         case let .requestFailed(backend, underlying):
             return "\(backend) could not be reached while generating meeting notes. \(underlying.localizedDescription)"
+        }
+    }
+}
+
+enum AnthropicModelPolicy {
+    static let summaryMaxOutputTokens = 12_000
+    static let titleMaxOutputTokens = 1_024
+    static let cleanupMaxOutputTokens = 12_000
+
+    static func briefTaskEffort(for model: String) -> String? {
+        switch model {
+        case "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5":
+            return "low"
+        default:
+            return nil
         }
     }
 }
@@ -47,6 +65,8 @@ enum MeetingSummaryRetryPolicy {
         }
 
         switch summaryError {
+        case .notConfigured:
+            return false
         case .requestFailed(let backend, let underlying):
             if isPermanentRequestFailure(underlying) {
                 return false
@@ -70,6 +90,8 @@ enum MeetingSummaryRetryPolicy {
         guard let summaryError = error as? MeetingSummaryError else { return 0 }
 
         switch summaryError {
+        case .notConfigured:
+            return 0
         case .requestFailed(let backend, _),
              .emptyResponse(let backend),
              .backendFailed(let backend, _, _):
@@ -282,7 +304,7 @@ enum MeetingSummaryClient {
         if backend == MeetingSummaryBackendOption.anthropic.backend {
             let apiKey = resolvedAnthropicAPIKey(config: config)
             guard !apiKey.isEmpty else {
-                return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+                throw MeetingSummaryError.notConfigured(backend: "Anthropic")
             }
             generatedNotes = try await summarizeWithAnthropicMessages(
                 backend: "Anthropic",
@@ -615,9 +637,9 @@ enum MeetingSummaryClient {
         visualContext: String? = nil,
         previousMeetingNotes: String? = nil
     ) async throws -> String {
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        let apiKey = resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw MeetingSummaryError.notConfigured(backend: "OpenAI")
         }
 
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
@@ -688,7 +710,7 @@ enum MeetingSummaryClient {
             legacyAPIKey: config.openRouterAPIKey
         )
         guard !apiKey.isEmpty else {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw MeetingSummaryError.notConfigured(backend: "OpenRouter")
         }
 
         let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1035,7 +1057,7 @@ enum MeetingSummaryClient {
         }
     }
 
-    private static func summarizeWithAnthropicMessages(
+    static func summarizeWithAnthropicMessages(
         backend: String,
         requestURL: URL,
         apiKey: String,
@@ -1050,7 +1072,10 @@ enum MeetingSummaryClient {
         visualContext: String?,
         previousMeetingNotes: String?,
         timeout: TimeInterval,
-        workspaceID: String = ""
+        workspaceID: String = "",
+        send: (URLRequest) async throws -> (Data, URLResponse) = { request in
+            try await URLSession.shared.data(for: request)
+        }
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -1064,28 +1089,23 @@ enum MeetingSummaryClient {
         )
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": backend == "Anthropic" ? AnthropicModelPolicy.summaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
             "system": instructions,
             "messages": [
                 ["role": "user", "content": userPrompt],
             ],
         ]
 
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = timeout
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !workspaceID.isEmpty {
-            request.setValue(workspaceID, forHTTPHeaderField: "anthropic-workspace-id")
-        }
-        if !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let request = try AnthropicAPIRequest.make(
+            url: requestURL,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: timeout
+        )
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await send(request)
             try validateHTTPResponse(response, data: data, backend: backend)
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1225,6 +1245,13 @@ enum MeetingSummaryClient {
         return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
     }
 
+    static func resolvedOpenAIAPIKey(config: AppConfig) -> String {
+        let savedKey = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !savedKey.isEmpty { return savedKey }
+        return ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     static func resolvedAnthropicAPIKey(config: AppConfig) -> String {
         AnthropicAPISettings.resolvedValue(
             environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
@@ -1330,13 +1357,15 @@ enum MeetingSummaryClient {
         if backend == MeetingSummaryBackendOption.anthropic.backend {
             let apiKey = resolvedAnthropicAPIKey(config: config)
             guard !apiKey.isEmpty else { return nil }
+            let model = config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel
             return await callAnthropicMessages(
                 url: anthropicURL,
                 apiKey: apiKey,
-                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                model: model,
                 systemPrompt: titleInstructions,
                 userPrompt: excerpt,
-                maxTokens: 100,
+                maxTokens: AnthropicModelPolicy.titleMaxOutputTokens,
+                outputEffort: AnthropicModelPolicy.briefTaskEffort(for: model),
                 backend: "Anthropic",
                 workspaceID: resolvedAnthropicWorkspaceID(config: config)
             )
@@ -1491,11 +1520,12 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        outputEffort: String? = nil,
         timeout: TimeInterval? = nil,
         backend: String = "Custom LLM",
         workspaceID: String = ""
     ) async -> String? {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
             "system": systemPrompt,
@@ -1503,23 +1533,18 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-
-        var request = URLRequest(url: url)
-        if let timeout {
-            request.timeoutInterval = timeout
+        if let outputEffort {
+            body["output_config"] = ["effort": outputEffort]
         }
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !workspaceID.isEmpty {
-            request.setValue(workspaceID, forHTTPHeaderField: "anthropic-workspace-id")
-        }
-        if !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
+            let request = try AnthropicAPIRequest.make(
+                url: url,
+                apiKey: apiKey,
+                workspaceID: workspaceID,
+                body: body,
+                timeout: timeout
+            )
             let (data, response) = try await URLSession.shared.data(for: request)
             try validateHTTPResponse(response, data: data, backend: backend)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1673,7 +1698,4 @@ enum MeetingSummaryClient {
         }
     }
 
-    private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {
-        "## Raw Transcript\n\n\(transcript)"
-    }
 }

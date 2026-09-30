@@ -5624,17 +5624,18 @@ public final class MuesliController: NSObject {
         selectMeetingSummaryBackend(option)
     }
 
-    func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption) -> Bool {
+    func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption, config summaryConfig: AppConfig? = nil) -> Bool {
+        let summaryConfig = summaryConfig ?? config
         switch provider {
         case .chatGPT: return appState.isChatGPTAuthenticated
-        case .openAI: return !resolvedOpenAIAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: config).isEmpty
+        case .openAI: return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: summaryConfig).isEmpty
+        case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: summaryConfig).isEmpty
         case .openRouter:
-            return appState.isOpenRouterAuthenticated || !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey).isEmpty
         case .ollama: return true
-        case .claudeCode: return ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil
-        case .lmStudio: return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
-        case .customLLM: return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
+        case .claudeCode: return ClaudeCodeSummarizer.executableURL(configuredPath: summaryConfig.claudeCodeExecutablePath) != nil
+        case .lmStudio: return MeetingSummaryClient.lmStudioHasRequiredSettings(config: summaryConfig)
+        case .customLLM: return MeetingSummaryClient.customLLMHasRequiredSettings(config: summaryConfig)
         default: return false
         }
     }
@@ -5662,6 +5663,11 @@ public final class MuesliController: NSObject {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         let summaryConfig = summaryConfig ?? config
+        let provider = MeetingSummaryBackendOption.resolved(summaryConfig.meetingSummaryBackend)
+        guard canUseSummaryProvider(provider, config: summaryConfig) else {
+            completion(.failure(MeetingSummaryError.notConfigured(backend: provider.label)))
+            return
+        }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }

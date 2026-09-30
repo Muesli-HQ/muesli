@@ -12,6 +12,98 @@ struct MeetingSummaryClientTests {
         #expect(AnthropicAPISettings.resolvedValue(environmentValue: " override\n", savedValue: " saved ") == "override")
     }
 
+    @Test("Anthropic Messages request sends trimmed credentials and optional workspace")
+    func anthropicRequestHeadersAndBody() throws {
+        let url = try #require(URL(string: "https://api.anthropic.com/v1/messages"))
+        let body: [String: Any] = [
+            "model": "claude-sonnet-5-5",
+            "max_tokens": 2500,
+            "system": "Summarize the meeting",
+            "messages": [["role": "user", "content": "Transcript"]],
+        ]
+        let request = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: " key-with-newline\n",
+            workspaceID: " wrkspc_test ",
+            body: body,
+            timeout: 300
+        )
+        #expect(request.url == url)
+        #expect(request.httpMethod == "POST")
+        #expect(request.timeoutInterval == 300)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
+        #expect(request.value(forHTTPHeaderField: "x-api-key") == "key-with-newline")
+        #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "wrkspc_test")
+        let requestBody = try #require(request.httpBody)
+        let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+        #expect(payload["model"] as? String == "claude-sonnet-5-5")
+        #expect(payload["max_tokens"] as? Int == 2500)
+        #expect((payload["messages"] as? [[String: String]])?.first?["content"] == "Transcript")
+
+        let withoutWorkspace = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: "key",
+            workspaceID: " \n",
+            body: body
+        )
+        #expect(withoutWorkspace.value(forHTTPHeaderField: "anthropic-workspace-id") == nil)
+    }
+
+    @Test("hosted Anthropic summary sends a complete request and parses the response")
+    func hostedAnthropicSummaryRequest() async throws {
+        let url = try #require(URL(string: "https://api.anthropic.com/v1/messages"))
+        for workspaceID in ["", "wrkspc_test"] {
+            let notes = try await MeetingSummaryClient.summarizeWithAnthropicMessages(
+                backend: "Anthropic",
+                requestURL: url,
+                apiKey: " test-key\n",
+                model: "claude-sonnet-5-5",
+                transcript: "The team agreed to launch on Friday.",
+                meetingTitle: "Launch review",
+                existingNotes: nil,
+                manualNotes: nil,
+                participantNames: [],
+                config: AppConfig(),
+                template: MeetingTemplates.auto.snapshot,
+                visualContext: nil,
+                previousMeetingNotes: nil,
+                timeout: 300,
+                workspaceID: workspaceID,
+                send: { request in
+                    #expect(request.url == url)
+                    #expect(request.value(forHTTPHeaderField: "x-api-key") == "test-key")
+                    #expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
+                    #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == (workspaceID.isEmpty ? nil : workspaceID))
+                    let requestBody = try #require(request.httpBody)
+                    let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+                    #expect(payload["model"] as? String == "claude-sonnet-5-5")
+                    #expect(payload["max_tokens"] as? Int == AnthropicModelPolicy.summaryMaxOutputTokens)
+                    #expect((payload["system"] as? String)?.contains("meeting notes assistant") == true)
+                    let messages = try #require(payload["messages"] as? [[String: String]])
+                    #expect(messages.first?["content"]?.contains("launch on Friday") == true)
+                    let response = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+                    let responseBody = try JSONSerialization.data(withJSONObject: [
+                        "content": [["type": "text", "text": "## Summary\nLaunch on Friday."]],
+                    ])
+                    return (responseBody, response)
+                }
+            )
+            #expect(notes == "## Summary\nLaunch on Friday.")
+        }
+    }
+
+    @Test("brief Anthropic tasks reserve output and use supported low effort")
+    func anthropicBriefTaskPolicy() {
+        #expect(AnthropicModelPolicy.summaryMaxOutputTokens >= 10_000)
+        #expect(AnthropicModelPolicy.titleMaxOutputTokens >= 1_024)
+        #expect(AnthropicModelPolicy.cleanupMaxOutputTokens >= 10_000)
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-opus-5-5") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-fable-5-1") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-sonnet-5-5") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-haiku-4-5-20251001") == nil)
+    }
+
     @Test("one-request choices preserve settings and route each provider's model",
           arguments: MeetingSummaryBackendOption.all)
     func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
@@ -53,34 +145,48 @@ struct MeetingSummaryClientTests {
         """
     )
 
-    @Test("summarize returns raw transcript fallback when no API key")
-    func fallbackWithoutKey() async throws {
+    @Test("OpenAI without a key fails instead of replacing existing notes")
+    func openAIWithoutKeyPreservesNotes() async {
         var config = AppConfig()
         config.openAIAPIKey = ""
         config.meetingSummaryBackend = "openai"
-
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Hello world",
-            meetingTitle: "Test",
-            config: config
-        )
-
-        #expect(result.contains("## Raw Transcript"))
-        #expect(result.contains("Hello world"))
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Hello world",
+                meetingTitle: "Test",
+                config: config,
+                existingNotes: "## Existing notes"
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "OpenAI")
+        }
     }
 
-    @Test("Anthropic returns raw transcript when no API key is configured")
-    func anthropicFallbackWithoutKey() async throws {
-        guard ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil else { return }
+    @Test("Anthropic without a key fails instead of replacing existing notes")
+    func anthropicWithoutKeyPreservesNotes() async {
+        guard MeetingSummaryClient.resolvedAnthropicAPIKey(config: AppConfig()).isEmpty else { return }
         var config = AppConfig()
         config.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Hello from Claude",
-            meetingTitle: "Test",
-            config: config
-        )
-        #expect(result.contains("## Raw Transcript"))
-        #expect(result.contains("Hello from Claude"))
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Hello from Claude",
+                meetingTitle: "Test",
+                config: config,
+                existingNotes: "## Existing notes"
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "Anthropic")
+        }
     }
 
     @Test("summary instructions include built-in template structure")
@@ -514,21 +620,17 @@ struct MeetingSummaryClientTests {
         #expect(result == "## Next steps\n- Follow up with Priy\n\n### Written notes\n\nNext steps")
     }
 
-    @Test("fallback summary retains manual notes")
-    func fallbackSummaryRetainsManualNotes() async throws {
-        var config = AppConfig()
-        config.openAIAPIKey = ""
-        config.meetingSummaryBackend = "openai"
-
-        let result = try await MeetingSummaryClient.summarize(
+    @Test("initial meeting failure notes retain manual notes")
+    func summaryFailureRetainsManualNotes() {
+        let result = MeetingSummaryClient.summaryFailureNotes(
             transcript: "Hello world",
             meetingTitle: "Test",
-            config: config,
-            existingNotes: "- Manual decision",
-            manualNotesToRetain: "- Manual decision"
+            error: MeetingSummaryError.notConfigured(backend: "OpenAI"),
+            manualNotes: "- Manual decision"
         )
 
         #expect(result.contains("## Raw Transcript"))
+        #expect(result.contains("## Summary failed"))
         #expect(result.contains("### Written notes"))
         #expect(result.contains("- Manual decision"))
     }
@@ -554,21 +656,27 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("Raw transcript:\nTranscript body"))
     }
 
-    @Test("summarize routes to OpenRouter when configured")
-    func routesToOpenRouter() async throws {
+    @Test("OpenRouter without a key fails instead of replacing existing notes")
+    func openRouterWithoutKeyPreservesNotes() async {
         var config = AppConfig()
         config.openRouterAPIKey = ""
         config.meetingSummaryBackend = "openrouter"
-
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Test transcript",
-            meetingTitle: "My Meeting",
-            config: config,
-            openRouterAPIKeyOverride: ""
-        )
-
-        // No key → falls back to raw transcript
-        #expect(result.contains("## Raw Transcript"))
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Meeting",
+                config: config,
+                existingNotes: "## Existing notes",
+                openRouterAPIKeyOverride: ""
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "OpenRouter")
+        }
     }
 
     @Test("summary failure notes make backend failure visible")
