@@ -206,13 +206,37 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
-            sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
-            sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            meetingsSection
-            sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-            sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-
-            Spacer()
+            // The navigation block scrolls so a long Meetings folder tree cannot
+            // push the header and footer out of the window, or raise the
+            // window's minimum height past the screen. A ScrollView has no
+            // intrinsic minimum height, unlike the plain stack it replaces.
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
+                        sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
+                        meetingsSection
+                        sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
+                        sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollIndicators(.automatic)
+                .scrollBounceBehavior(.basedOnSize)
+                .onChange(of: renamingFolderID) { _, folderID in
+                    // A new folder enters rename mode straight away; in a long
+                    // tree its row can be below the visible area, so bring it
+                    // into view. Wait a turn so the new row is laid out first.
+                    guard let folderID else { return }
+                    Task { @MainActor in
+                        await Task.yield()
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            proxy.scrollTo(folderID, anchor: .center)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
 
             modelPreparationStatus
             spreadTheWordSection
@@ -419,6 +443,7 @@ struct SidebarView: View {
                         if renamingFolderID == folder.id {
                             folderRenameField(folder: folder)
                                 .padding(.leading, CGFloat(depth) * folderDepthIndent)
+                                .id(folder.id)
                         } else {
                             meetingFilterRow(
                                 icon: "folder",
