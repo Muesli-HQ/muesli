@@ -792,8 +792,8 @@ struct MeetingSummaryClientTests {
         #expect(!regenerated.contains("Quoted heading"))
     }
 
-    @Test("ambiguous edited transcript headings keep saved notes unchanged")
-    func failedRegenerationKeepsAmbiguousTranscriptEdits() {
+    @Test("ambiguous edited transcript headings retain edits and refresh written notes")
+    func failedRegenerationRefreshesNotesWithAmbiguousTranscriptEdits() {
         let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
         let previousFailure = MeetingSummaryClient.summaryFailureNotes(
             transcript: "Old transcript",
@@ -812,10 +812,23 @@ struct MeetingSummaryClientTests {
             transcript: "New transcript",
             meetingTitle: "Launch review",
             error: error,
-            manualNotes: "Updated agenda"
+            manualNotes: "Updated agenda\n\n## Raw Transcript\n\nNew example"
         )
 
-        #expect(retained == editedFailure)
+        #expect(retained.contains("### Written notes\n\nUpdated agenda\n\n## Raw Transcript\n\nNew example"))
+        #expect(retained.contains("### Earlier written-note text (preserved; may be outdated)\n\nAgenda\n\n## Raw Transcript\n\nExample from the agenda"))
+        #expect(retained.hasSuffix("\n\n## Raw Transcript\n\nCorrected old transcript"))
+        #expect(!retained.contains("New transcript"))
+
+        let repeated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: retained,
+            previousTranscript: "New transcript",
+            transcript: "Newest transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Updated agenda\n\n## Raw Transcript\n\nNew example"
+        )
+        #expect(repeated == retained)
     }
 
     @Test("summary user prompt includes meeting context when provided")

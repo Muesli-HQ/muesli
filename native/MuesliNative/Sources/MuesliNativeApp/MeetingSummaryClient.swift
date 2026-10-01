@@ -429,13 +429,15 @@ enum MeetingSummaryClient {
     ) -> String {
         if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let marker = "\n\n## Raw Transcript\n\n"
-            guard isSummaryFailureNotes(existingNotes),
-                  let markerRange = failureTranscriptBoundary(
-                    in: existingNotes,
-                    marker: marker,
-                    previousTranscript: previousTranscript
-                  ) else {
+            guard isSummaryFailureNotes(existingNotes) else {
                 return existingNotes
+            }
+            guard let markerRange = failureTranscriptBoundary(
+                in: existingNotes,
+                marker: marker,
+                previousTranscript: previousTranscript
+            ) else {
+                return refreshedAmbiguousFailureWrittenNotes(existingNotes, currentNotes: manualNotes, marker: marker)
             }
             let updatedPrefix = refreshedFailureNoteWrittenNotes(
                 String(existingNotes[..<markerRange.lowerBound]),
@@ -475,6 +477,37 @@ enum MeetingSummaryClient {
         }
         // If the transcript was edited, preserve it only when the boundary is unambiguous.
         return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private static func refreshedAmbiguousFailureWrittenNotes(
+        _ notes: String,
+        currentNotes: String?,
+        marker: String
+    ) -> String {
+        let current = currentNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let writtenMarker = "\n\n### Written notes\n\n"
+        let preservedMarker = "\n\n### Earlier written-note text (preserved; may be outdated)\n\n"
+        guard let firstTranscriptHeading = notes.range(of: marker) else { return notes }
+        let prefix = notes[..<firstTranscriptHeading.lowerBound]
+
+        if let writtenRange = prefix.range(of: writtenMarker) {
+            // The transcript boundary cannot be identified, so leave every heading and
+            // edit in place. Give current notes their own canonical section and mark
+            // the previous one as historical without parsing its contents.
+            let writtenSection = writtenMarker + current
+            if !current.isEmpty,
+               (notes[writtenRange.lowerBound...].hasPrefix(writtenSection + marker)
+                || notes[writtenRange.lowerBound...].hasPrefix(writtenSection + preservedMarker)) {
+                return notes
+            }
+            let before = String(notes[..<writtenRange.lowerBound])
+            let after = String(notes[writtenRange.upperBound...])
+            let currentSection = current.isEmpty ? "" : writtenMarker + current
+            return before + currentSection + preservedMarker + after
+        }
+
+        guard !current.isEmpty else { return notes }
+        return String(prefix) + writtenMarker + current + String(notes[firstTranscriptHeading.lowerBound...])
     }
 
     private static func refreshedFailureNoteWrittenNotes(_ prefix: String, currentNotes: String?) -> String {
