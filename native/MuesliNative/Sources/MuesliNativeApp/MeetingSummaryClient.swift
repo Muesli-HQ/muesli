@@ -496,8 +496,7 @@ enum MeetingSummaryClient {
             // the previous one as historical without parsing its contents.
             let writtenSection = writtenMarker + current
             if !current.isEmpty,
-               (notes[writtenRange.lowerBound...].hasPrefix(writtenSection + marker)
-                || notes[writtenRange.lowerBound...].hasPrefix(writtenSection + preservedMarker)) {
+               notes[writtenRange.lowerBound...].hasPrefix(writtenSection + preservedMarker) {
                 return notes
             }
             let before = String(notes[..<writtenRange.lowerBound])

@@ -829,6 +829,18 @@ struct MeetingSummaryClientTests {
             manualNotes: "Updated agenda\n\n## Raw Transcript\n\nNew example"
         )
         #expect(repeated == retained)
+
+        let shortened = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedFailure,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Agenda"
+        )
+        #expect(shortened.contains("### Written notes\n\nAgenda\n\n### Earlier written-note text (preserved; may be outdated)"))
+        #expect(shortened.contains("## Raw Transcript\n\nExample from the agenda"))
+        #expect(shortened.hasSuffix("\n\n## Raw Transcript\n\nCorrected old transcript"))
     }
 
     @Test("summary user prompt includes meeting context when provided")
