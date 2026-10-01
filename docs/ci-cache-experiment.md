@@ -10,9 +10,13 @@ release build, test shards, and shipped app code are preserved.
 - PR release jobs restore from the base commit's cache, falling back only to the
   latest cache with an identical compatibility fingerprint. Every job still runs
   `swift build -c release --product MuesliNativeApp --force-resolved-versions`.
-- Only successful `push` builds on `main` save release artifacts. They never
-  restore: every relevant main push remains a clean optimized-build validation.
-  Manual CI runs also build clean and do not save. PRs never save this cache.
+- Only successful `push` builds on `main` can save release artifacts. After
+  compilation, a metadata-only lookup checks for an existing compatible cache;
+  any matching key (including an older commit) skips the upload. Only a successful
+  lookup with no match allows saving. A failed lookup step skips saving.
+  Main never downloads cached artifacts: every relevant main push remains a clean
+  optimized-build validation. Manual CI runs also build clean and do not save.
+  PRs never save this cache.
 - Keys cover architecture, OS/runner image, exact Xcode/Swift/SDK and SDK path,
   workspace/scratch paths, full build command, manifest, lockfile, and helper
   digest. No fallback crosses those boundaries. Source changes are deliberately
@@ -23,8 +27,19 @@ release build, test shards, and shipped app code are preserved.
 - Cache misses/eviction build cold. Save failures do not fail a correct build;
   compilation failures still fail the required gate. Restore failures are not
   disguised as successful builds.
+- Timing markers, measurement recording/reporting, and artifact uploads are
+  best-effort and cannot fail the required job. The build helper preserves the
+  compiler exit status even when timer/log/result writes fail, and compiler
+  output remains in the Actions console. Cache identity/safety checks remain
+  mandatory; this does not make an unsafe restore or a failed compile pass.
+- Reusing an existing compatible cache avoids a fresh ~1.6 GB upload per main
+  commit. An older app baseline can require more app recompilation, but dependency
+  reuse remains useful and ordinary source invalidation is preserved. New
+  fingerprints or eviction allow a fresh seed. This is not a strict repository
+  storage cap; distinct toolchains/dependency sets still produce distinct caches.
 - Job summaries and seven-day `release-build-measurements` artifacts report
-  matched cache key, restore/save outcome, build/pipeline time, and transfer
+  matched cache key, main lookup/existing-key and restore/save outcomes,
+  build/pipeline time, and transfer
   phases. Pipeline includes intervening steps; queue/checkout/preparation and
   report/upload time are excluded. Incomplete phases are explicitly marked.
 

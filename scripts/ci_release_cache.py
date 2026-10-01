@@ -30,6 +30,15 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def best_effort(description, operation):
+    """Telemetry must never prevent compilation or replace its exit status."""
+    try:
+        return operation()
+    except Exception as error:
+        print(f"::warning::Release measurement failed ({description}): {error}")
+        return None
+
+
 def cache_keys(facts, revision):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Cache revision must be a full commit SHA")
@@ -62,10 +71,12 @@ def prepare():
         "helper": digest(Path(__file__)),
     }
     key, prefix = cache_keys(facts, os.environ["CACHE_REVISION"])
-    RESULTS.mkdir(exist_ok=True)
-    (RESULTS / "environment.json").write_text(json.dumps(facts, indent=2) + "\n")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"scratch={scratch}\nkey={key}\nprefix={prefix}\n")
+    def record_environment():
+        RESULTS.mkdir(exist_ok=True)
+        (RESULTS / "environment.json").write_text(json.dumps(facts, indent=2) + "\n")
+    best_effort("environment", record_environment)
     print(f"Release cache key: {key}\n{json.dumps(facts, indent=2)}")
 
 
@@ -88,19 +99,30 @@ def durations(data):
 
 def build():
     # A cache hit NEVER skips compilation or changes build flags.
-    mark("begin", "build")
+    best_effort("build start", lambda: mark("begin", "build"))
     command = build_command(scratch_path())
-    started = time.monotonic()
-    with (RESULTS / "build.log").open("w") as log:
+    started = best_effort("build clock", time.monotonic)
+    log = best_effort("open build log", lambda: (RESULTS / "build.log").open("w"))
+    try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True)
+                                   stderr=subprocess.STDOUT, text=True, errors="replace")
         for line in process.stdout:
-            stamped = f"[{time.monotonic() - started:8.1f}s] {line}"
-            print(stamped, end="", flush=True)
-            log.write(stamped)
+            # The Actions console retains compiler output even if artifact logging fails.
+            print(line, end="", flush=True)
+            if log is not None:
+                try:
+                    log.write(line if started is None else f"[{time.monotonic() - started:8.1f}s] {line}")
+                except Exception as error:
+                    print(f"::warning::Release build log disabled: {error}")
+                    best_effort("close build log", log.close)
+                    log = None
         code = process.wait()
-    mark("end", "build")
-    (RESULTS / "build.json").write_text(json.dumps({"exit_code": code, "command": command}) + "\n")
+    finally:
+        if log is not None:
+            best_effort("close build log", log.close)
+    best_effort("build end", lambda: mark("end", "build"))
+    best_effort("build result", lambda: (RESULTS / "build.json").write_text(
+        json.dumps({"exit_code": code, "command": command}) + "\n"))
     raise SystemExit(code)
 
 
@@ -116,6 +138,8 @@ def report():
                  "cache_matched_key": os.environ.get("CACHE_MATCHED_KEY", ""),
                  "cache_exact_hit": os.environ.get("CACHE_EXACT_HIT", ""),
                  "restore_outcome": os.environ.get("CACHE_RESTORE_OUTCOME", "skipped"),
+                 "lookup_outcome": os.environ.get("CACHE_LOOKUP_OUTCOME", "skipped"),
+                 "existing_compatible_key": os.environ.get("CACHE_EXISTING_KEY", ""),
                  "save_outcome": os.environ.get("CACHE_SAVE_OUTCOME", "skipped")})
     (RESULTS / "measurement.json").write_text(json.dumps(data, indent=2) + "\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
@@ -123,6 +147,8 @@ def report():
         summary.write(f"Event: `{data['event']}`; build exit: `{data['exit_code']}`.\n\n")
         summary.write(f"Restored key: `{data['cache_matched_key'] or 'none (clean build)'}`.\n\n")
         summary.write(f"Restore: `{data['restore_outcome']}`; save: `{data['save_outcome']}`.\n\n")
+        summary.write(f"Main lookup: `{data['lookup_outcome']}`; existing compatible key: "
+                      f"`{data['existing_compatible_key'] or 'none'}`.\n\n")
         summary.write("| Phase | Seconds |\n| --- | ---: |\n")
         for phase, seconds in times.items():
             summary.write(f"| {phase} | {seconds if seconds is not None else 'INCOMPLETE'} |\n")

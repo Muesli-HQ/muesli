@@ -65,12 +65,15 @@ class ReleaseCacheTests(unittest.TestCase):
             (root / "build.json").write_text('{"exit_code":0}')
             env = {"GITHUB_STEP_SUMMARY": str(root / "summary"), "GITHUB_EVENT_NAME": "pull_request",
                    "CACHE_MATCHED_KEY": "compatible-older-main", "CACHE_EXACT_HIT": "false",
-                   "CACHE_RESTORE_OUTCOME": "success", "CACHE_SAVE_OUTCOME": "failure"}
+                   "CACHE_RESTORE_OUTCOME": "success", "CACHE_SAVE_OUTCOME": "failure",
+                   "CACHE_LOOKUP_OUTCOME": "success", "CACHE_EXISTING_KEY": "existing-main"}
             with patch.object(cache, "RESULTS", root), patch.dict(os.environ, env):
                 cache.report()
             data = json.loads((root / "measurement.json").read_text())
             self.assertEqual(data["cache_matched_key"], "compatible-older-main")
             self.assertEqual(data["save_outcome"], "failure")
+            self.assertEqual(data["existing_compatible_key"], "existing-main")
+            self.assertEqual(data["lookup_outcome"], "success")
             self.assertEqual(data["phase_seconds"]["build"], 4)
 
     def test_failed_compilation_still_fails_job(self):
@@ -86,6 +89,64 @@ class ReleaseCacheTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "build.json").read_text())["exit_code"], 1)
             popen.assert_called_once()
             self.assertEqual(mark.call_count, 2)
+
+    def test_unwritable_measurements_and_broken_timers_preserve_compiler_exit(self):
+        for code in (0, 1):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                blocked = Path(directory) / "not-a-directory"
+                blocked.touch()
+                process = Mock(stdout=iter(["compiler output\n"]))
+                process.wait.return_value = code
+                with patch.object(cache, "RESULTS", blocked), \
+                        patch.object(cache, "mark", side_effect=ValueError("broken timer")), \
+                        patch.object(cache.time, "monotonic", side_effect=RuntimeError("clock failed")), \
+                        patch.object(cache.subprocess, "Popen", return_value=process) as popen, \
+                        patch("builtins.print") as output:
+                    with self.assertRaises(SystemExit) as exited:
+                        cache.build()
+                self.assertEqual(exited.exception.code, code)
+                popen.assert_called_once()
+                process.wait.assert_called_once()
+                output.assert_any_call("compiler output\n", end="", flush=True)
+
+    def test_mid_build_log_write_and_close_failures_do_not_interrupt_compiler(self):
+        for code in (0, 2):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                process = Mock(stdout=iter(["first\n", "second\n"]))
+                process.wait.return_value = code
+                log = Mock()
+                log.write.side_effect = OSError("disk full")
+                log.close.side_effect = OSError("flush failed")
+                with patch.object(cache, "RESULTS", Path(directory)), patch.object(cache, "mark"), \
+                        patch.object(cache.subprocess, "Popen", return_value=process), \
+                        patch.object(Path, "open", return_value=log), patch("builtins.print") as output:
+                    with self.assertRaises(SystemExit) as exited:
+                        cache.build()
+                self.assertEqual(exited.exception.code, code)
+                process.wait.assert_called_once()
+                log.write.assert_called_once()
+                log.close.assert_called_once()
+                output.assert_any_call("second\n", end="", flush=True)
+
+    def test_environment_recording_failure_does_not_break_cache_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blocked = root / "not-a-directory"
+            blocked.touch()
+            env = {"CACHE_REVISION": "a" * 40, "GITHUB_OUTPUT": str(root / "output")}
+            with patch.object(cache, "RESULTS", blocked), \
+                    patch.object(cache, "scratch_path", return_value=root / "scratch"), \
+                    patch.object(cache.subprocess, "check_output", return_value="toolchain"), \
+                    patch.object(cache, "digest", return_value="digest"), \
+                    patch.dict(os.environ, env), patch("builtins.print"):
+                cache.prepare()
+            self.assertIn("key=ci-release-v1-", (root / "output").read_text())
+
+    def test_existing_scratch_safety_check_is_still_fatal(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(cache, "scratch_path", return_value=Path(directory)):
+            with self.assertRaisesRegex(RuntimeError, "fresh hosted runner"):
+                cache.prepare()
 
     def test_prepare_fingerprints_real_build_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,19 +171,37 @@ class ReleaseCacheTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
         job = workflow.split("  build_release:\n", 1)[1].split("\n  test_shards:", 1)[0]
         steps = job.split("      - name: ")[1:]
-        restore = next(step for step in steps if "uses: actions/cache/restore@v4" in step)
+        restore = next(step for step in steps if step.startswith("Restore compatible main"))
+        lookup = next(step for step in steps if step.startswith("Check for existing compatible"))
         save = next(step for step in steps if "uses: actions/cache/save@v4" in step)
         build = next(step for step in steps if step.startswith("Build (release)\n"))
         self.assertIn("if: github.event_name == 'pull_request'\n", restore)
-        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n", save)
+        save_condition = ("if: >-\n"
+                          "          github.event_name == 'push' && github.ref == 'refs/heads/main' &&\n"
+                          "          steps.lookup-release.outcome == 'success' &&\n"
+                          "          steps.lookup-release.outputs.cache-matched-key == ''\n")
+        self.assertIn(save_condition, save)
         self.assertIn("continue-on-error: true", save)
         self.assertNotIn("if:", build)
+        self.assertNotIn("continue-on-error:", build)
         self.assertIn("python3 scripts/ci_release_cache.py build", build)
-        self.assertEqual(job.count("uses: actions/cache/"), 2)
-        for step in (restore, save):
+        self.assertEqual(job.count("uses: actions/cache/"), 3)
+        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n", lookup)
+        self.assertIn("lookup-only: true", lookup)
+        self.assertIn("continue-on-error: true", lookup)
+        self.assertIn("restore-keys: ${{ steps.release-cache.outputs.prefix }}\n", lookup)
+        self.assertLess(steps.index(build), steps.index(lookup))
+        for step in (restore, save, lookup):
             self.assertIn("path: ${{ steps.release-cache.outputs.scratch }}\n", step)
         self.assertIn("restore-keys: ${{ steps.release-cache.outputs.prefix }}\n", restore)
         self.assertIn("CACHE_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}", job)
+        telemetry = [step for step in steps if step.startswith(("Begin ", "End ",
+                     "Report release build", "Upload release build"))]
+        self.assertEqual(len(telemetry), 8)
+        for step in telemetry:
+            self.assertIn("continue-on-error: true", step)
+            if "save timing" in step:
+                self.assertIn(save_condition, step)
 
 
 if __name__ == "__main__":
