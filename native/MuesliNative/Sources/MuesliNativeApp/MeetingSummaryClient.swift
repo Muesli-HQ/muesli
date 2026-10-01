@@ -430,7 +430,11 @@ enum MeetingSummaryClient {
         if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let marker = "\n\n## Raw Transcript\n\n"
             guard isSummaryFailureNotes(existingNotes),
-                  let markerRange = existingNotes.range(of: marker) else {
+                  let markerRange = failureTranscriptBoundary(
+                    in: existingNotes,
+                    marker: marker,
+                    previousTranscript: previousTranscript
+                  ) else {
                 return existingNotes
             }
             let updatedPrefix = refreshedFailureNoteWrittenNotes(
@@ -450,6 +454,27 @@ enum MeetingSummaryClient {
             error: error,
             manualNotes: manualNotes
         )
+    }
+
+    private static func failureTranscriptBoundary(
+        in notes: String,
+        marker: String,
+        previousTranscript: String
+    ) -> Range<String.Index>? {
+        var candidates: [Range<String.Index>] = []
+        var searchStart = notes.startIndex
+        while let range = notes.range(of: marker, range: searchStart..<notes.endIndex) {
+            candidates.append(range)
+            searchStart = range.upperBound
+        }
+
+        // The generated boundary is followed by the complete saved transcript.
+        // A heading inside written notes or the transcript cannot satisfy that match.
+        if let untouched = candidates.first(where: { notes[$0.upperBound...] == previousTranscript }) {
+            return untouched
+        }
+        // If the transcript was edited, preserve it only when the boundary is unambiguous.
+        return candidates.count == 1 ? candidates[0] : nil
     }
 
     private static func refreshedFailureNoteWrittenNotes(_ prefix: String, currentNotes: String?) -> String {
