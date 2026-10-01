@@ -3,12 +3,15 @@ import MuesliCore
 import os
 
 enum MeetingSummaryError: LocalizedError {
+    case notConfigured(backend: String)
     case backendFailed(backend: String, statusCode: Int?, message: String)
     case emptyResponse(backend: String)
     case requestFailed(backend: String, underlying: Error)
 
     var errorDescription: String? {
         switch self {
+        case let .notConfigured(backend):
+            return "\(backend) is not configured for meeting summaries. Connect it in Settings and try again."
         case let .backendFailed(backend, statusCode, message):
             let statusText = statusCode.map { " Status \($0)." } ?? ""
             return "\(backend) could not generate meeting notes.\(statusText) \(message) The selected model may be unavailable or retired."
@@ -16,6 +19,21 @@ enum MeetingSummaryError: LocalizedError {
             return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
         case let .requestFailed(backend, underlying):
             return "\(backend) could not be reached while generating meeting notes. \(underlying.localizedDescription)"
+        }
+    }
+}
+
+enum AnthropicModelPolicy {
+    static let summaryMaxOutputTokens = AnthropicAPISettings.hostedSummaryMaxOutputTokens
+    static let titleMaxOutputTokens = 1_024
+    static let cleanupMaxOutputTokens = 12_000
+
+    static func briefTaskEffort(for model: String) -> String? {
+        switch model {
+        case "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5":
+            return "low"
+        default:
+            return nil
         }
     }
 }
@@ -47,6 +65,8 @@ enum MeetingSummaryRetryPolicy {
         }
 
         switch summaryError {
+        case .notConfigured:
+            return false
         case .requestFailed(let backend, let underlying):
             if isPermanentRequestFailure(underlying) {
                 return false
@@ -70,6 +90,8 @@ enum MeetingSummaryRetryPolicy {
         guard let summaryError = error as? MeetingSummaryError else { return 0 }
 
         switch summaryError {
+        case .notConfigured:
+            return 0
         case .requestFailed(let backend, _),
              .emptyResponse(let backend),
              .backendFailed(let backend, _, _):
@@ -131,12 +153,14 @@ enum MeetingSummaryRetryPolicy {
 enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
+    private static let anthropicURL = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let defaultLMStudioBaseURL = URL(string: "http://localhost:1234")!
-    private static let defaultOpenAIModel = "gpt-5.4-mini"
+    private static let defaultOpenAIModel = "gpt-6.1-sol"
+    private static let defaultAnthropicModel = "claude-sonnet-5-5"
     private static let defaultOpenRouterModel = "openrouter/free"
-    private static let defaultChatGPTModel = "gpt-5.4-mini"
+    private static let defaultChatGPTModel = "gpt-6.1-sol"
     private static let defaultOllamaModel = "qwen3.5"
     private static let defaultSummaryMaxOutputTokens = 2500
     private static let participantPromptNameCharacterLimit = 200
@@ -277,6 +301,30 @@ enum MeetingSummaryClient {
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            let apiKey = resolvedAnthropicAPIKey(config: config)
+            guard !apiKey.isEmpty else {
+                throw MeetingSummaryError.notConfigured(backend: "Anthropic")
+            }
+            generatedNotes = try await summarizeWithAnthropicMessages(
+                backend: "Anthropic",
+                requestURL: anthropicURL,
+                apiKey: apiKey,
+                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                participantNames: participantNames,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes,
+                timeout: customLLMSummaryTimeout,
+                workspaceID: resolvedAnthropicWorkspaceID(config: config)
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
         if backend == MeetingSummaryBackendOption.ollama.backend {
             generatedNotes = try await summarizeWithOllama(
                 transcript: transcript,
@@ -369,6 +417,133 @@ enum MeetingSummaryClient {
         }
         sections.append("## Raw Transcript\n\n\(transcript)")
         return sections.joined(separator: "\n\n")
+    }
+
+    static func notesAfterFailedRegeneration(
+        existingNotes: String,
+        previousTranscript: String,
+        transcript: String,
+        meetingTitle: String,
+        error: Error,
+        manualNotes: String?
+    ) -> String {
+        if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let marker = "\n\n## Raw Transcript\n\n"
+            guard isSummaryFailureNotes(existingNotes) else {
+                return existingNotes
+            }
+            guard let markerRange = failureTranscriptBoundary(
+                in: existingNotes,
+                marker: marker,
+                previousTranscript: previousTranscript
+            ) else {
+                return refreshedAmbiguousFailureWrittenNotes(existingNotes, currentNotes: manualNotes, marker: marker)
+            }
+            let updatedPrefix = refreshedFailureNoteWrittenNotes(
+                String(existingNotes[..<markerRange.lowerBound]),
+                currentNotes: manualNotes
+            )
+            let previousTranscriptSection = String(existingNotes[markerRange.upperBound...])
+            // Only replace an untouched transcript section; edits to it stay in the notes.
+            let transcriptSection = previousTranscriptSection == previousTranscript
+                ? transcript
+                : previousTranscriptSection
+            return updatedPrefix + marker + transcriptSection
+        }
+        return summaryFailureNotes(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            error: error,
+            manualNotes: manualNotes
+        )
+    }
+
+    private static func failureTranscriptBoundary(
+        in notes: String,
+        marker: String,
+        previousTranscript: String
+    ) -> Range<String.Index>? {
+        var candidates: [Range<String.Index>] = []
+        var searchStart = notes.startIndex
+        while let range = notes.range(of: marker, range: searchStart..<notes.endIndex) {
+            candidates.append(range)
+            searchStart = range.upperBound
+        }
+
+        // The generated boundary is followed by the complete saved transcript.
+        // A heading inside written notes or the transcript cannot satisfy that match.
+        if let untouched = candidates.first(where: { notes[$0.upperBound...] == previousTranscript }) {
+            return untouched
+        }
+        // If the transcript was edited, preserve it only when the boundary is unambiguous.
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private static func refreshedAmbiguousFailureWrittenNotes(
+        _ notes: String,
+        currentNotes: String?,
+        marker: String
+    ) -> String {
+        let current = currentNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let writtenMarker = "\n\n### Written notes\n\n"
+        let preservedMarker = "\n\n### Earlier written-note text (preserved; may be outdated)\n\n"
+        guard let firstTranscriptHeading = notes.range(of: marker) else { return notes }
+        let prefix = notes[..<firstTranscriptHeading.lowerBound]
+
+        if let writtenRange = prefix.range(of: writtenMarker) {
+            // The transcript boundary cannot be identified, so leave every heading and
+            // edit in place. Give current notes their own canonical section and mark
+            // the previous one as historical without parsing its contents.
+            let writtenSection = writtenMarker + current
+            if !current.isEmpty,
+               notes[writtenRange.lowerBound...].hasPrefix(writtenSection + preservedMarker) {
+                return notes
+            }
+            let before = String(notes[..<writtenRange.lowerBound])
+            let after = String(notes[writtenRange.upperBound...])
+            let currentSection = current.isEmpty ? "" : writtenMarker + current
+            return before + currentSection + preservedMarker + after
+        }
+
+        guard !current.isEmpty else { return notes }
+        return String(prefix) + writtenMarker + current + String(notes[firstTranscriptHeading.lowerBound...])
+    }
+
+    private static func refreshedFailureNoteWrittenNotes(_ prefix: String, currentNotes: String?) -> String {
+        let current = currentNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let writtenMarker = "\n\n### Written notes\n\n"
+        let preservedMarker = "\n\n### Earlier written-note text (preserved; may be outdated)\n\n"
+
+        guard let writtenRange = prefix.range(of: writtenMarker) else {
+            guard !current.isEmpty else { return prefix }
+            if let preservedRange = prefix.range(of: preservedMarker) {
+                return String(prefix[..<preservedRange.lowerBound])
+                    + writtenMarker + current
+                    + String(prefix[preservedRange.lowerBound...])
+            }
+            return prefix + writtenMarker + current
+        }
+
+        let following = prefix[writtenRange.upperBound...]
+        let preservedRange = following.range(of: preservedMarker)
+        let previous = preservedRange.map { String(following[..<$0.lowerBound]) } ?? String(following)
+        guard previous != current else { return prefix }
+
+        let earlier = preservedRange.map { String(following[$0.upperBound...]) } ?? ""
+        var updated = String(prefix[..<writtenRange.lowerBound])
+        if !current.isEmpty {
+            updated += writtenMarker + current
+        }
+        let preserved = [previous, earlier].filter { !$0.isEmpty }.joined(separator: "\n\n---\n\n")
+        if !preserved.isEmpty {
+            updated += preservedMarker + preserved
+        }
+        return updated
+    }
+
+    static func isSummaryFailureNotes(_ notes: String) -> Bool {
+        notes.hasPrefix("## Summary failed\n\n")
+            && notes.contains("\n\n## Raw Transcript\n\n")
     }
 
     static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil, previousMeetingNotes: String? = nil) -> String {
@@ -589,9 +764,9 @@ enum MeetingSummaryClient {
         visualContext: String? = nil,
         previousMeetingNotes: String? = nil
     ) async throws -> String {
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        let apiKey = resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw MeetingSummaryError.notConfigured(backend: "OpenAI")
         }
 
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
@@ -662,7 +837,7 @@ enum MeetingSummaryClient {
             legacyAPIKey: config.openRouterAPIKey
         )
         guard !apiKey.isEmpty else {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw MeetingSummaryError.notConfigured(backend: "OpenRouter")
         }
 
         let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1009,7 +1184,7 @@ enum MeetingSummaryClient {
         }
     }
 
-    private static func summarizeWithAnthropicMessages(
+    static func summarizeWithAnthropicMessages(
         backend: String,
         requestURL: URL,
         apiKey: String,
@@ -1023,7 +1198,11 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        workspaceID: String = "",
+        send: (URLRequest) async throws -> (Data, URLResponse) = { request in
+            try await URLSession.shared.data(for: request)
+        }
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -1037,25 +1216,23 @@ enum MeetingSummaryClient {
         )
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": backend == "Anthropic" ? AnthropicModelPolicy.summaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
             "system": instructions,
             "messages": [
                 ["role": "user", "content": userPrompt],
             ],
         ]
 
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = timeout
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let request = try AnthropicAPIRequest.make(
+            url: requestURL,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: timeout
+        )
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await send(request)
             try validateHTTPResponse(response, data: data, backend: backend)
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1195,6 +1372,30 @@ enum MeetingSummaryClient {
         return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
     }
 
+    static func resolvedOpenAIAPIKey(
+        config: AppConfig,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        OpenAIAPISettings.resolvedAPIKey(
+            environmentValue: environment["OPENAI_API_KEY"],
+            savedValue: config.openAIAPIKey
+        )
+    }
+
+    static func resolvedAnthropicAPIKey(config: AppConfig) -> String {
+        AnthropicAPISettings.resolvedValue(
+            environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+            savedValue: config.anthropicAPIKey
+        )
+    }
+
+    static func resolvedAnthropicWorkspaceID(config: AppConfig) -> String {
+        AnthropicAPISettings.resolvedValue(
+            environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"],
+            savedValue: config.anthropicWorkspaceID
+        )
+    }
+
     static func resolveLMStudioURL(config: AppConfig) -> URL? {
         let rawURL = config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return resolveEndpointURL(
@@ -1283,6 +1484,23 @@ enum MeetingSummaryClient {
             )
         }
 
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            let apiKey = resolvedAnthropicAPIKey(config: config)
+            guard !apiKey.isEmpty else { return nil }
+            let model = config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel
+            return await callAnthropicMessages(
+                url: anthropicURL,
+                apiKey: apiKey,
+                model: model,
+                systemPrompt: titleInstructions,
+                userPrompt: excerpt,
+                maxTokens: AnthropicModelPolicy.titleMaxOutputTokens,
+                outputEffort: AnthropicModelPolicy.briefTaskEffort(for: model),
+                backend: "Anthropic",
+                workspaceID: resolvedAnthropicWorkspaceID(config: config)
+            )
+        }
+
         if backend == MeetingSummaryBackendOption.ollama.backend {
             return await generateTitleWithOllama(transcript: excerpt, config: config)
         }
@@ -1305,7 +1523,7 @@ enum MeetingSummaryClient {
             return await generateTitleWithCustomLLM(transcript: excerpt, config: config)
         }
 
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        let apiKey = resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else { return nil }
         let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
         return await callChatCompletions(
@@ -1432,9 +1650,12 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
-        timeout: TimeInterval? = nil
+        outputEffort: String? = nil,
+        timeout: TimeInterval? = nil,
+        backend: String = "Custom LLM",
+        workspaceID: String = ""
     ) async -> String? {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
             "system": systemPrompt,
@@ -1442,22 +1663,20 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-
-        var request = URLRequest(url: url)
-        if let timeout {
-            request.timeoutInterval = timeout
+        if let outputEffort {
+            body["output_config"] = ["effort": outputEffort]
         }
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
+            let request = try AnthropicAPIRequest.make(
+                url: url,
+                apiKey: apiKey,
+                workspaceID: workspaceID,
+                body: body,
+                timeout: timeout
+            )
             let (data, response) = try await URLSession.shared.data(for: request)
-            try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+            try validateHTTPResponse(response, data: data, backend: backend)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 fputs("[summary] Anthropic title generation: invalid JSON response\n", stderr)
                 return nil
@@ -1609,7 +1828,4 @@ enum MeetingSummaryClient {
         }
     }
 
-    private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {
-        "## Raw Transcript\n\n\(transcript)"
-    }
 }

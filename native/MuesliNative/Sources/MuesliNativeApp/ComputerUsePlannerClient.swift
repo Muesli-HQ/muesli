@@ -24,7 +24,7 @@ enum ComputerUsePlannerError: LocalizedError, Equatable {
 }
 
 enum ComputerUsePlannerClient {
-    static let defaultModel = "gpt-5.6-sol"
+    static let defaultModel = "gpt-6.1-sol"
 
     static var instructions: String {
         """

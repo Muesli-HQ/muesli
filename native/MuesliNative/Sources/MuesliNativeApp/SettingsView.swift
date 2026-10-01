@@ -1505,6 +1505,23 @@ struct SettingsView: View {
                     onChange: { value in controller.updateConfig { $0.openAIAPIKey = value } }
                 ).frame(height: 22)
             }
+        } else if backend == .hosted(.anthropic) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("API Key", controlWidth: meetingControlWidth) {
+                PastableSecureField(
+                    text: appState.config.anthropicAPIKey,
+                    placeholder: "sk-ant-api...",
+                    onChange: { value in controller.updateConfig { $0.anthropicAPIKey = value } }
+                ).frame(height: 22)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.anthropicWorkspaceID,
+                    placeholder: "Optional workspace ID",
+                    onChange: { value in controller.updateConfig { $0.anthropicWorkspaceID = value } }
+                ).frame(height: 22)
+            }
         } else if backend == .hosted(.openRouter) {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Account", controlWidth: meetingControlWidth) {
@@ -1660,6 +1677,40 @@ struct SettingsView: View {
                 }
             }
             keyStatusRow(key: appState.config.openAIAPIKey)
+        case .some(.anthropic):
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("API Key", controlWidth: meetingControlWidth) {
+                PastableSecureField(
+                    text: appState.config.anthropicAPIKey,
+                    placeholder: "sk-ant-api...",
+                    onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
+                )
+                .frame(height: 22)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                settingsModelMenu(
+                    currentModel: appState.config.postProcessorAnthropicModel,
+                    presets: SummaryModelPreset.anthropicModels
+                ) { controller.updatePostProcessorModel($0, for: backend) }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.postProcessorAnthropicModel,
+                    placeholder: "Optional model ID"
+                ) { controller.updatePostProcessorModel($0, for: backend) }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.anthropicWorkspaceID,
+                    placeholder: "Optional workspace ID",
+                    onChange: { val in controller.updateConfig { $0.anthropicWorkspaceID = val } }
+                )
+                .frame(height: 22)
+            }
+            keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
         case .some(.openRouter):
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Account", controlWidth: meetingControlWidth) {
@@ -1863,6 +1914,39 @@ struct SettingsView: View {
                     }
                 }
                 keyStatusRow(key: appState.config.openAIAPIKey)
+            } else if appState.selectedMeetingSummaryBackend == .anthropic {
+                settingsRow("API Key", description: "Use an Anthropic API key from the Claude Console.", controlWidth: meetingControlWidth) {
+                    PastableSecureField(
+                        text: appState.config.anthropicAPIKey,
+                        placeholder: "sk-ant-api...",
+                        onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Model", controlWidth: meetingControlWidth) {
+                    settingsModelMenu(
+                        currentModel: appState.config.anthropicModel,
+                        presets: SummaryModelPreset.anthropicModels
+                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Custom model ID", description: "Use a Claude API model ID that is not in the list.", controlWidth: meetingControlWidth) {
+                    settingsModelTextField(
+                        currentModel: appState.config.anthropicModel,
+                        placeholder: "Optional model ID"
+                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Workspace ID", description: "Only needed for API keys that are not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: appState.config.anthropicWorkspaceID,
+                        placeholder: "Optional workspace ID",
+                        onChange: { val in controller.updateConfig { $0.anthropicWorkspaceID = val } }
+                    )
+                    .frame(height: 22)
+                }
+                keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
             } else if appState.selectedMeetingSummaryBackend == .claudeCode {
                 settingsRow("Account", description: "Uses the Claude Code sign-in on this Mac.", controlWidth: meetingControlWidth) {
                     claudeCodeAccountControl()

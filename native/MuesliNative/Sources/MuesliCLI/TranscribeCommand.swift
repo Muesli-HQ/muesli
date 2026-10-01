@@ -1089,8 +1089,11 @@ struct ConfiguredCLIMeetingSummarizer: MeetingSummarizing {
 struct CLISummaryConfig: Decodable {
     var meetingSummaryBackend = "chatgpt"
     var openAIAPIKey = ""
+    var anthropicAPIKey = ""
+    var anthropicWorkspaceID = ""
     var openRouterAPIKey = ""
     var openAIModel = ""
+    var anthropicModel = ""
     var openRouterModel = ""
     var ollamaURL = "http://localhost:11434"
     var ollamaModel = "qwen3.5"
@@ -1106,8 +1109,11 @@ struct CLISummaryConfig: Decodable {
     enum CodingKeys: String, CodingKey {
         case meetingSummaryBackend = "meeting_summary_backend"
         case openAIAPIKey = "openai_api_key"
+        case anthropicAPIKey = "anthropic_api_key"
+        case anthropicWorkspaceID = "anthropic_workspace_id"
         case openRouterAPIKey = "openrouter_api_key"
         case openAIModel = "openai_model"
+        case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
@@ -1127,8 +1133,11 @@ struct CLISummaryConfig: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         meetingSummaryBackend = try container.decodeIfPresent(String.self, forKey: .meetingSummaryBackend) ?? meetingSummaryBackend
         openAIAPIKey = try container.decodeIfPresent(String.self, forKey: .openAIAPIKey) ?? openAIAPIKey
+        anthropicAPIKey = try container.decodeIfPresent(String.self, forKey: .anthropicAPIKey) ?? anthropicAPIKey
+        anthropicWorkspaceID = try container.decodeIfPresent(String.self, forKey: .anthropicWorkspaceID) ?? anthropicWorkspaceID
         openRouterAPIKey = try container.decodeIfPresent(String.self, forKey: .openRouterAPIKey) ?? openRouterAPIKey
         openAIModel = try container.decodeIfPresent(String.self, forKey: .openAIModel) ?? openAIModel
+        anthropicModel = try container.decodeIfPresent(String.self, forKey: .anthropicModel) ?? anthropicModel
         openRouterModel = try container.decodeIfPresent(String.self, forKey: .openRouterModel) ?? openRouterModel
         ollamaURL = try container.decodeIfPresent(String.self, forKey: .ollamaURL) ?? ollamaURL
         ollamaModel = try container.decodeIfPresent(String.self, forKey: .ollamaModel) ?? ollamaModel
@@ -1180,7 +1189,8 @@ enum CLISummaryError: LocalizedError {
 }
 
 enum CLISummaryClient {
-    private static let defaultOpenAIModel = "gpt-5.4-mini"
+    private static let defaultOpenAIModel = "gpt-6.1-sol"
+    private static let defaultAnthropicModel = "claude-sonnet-5-5"
     private static let defaultOpenRouterModel = "openrouter/free"
     private static let defaultSummaryMaxOutputTokens = 2500
 
@@ -1199,8 +1209,11 @@ enum CLISummaryClient {
                 executablePath: config.claudeCodeExecutablePath
             )
         case "openai":
-            let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = OpenAIAPISettings.resolvedAPIKey(
+                environmentValue: ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
+                savedValue: config.openAIAPIKey
+            )
+            guard !key.isEmpty else {
                 throw CLISummaryError.unavailable("OpenAI summary settings are missing an API key.")
             }
             return try await responsesSummary(
@@ -1210,6 +1223,27 @@ enum CLISummaryClient {
                 model: config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel,
                 transcript: transcript,
                 title: title
+            )
+        case "anthropic":
+            let key = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+                savedValue: config.anthropicAPIKey
+            )
+            guard !key.isEmpty else {
+                throw CLISummaryError.unavailable("Anthropic summary settings are missing an API key.")
+            }
+            let workspaceID = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"],
+                savedValue: config.anthropicWorkspaceID
+            )
+            return try await anthropicSummary(
+                url: URL(string: "https://api.anthropic.com/v1/messages")!,
+                apiKey: key,
+                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                transcript: transcript,
+                title: title,
+                backend: "Anthropic",
+                workspaceID: workspaceID
             )
         case "openrouter":
             let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
@@ -1273,7 +1307,7 @@ enum CLISummaryClient {
                 title: title
             )
         default:
-            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
+            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
         }
     }
 
@@ -1358,30 +1392,30 @@ enum CLISummaryClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func anthropicSummary(url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
+    private static func anthropicSummary(url: URL, apiKey: String, model: String, transcript: String, title: String, backend: String = "Custom LLM", workspaceID: String = "") async throws -> String {
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": backend == "Anthropic" ? AnthropicAPISettings.hostedSummaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
             "system": systemPrompt(),
             "messages": [
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
         ]
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 300
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await send(request: request, backend: "Custom LLM")
+        let request = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: 300
+        )
+        let data = try await send(request: request, backend: backend)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]] else {
-            throw CLISummaryError.emptyResponse("Custom LLM returned an empty summary response.")
+            throw CLISummaryError.emptyResponse("\(backend) returned an empty summary response.")
         }
         let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            throw CLISummaryError.emptyResponse("Custom LLM returned an empty summary response.")
+            throw CLISummaryError.emptyResponse("\(backend) returned an empty summary response.")
         }
         return text
     }
