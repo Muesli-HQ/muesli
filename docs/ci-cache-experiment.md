@@ -1,8 +1,47 @@
 # SwiftPM release cache experiment
 
 This opt-in benchmark measures build-artifact reuse on separate GitHub-hosted
-`macos-26` runners with Xcode 26.6. It does not change `.github/workflows/ci.yml`,
-the required optimized release build, test shards, or any shipped app.
+`macos-26` runners with Xcode 26.6. The same PR also rolls the measured raw-cache
+strategy into `build_release` in `.github/workflows/ci.yml`. The required optimized
+release build, test shards, and shipped app code are preserved.
+
+## Actual CI rollout
+
+- PR release jobs restore from the base commit's cache, falling back only to the
+  latest cache with an identical compatibility fingerprint. Every job still runs
+  `swift build -c release --product MuesliNativeApp --force-resolved-versions`.
+- Only successful `push` builds on `main` save release artifacts. They never
+  restore: every relevant main push remains a clean optimized-build validation.
+  Manual CI runs also build clean and do not save. PRs never save this cache.
+- Keys cover architecture, OS/runner image, exact Xcode/Swift/SDK and SDK path,
+  workspace/scratch paths, full build command, manifest, lockfile, and helper
+  digest. No fallback crosses those boundaries. Source changes are deliberately
+  not part of the fingerprint: SwiftPM must invalidate and compile them normally.
+- Only `~/Library/Caches/muesli-spm/ci/release` is cached. No timestamp repair,
+  credentials, signing material, debug products, or app data are cached. Shipping
+  workflows do not consume this cache.
+- Cache misses/eviction build cold. Save failures do not fail a correct build;
+  compilation failures still fail the required gate. Restore failures are not
+  disguised as successful builds.
+- Job summaries and seven-day `release-build-measurements` artifacts report
+  matched cache key, restore/save outcome, build/pipeline time, and transfer
+  phases. Pipeline includes intervening steps; queue/checkout/preparation and
+  report/upload time are excluded. Incomplete phases are explicitly marked.
+
+Bootstrap: this PR's actual release job initially has no trusted main cache and
+will build cold. Its first successful post-merge main build seeds the cache for
+subsequent PRs. The experiment proves fresh-runner reuse before merge; the first
+ordinary PR after seeding verifies the base-branch restore path. No second
+implementation PR is required. GitHub documents [base/default-branch cache
+access](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+
+Test shards and CLI packaging are unchanged and may become the critical path;
+the release-job speedup is not a promise that the entire CI pipeline takes five
+minutes. If caching regresses, remove the restore step to return to clean builds;
+keep the measurements and do not relax the release gate.
+
+Policy/helper checks: `python3 scripts/test_ci_release_cache.py` (runs in the
+Linux classifier job). Workflow syntax is checked with actionlint.
 
 ## Scenarios
 
@@ -21,8 +60,11 @@ benchmark binary is installed, executed, published, or signed.
 
 ## Running
 
-Open/update a same-repository PR from `codex/ci-build-cache-experiment` changing
-the workflow or harness. Other PR branches do not automatically run it. Once the
+Apply the `ci-cache-benchmark` label to a same-repository PR from
+`codex/ci-build-cache-experiment` changing the workflow or harness (or update it
+while that label is present). Other PR branches do not automatically run it. The
+label requirement was added after the two initial runs so ordinary rollout
+updates do not repeatedly launch extra cold builds. Once the
 workflow exists on the default branch, it can also be dispatched manually.
 Do not merge an experiment merely to run it: the PR trigger works before merge.
 
@@ -68,8 +110,8 @@ benchmarking larger runners are separate experiments.
   experiment; "cold" means no restored compiled artifacts in the scratch path.
 - Timestamp restoration modifies metadata only when SHA-256 matches, and rejects
   path traversal/symlink escapes. Changed/new/deleted source inputs are not hidden.
-- The experimental cache is PR-scoped, not a shared trusted-main cache. A rollout
-  would warm caches from trusted main pushes with PR restore-only consumers;
+- The experimental cache is PR-scoped and uses a separate namespace and path
+  from the actual CI rollout above. It never seeds the shared trusted-main cache;
   privileged release workflows must not trust PR-produced artifacts.
 - No production gate depends on the experimental jobs and no paid runner tier or
   repository setting is changed. Cache entries expire under repository policy;
@@ -94,7 +136,7 @@ The edited build recompiled the app and verified its new string, with zero
 C-family or SwiftSyntax compile entries. Cache restore took 31–42 seconds;
 save took 31 seconds; compressed cache was about 1.6 GB (3.5 GB unpacked).
 The ~76% edited-job reduction is one feasibility result, not a production SLA.
-Timestamp restoration did not demonstrate a wall-clock benefit. Repeat with
-raw-edited before choosing the simpler rollout. Automatic phase accounting was
+Timestamp restoration did not demonstrate a wall-clock benefit. A repeat with
+raw-edited validates the simpler rollout. Automatic phase accounting was
 added after this first run to make net-savings comparisons reproducible directly
 from artifacts (the first result above uses the API timeline).

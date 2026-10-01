@@ -85,6 +85,9 @@ jobs:
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
+      - name: Test release cache identity and workflow policy
+        run: python3 ./scripts/test_ci_release_cache.py
+
   # MLX Swift 0.31.6 requires Swift 6.3; Xcode 26.6 is available on macos-26.
   # Drafts get debug tests and packaging feedback; release compilation is
   # required once ready for review, and on main/manual runs.
@@ -108,8 +111,75 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Identify compatible release cache
+        id: release-cache
+        env:
+          CACHE_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: python3 scripts/ci_release_cache.py prepare
+
+      - name: Begin measured release pipeline
+        run: python3 scripts/ci_release_cache.py begin pipeline
+
+      - name: Begin restore timing
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci_release_cache.py begin restore
+
+      # Only PRs restore; main and manual runs always compile from a clean scratch
+      # directory. The sole fallback retains the complete compatibility fingerprint.
+      - name: Restore compatible main release artifacts
+        if: github.event_name == 'pull_request'
+        id: restore-release
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+          restore-keys: ${{ steps.release-cache.outputs.prefix }}
+
+      - name: End restore timing
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci_release_cache.py end restore
+
       - name: Build (release)
-        run: swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
+        # Always compile, including on an exact hit. Missing/evicted caches build cold.
+        run: python3 scripts/ci_release_cache.py build
+
+      - name: Begin save timing
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/ci_release_cache.py begin save
+
+      - name: Save clean main release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: save-release
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+
+      - name: End save timing
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/ci_release_cache.py end save
+
+      - name: End measured release pipeline
+        run: python3 scripts/ci_release_cache.py end pipeline
+
+      - name: Report release build and cache overhead
+        if: always()
+        env:
+          CACHE_MATCHED_KEY: ${{ steps.restore-release.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.restore-release.outputs.cache-hit }}
+          CACHE_RESTORE_OUTCOME: ${{ steps.restore-release.outcome }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-release.outcome }}
+        run: python3 scripts/ci_release_cache.py report
+
+      - name: Upload release build measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-measurements
+          path: ci-release-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Swift tests — includes AppleSpeechAnalyzerBackendTests on macOS 26 in
   # dictation-transcription; a separate same-toolchain job would duplicate it.

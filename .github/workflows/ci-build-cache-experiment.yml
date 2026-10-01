@@ -4,7 +4,7 @@ name: CI build cache experiment
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - .github/workflows/ci-build-cache-experiment.yml
       - scripts/ci_cache_experiment.py
@@ -26,6 +26,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.head_ref == 'codex/ci-build-cache-experiment' &&
+       contains(github.event.pull_request.labels.*.name, 'ci-cache-benchmark') &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-26
     timeout-minutes: 40
