@@ -430,13 +430,19 @@ enum MeetingSummaryClient {
         if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let marker = "\n\n## Raw Transcript\n\n"
             guard isSummaryFailureNotes(existingNotes),
-                  let markerRange = existingNotes.range(of: marker, options: .backwards),
-                  String(existingNotes[markerRange.upperBound...]) == previousTranscript else {
+                  let markerRange = existingNotes.range(of: marker) else {
                 return existingNotes
             }
-            // Replace only the untouched transcript section. Everything before it may
-            // contain edits made to the saved failure note and must be preserved.
-            return String(existingNotes[..<markerRange.upperBound]) + transcript
+            let updatedPrefix = refreshedFailureNoteWrittenNotes(
+                String(existingNotes[..<markerRange.lowerBound]),
+                currentNotes: manualNotes
+            )
+            let previousTranscriptSection = String(existingNotes[markerRange.upperBound...])
+            // Only replace an untouched transcript section; edits to it stay in the notes.
+            let transcriptSection = previousTranscriptSection == previousTranscript
+                ? transcript
+                : previousTranscriptSection
+            return updatedPrefix + marker + transcriptSection
         }
         return summaryFailureNotes(
             transcript: transcript,
@@ -444,6 +450,38 @@ enum MeetingSummaryClient {
             error: error,
             manualNotes: manualNotes
         )
+    }
+
+    private static func refreshedFailureNoteWrittenNotes(_ prefix: String, currentNotes: String?) -> String {
+        let current = currentNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let writtenMarker = "\n\n### Written notes\n\n"
+        let preservedMarker = "\n\n### Earlier written-note text (preserved; may be outdated)\n\n"
+
+        guard let writtenRange = prefix.range(of: writtenMarker) else {
+            guard !current.isEmpty else { return prefix }
+            if let preservedRange = prefix.range(of: preservedMarker) {
+                return String(prefix[..<preservedRange.lowerBound])
+                    + writtenMarker + current
+                    + String(prefix[preservedRange.lowerBound...])
+            }
+            return prefix + writtenMarker + current
+        }
+
+        let following = prefix[writtenRange.upperBound...]
+        let preservedRange = following.range(of: preservedMarker)
+        let previous = preservedRange.map { String(following[..<$0.lowerBound]) } ?? String(following)
+        guard previous != current else { return prefix }
+
+        let earlier = preservedRange.map { String(following[$0.upperBound...]) } ?? ""
+        var updated = String(prefix[..<writtenRange.lowerBound])
+        if !current.isEmpty {
+            updated += writtenMarker + current
+        }
+        let preserved = [previous, earlier].filter { !$0.isEmpty }.joined(separator: "\n\n---\n\n")
+        if !preserved.isEmpty {
+            updated += preservedMarker + preserved
+        }
+        return updated
     }
 
     static func isSummaryFailureNotes(_ notes: String) -> Bool {

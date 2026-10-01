@@ -693,7 +693,8 @@ struct MeetingSummaryClientTests {
         )
         #expect(regeneratedFailure.contains("New transcript"))
         #expect(!regeneratedFailure.contains("Old transcript"))
-        #expect(regeneratedFailure.contains("- Old written note"))
+        #expect(regeneratedFailure.contains("### Written notes\n\n- Updated written note"))
+        #expect(regeneratedFailure.contains("### Earlier written-note text (preserved; may be outdated)\n\n- Old written note"))
 
         let editedPrefix = previousFailure.replacingOccurrences(
             of: "Muesli could not generate structured meeting notes.",
@@ -710,6 +711,7 @@ struct MeetingSummaryClientTests {
         #expect(regeneratedWithEdit.contains("My saved edit."))
         #expect(regeneratedWithEdit.contains("New transcript"))
         #expect(!regeneratedWithEdit.contains("Old transcript"))
+        #expect(regeneratedWithEdit.contains("### Written notes\n\n- Updated written note"))
 
         let editedTranscript = previousFailure.replacingOccurrences(
             of: "## Raw Transcript\n\nOld transcript",
@@ -723,7 +725,23 @@ struct MeetingSummaryClientTests {
             error: error,
             manualNotes: "- Updated written note"
         )
-        #expect(retainedTranscriptEdit == editedTranscript)
+        #expect(retainedTranscriptEdit.contains("Corrected old transcript"))
+        #expect(!retainedTranscriptEdit.contains("New transcript"))
+        #expect(retainedTranscriptEdit.contains("### Written notes\n\n- Updated written note"))
+
+        let repeatedFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: regeneratedFailure,
+            previousTranscript: "New transcript",
+            transcript: "Newest transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Newest written note"
+        )
+        #expect(repeatedFailure.contains("### Written notes\n\n- Newest written note"))
+        #expect(repeatedFailure.contains("- Updated written note"))
+        #expect(repeatedFailure.contains("- Old written note"))
+        #expect(repeatedFailure.contains("Newest transcript"))
+        #expect(!repeatedFailure.contains("## Raw Transcript\n\nNew transcript"))
     }
 
     @Test("summary user prompt includes meeting context when provided")

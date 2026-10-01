@@ -5865,10 +5865,7 @@ public final class MuesliController: NSObject {
                         error: error,
                         manualNotes: meeting.manualNotes
                     )
-                    let failureDetail = formattedNotes == meeting.formattedNotes
-                        ? "Existing notes were kept; the new transcript was saved separately."
-                        : "Failure notes were updated with the new transcript."
-                    summaryFailureWarning = "Summary could not be regenerated. \(failureDetail) \(error.localizedDescription)"
+                    summaryFailureWarning = "Summary could not be regenerated. The new transcript was saved separately from any retained note edits. \(error.localizedDescription)"
                 }
 
                 do {
