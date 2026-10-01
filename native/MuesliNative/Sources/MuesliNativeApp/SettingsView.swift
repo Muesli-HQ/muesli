@@ -1460,10 +1460,7 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorAnthropicModel,
-                    presets: SummaryModelPreset.anthropicModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_anthropic_model")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
@@ -1658,10 +1655,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.anthropicModel,
-                        presets: SummaryModelPreset.anthropicModels
-                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                    settingsControl("summary_anthropic_model")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Custom model ID", description: "Use a Claude API model ID that is not in the list.", controlWidth: meetingControlWidth) {
@@ -2251,22 +2245,7 @@ struct SettingsView: View {
     }
 
     private func claudeCodeModelControl() -> some View {
-        let configured = appState.config.claudeCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let presets = SummaryModelPreset.claudeCodeModels
-        let options = [SummaryModelPreset(id: "", label: "Follow Claude Code settings")]
-            + presets
-            + (configured.isEmpty || presets.contains(where: { $0.id == configured })
-                ? [] : [SummaryModelPreset(id: configured, label: "Custom: \(configured)")])
-        let selectedLabel = options.first(where: { $0.id == configured })?.label ?? options[0].label
-        return FixedWidthPopUp(
-            selection: selectedLabel,
-            options: options.map(\.label),
-            onSelectIndex: { index in
-                guard options.indices.contains(index) else { return }
-                controller.updateConfig { $0.claudeCodeModel = options[index].id }
-            }
-        )
-        .frame(height: 24)
+        settingsControl("summary_claude_code_model")
     }
 
     @MainActor

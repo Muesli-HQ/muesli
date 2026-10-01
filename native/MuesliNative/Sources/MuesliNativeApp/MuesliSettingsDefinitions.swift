@@ -202,6 +202,9 @@ extension MuesliController {
         presets("cleanup_openai_model", "OpenAI cleanup model", SummaryModelPreset.openAIModels, \.postProcessorOpenAIModel) {
             self.updatePostProcessorModel($0, for: .hosted(.openAI))
         }
+        presets("cleanup_anthropic_model", "Anthropic cleanup model", SummaryModelPreset.anthropicModels, \.postProcessorAnthropicModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.anthropic))
+        }
         presets("cleanup_openrouter_model", "OpenRouter cleanup model", SummaryModelPreset.openRouterModels, \.postProcessorOpenRouterModel) {
             self.updatePostProcessorModel($0, for: .hosted(.openRouter))
         }
@@ -248,12 +251,23 @@ extension MuesliController {
                 if value != "off" { $0.meetingLiveCaptionBackend = value }
             }
         }
-        add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.all.map { .init(id: $0.backend, label: $0.label) },
+        add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.selectable(config: config, selected: appState.selectedMeetingSummaryBackend).map { .init(id: $0.backend, label: $0.label) },
             read: { $0.meetingSummaryBackend }) { value in
             if let option = MeetingSummaryBackendOption.all.first(where: { $0.backend == value }) { self.selectMeetingSummaryBackend(option) }
         }
         presets("summary_chatgpt_model", "ChatGPT meeting summary model", SummaryModelPreset.chatGPTModels, \.chatGPTModel)
         presets("summary_openai_model", "OpenAI meeting summary model", SummaryModelPreset.openAIModels, \.openAIModel)
+        presets("summary_anthropic_model", "Anthropic meeting summary model", SummaryModelPreset.anthropicModels, \.anthropicModel)
+        let configuredClaudeModel = config.claudeCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let claudeModels = SummaryModelPreset.claudeCodeModels
+        let claudeChoices = [Choice(id: "", label: "Follow Claude Code settings")]
+            + claudeModels.map { Choice(id: $0.id, label: $0.label) }
+            + (configuredClaudeModel.isEmpty || claudeModels.contains(where: { $0.id == configuredClaudeModel })
+                ? [] : [Choice(id: configuredClaudeModel, label: "Custom: \(configuredClaudeModel)")])
+        add("summary_claude_code_model", "Claude Code meeting summary model", claudeChoices,
+            read: { $0.claudeCodeModel.trimmingCharacters(in: .whitespacesAndNewlines) }) { value in
+            self.updateConfig { $0.claudeCodeModel = value }
+        }
         textMenu("summary_openrouter_model", "OpenRouter meeting summary model", appState.openRouterSummaryModels.map { .init(id: $0.id, label: $0.label) }, \.openRouterModel)
         add("openrouter_dictation_model", "OpenRouter dictation model", appState.openRouterTranscriptionModels.map { .init(id: $0.id, label: $0.label) },
             read: { $0.openRouterDictationModel }) { self.selectOpenRouterDictationModel($0) }

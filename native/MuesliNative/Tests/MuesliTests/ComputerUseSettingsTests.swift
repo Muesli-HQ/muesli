@@ -190,6 +190,9 @@ struct ComputerUseSettingsTests {
         #expect(settings.first { $0.id == "bodhan_output" }?.choices.map(\.id) == BodhanOutputMode.allCases.map(\.rawValue))
         #expect(settings.first { $0.id == "bodhan_language" }?.choices.map(\.id) == BodhanLanguage.allCases.map(\.rawValue))
 
+        #expect(settings.first { $0.id == "summary_anthropic_model" }?.choices.map(\.id) == SummaryModelPreset.anthropicModels.map(\.id))
+        #expect(settings.first { $0.id == "summary_claude_code_model" }?.choices.map(\.id) == [""] + SummaryModelPreset.claudeCodeModels.map(\.id))
+        #expect(settings.first { $0.id == "summary_source" }?.choices.map(\.id) == MeetingSummaryBackendOption.selectable(config: controller.config, selected: controller.appState.selectedMeetingSummaryBackend).map(\.backend))
         #expect(Set(settings.map(\.id)).count == settings.count)
         for setting in settings {
             #expect(Set(setting.choices.map(\.id)).count == setting.choices.count)
@@ -210,7 +213,12 @@ struct ComputerUseSettingsTests {
                 #expect(settings.contains { $0.id == id }, "UI setting \(id) must be in the same catalog used by voice.")
             }
         }
-        for (setting, value) in [("indicator_style", "notch"), ("sound", "off"), ("indicator_style", "classic")] {
+        for (setting, value) in [
+            ("indicator_style", "notch"), ("sound", "off"), ("indicator_style", "classic"),
+            ("summary_anthropic_model", SummaryModelPreset.anthropicModels.last!.id),
+            ("cleanup_anthropic_model", SummaryModelPreset.anthropicModels.last!.id),
+            ("summary_claude_code_model", "sonnet"), ("summary_claude_code_model", ""),
+        ] {
             let snapshots = settings.map { $0.snapshot(config: controller.config) }
             _ = try await MuesliSettings.apply(.init(setting: setting, value: value), settings: settings,
                 snapshots: snapshots, config: { controller.config }, persistedConfig: {
