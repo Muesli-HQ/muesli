@@ -35,6 +35,7 @@ struct ModelsView: View {
     @State private var downloadGenerations: [String: UUID] = [:]
     @State private var downloadedModels: Set<String> = []
     @State private var downloadTasks: [String: Task<Void, Never>] = [:]
+    @State private var orukeetCancellation = OrukeetCancellationBarrier()
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
@@ -1769,8 +1770,11 @@ struct ModelsView: View {
         downloadGenerations[option.model] = generation
 
         let startTime = Date()
+        let pendingCancellation = option == .orukeet ? orukeetCancellation.pending : nil
         let task = Task {
             do {
+                await pendingCancellation?.value
+                try Task.checkCancellation()
                 try await controller.transcriptionCoordinator.preloadRequired(
                     backend: option,
                     includeMeetingHelpers: false,
@@ -1926,19 +1930,27 @@ struct ModelsView: View {
                 )
             }
         }
-        Task {
+        let cancel: () async -> Void = {
             let shouldCancel = await MainActor.run {
                 downloadGenerations[modelID] == cancellationGeneration
             }
             guard shouldCancel else { return }
 
             await ManagedASRModelDownloader.cancel(modelID: modelID)
+            if modelID == OrukeetModelStore.modelID {
+                await OrukeetModelStore.cancelAndWait()
+            }
             _ = await task?.value
 
             await MainActor.run {
                 guard downloadGenerations[modelID] == cancellationGeneration else { return }
                 downloadGenerations.removeValue(forKey: modelID)
             }
+        }
+        if option == .orukeet {
+            orukeetCancellation.enqueue(cancel)
+        } else {
+            Task { await cancel() }
         }
     }
 
@@ -2045,6 +2057,12 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
+            if option == .orukeet {
+                await OrukeetModelStore.cancelAndWait()
+                await controller.transcriptionCoordinator.unloadOrukeetTranscriber()
+                try removeItemIfPresent(at: OrukeetModelStore.cacheDirectory, fileManager: fm)
+                break
+            }
             let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
                 ifLoadedVersion: version
@@ -2115,6 +2133,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
+            if option == .orukeet { return OrukeetModelStore.isInstalled }
             let plan = option.model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
