@@ -11,9 +11,10 @@ release build, test shards, and shipped app code are preserved.
   latest cache with an identical compatibility fingerprint. Every job still runs
   `swift build -c release --product MuesliNativeApp --force-resolved-versions`.
 - Only successful `push` builds on `main` can save release artifacts. After
-  compilation, a metadata-only lookup checks for an existing compatible cache;
-  any matching key (including an older commit) skips the upload. Only a successful
-  lookup with no match allows saving. A failed lookup step skips saving.
+  compilation, a metadata-only lookup checks for the exact commit's cache, with
+  no prefix fallback. Only an exact hit skips the upload; an older compatible
+  snapshot does not suppress refresh. A failed lookup step skips saving and
+  emits a warning in the report.
   Main never downloads cached artifacts: every relevant main push remains a clean
   optimized-build validation. Manual CI runs also build clean and do not save.
   PRs never save this cache.
@@ -32,13 +33,24 @@ release build, test shards, and shipped app code are preserved.
   compiler exit status even when timer/log/result writes fail, and compiler
   output remains in the Actions console. Cache identity/safety checks remain
   mandatory; this does not make an unsafe restore or a failed compile pass.
-- Reusing an existing compatible cache avoids a fresh ~1.6 GB upload per main
-  commit. An older app baseline can require more app recompilation, but dependency
-  reuse remains useful and ordinary source invalidation is preserved. New
-  fingerprints or eviction allow a fresh seed. This is not a strict repository
-  storage cap; distinct toolchains/dependency sets still produce distinct caches.
+- Each successful relevant main commit can publish a fresh ~1.6 GB snapshot.
+  Storage is controlled by retention, not a periodic refresh or frozen seed.
+  A separate best-effort main-only cleanup job retains the newest three snapshots
+  across the `ci-release-v1-` namespace on `refs/heads/main`. It first verifies the
+  replacement's full key/current commit and positive size via the cache API, then
+  revalidates targets and replacement before each exact-ID deletion. It ignores
+  PR caches, benchmark caches, LocalVQE caches, and other namespaces/refs.
+  Missing replacement or API/metadata errors stop deletion. An out-of-order job
+  cannot delete snapshots newer than its own replacement. These safeguards and
+  cancellation may temporarily retain more than three; this is a count target,
+  not a hard repository byte quota. Deleted caches are rebuildable, not backups.
+- Only the cleanup job has `actions: write`; it runs after a successful main
+  build/save, never on a PR or manual dispatch, and is not part of `ci-gate`.
+  Save-action success alone is insufficient: the API must confirm the replacement
+  exists before anything is deleted. No existing caches were deleted locally
+  while implementing or testing this policy.
 - Job summaries and seven-day `release-build-measurements` artifacts report
-  matched cache key, main lookup/existing-key and restore/save outcomes,
+  matched cache key, bypass state, main exact-lookup and restore/save outcomes,
   build/pipeline time, and transfer
   phases. Pipeline includes intervening steps; queue/checkout/preparation and
   report/upload time are excluded. Incomplete phases are explicitly marked.
@@ -52,11 +64,27 @@ access](https://docs.github.com/en/actions/reference/workflows-and-actions/depen
 
 Test shards and CLI packaging are unchanged and may become the critical path;
 the release-job speedup is not a promise that the entire CI pipeline takes five
-minutes. If caching regresses, remove the restore step to return to clean builds;
-keep the measurements and do not relax the release gate.
+minutes.
 
-Policy/helper checks: `python3 scripts/test_ci_release_cache.py` (runs in the
-Linux classifier job). Workflow syntax is checked with actionlint.
+### Clean builds / cache bypass
+
+Set repository Actions variable `MUESLI_CI_RELEASE_CACHE_DISABLED` to the exact
+string `true`, then rerun CI. This disables release-cache restore, lookup, save,
+and cleanup while retaining the identical optimized compile and all required
+checks. Unset it (or set `false`) to resume caching. Manual `CI` workflow dispatch
+already builds clean and never saves/deletes release caches, so dispatch on a
+feature branch is an additional diagnostic path without changing the variable.
+The switch does not purge existing entries and does not affect unrelated caches.
+
+Do not wait for a timer if a cache is suspect. Use the bypass to diagnose; fix the
+underlying invalidation issue and rotate the cache schema/helper fingerprint if
+the existing snapshot must no longer be consumed.
+
+Policy/helper checks: `python3 scripts/test_ci_release_cache.py` and
+`python3 scripts/test_ci_release_cache_cleanup.py` (both run in the Linux
+classifier job). Cleanup API calls are mocked in tests; the cleanup CLI defaults
+to dry-run and requires `--delete` plus a trusted successful main-save context to
+apply deletions. Workflow syntax is checked with actionlint.
 
 ## Scenarios
 

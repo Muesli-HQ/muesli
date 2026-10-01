@@ -139,16 +139,22 @@ def report():
                  "cache_exact_hit": os.environ.get("CACHE_EXACT_HIT", ""),
                  "restore_outcome": os.environ.get("CACHE_RESTORE_OUTCOME", "skipped"),
                  "lookup_outcome": os.environ.get("CACHE_LOOKUP_OUTCOME", "skipped"),
-                 "existing_compatible_key": os.environ.get("CACHE_EXISTING_KEY", ""),
+                 "existing_exact_key": os.environ.get("CACHE_EXISTING_KEY", ""),
+                 "cache_disabled": os.environ.get("CACHE_DISABLED") == "true",
                  "save_outcome": os.environ.get("CACHE_SAVE_OUTCOME", "skipped")})
+    if (data["event"] == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
+            and not data["cache_disabled"] and data["exit_code"] == 0
+            and data["lookup_outcome"] != "success"):
+        print("::warning::Release cache lookup did not succeed; no fresh snapshot was saved.")
     (RESULTS / "measurement.json").write_text(json.dumps(data, indent=2) + "\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
         summary.write("## Release cache measurements\n\n")
         summary.write(f"Event: `{data['event']}`; build exit: `{data['exit_code']}`.\n\n")
         summary.write(f"Restored key: `{data['cache_matched_key'] or 'none (clean build)'}`.\n\n")
         summary.write(f"Restore: `{data['restore_outcome']}`; save: `{data['save_outcome']}`.\n\n")
-        summary.write(f"Main lookup: `{data['lookup_outcome']}`; existing compatible key: "
-                      f"`{data['existing_compatible_key'] or 'none'}`.\n\n")
+        summary.write(f"Cache disabled: `{data['cache_disabled']}`.\n\n")
+        summary.write(f"Main lookup: `{data['lookup_outcome']}`; existing exact key: "
+                      f"`{data['existing_exact_key'] or 'none'}`.\n\n")
         summary.write("| Phase | Seconds |\n| --- | ---: |\n")
         for phase, seconds in times.items():
             summary.write(f"| {phase} | {seconds if seconds is not None else 'INCOMPLETE'} |\n")

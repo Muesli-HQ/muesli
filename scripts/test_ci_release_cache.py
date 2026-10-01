@@ -72,9 +72,22 @@ class ReleaseCacheTests(unittest.TestCase):
             data = json.loads((root / "measurement.json").read_text())
             self.assertEqual(data["cache_matched_key"], "compatible-older-main")
             self.assertEqual(data["save_outcome"], "failure")
-            self.assertEqual(data["existing_compatible_key"], "existing-main")
+            self.assertEqual(data["existing_exact_key"], "existing-main")
             self.assertEqual(data["lookup_outcome"], "success")
             self.assertEqual(data["phase_seconds"]["build"], 4)
+
+    def test_report_warns_for_failed_main_lookup_unless_bypassed(self):
+        for disabled in ("true", "false"):
+            with self.subTest(disabled=disabled), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "build.json").write_text('{"exit_code":0}')
+                env = {"GITHUB_STEP_SUMMARY": str(root / "summary"), "GITHUB_EVENT_NAME": "push",
+                       "GITHUB_REF": "refs/heads/main", "CACHE_LOOKUP_OUTCOME": "failure",
+                       "CACHE_DISABLED": disabled}
+                with patch.object(cache, "RESULTS", root), patch.dict(os.environ, env), \
+                        patch("builtins.print") as output:
+                    cache.report()
+                self.assertEqual(output.call_count, 0 if disabled == "true" else 1)
 
     def test_failed_compilation_still_fails_job(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -169,27 +182,29 @@ class ReleaseCacheTests(unittest.TestCase):
         # Keep this dependency-free for the Linux classifier job. Match complete
         # step blocks rather than merely checking that a condition appears somewhere.
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
-        job = workflow.split("  build_release:\n", 1)[1].split("\n  test_shards:", 1)[0]
+        job = workflow.split("  build_release:\n", 1)[1].split("\n  release_cache_cleanup:", 1)[0]
         steps = job.split("      - name: ")[1:]
         restore = next(step for step in steps if step.startswith("Restore compatible main"))
-        lookup = next(step for step in steps if step.startswith("Check for existing compatible"))
+        lookup = next(step for step in steps if step.startswith("Check for existing exact"))
         save = next(step for step in steps if "uses: actions/cache/save@v4" in step)
         build = next(step for step in steps if step.startswith("Build (release)\n"))
-        self.assertIn("if: github.event_name == 'pull_request'\n", restore)
+        self.assertIn("if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'\n", restore)
         save_condition = ("if: >-\n"
                           "          github.event_name == 'push' && github.ref == 'refs/heads/main' &&\n"
+                          "          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&\n"
                           "          steps.lookup-release.outcome == 'success' &&\n"
-                          "          steps.lookup-release.outputs.cache-matched-key == ''\n")
+                          "          steps.lookup-release.outputs.cache-hit != 'true'\n")
         self.assertIn(save_condition, save)
         self.assertIn("continue-on-error: true", save)
         self.assertNotIn("if:", build)
         self.assertNotIn("continue-on-error:", build)
         self.assertIn("python3 scripts/ci_release_cache.py build", build)
         self.assertEqual(job.count("uses: actions/cache/"), 3)
-        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n", lookup)
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' &&", lookup)
+        self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'", lookup)
         self.assertIn("lookup-only: true", lookup)
         self.assertIn("continue-on-error: true", lookup)
-        self.assertIn("restore-keys: ${{ steps.release-cache.outputs.prefix }}\n", lookup)
+        self.assertNotIn("restore-keys:", lookup)
         self.assertLess(steps.index(build), steps.index(lookup))
         for step in (restore, save, lookup):
             self.assertIn("path: ${{ steps.release-cache.outputs.scratch }}\n", step)
@@ -202,6 +217,16 @@ class ReleaseCacheTests(unittest.TestCase):
             self.assertIn("continue-on-error: true", step)
             if "save timing" in step:
                 self.assertIn(save_condition, step)
+
+        cleanup = workflow.split("  release_cache_cleanup:\n", 1)[1].split("\n  test_shards:", 1)[0]
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' &&", cleanup)
+        self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&", cleanup)
+        self.assertIn("needs.build_release.result == 'success' &&", cleanup)
+        self.assertIn("needs.build_release.outputs.cache_save_outcome == 'success'", cleanup)
+        self.assertIn("continue-on-error: true", cleanup)
+        self.assertIn("actions: write", cleanup)
+        self.assertEqual(workflow.count("actions: write"), 1)
+        self.assertNotIn("release_cache_cleanup", workflow.split("  ci-gate:", 1)[1])
 
 
 if __name__ == "__main__":
