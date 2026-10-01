@@ -15,7 +15,62 @@ import time
 PACKAGE = Path("native/MuesliNative")
 PROBE = PACKAGE / "Sources/MuesliNativeApp/AboutView.swift"
 MARKER = "About — CI cache invalidation probe"
-SCENARIOS = ("cold", "raw", "unchanged", "edited")
+SCENARIOS = ("cold", "raw", "unchanged", "edited", "raw-edited")
+PHASES = ("pipeline", "cache-save", "cache-restore", "input-validation", "snapshot", "probe-edit")
+
+
+def mark_phase(action, phase, results=Path("ci-cache-results")):
+    """Use the same host's monotonic clock across workflow steps."""
+    if action not in ("begin", "end") or phase not in PHASES:
+        raise ValueError("Unknown timing marker")
+    path = results / "timings.json"
+    timings = json.loads(path.read_text()) if path.exists() else {}
+    entry = timings.setdefault(phase, {})
+    if action in entry or (action == "end" and "begin" not in entry):
+        raise ValueError("Duplicate or out-of-order timing marker")
+    entry[action] = time.monotonic()
+    path.write_text(json.dumps(timings, indent=2) + "\n")
+
+
+def phase_durations(timings):
+    durations = {}
+    for name, entry in timings.items():
+        if "end" not in entry:
+            durations[name] = None  # Never misreport a failed/incomplete phase as free.
+        else:
+            elapsed = entry["end"] - entry["begin"]
+            if elapsed < 0:
+                raise ValueError("Non-monotonic phase timing")
+            durations[name] = round(elapsed, 3)
+    return durations
+
+
+def report():
+    results = Path("ci-cache-results")
+    path = results / "measurement.json"
+    if not path.exists():
+        print("No build measurement; see failing setup/cache step and timings.json")
+        return
+    measurement = json.loads(path.read_text())
+    timings_path = results / "timings.json"
+    timings = json.loads(timings_path.read_text()) if timings_path.exists() else {}
+    durations = phase_durations(timings)
+    measurement["phase_seconds"] = durations
+    measurement["timing_scope"] = (
+        "pipeline includes restore/save, timestamp work, edit, build, binary validation, "
+        "and intervening steps; excludes runner queue, checkout, prepare, report/artifact upload"
+    )
+    path.write_text(json.dumps(measurement, indent=2) + "\n")
+    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+        summary.write(f"## {measurement['scenario']}\n\n")
+        summary.write(f"Build: {measurement['build_seconds']:.1f}s; exit: {measurement['exit_code']}.\n\n")
+        summary.write("| Measured phase | Seconds |\n| --- | ---: |\n")
+        for name, seconds in durations.items():
+            value = "INCOMPLETE" if seconds is None else f"{seconds:.1f}"
+            summary.write(f"| {name} | {value} |\n")
+        summary.write(f"\n{measurement['timing_scope']}. Phases overlap with pipeline; do not sum them.\n\n")
+        summary.write(f"Compile progress counts: `{measurement['compile_progress_counts']}`\n\n")
+        summary.write(f"Edited binary verified: `{measurement.get('edited_binary_verified')}`\n")
 
 
 def digest(path):
@@ -172,38 +227,38 @@ def build(scenario):
                    "exit_code": code, "compile_progress_counts": counts,
                    "command": command}
     (results / "measurement.json").write_text(json.dumps(measurement, indent=2) + "\n")
-    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-        summary.write(f"## {scenario}\n\nBuild: {elapsed:.1f}s; exit: {code}.\n\n")
-        summary.write(f"Compile progress counts (not task durations): `{counts}`\n\n")
-        summary.write("Add cache restore/save step durations and queue time from the job timeline.\n")
     if code:
         raise SystemExit(code)
-    if scenario == "edited" and counts["app"] == 0:
+    if scenario in ("edited", "raw-edited") and counts["app"] == 0:
         raise RuntimeError("Edited app source did not trigger app recompilation")
     # Never ship or execute this benchmark product. Inspect the edited binary to
     # catch falsely 'successful' reuse of the old app artifact.
-    if scenario == "edited":
+    if scenario in ("edited", "raw-edited"):
         bin_command = command[:-1] + ["--show-bin-path"]
         binary = Path(capture(bin_command)) / "MuesliNativeApp"
         if MARKER.encode() not in binary.read_bytes():
             raise RuntimeError("Edited marker missing from rebuilt app binary")
         print("Verified edited marker in the rebuilt app binary")
+        measurement["edited_binary_verified"] = True
+        (results / "measurement.json").write_text(json.dumps(measurement, indent=2) + "\n")
     print(capture(["du", "-sh", str(scratch_path())]))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "build", "snapshot", "restore-inputs", "edit"))
-    parser.add_argument("scenario", nargs="?", choices=SCENARIOS)
+    parser.add_argument("action", choices=("prepare", "build", "snapshot", "restore-inputs", "edit", "begin", "end", "report"))
+    parser.add_argument("value", nargs="?")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("Run only on an ephemeral GitHub Actions runner; use the unit tests locally")
     if args.action in ("prepare", "build"):
-        if args.scenario is None:
-            parser.error("scenario required")
-        {"prepare": prepare, "build": build}[args.action](args.scenario)
+        if args.value not in SCENARIOS:
+            parser.error("valid scenario required")
+        {"prepare": prepare, "build": build}[args.action](args.value)
+    elif args.action in ("begin", "end"):
+        mark_phase(args.action, args.value)
     else:
-        {"snapshot": snapshot, "restore-inputs": restore_inputs, "edit": edit_source}[args.action]()
+        {"snapshot": snapshot, "restore-inputs": restore_inputs, "edit": edit_source, "report": report}[args.action]()
 
 
 if __name__ == "__main__":

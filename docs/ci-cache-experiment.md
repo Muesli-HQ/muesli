@@ -12,8 +12,9 @@ the required optimized release build, test shards, or any shipped app.
 | raw | Fresh checkout, exact cache restore | Test naive artifact caching |
 | unchanged | Same restore, byte-verified input timestamps | Detect checkout timestamp invalidation |
 | edited | Same timestamp restoration, then change an About string | Verify useful reuse across real app edits |
+| raw-edited | Raw restore, then change an About string | Verify the simpler strategy without timestamp restoration |
 
-The last three jobs run on new runners after cold completes. The edited job
+Warm jobs run on new runners after cold completes. The edited jobs
 requires an app compile progress entry and checks the built binary contains the
 new string. Its source edit is confined to that disposable CI checkout. No
 benchmark binary is installed, executed, published, or signed.
@@ -25,15 +26,21 @@ the workflow or harness. Other PR branches do not automatically run it. Once the
 workflow exists on the default branch, it can also be dispatched manually.
 Do not merge an experiment merely to run it: the PR trigger works before merge.
 
-Each full run uses four macOS jobs. Cancel obsolete runs; concurrency does this
+The first run used four macOS jobs. The follow-up matrix uses three: cold, raw,
+and raw-edited. Cancel obsolete runs; concurrency does this
 automatically on new commits. A cold run may take approximately 20 minutes, and
 a cache that fails to reuse compilation may take that long again in warm jobs.
 
 ## Measurements and acceptance
 
-Each job uploads `environment.json`, `measurement.json`, and elapsed-time-stamped
-`build.log`, retained for seven days. The Actions timeline supplies queue time,
-cache save/restore overhead, and total job duration. Progress-entry counts show
+Each job uploads `environment.json`, `measurement.json`, `timings.json`, and elapsed-time-stamped
+`build.log`, retained for seven days. `measurement.json` includes automatically
+measured pipeline and cache save/restore durations, plus input-validation,
+snapshot, and probe-edit time when applicable. Pipeline includes binary validation
+and intervening workflow-step overhead; it excludes queue, checkout, environment
+preparation, final reporting and artifact upload. Phase durations overlap with
+pipeline: do not add them to it. Incomplete phases are null, never zero.
+The Actions timeline supplies queue time and whole-job duration. Progress-entry counts show
 work replayed, not exclusive module CPU time (compilation overlaps).
 
 Compare:
@@ -69,3 +76,25 @@ benchmarking larger runners are separate experiments.
   delete only this run's `experiment-spm-v1-*` entries after measurement if needed.
 
 Harness checks: `python3 scripts/test_ci_cache_experiment.py` (no native build).
+
+## First hosted result (2026-10-01)
+
+[Run 36854266264](https://github.com/Muesli-HQ/muesli/actions/runs/36854266264)
+at `b1272674` passed all four scenarios. Whole-job times from the Actions API
+(exclude queue; include checkout, cache, validation, and upload):
+
+| Scenario | Job duration | Swift build duration |
+| --- | ---: | ---: |
+| cold | 22m 40s | 1309.256s |
+| raw | 5m 39s | 279.758s |
+| unchanged | 5m 41s | 283.916s |
+| edited | 5m 28s | 264.719s |
+
+The edited build recompiled the app and verified its new string, with zero
+C-family or SwiftSyntax compile entries. Cache restore took 31–42 seconds;
+save took 31 seconds; compressed cache was about 1.6 GB (3.5 GB unpacked).
+The ~76% edited-job reduction is one feasibility result, not a production SLA.
+Timestamp restoration did not demonstrate a wall-clock benefit. Repeat with
+raw-edited before choosing the simpler rollout. Automatic phase accounting was
+added after this first run to make net-savings comparisons reproducible directly
+from artifacts (the first result above uses the API timeline).

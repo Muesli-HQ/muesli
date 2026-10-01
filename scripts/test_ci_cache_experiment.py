@@ -1,15 +1,66 @@
 #!/usr/bin/env python3
 """Local tests do not compile, touch the user's caches, or post keyboard events."""
 import os
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci_cache_experiment import (MARKER, compile_counts, edit_source, restore_files,
-                                 safe_file, snapshot_files)
+                                 safe_file, snapshot_files, mark_phase, phase_durations, report)
 
 
 class CacheExperimentTests(unittest.TestCase):
+    def test_phase_timer_tracks_transfer_overhead(self):
+        with tempfile.TemporaryDirectory() as directory:
+            results = Path(directory)
+            with patch("ci_cache_experiment.time.monotonic", side_effect=[10, 52]):
+                mark_phase("begin", "cache-restore", results)
+                mark_phase("end", "cache-restore", results)
+            timings = json.loads((results / "timings.json").read_text())
+            self.assertEqual(phase_durations(timings), {"cache-restore": 42})
+            with self.assertRaises(ValueError):
+                mark_phase("end", "cache-restore", results)
+
+    def test_incomplete_phases_are_not_zero(self):
+        self.assertEqual(phase_durations({"cache-restore": {"begin": 10}}),
+                         {"cache-restore": None})
+        with self.assertRaises(ValueError):
+            phase_durations({"cache-restore": {"begin": 20, "end": 10}})
+
+    def test_rejects_unknown_or_out_of_order_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for action, phase in (("begin", "bogus"), ("end", "pipeline")):
+                with self.assertRaises(ValueError):
+                    mark_phase(action, phase, root)
+
+    def test_report_persists_overhead_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "ci-cache-results"
+            results.mkdir()
+            (results / "measurement.json").write_text(json.dumps({
+                "scenario": "raw-edited", "build_seconds": 260, "exit_code": 0,
+                "compile_progress_counts": {"app": 1}, "edited_binary_verified": True,
+            }))
+            (results / "timings.json").write_text(json.dumps({
+                "pipeline": {"begin": 10, "end": 330},
+                "cache-restore": {"begin": 10, "end": 52},
+            }))
+            original = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(root / "summary.md")}):
+                    report()
+            finally:
+                os.chdir(original)
+            data = json.loads((results / "measurement.json").read_text())
+            self.assertEqual(data["phase_seconds"], {"pipeline": 320, "cache-restore": 42})
+            self.assertTrue(data["edited_binary_verified"])
+            self.assertIn("do not sum", (root / "summary.md").read_text())
+
     def test_restores_only_identical_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
