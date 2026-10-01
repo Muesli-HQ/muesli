@@ -140,3 +140,23 @@ Timestamp restoration did not demonstrate a wall-clock benefit. A repeat with
 raw-edited validates the simpler rollout. Automatic phase accounting was
 added after this first run to make net-savings comparisons reproducible directly
 from artifacts (the first result above uses the API timeline).
+
+## Raw-cache confirmation (2026-10-01)
+
+[Run 36858256720](https://github.com/Muesli-HQ/muesli/actions/runs/36858256720)
+at `ee0c5268` passed all three scenarios without timestamp restoration:
+
+| Scenario | Whole job | Swift build | Measured pipeline | Cache transfer |
+| --- | ---: | ---: | ---: | ---: |
+| cold | 21m 18s | 1233.003s | 1262.873s | save 22.679s |
+| raw | 4m 52s | 244.999s | 276.377s | restore 30.775s |
+| raw-edited | 7m 38s | 388.926s | 437.355s | restore 41.555s |
+
+The edited binary check passed. Both warm runs emitted one app, one C-family,
+zero SwiftSyntax, and three other compile progress entries, versus cold's
+one/181/17/31. The raw-edited whole job was about 64% shorter than cold, including
+cache transfer and binary validation. Its longer runtime than the unchanged run
+is why we do not promise a uniform five-minute build. These two hosted benchmark
+runs support adopting the simpler raw-cache strategy; production cache-hit rate,
+whole-CI critical path, and base-branch restoration still need observation after
+trusted-main seeding.
