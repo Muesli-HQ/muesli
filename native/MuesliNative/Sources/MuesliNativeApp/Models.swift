@@ -1585,6 +1585,23 @@ struct HotkeyConfig: Codable, Equatable {
         return letters[keyCode]
     }
 
+    /// US-layout labels for keys that can anchor a combination: letters, digits,
+    /// Space, punctuation, arrows, and function keys. Modifiers, Escape, and
+    /// editing keys such as Return, Tab, and Delete are not shortcut keys.
+    static func keyLabel(for keyCode: UInt16) -> String? {
+        if let letter = letterLabel(for: keyCode) { return letter }
+        let keys: [UInt16: String] = [
+            18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+            49: "Space",
+            24: "=", 27: "-", 33: "[", 30: "]", 42: "\\", 41: ";", 39: "'", 43: ",", 47: ".", 44: "/", 50: "`",
+            123: "←", 124: "→", 125: "↓", 126: "↑",
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8",
+            101: "F9", 109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15",
+            106: "F16", 64: "F17", 79: "F18", 80: "F19", 90: "F20",
+        ]
+        return keys[keyCode]
+    }
+
     static func combinationLabel(modifiers: NSEvent.ModifierFlags, keyCode: UInt16) -> String {
         let modifiers = supportedCombinationModifiers(from: modifiers)
         var parts: [String] = []
@@ -1592,7 +1609,7 @@ struct HotkeyConfig: Codable, Equatable {
         if modifiers.contains(.control) { parts.append("⌃") }
         if modifiers.contains(.option) { parts.append("⌥") }
         if modifiers.contains(.shift) { parts.append("⇧") }
-        parts.append(letterLabel(for: keyCode) ?? "?")
+        parts.append(keyLabel(for: keyCode) ?? "?")
         return parts.joined()
     }
 
@@ -1615,6 +1632,29 @@ struct HotkeyConfig: Codable, Equatable {
         guard let raw = combinationModifiers else { return nil }
         return Self.supportedCombinationModifiers(from: NSEvent.ModifierFlags(rawValue: raw))
     }
+
+    /// Dictation accepts one bare modifier, or a chord of a supported key with any
+    /// modifiers except Shift alone, which would capture ordinary typing. Command
+    /// alone is limited to keys that never type a letter: Automatic paste sends
+    /// Command plus whichever key types "v" in the current layout.
+    var isValidDictationShortcut: Bool {
+        guard combinationModifiers != nil || combinationKeyCode != nil else {
+            return Self.label(for: keyCode) != nil
+        }
+        guard let modifiers = resolvedCombinationModifiers,
+              let combinationKeyCode,
+              Self.keyLabel(for: combinationKeyCode) != nil else { return false }
+        if modifiers == .command {
+            return Self.layoutIndependentKeyCodes.contains(combinationKeyCode)
+        }
+        return !modifiers.subtracting(.shift).isEmpty
+    }
+
+    /// Digits, Space, arrows, and function keys.
+    private static let layoutIndependentKeyCodes: Set<UInt16> = [
+        18, 19, 20, 21, 22, 23, 25, 26, 28, 29, 49, 123, 124, 125, 126,
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+    ]
 
     static let `default` = HotkeyConfig()
     static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
@@ -1771,6 +1811,8 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    /// Only applies when the dictation shortcut is a key combination.
+    var dictationCombinationActivation: HotkeyMonitor.CombinationActivation = .pushToTalk
     var pasteShortcut: PasteShortcut = .automatic
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var quilHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -1923,6 +1965,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case dictationCombinationActivation = "dictation_combination_activation"
         case pasteShortcut = "paste_shortcut"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case quilHotkeyTriggerThresholdMS = "quil_hotkey_trigger_threshold_ms"
@@ -2028,7 +2071,8 @@ struct AppConfig: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
-        dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
+            .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
@@ -2111,6 +2155,10 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        dictationCombinationActivation = (try? c.decode(
+            HotkeyMonitor.CombinationActivation.self,
+            forKey: .dictationCombinationActivation
+        )) ?? defaults.dictationCombinationActivation
         pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
