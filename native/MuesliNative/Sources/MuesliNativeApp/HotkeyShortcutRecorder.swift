@@ -113,21 +113,25 @@ final class HotkeyShortcutRecorder {
     private(set) weak var window: NSWindow?
     private var state: HotkeyShortcutCaptureState?
     private var monitor: Any?
+    private var timeoutTask: Task<Void, Never>?
     private var release: (() -> Void)?
     private let addMonitor: (@escaping (NSEvent) -> NSEvent?) -> Any?
     private let removeMonitor: (Any) -> Void
     private let keyWindow: () -> NSWindow?
+    private let timeout: Duration
 
     init(
         addMonitor: @escaping (@escaping (NSEvent) -> NSEvent?) -> Any? = {
             NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged], handler: $0)
         },
         removeMonitor: @escaping (Any) -> Void = { NSEvent.removeMonitor($0) },
-        keyWindow: @escaping () -> NSWindow? = { NSApp.keyWindow }
+        keyWindow: @escaping () -> NSWindow? = { NSApp.keyWindow },
+        timeout: Duration = .seconds(30)
     ) {
         self.addMonitor = addMonitor
         self.removeMonitor = removeMonitor
         self.keyWindow = keyWindow
+        self.timeout = timeout
     }
 
     /// Returns a message when capture could not start.
@@ -151,6 +155,11 @@ final class HotkeyShortcutRecorder {
             cancel()
             return Self.installFailedMessage
         }
+        // Every global shortcut stays paused while capture is open.
+        timeoutTask = Task { [weak self, timeout] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            self?.cancel()
+        }
         return nil
     }
 
@@ -162,6 +171,8 @@ final class HotkeyShortcutRecorder {
     func cancel() {
         if let monitor { removeMonitor(monitor) }
         monitor = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
         target = nil
         window = nil
         state = nil

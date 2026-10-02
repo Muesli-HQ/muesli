@@ -538,15 +538,21 @@ final class HotkeyMonitor {
         return true
     }
 
-    /// Carbon owns the registered combination, but it does not deliver Escape.
-    /// Keep narrow monitors so an active global Quill session remains cancellable.
+    /// Carbon owns the registered combination, but it delivers neither Escape nor
+    /// modifier changes. Keep narrow monitors so a registered session remains
+    /// cancellable and a held chord ends when one of its modifiers is released.
     private func startRegisteredCombinationEscapeMonitors() {
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard event.type == .flagsChanged || event.keyCode == 53 else { return }
             _ = self?.handle(event)
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, let self else { return event }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .flagsChanged {
+                _ = self.handle(event)
+                return event
+            }
+            guard event.keyCode == 53 else { return event }
             return self.handle(event) ? nil : event
         }
     }

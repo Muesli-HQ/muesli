@@ -1634,7 +1634,8 @@ struct HotkeyConfig: Codable, Equatable {
     }
 
     /// Dictation accepts one bare modifier, or a chord of a supported key with any
-    /// modifiers except Shift alone, which would capture ordinary typing.
+    /// modifiers except Shift alone, which would capture ordinary typing, or
+    /// Command alone, which Automatic paste can resolve to under another layout.
     var isValidDictationShortcut: Bool {
         guard combinationModifiers != nil || combinationKeyCode != nil else {
             return Self.label(for: keyCode) != nil
@@ -1642,7 +1643,7 @@ struct HotkeyConfig: Codable, Equatable {
         guard let modifiers = resolvedCombinationModifiers,
               let combinationKeyCode,
               Self.keyLabel(for: combinationKeyCode) != nil else { return false }
-        return !modifiers.subtracting(.shift).isEmpty
+        return !modifiers.subtracting(.shift).isEmpty && modifiers != .command
     }
 
     static let `default` = HotkeyConfig()

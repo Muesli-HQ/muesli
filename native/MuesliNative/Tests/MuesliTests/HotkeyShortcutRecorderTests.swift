@@ -68,11 +68,11 @@ struct HotkeyShortcutRecorderTests {
         #expect(capture.completed?.label == "⌃⌥Space")
 
         var modifiersFirst = HotkeyShortcutCaptureState(target: .dictation)
-        modifiersFirst.keyDown(keyCode: 124, flags: [.command, .numericPad, .function], isRepeat: false)
+        modifiersFirst.keyDown(keyCode: 124, flags: [.command, .shift, .numericPad, .function], isRepeat: false)
         modifiersFirst.flagsChanged(keyCode: 55, flags: [])
         #expect(modifiersFirst.completed == nil)
         modifiersFirst.keyUp(keyCode: 124, flags: [])
-        #expect(modifiersFirst.completed?.label == "⌘→")
+        #expect(modifiersFirst.completed?.label == "⌘⇧→")
     }
 
     struct ChordRule: Sendable, CustomTestStringConvertible {
@@ -88,6 +88,7 @@ struct HotkeyShortcutRecorderTests {
         ChordRule(target: .dictation, modifiers: .shift, keyCode: 0, accepted: false),
         ChordRule(target: .dictation, modifiers: [.control, .option], keyCode: 49, accepted: true),
         ChordRule(target: .dictation, modifiers: .command, keyCode: 36, accepted: false),
+        ChordRule(target: .dictation, modifiers: .command, keyCode: 2, accepted: false),
         ChordRule(target: .dictation, modifiers: [.command, .shift], keyCode: 18, accepted: true),
         ChordRule(target: .quil, modifiers: .control, keyCode: 12, accepted: true),
         ChordRule(target: .quil, modifiers: [.control, .option], keyCode: 12, accepted: false),
@@ -161,6 +162,24 @@ struct HotkeyShortcutRecorderTests {
         #expect(brokenMessage == HotkeyShortcutRecorder.installFailedMessage)
         #expect(broken.target == nil)
         #expect(released == 3)
+    }
+
+    @Test("capture times out and restores monitors")
+    func captureTimesOut() async throws {
+        var released = 0
+        let recorder = HotkeyShortcutRecorder(
+            addMonitor: { _ in NSObject() },
+            removeMonitor: { _ in },
+            timeout: .milliseconds(20)
+        )
+        _ = recorder.start(.dictation, acquire: { true }, release: { released += 1 }, commit: { _ in })
+        #expect(recorder.target == .dictation)
+
+        for _ in 0..<100 where recorder.target != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(recorder.target == nil)
+        #expect(released == 1)
     }
 
     @Test("only the capturing window resigning key ends capture")

@@ -2996,6 +2996,38 @@ struct HotkeyMonitorTests {
         #expect(!monitor.isToggleRecording)
     }
 
+    @Test("registered chord ends when one of its modifiers is released")
+    @MainActor
+    func registeredChordEndsOnModifierRelease() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "stop"])
+
+        // A toggle start in progress is abandoned the same way.
+        monitor.combinationActivation = .toggle
+        monitor.onToggleStart = { events.append("toggle-start") }
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "stop"])
+    }
+
     @Test("registered hotkey handlers only claim their own chord")
     @MainActor
     func registeredHotkeyHandlersOnlyClaimTheirOwnChord() {
@@ -3358,7 +3390,11 @@ struct HotkeyConfigTests {
         #expect(HotkeyConfig.combination(modifiers: [.command, .control, .option, .shift], keyCode: 2).isValidDictationShortcut)
         #expect(HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 123).isValidDictationShortcut)
 
+        #expect(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 9).isValidDictationShortcut)
+
         #expect(!HotkeyConfig.combination(modifiers: .shift, keyCode: 2).isValidDictationShortcut)
+        // Automatic paste is Command plus whichever key types "v" in the current layout.
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 47).isValidDictationShortcut)
         #expect(!HotkeyConfig.combination(modifiers: [.capsLock, .function], keyCode: 2).isValidDictationShortcut)
         #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 36).isValidDictationShortcut)
         #expect(!HotkeyConfig(keyCode: 0, label: "A").isValidDictationShortcut)
