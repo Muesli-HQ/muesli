@@ -9,8 +9,13 @@ struct CalendarAttendee: Identifiable, Equatable, Sendable {
     let id: String
     let displayName: String
     let emailAddress: String?
+    let isCurrentUser: Bool?
 
-    init?(identifier: String?, displayName: String?, emailAddress: String?) {
+    var identityRole: MeetingParticipantRole {
+        switch isCurrentUser { case true?: return .owner; case false?: return .remote; case nil: return .unknown }
+    }
+
+    init?(identifier: String?, displayName: String?, emailAddress: String?, isCurrentUser: Bool? = nil) {
         let normalizedEmail = Self.normalizedEmail(emailAddress ?? identifier)
         let normalizedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fallbackIdentifier = identifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -23,6 +28,7 @@ struct CalendarAttendee: Identifiable, Equatable, Sendable {
         self.id = identity
         self.displayName = resolvedName
         self.emailAddress = normalizedEmail
+        self.isCurrentUser = isCurrentUser
     }
 
     var participantDraft: MeetingParticipantDraft {
@@ -296,7 +302,8 @@ final class CalendarMonitor {
             return CalendarAttendee(
                 identifier: participant.url.absoluteString,
                 displayName: participant.name,
-                emailAddress: participant.url.absoluteString
+                emailAddress: participant.url.absoluteString,
+                isCurrentUser: participant.isCurrentUser
             )
         }
         return CalendarAttendee.deduplicated(attendees)

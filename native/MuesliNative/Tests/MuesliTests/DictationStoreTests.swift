@@ -18,6 +18,20 @@ struct DictationStoreTests {
         return store
     }
 
+    private func literalSpeakerState(_ transcript: String) -> MeetingSpeakerState {
+        var state = MeetingSpeakerState(session: UUID(), segments: [], assignments: [:])
+        state.literalPrefix = transcript
+        return state
+    }
+
+    private func installSpeakerStateInsertFailure(_ store: DictationStore) throws {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER fail_speaker_state BEFORE INSERT ON meeting_speaker_state BEGIN SELECT RAISE(ABORT, 'fixture'); END;"
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+    }
+
     @Test("startup interrupts only running CUA traces and preserves their events")
     func reconcileRunningComputerUseTraces() throws {
         let store = try makeStore()
@@ -1862,6 +1876,57 @@ struct DictationStoreTests {
         #expect(completed.manualNotes == "- Keep this")
     }
 
+    @Test("meeting insert rolls back when its initial speaker state cannot be saved")
+    func insertMeetingRollsBackWithInitialSpeakerState() throws {
+        let store = try makeStore()
+        try installSpeakerStateInsertFailure(store)
+        let now = Date()
+
+        #expect(throws: (any Error).self) {
+            try store.insertMeeting(
+                title: "Atomic insert",
+                calendarEventID: nil,
+                startTime: now,
+                endTime: now.addingTimeInterval(60),
+                rawTranscript: "Imported speaker words",
+                formattedNotes: "Notes",
+                micAudioPath: nil,
+                systemAudioPath: nil,
+                speakerState: literalSpeakerState("Imported speaker words")
+            )
+        }
+
+        #expect(try store.recentMeetings(limit: 10).isEmpty)
+    }
+
+    @Test("live completion rolls back transcript and checkpoints with initial speaker state")
+    func completeLiveMeetingRollsBackWithInitialSpeakerState() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.createLiveMeeting(title: "Draft", calendarEventID: nil, startTime: start)
+        try installSpeakerStateInsertFailure(store)
+
+        #expect(throws: (any Error).self) {
+            try store.completeLiveMeeting(
+                id: id,
+                title: "Completed",
+                calendarEventID: nil,
+                startTime: start,
+                endTime: start.addingTimeInterval(60),
+                rawTranscript: "Final speaker words",
+                formattedNotes: "Final notes",
+                micAudioPath: nil,
+                systemAudioPath: nil,
+                speakerState: literalSpeakerState("Final speaker words")
+            )
+        }
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .recording)
+        #expect(meeting.rawTranscript.isEmpty)
+        #expect(meeting.title == "Draft")
+    }
+
     @Test("live transcript checkpoints recover stale meetings as raw transcript fallback")
     func liveTranscriptCheckpointsRecoverStaleMeeting() throws {
         let store = try makeStore()
@@ -2240,6 +2305,41 @@ struct DictationStoreTests {
         #expect(updated.wordCount == 5)
         #expect(updated.savedRecordingPath == "/tmp/recovered.wav")
         #expect(updated.manualNotes == "Manual note")
+    }
+
+    @Test("re-transcription rolls back transcript and notes with initial speaker state")
+    func retranscriptionRollsBackWithInitialSpeakerState() throws {
+        let store = try makeStore()
+        let now = Date()
+        let id = try store.insertMeeting(
+            title: "Existing",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Original transcript",
+            formattedNotes: "Original notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try installSpeakerStateInsertFailure(store)
+
+        #expect(throws: (any Error).self) {
+            try store.updateMeetingTranscriptAndSummary(
+                id: id,
+                rawTranscript: "Replacement transcript",
+                formattedNotes: "Replacement notes",
+                selectedTemplateID: "auto",
+                selectedTemplateName: "Auto",
+                selectedTemplateKind: .auto,
+                selectedTemplatePrompt: "Auto prompt",
+                expectedRawTranscript: "Original transcript",
+                speakerState: literalSpeakerState("Replacement transcript")
+            )
+        }
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.rawTranscript == "Original transcript")
+        #expect(meeting.formattedNotes == "Original notes")
     }
 
     @Test("update meeting transcript preserves notes and refreshes word count")

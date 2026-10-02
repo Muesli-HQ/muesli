@@ -104,6 +104,8 @@ struct MeetingSessionResult {
     let systemRecordingURL: URL?
     let templateSnapshot: MeetingTemplateSnapshot
     var visualContext: String? = nil
+    var speakerState: MeetingSpeakerState? = nil
+    var expectedPriorTranscript: String? = nil
 }
 
 extension MeetingSessionResult {
@@ -115,7 +117,9 @@ extension MeetingSessionResult {
         durationSeconds newDurationSeconds: Double? = nil,
         rawTranscript: String,
         formattedNotes: String,
-        visualContext newVisualContext: String? = nil
+        visualContext newVisualContext: String? = nil,
+        speakerState newSpeakerState: MeetingSpeakerState? = nil,
+        expectedPriorTranscript newExpectedPriorTranscript: String? = nil
     ) -> MeetingSessionResult {
         let resolvedStart = newStartTime ?? startTime
         let resolvedDuration = newDurationSeconds ?? durationSeconds
@@ -132,7 +136,9 @@ extension MeetingSessionResult {
             retainedRecordingError: retainedRecordingError,
             systemRecordingURL: systemRecordingURL,
             templateSnapshot: templateSnapshot,
-            visualContext: newVisualContext ?? visualContext
+            visualContext: newVisualContext ?? visualContext,
+            speakerState: newSpeakerState ?? (speakerState?.renderedTranscript() == rawTranscript ? speakerState : nil),
+            expectedPriorTranscript: newExpectedPriorTranscript ?? expectedPriorTranscript
         )
     }
 }
@@ -369,7 +375,10 @@ final class MeetingSession {
         backendLock.withLock { $0 }
     }
 
+    private(set) var microphoneLabel = "You"
+
     func start() async throws {
+        microphoneLabel = await transcriptionCoordinator.ownerVoiceIsEnrolled() ? "Microphone" : "You"
         try Task.checkCancellation()
         guard !captureLifecycle.isEnding else { throw CancellationError() }
         let inputDeviceID = meetingMicRecorder.preferredInputDeviceID
@@ -440,8 +449,8 @@ final class MeetingSession {
                     return
                 }
 
-                let mic = MeetingStreamingPartialSession(engine: engines.mic, label: "You", startsAtSegmentBoundary: false)
-                mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
+                let mic = MeetingStreamingPartialSession(engine: engines.mic, label: microphoneLabel, startsAtSegmentBoundary: false)
+                mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?(self?.microphoneLabel ?? "Microphone", text) }
                 await mic.connect()
                 let system = MeetingStreamingPartialSession(engine: engines.system, label: "Others", startsAtSegmentBoundary: false)
                 system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
@@ -776,10 +785,11 @@ final class MeetingSession {
 
         var diarizationSegments: [TimedSpeakerSegment]?
         if let systemAudioURL {
-            // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult.segments
-            }
+            diarizationSegments = try? await transcriptionCoordinator.diarizeRecordedAudio(at: systemAudioURL)
+        }
+        var micDiarization: [TimedSpeakerSegment] = []
+        if await transcriptionCoordinator.ownerVoiceIsEnrolled(), let rawStreamingMicURL {
+            micDiarization = (try? await transcriptionCoordinator.diarizeRecordedAudio(at: rawStreamingMicURL)) ?? []
         }
 
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
@@ -842,12 +852,12 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
-        let rawTranscript = TranscriptFormatter.merge(
+        let speakerState = await transcriptionCoordinator.speakerState(
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
-            diarizationSegments: protectedTranscriptInputs.diarizationSegments,
-            meetingStart: meetingStart
-        )
+            systemDiarization: protectedTranscriptInputs.diarizationSegments ?? [],
+            micDiarization: micDiarization, meetingStart: meetingStart)
+        let rawTranscript = speakerState.renderedTranscript()
 
         let titleManualNotes = await manualNotesProvider?()
         let generatedTitle: String
@@ -930,7 +940,8 @@ final class MeetingSession {
             retainedRecordingError: retainedRecordingWriterError,
             systemRecordingURL: systemAudioURL,
             templateSnapshot: templateSnapshot,
-            visualContext: visualContext.isEmpty ? nil : visualContext
+            visualContext: visualContext.isEmpty ? nil : visualContext,
+            speakerState: speakerState
         )
     }
 
@@ -1017,7 +1028,7 @@ final class MeetingSession {
                 guard self.micChunkCollector.retire(id: retireID, segments: resolvedSegments) else { return }
                 self.commitMicPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
-                self.onChunkTranscribed?(resolvedSegments, "You")
+                self.onChunkTranscribed?(resolvedSegments, self.microphoneLabel)
             }
         } else {
             task.cancel()

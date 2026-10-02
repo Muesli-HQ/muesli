@@ -5,6 +5,8 @@ public enum DictationStoreError: Error, LocalizedError {
     case dictationNotFound(id: Int64)
     case meetingNotFound(id: Int64)
     case invalidParticipantIdentifier
+    case meetingTranscriptChanged
+    case invalidSpeakerState
 
     public var errorDescription: String? {
         switch self {
@@ -12,8 +14,12 @@ public enum DictationStoreError: Error, LocalizedError {
             return "Dictation \(id) no longer exists."
         case .meetingNotFound(let id):
             return "Meeting \(id) no longer exists."
+        case .meetingTranscriptChanged:
+            return "The transcript changed while processing. Your edited text was preserved. Please retry with the current transcript."
         case .invalidParticipantIdentifier:
             return "That meeting participant could not be identified."
+        case .invalidSpeakerState:
+            return "Speaker identity state did not match the meeting transcript."
         }
     }
 }
@@ -291,6 +297,35 @@ public final class DictationStore {
             nil
         )
         _ = sqlite3_exec(db, "DROP TABLE IF EXISTS meeting_participant_suppressions", nil, nil, nil)
+        try exec("""
+            CREATE TABLE IF NOT EXISTS meeting_speaker_state (
+                meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+                generation INTEGER NOT NULL, text_hash TEXT NOT NULL,
+                authoritative INTEGER NOT NULL, state_json BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS meeting_identity_roles (
+                meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+                participant_identifier TEXT NOT NULL, role TEXT NOT NULL,
+                PRIMARY KEY(meeting_id, participant_identifier)
+            );
+            CREATE TRIGGER IF NOT EXISTS delete_speaker_identity_on_tombstone
+            AFTER UPDATE OF deleted_at ON meetings
+            WHEN NEW.deleted_at IS NOT NULL
+            BEGIN
+                DELETE FROM meeting_speaker_state WHERE meeting_id = NEW.id;
+                DELETE FROM meeting_identity_roles WHERE meeting_id = NEW.id;
+            END;
+            DELETE FROM meeting_speaker_state WHERE meeting_id IN (SELECT id FROM meetings WHERE deleted_at IS NOT NULL);
+            DELETE FROM meeting_identity_roles WHERE meeting_id IN (SELECT id FROM meetings WHERE deleted_at IS NOT NULL);
+            CREATE TRIGGER IF NOT EXISTS invalidate_speaker_state_text
+            AFTER UPDATE OF raw_transcript ON meetings
+            WHEN OLD.raw_transcript IS NOT NEW.raw_transcript
+            BEGIN UPDATE meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id; END;
+            CREATE TRIGGER IF NOT EXISTS invalidate_speaker_state_capture
+            AFTER UPDATE OF meeting_status ON meetings
+            WHEN NEW.meeting_status IN ('recording', 'processing') AND OLD.meeting_status IS NOT NEW.meeting_status
+            BEGIN UPDATE meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id; END;
+            """, db: db)
         try backfillLegacyTargetApplicationsIfNeeded(db: db)
         // Calendar metadata is not a meeting identity: one occurrence may be
         // recorded more than once, and recurring providers may reuse ids.
@@ -1097,10 +1132,14 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        speakerState: MeetingSpeakerState? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
 
         let sql = """
         INSERT INTO meetings
@@ -1149,7 +1188,13 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_last_insert_rowid(db)
+        let id = sqlite3_last_insert_rowid(db)
+        if let speakerState {
+            try writeInitialSpeakerState(meetingID: id, state: speakerState, rendered: rawTranscript, db: db)
+        }
+        try exec("COMMIT", db: db)
+        committed = true
+        return id
     }
 
     public func listMeetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
@@ -2578,6 +2623,176 @@ public final class DictationStore {
         }
     }
 
+    // MARK: Device-local speaker identity (excluded from all sync/export payloads)
+
+    public func meetingSpeakerState(meetingID: Int64) throws -> MeetingSpeakerState? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try speakerState(meetingID: meetingID, db: db)
+    }
+
+    private func speakerState(meetingID: Int64, db: OpaquePointer?) throws -> MeetingSpeakerState? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT generation, text_hash, authoritative, state_json FROM meeting_speaker_state WHERE meeting_id = ?", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let pointer = sqlite3_column_blob(statement, 3) else { return nil }
+        let data = Data(bytes: pointer, count: Int(sqlite3_column_bytes(statement, 3)))
+        guard var state = try? JSONDecoder().decode(MeetingSpeakerState.self, from: data), state.schemaVersion == 1 else { return nil }
+        state.generation = sqlite3_column_int64(statement, 0)
+        state.lastGeneratedHash = stringColumn(statement, index: 1)
+        state.isAuthoritative = sqlite3_column_int(statement, 2) != 0
+        if let transcript = try meeting(id: meetingID, db: db)?.rawTranscript,
+           MeetingSpeakerState.hash(transcript) != state.lastGeneratedHash { state.isAuthoritative = false }
+        return state
+    }
+
+    private func writeSpeakerState(meetingID: Int64, state: MeetingSpeakerState, db: OpaquePointer?) throws {
+        let data = try JSONEncoder().encode(state)
+        var statement: OpaquePointer?
+        let sql = "INSERT INTO meeting_speaker_state(meeting_id, generation, text_hash, authoritative, state_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(meeting_id) DO UPDATE SET generation = excluded.generation, text_hash = excluded.text_hash, authoritative = excluded.authoritative, state_json = excluded.state_json"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_int64(statement, 2, state.generation)
+        sqlite3_bind_text(statement, 3, (state.lastGeneratedHash as NSString).utf8String, -1, transient)
+        sqlite3_bind_int(statement, 4, state.isAuthoritative ? 1 : 0)
+        _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, 5, $0.baseAddress, Int32($0.count), transient) }
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    private func writeInitialSpeakerState(meetingID: Int64, state: MeetingSpeakerState, rendered: String, db: OpaquePointer?) throws {
+        guard state.schemaVersion == 1, state.renderedTranscript() == rendered,
+              try meeting(id: meetingID, db: db)?.rawTranscript == rendered else {
+            throw DictationStoreError.invalidSpeakerState
+        }
+        var initial = state
+        initial.generation = ((try speakerState(meetingID: meetingID, db: db)?.generation) ?? 0) + 1
+        initial.lastGeneratedHash = MeetingSpeakerState.hash(rendered)
+        initial.isAuthoritative = true
+        try writeSpeakerState(meetingID: meetingID, state: initial, db: db)
+    }
+
+    public func saveInitialSpeakerState(meetingID: Int64, state: MeetingSpeakerState, rendered: String) throws -> MeetingSpeakerRenderResult {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard state.schemaVersion == 1, state.renderedTranscript() == rendered,
+                  try meeting(id: meetingID, db: db)?.rawTranscript == rendered else {
+                try exec("COMMIT", db: db)
+                return .invalidatedByTextEdit
+            }
+            var initial = state
+            initial.generation = (try speakerState(meetingID: meetingID, db: db)?.generation ?? 0) + 1
+            initial.lastGeneratedHash = MeetingSpeakerState.hash(rendered)
+            initial.isAuthoritative = true
+            try writeSpeakerState(meetingID: meetingID, state: initial, db: db)
+            try exec("COMMIT", db: db)
+            return .updated
+        } catch { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error }
+    }
+
+    public func renderSpeakerStateIfCurrent(meetingID: Int64, state: MeetingSpeakerState) throws -> MeetingSpeakerRenderResult {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard let current = try speakerState(meetingID: meetingID, db: db), current.isAuthoritative,
+                  current.generation == state.generation, current.session == state.session,
+                  current.lastGeneratedHash == state.lastGeneratedHash,
+                  current.segments == state.segments, current.literalPrefix == state.literalPrefix,
+                  let transcript = try meeting(id: meetingID, db: db)?.rawTranscript,
+                  MeetingSpeakerState.hash(transcript) == current.lastGeneratedHash else {
+                try exec("COMMIT", db: db)
+                return .invalidatedByTextEdit
+            }
+            var updated = state
+            let rendered = updated.renderedTranscript()
+            updated.generation = current.generation + 1
+            updated.lastGeneratedHash = MeetingSpeakerState.hash(rendered)
+            updated.isAuthoritative = true
+            updated.summaryIsStale = current.summaryIsStale || rendered != transcript
+            if current.assignments != state.assignments {
+                updated.priorAssignments = Array((current.priorAssignments + [current.assignments]).suffix(20))
+            }
+            if rendered != transcript {
+                var statement: OpaquePointer?
+                let sql = "UPDATE meetings SET raw_transcript = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+                defer { sqlite3_finalize(statement) }
+                sqlite3_bind_text(statement, 1, (rendered as NSString).utf8String, -1, nil)
+                let notes = try manualNotesForMeeting(id: meetingID, db: db)
+                sqlite3_bind_int(statement, 2, Int32(Self.countWords(in: rendered) + Self.countWords(in: notes)))
+                sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+                sqlite3_bind_int64(statement, 4, meetingID)
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            }
+            // The transcript trigger invalidates first; this write restores the new state in the same transaction.
+            try writeSpeakerState(meetingID: meetingID, state: updated, db: db)
+            try exec("COMMIT", db: db)
+            return .updated
+        } catch { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error }
+    }
+
+    public func meetingParticipantRoles(meetingID: Int64) throws -> [String: MeetingParticipantRole] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        let sql = "SELECT p.participant_identifier, COALESCE(r.role, CASE WHEN p.source = 'manual' THEN 'remote' ELSE 'unknown' END) FROM meeting_participants p LEFT JOIN meeting_identity_roles r ON r.meeting_id = p.meeting_id AND r.participant_identifier = p.participant_identifier WHERE p.meeting_id = ? AND p.is_suppressed = 0"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        var roles: [String: MeetingParticipantRole] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            roles[stringColumn(statement, index: 0)] = MeetingParticipantRole(rawValue: stringColumn(statement, index: 1)) ?? .unknown
+        }
+        return roles
+    }
+
+    public func setMeetingParticipantRole(meetingID: Int64, participantID: String, role: MeetingParticipantRole, onlyIfUnspecified: Bool = false) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        let conflict = onlyIfUnspecified ? "DO NOTHING" : "DO UPDATE SET role = excluded.role"
+        let sql = "INSERT INTO meeting_identity_roles(meeting_id, participant_identifier, role) SELECT ?, ?, ? WHERE EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id = p.meeting_id WHERE p.meeting_id = ? AND p.participant_identifier = ? AND p.is_suppressed = 0 AND m.deleted_at IS NULL) ON CONFLICT(meeting_id, participant_identifier) " + conflict
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_text(statement, 2, (participantID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 3, (role.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 4, meetingID)
+        sqlite3_bind_text(statement, 5, (participantID as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    public func markSpeakerSummaryCurrent(meetingID: Int64, transcriptHash: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            if var state = try speakerState(meetingID: meetingID, db: db), state.isAuthoritative,
+               state.lastGeneratedHash == transcriptHash {
+                state.summaryIsStale = false
+                try writeSpeakerState(meetingID: meetingID, state: state, db: db)
+            }
+            try exec("COMMIT", db: db)
+        } catch { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error }
+    }
+
+    public func speakerStateMeetingIDs() throws -> [Int64] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT meeting_id FROM meeting_speaker_state", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        var ids: [Int64] = []
+        while sqlite3_step(statement) == SQLITE_ROW { ids.append(sqlite3_column_int64(statement, 0)) }
+        return ids
+    }
+
     public func updateMeetingTranscript(id: Int64, rawTranscript: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -2838,14 +3053,22 @@ public final class DictationStore {
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        expectedRawTranscript: String? = nil,
+        speakerState: MeetingSpeakerState? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
+        if let expectedRawTranscript, try meeting(id: id, db: db)?.rawTranscript != expectedRawTranscript {
+            throw DictationStoreError.meetingTranscriptChanged
+        }
         let sql = """
         UPDATE meetings
         SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
-        WHERE id = ?
+        WHERE id = ? AND deleted_at IS NULL
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -2885,8 +3108,13 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        if let speakerState {
+            try writeInitialSpeakerState(meetingID: id, state: speakerState, rendered: rawTranscript, db: db)
+        }
         try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
         try deleteResumeSnapshot(meetingID: id, db: db)
+        try exec("COMMIT", db: db)
+        committed = true
     }
 
     private func manualNoteWordCountIfNeeded(for status: MeetingStatus, id: Int64, db: OpaquePointer?) throws -> Int? {
@@ -3105,12 +3333,17 @@ public final class DictationStore {
     }
 
     private func restoreResumedMeeting(id: Int64, snapshot: ResumeSnapshot, db: OpaquePointer?) throws {
-        let manualNotes = try manualNotesForMeeting(id: id, db: db)
-        let wordCount = Self.countWords(in: snapshot.rawTranscript) + Self.countWords(in: manualNotes)
         guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
             throw lastError(db)
         }
         do {
+            var snapshot = snapshot
+            if let current = try meeting(id: id, db: db), current.rawTranscript != snapshot.rawTranscript {
+                snapshot.rawTranscript = current.rawTranscript
+                snapshot.formattedNotes = current.formattedNotes
+            }
+            let manualNotes = try manualNotesForMeeting(id: id, db: db)
+            let wordCount = Self.countWords(in: snapshot.rawTranscript) + Self.countWords(in: manualNotes)
             try completeResumedRecovery(
                 id: id,
                 snapshot: snapshot,
@@ -3291,16 +3524,24 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        expectedRawTranscript: String? = nil,
+        speakerState: MeetingSpeakerState? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
+        if let expectedRawTranscript, try meeting(id: id, db: db)?.rawTranscript != expectedRawTranscript {
+            throw DictationStoreError.meetingTranscriptChanged
+        }
         let manualNotes = try manualNotesForMeeting(id: id, db: db)
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
         let sql = """
         UPDATE meetings
         SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
-        WHERE id = ?
+        WHERE id = ? AND deleted_at IS NULL
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -3323,6 +3564,11 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        if let speakerState {
+            try writeInitialSpeakerState(meetingID: id, state: speakerState, rendered: rawTranscript, db: db)
+        }
+        try exec("COMMIT", db: db)
+        committed = true
     }
 
     public func updateMeetingTitle(id: Int64, title: String) throws {

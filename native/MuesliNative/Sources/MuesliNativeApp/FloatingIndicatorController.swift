@@ -469,12 +469,14 @@ final class FloatingIndicatorController: NSObject {
     func updateMeetingTranscript(
         transcript: String,
         partialYou: String,
-        partialOthers: String
+        partialOthers: String,
+        microphoneLabel: String = "You"
     ) {
         meetingTranscriptPanel.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            microphoneLabel: microphoneLabel
         )
     }
 

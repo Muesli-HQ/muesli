@@ -192,19 +192,21 @@ enum AudioFileImportController {
 
         // Run speaker diarization if available
         var diarizedTranscript = rawTranscript
-        if let diarizerManager = await transcriptionCoordinator.getDiarizerManager(),
-           diarizerManager.isAvailable {
+        var speakerState: MeetingSpeakerState?
+        if await transcriptionCoordinator.isDiarizationAvailable() {
             progress("Identifying speakers...")
             do {
                 let speakerSegments = try await transcriptionCoordinator.diarizeRecordedAudio(at: wavURL) { fraction in
                     progress("Identifying speakers · \(Int(fraction * 100))%")
                 }
                 if !speakerSegments.isEmpty {
-                    diarizedTranscript = formatTranscriptWithSpeakers(
-                        transcription: transcription,
-                        diarizationSegments: speakerSegments,
-                        meetingStart: importedTranscriptTimelineStart()
-                    )
+                    if !transcription.segments.isEmpty {
+                        let state = await transcriptionCoordinator.speakerState(micSegments: [],
+                            systemSegments: transcription.segments, systemDiarization: speakerSegments,
+                            micDiarization: [], meetingStart: importedTranscriptTimelineStart(), systemSource: .mixed)
+                        speakerState = state
+                        diarizedTranscript = state.renderedTranscript()
+                    }
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -270,7 +272,8 @@ enum AudioFileImportController {
             selectedTemplateID: templateSnapshot.id,
             selectedTemplateName: templateSnapshot.name,
             selectedTemplateKind: templateSnapshot.kind,
-            selectedTemplatePrompt: templateSnapshot.prompt
+            selectedTemplatePrompt: templateSnapshot.prompt,
+            speakerState: speakerState
         )
 
         return ImportResult(
