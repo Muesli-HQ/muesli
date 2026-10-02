@@ -2956,6 +2956,46 @@ struct HotkeyMonitorTests {
         #expect(events == ["prepare", "start", "cancel", "prepare", "start", "stop"])
     }
 
+    @Test("registered toggle chord starts and stops only after the hold threshold")
+    @MainActor
+    func registeredToggleChordLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 49))
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("toggle-start") }
+        monitor.onToggleStop = { events.append("toggle-stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        // A brief press neither starts nor reports a cancellation.
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.02)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        scheduler.advance(by: 0.10)
+        #expect(events.isEmpty)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["toggle-start", "toggle-stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(events == ["toggle-start", "toggle-stop", "toggle-start", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
     @Test("registered hotkey handlers only claim their own chord")
     @MainActor
     func registeredHotkeyHandlersOnlyClaimTheirOwnChord() {
@@ -2967,6 +3007,29 @@ struct HotkeyMonitorTests {
         #expect(!quill.ownsRegisteredHotKeyForTests(dictation.registeredHotKeyIDForTests))
     }
 
+    @Test("held combination ends on modifier release and ignores key repeat")
+    @MainActor
+    func heldCombinationEndsOnModifierReleaseAndIgnoresRepeat() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 2))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 2, flags: [.command, .shift, .capsLock])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 2, flags: [.command, .shift], isRepeat: true)
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 2, flags: .command)
+
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
 }
 
 @Suite("MeetingResummarizationPolicy")
@@ -3273,6 +3336,105 @@ struct HotkeyConfigTests {
     func unknownKeyCode() {
         #expect(HotkeyConfig.label(for: 0) == nil)
         #expect(HotkeyConfig.label(for: 100) == nil)
+    }
+
+    @Test("combination labels cover digits, Space, punctuation, arrows, and function keys")
+    func combinationLabelsCoverNonLetterKeys() {
+        #expect(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49).label == "⌃⌥Space")
+        #expect(HotkeyConfig.combination(modifiers: .command, keyCode: 18).label == "⌘1")
+        #expect(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 44).label == "⌘⇧/")
+        #expect(HotkeyConfig.combination(modifiers: .control, keyCode: 126).label == "⌃↑")
+        #expect(HotkeyConfig.combination(modifiers: [.option, .function, .numericPad], keyCode: 96).label == "⌥F5")
+        #expect(HotkeyConfig.keyLabel(for: 53) == nil)
+        #expect(HotkeyConfig.keyLabel(for: 36) == nil)
+        #expect(HotkeyConfig.keyLabel(for: 55) == nil)
+    }
+
+    @Test("dictation accepts bare modifiers and chords, never Shift-only or unsupported keys")
+    func dictationShortcutValidity() {
+        #expect(HotkeyConfig.default.isValidDictationShortcut)
+        #expect(HotkeyConfig(keyCode: 63, label: "Fn").isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49).isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.command, .control, .option, .shift], keyCode: 2).isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 123).isValidDictationShortcut)
+
+        #expect(!HotkeyConfig.combination(modifiers: .shift, keyCode: 2).isValidDictationShortcut)
+        #expect(!HotkeyConfig.combination(modifiers: [.capsLock, .function], keyCode: 2).isValidDictationShortcut)
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 36).isValidDictationShortcut)
+        #expect(!HotkeyConfig(keyCode: 0, label: "A").isValidDictationShortcut)
+        #expect(!HotkeyConfig(keyCode: UInt16.max, label: "⌘D", combinationModifiers: nil, combinationKeyCode: 2)
+            .isValidDictationShortcut)
+    }
+
+    @Test("dictation policy rejects invalid chords, conflicts, and warns about common app shortcuts")
+    func dictationPolicyForCombinations() {
+        let chord = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            chord,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: true
+        ) == .updated)
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            HotkeyConfig.combination(modifiers: .shift, keyCode: 2),
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.dictationShortcutMessage))
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: true
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .updated(notice: ShortcutHotkeyPolicy.commonGlobalShortcutWarning))
+        #expect(ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            .meetingRecordingDefault,
+            dictationHotkey: .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(ShortcutHotkeyPolicy.validateQuilHotkey(
+            HotkeyConfig.combination(modifiers: .control, keyCode: 12),
+            dictationHotkey: HotkeyConfig.combination(modifiers: [.control, .capsLock], keyCode: 12),
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+    }
+
+    @Test("combination dictation shortcuts round-trip and invalid saved shortcuts fall back")
+    func dictationShortcutConfigRoundTrip() throws {
+        var config = AppConfig()
+        #expect(config.dictationCombinationActivation == .pushToTalk)
+        config.dictationHotkey = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        config.dictationCombinationActivation = .toggle
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.dictationHotkey == config.dictationHotkey)
+        #expect(decoded.dictationCombinationActivation == .toggle)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["dictation_combination_activation"] as? String == "toggle")
+
+        let unknownActivation = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"dictation_combination_activation": "double_tap"}"#.utf8)
+        )
+        #expect(unknownActivation.dictationCombinationActivation == .pushToTalk)
+
+        for invalid in [
+            #"{"keyCode": 65535, "label": "⇧A", "combinationModifiers": 131072, "combinationKeyCode": 0}"#,
+            #"{"keyCode": 65535, "label": "⌘↩", "combinationModifiers": 1048576, "combinationKeyCode": 36}"#,
+            #"{"keyCode": 65535, "label": "⌘?", "combinationModifiers": 1048576}"#,
+        ] {
+            let json = #"{"dictation_hotkey": "# + invalid + "}"
+            let fallback = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(fallback.dictationHotkey == .default)
+        }
     }
 }
 

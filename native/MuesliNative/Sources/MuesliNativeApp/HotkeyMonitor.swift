@@ -64,9 +64,9 @@ struct HotkeyCaptureSuspension {
 
 final class HotkeyMonitor {
     private var captureSuspension = HotkeyCaptureSuspension()
-    enum CombinationActivation {
+    enum CombinationActivation: String, Codable {
         case toggle
-        case pushToTalk
+        case pushToTalk = "push_to_talk"
     }
 
     var onArm: (() -> Void)?
@@ -430,9 +430,15 @@ final class HotkeyMonitor {
 
         if combinationActivation == .pushToTalk {
             beginCombinationPushToTalk()
-            return true
+        } else {
+            armCombinationToggle()
         }
+        return true
+    }
 
+    /// The chord must stay held for the start delay before it toggles, so a brief
+    /// press cannot start or stop a session.
+    private func armCombinationToggle() {
         combinationKeyDown = true
         combinationTriggered = false
         combinationWorkItem?.cancel()
@@ -445,7 +451,6 @@ final class HotkeyMonitor {
         combinationWorkItem = item
         scheduleAfter(startDelay, item)
         fputs("[hotkey] combination armed\n", stderr)
-        return true
     }
 
     private func beginCombinationPushToTalk() {
@@ -555,10 +560,18 @@ final class HotkeyMonitor {
         case UInt32(kEventHotKeyPressed):
             guard !registeredHotKeyIsDown else { return }
             registeredHotKeyIsDown = true
-            beginCombinationPushToTalk()
+            if combinationActivation == .pushToTalk {
+                beginCombinationPushToTalk()
+            } else {
+                armCombinationToggle()
+            }
         case UInt32(kEventHotKeyReleased):
             registeredHotKeyIsDown = false
-            finishCombinationPushToTalk(cancelled: false)
+            if combinationActivation == .pushToTalk {
+                finishCombinationPushToTalk(cancelled: false)
+            } else {
+                cancelCombinationPending(notify: false)
+            }
         default:
             break
         }

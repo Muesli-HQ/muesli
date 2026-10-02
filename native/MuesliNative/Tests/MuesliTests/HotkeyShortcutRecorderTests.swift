@@ -52,6 +52,29 @@ struct HotkeyShortcutRecorderTests {
         #expect(modifiersFirst.completed?.label == "⌃Q")
     }
 
+    @Test("dictation chord waits for every key, ignores repeats, and normalizes device flags")
+    func dictationChord() {
+        var capture = HotkeyShortcutCaptureState(target: .dictation)
+        capture.flagsChanged(keyCode: 59, flags: .control)
+        capture.flagsChanged(keyCode: 58, flags: [.control, .option])
+        capture.keyDown(keyCode: 49, flags: [.control, .option, .capsLock, .function], isRepeat: false)
+        capture.keyDown(keyCode: 0, flags: [.control, .option], isRepeat: true)
+        capture.keyUp(keyCode: 49, flags: [.control, .option])
+        #expect(capture.completed == nil)
+        capture.flagsChanged(keyCode: 59, flags: .option)
+        #expect(capture.completed == nil)
+        capture.flagsChanged(keyCode: 58, flags: .capsLock)
+        #expect(capture.completed == HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49))
+        #expect(capture.completed?.label == "⌃⌥Space")
+
+        var modifiersFirst = HotkeyShortcutCaptureState(target: .dictation)
+        modifiersFirst.keyDown(keyCode: 124, flags: [.command, .numericPad, .function], isRepeat: false)
+        modifiersFirst.flagsChanged(keyCode: 55, flags: [])
+        #expect(modifiersFirst.completed == nil)
+        modifiersFirst.keyUp(keyCode: 124, flags: [])
+        #expect(modifiersFirst.completed?.label == "⌘→")
+    }
+
     struct ChordRule: Sendable, CustomTestStringConvertible {
         let target: HotkeyShortcutTarget
         let modifiers: NSEvent.ModifierFlags
@@ -63,7 +86,9 @@ struct HotkeyShortcutRecorderTests {
 
     @Test("each target keeps its own chord rules", arguments: [
         ChordRule(target: .dictation, modifiers: .shift, keyCode: 0, accepted: false),
-        ChordRule(target: .dictation, modifiers: [.control, .option], keyCode: 49, accepted: false),
+        ChordRule(target: .dictation, modifiers: [.control, .option], keyCode: 49, accepted: true),
+        ChordRule(target: .dictation, modifiers: .command, keyCode: 36, accepted: false),
+        ChordRule(target: .dictation, modifiers: [.command, .shift], keyCode: 18, accepted: true),
         ChordRule(target: .quil, modifiers: .control, keyCode: 12, accepted: true),
         ChordRule(target: .quil, modifiers: [.control, .option], keyCode: 12, accepted: false),
         ChordRule(target: .meetingRecording, modifiers: [.command, .shift], keyCode: 15, accepted: true),
@@ -159,7 +184,7 @@ struct HotkeyShortcutRecorderTests {
         #expect(released == 1)
     }
 
-    @Test("rejected chords keep recording")
+    @Test("rejected dictation chords keep recording and surface guidance")
     func rejectedChordKeepsRecording() throws {
         var handler: ((NSEvent) -> NSEvent?)?
         let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })

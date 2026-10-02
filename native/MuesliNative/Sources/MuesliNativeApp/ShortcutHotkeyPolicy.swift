@@ -32,6 +32,8 @@ struct ShortcutHotkeyPolicy {
     static let conflictMessage = "These shortcuts need different keys."
     static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
     static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
+    static let pasteConflictMessage = "Muesli uses this shortcut to paste. Choose a different shortcut."
+    static let dictationShortcutMessage = "Use a modifier key, or a key with Command, Control, or Option."
 
     static func isValidQuilShortcut(_ hotkey: HotkeyConfig) -> Bool {
         guard hotkey.isCombination else { return HotkeyConfig.label(for: hotkey.keyCode) != nil }
@@ -79,13 +81,16 @@ struct ShortcutHotkeyPolicy {
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
+        guard hotkey.isValidDictationShortcut else {
+            return .conflict(message: dictationShortcutMessage)
+        }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
             return .conflict(message: conflictMessage)
         }
-        return .updated
+        return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
 
     static func validateComputerUseHotkey(

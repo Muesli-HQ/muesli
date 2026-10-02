@@ -751,9 +751,15 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
         hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
-        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
+        hotkeyMonitor.onToggleStart = { [weak self] in
+            // A refused start must not leave the next press acting as a stop.
+            guard let self, !self.handleToggleStart() else { return }
+            self.hotkeyMonitor.cancelToggleMode()
+        }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
+        hotkeyMonitor.registersCombinationGlobally = true
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -4452,13 +4458,26 @@ public final class MuesliController: NSObject {
             isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
         )
         guard result.didUpdate else {
-            fputs("[hotkeys] rejected dictation hotkey because it matches computer use hotkey\n", stderr)
+            fputs("[hotkeys] rejected dictation hotkey: \(result.message ?? "invalid")\n", stderr)
             return result
+        }
+        // Muesli's own paste would trigger a dictation chord registered on the same keys.
+        if hotkey.isCombination,
+           let pasteChord = PasteKeyboardLayout.resolve(config.pasteShortcut),
+           ShortcutHotkeyPolicy.hotkeysConflict(hotkey, Self.hotkey(for: pasteChord)) {
+            return .conflict(message: ShortcutHotkeyPolicy.pasteConflictMessage)
         }
         updateConfig { $0.dictationHotkey = hotkey }
         hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
         return result
+    }
+
+    func updateDictationCombinationActivation(_ activation: HotkeyMonitor.CombinationActivation) {
+        updateConfig { $0.dictationCombinationActivation = activation }
+        hotkeyMonitor.combinationActivation = activation
+        // Ends any session started under the previous activation before it can be misread.
+        hotkeyMonitor.configure(config.dictationHotkey)
     }
 
     @discardableResult
@@ -4637,6 +4656,7 @@ public final class MuesliController: NSObject {
     func resetShortcutDefaults() {
         updateConfig { config in
             config.dictationHotkey = .default
+            config.dictationCombinationActivation = .pushToTalk
             config.quilHotkey = .quilDefault
             config.enableQuilMode = false
             config.computerUseHotkey = .computerUseDefault
@@ -4648,6 +4668,7 @@ public final class MuesliController: NSObject {
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
+        hotkeyMonitor.combinationActivation = .pushToTalk
         hotkeyMonitor.configure(.default)
         quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
@@ -4825,9 +4846,9 @@ public final class MuesliController: NSObject {
         setState(.idle)
     }
 
-    func startHotkeyMonitor(keyCode: UInt16? = nil) {
-        if let keyCode {
-            hotkeyMonitor.configure(keyCode: keyCode)
+    func startHotkeyMonitor(hotkey: HotkeyConfig? = nil) {
+        if let hotkey {
+            hotkeyMonitor.configure(hotkey)
         }
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
@@ -4859,13 +4880,16 @@ public final class MuesliController: NSObject {
             .forEach { $0.resumeAfterShortcutCapture() }
     }
 
+    private static func hotkey(for chord: PasteKeyChord) -> HotkeyConfig {
+        HotkeyConfig.combination(modifiers: NSEvent.ModifierFlags(rawValue: UInt(chord.modifiers)), keyCode: chord.keyCode)
+    }
+
+    /// Disabled shortcuts count too: re-enabling one does not revisit the paste
+    /// chord, and a registered chord would intercept Muesli's own paste.
     func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
-        let candidate = HotkeyConfig.combination(modifiers: NSEvent.ModifierFlags(rawValue: UInt(chord.modifiers)), keyCode: chord.keyCode)
-        return [(config.enablePushToTalk, config.dictationHotkey),
-                (config.enableComputerUseHotkey, config.computerUseHotkey),
-                (config.enableQuilMode, config.quilHotkey),
-                (config.enableMeetingRecordingHotkey, config.meetingRecordingHotkey)]
-            .contains { $0.0 && $0.1.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0.1) }
+        let candidate = Self.hotkey(for: chord)
+        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
+            .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
     }
 
     func downloadModelForOnboarding(
@@ -5033,7 +5057,7 @@ public final class MuesliController: NSObject {
             }
         }
         selectBackend(backend)
-        hotkeyMonitor.configure(keyCode: hotkey.keyCode)
+        hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
         clearDictationTestLifecycle()
 
@@ -5426,8 +5450,7 @@ public final class MuesliController: NSObject {
             selectedBackendKey: config.sttBackend,
             selectedModelKey: config.sttModel,
             selectedCohereLanguageCode: config.cohereLanguage,
-            hotkeyKeyCode: config.dictationHotkey.keyCode,
-            hotkeyLabel: config.dictationHotkey.label,
+            hotkey: config.dictationHotkey,
             systemAudioRequested: false,
             onboardingUseCaseRawValue: config.onboardingUseCase
         )

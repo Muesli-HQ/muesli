@@ -62,6 +62,32 @@ struct ShortcutsView: View {
 
     private var recordingTarget: ShortcutTarget? { recorder.target }
 
+    private var isDictationCombinationToggle: Bool {
+        appState.config.dictationHotkey.isCombination
+            && appState.config.dictationCombinationActivation == .toggle
+    }
+
+    private var dictationCombinationActivationControl: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Text("Activation")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer(minLength: MuesliTheme.spacing16)
+            Picker("Activation", selection: Binding(
+                get: { appState.config.dictationCombinationActivation },
+                set: { controller.updateDictationCombinationActivation($0) }
+            )) {
+                Text("Hold to talk").tag(HotkeyMonitor.CombinationActivation.pushToTalk)
+                Text("Toggle").tag(HotkeyMonitor.CombinationActivation.toggle)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+        }
+        .disabled(!isPushToTalkEnabled || recordingTarget != nil)
+        .opacity(isPushToTalkEnabled ? 1 : 0.55)
+    }
+
     private var isPushToTalkEnabled: Bool {
         appState.config.enablePushToTalk
     }
@@ -81,7 +107,9 @@ struct ShortcutsView: View {
                     Text("Push to Talk")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Hold to record, release to transcribe")
+                    Text(isDictationCombinationToggle
+                        ? "Hold to start recording, hold again to transcribe"
+                        : "Hold to record, release to transcribe")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -105,11 +133,17 @@ struct ShortcutsView: View {
 
             pushToTalkControls
 
+            if appState.config.dictationHotkey.isCombination {
+                dictationCombinationActivationControl
+            }
+
             if !isPushToTalkEnabled {
                 pushToTalkDisabledMessage
             }
 
-            if let dictationShortcutMessage {
+            if recordingTarget == .dictation, recorder.rejectedChord {
+                shortcutMessage(ShortcutHotkeyPolicy.dictationShortcutMessage)
+            } else if let dictationShortcutMessage {
                 shortcutMessage(dictationShortcutMessage)
             }
         }
@@ -491,7 +525,9 @@ struct ShortcutsView: View {
             return "Press a key or modifier..."
         case .quil:
             return "Press one key or a two-key shortcut..."
-        case .dictation, .computerUse:
+        case .dictation:
+            return "Press a modifier or a shortcut..."
+        case .computerUse:
             return "Press a modifier key..."
         }
     }
@@ -543,6 +579,7 @@ struct ShortcutsView: View {
         .buttonStyle(.plain)
         .disabled(
             appState.config.dictationHotkey == .default
+                && appState.config.dictationCombinationActivation == .pushToTalk
                 && appState.config.computerUseHotkey == .computerUseDefault
                 && !appState.config.enableComputerUseHotkey
                 && appState.config.quilHotkey == .quilDefault

@@ -72,11 +72,13 @@ struct HotkeyShortcutCaptureState {
 
     static func accepts(_ hotkey: HotkeyConfig, for target: HotkeyShortcutTarget) -> Bool {
         switch target {
+        case .dictation:
+            return hotkey.isValidDictationShortcut
         case .quil:
             return ShortcutHotkeyPolicy.isValidQuilShortcut(hotkey)
         case .meetingRecording:
             return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
-        case .dictation, .computerUse:
+        case .computerUse:
             return false
         }
     }
