@@ -3028,6 +3028,25 @@ struct HotkeyMonitorTests {
         #expect(events == ["prepare", "start", "stop"])
     }
 
+    @Test("registered hold-to-talk chord keeps thresholds below the double-tap guard")
+    @MainActor
+    func registeredChordIgnoresDoubleTapGuard() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = true
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+
+        #expect(HotkeyTriggerTiming.doubleTapTapGuardDelay > 0.06)
+        #expect(events == ["prepare", "start"])
+    }
+
     @Test("registered hotkey handlers only claim their own chord")
     @MainActor
     func registeredHotkeyHandlersOnlyClaimTheirOwnChord() {
@@ -3395,6 +3414,10 @@ struct HotkeyConfigTests {
         #expect(!HotkeyConfig.combination(modifiers: .shift, keyCode: 2).isValidDictationShortcut)
         // Automatic paste is Command plus whichever key types "v" in the current layout.
         #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 47).isValidDictationShortcut)
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 2).isValidDictationShortcut)
+        for keyCode: UInt16 in [18, 49, 123, 122, 90] {
+            #expect(HotkeyConfig.combination(modifiers: .command, keyCode: keyCode).isValidDictationShortcut)
+        }
         #expect(!HotkeyConfig.combination(modifiers: [.capsLock, .function], keyCode: 2).isValidDictationShortcut)
         #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 36).isValidDictationShortcut)
         #expect(!HotkeyConfig(keyCode: 0, label: "A").isValidDictationShortcut)

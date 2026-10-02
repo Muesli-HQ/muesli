@@ -89,6 +89,7 @@ struct HotkeyShortcutRecorderTests {
         ChordRule(target: .dictation, modifiers: [.control, .option], keyCode: 49, accepted: true),
         ChordRule(target: .dictation, modifiers: .command, keyCode: 36, accepted: false),
         ChordRule(target: .dictation, modifiers: .command, keyCode: 2, accepted: false),
+        ChordRule(target: .dictation, modifiers: .command, keyCode: 18, accepted: true),
         ChordRule(target: .dictation, modifiers: [.command, .shift], keyCode: 18, accepted: true),
         ChordRule(target: .quil, modifiers: .control, keyCode: 12, accepted: true),
         ChordRule(target: .quil, modifiers: [.control, .option], keyCode: 12, accepted: false),

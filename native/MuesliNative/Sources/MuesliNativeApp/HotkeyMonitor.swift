@@ -816,7 +816,8 @@ final class HotkeyMonitor {
     }
 
     private func timerDelays() -> (prepare: TimeInterval, start: TimeInterval) {
-        guard doubleTapEnabled else {
+        // Only bare modifiers detect double-taps, so chords keep their configured threshold.
+        guard doubleTapEnabled, !isCombinationMode else {
             return (prepareDelay, startDelay)
         }
         let guardedStartDelay = max(startDelay, HotkeyTriggerTiming.doubleTapTapGuardDelay)

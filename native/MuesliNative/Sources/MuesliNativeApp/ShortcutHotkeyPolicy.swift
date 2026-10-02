@@ -33,7 +33,7 @@ struct ShortcutHotkeyPolicy {
     static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
     static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
     static let pasteConflictMessage = "Muesli uses this shortcut to paste. Choose a different shortcut."
-    static let dictationShortcutMessage = "Use a modifier key, or a shortcut with Control, Option, or Command and Shift."
+    static let dictationShortcutMessage = "Use a modifier key, or add Control, Option, or Shift. Command alone works only with digits, Space, arrows, and function keys."
 
     static func isValidQuilShortcut(_ hotkey: HotkeyConfig) -> Bool {
         guard hotkey.isCombination else { return HotkeyConfig.label(for: hotkey.keyCode) != nil }

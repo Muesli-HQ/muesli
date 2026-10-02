@@ -1634,8 +1634,9 @@ struct HotkeyConfig: Codable, Equatable {
     }
 
     /// Dictation accepts one bare modifier, or a chord of a supported key with any
-    /// modifiers except Shift alone, which would capture ordinary typing, or
-    /// Command alone, which Automatic paste can resolve to under another layout.
+    /// modifiers except Shift alone, which would capture ordinary typing. Command
+    /// alone is limited to keys that never type a letter: Automatic paste sends
+    /// Command plus whichever key types "v" in the current layout.
     var isValidDictationShortcut: Bool {
         guard combinationModifiers != nil || combinationKeyCode != nil else {
             return Self.label(for: keyCode) != nil
@@ -1643,8 +1644,17 @@ struct HotkeyConfig: Codable, Equatable {
         guard let modifiers = resolvedCombinationModifiers,
               let combinationKeyCode,
               Self.keyLabel(for: combinationKeyCode) != nil else { return false }
-        return !modifiers.subtracting(.shift).isEmpty && modifiers != .command
+        if modifiers == .command {
+            return Self.layoutIndependentKeyCodes.contains(combinationKeyCode)
+        }
+        return !modifiers.subtracting(.shift).isEmpty
     }
+
+    /// Digits, Space, arrows, and function keys.
+    private static let layoutIndependentKeyCodes: Set<UInt16> = [
+        18, 19, 20, 21, 22, 23, 25, 26, 28, 29, 49, 123, 124, 125, 126,
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+    ]
 
     static let `default` = HotkeyConfig()
     static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
