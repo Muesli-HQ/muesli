@@ -16,6 +16,7 @@ struct MeetingParticipantsView: View {
     @State private var isNewContactPresented = false
     @State private var isPeoplePopoverPresented = false
     @State private var errorMessage: String?
+    @State private var callerHistory: CallerHistorySelection?
 
     init(
         meetingID: Int64,
@@ -57,6 +58,12 @@ struct MeetingParticipantsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { notification in
             guard notification.object as? Int64 == meetingID else { return }
             Task { await reload() }
+        }
+        .sheet(item: $callerHistory, onDismiss: { Task { await reload() } }) { selection in
+            CallerHistoryView(personID: selection.id, controller: controller) { meetingID in
+                callerHistory = nil
+                controller.showMeetingDocument(id: meetingID)
+            }
         }
         .sheet(isPresented: $isNewContactPresented) {
             NewMeetingContactView { participant in
@@ -222,8 +229,10 @@ struct MeetingParticipantsView: View {
             participant.displayName,
             emailAddress: participant.emailAddress
         )
+        let callerID = DictationStore.callerPersonID(fromParticipantIdentifier: participant.participantIdentifier)
+            ?? participant.callerPersonID
         return HStack(spacing: MuesliTheme.spacing8) {
-            Image(systemName: "person.crop.circle.fill")
+            Image(systemName: callerID == nil ? "person.crop.circle.fill" : "phone.circle.fill")
                 .font(.system(size: 18))
                 .foregroundStyle(MuesliTheme.textTertiary)
 
@@ -238,6 +247,18 @@ struct MeetingParticipantsView: View {
             }
 
             Spacer()
+
+            if let callerID {
+                Button {
+                    showCallerHistory(callerID)
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Caller History…")
+            }
 
             Button {
                 remove(participant)
@@ -274,6 +295,14 @@ struct MeetingParticipantsView: View {
         Task { @MainActor in
             await Task.yield()
             isPeoplePopoverPresented = true
+        }
+    }
+
+    private func showCallerHistory(_ personID: UUID) {
+        isPeoplePopoverPresented = false
+        Task { @MainActor in
+            await Task.yield()
+            callerHistory = CallerHistorySelection(id: personID)
         }
     }
 

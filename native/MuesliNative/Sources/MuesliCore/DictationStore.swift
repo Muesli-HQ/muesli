@@ -336,6 +336,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_cloud_record_name ON meetings(cloud_record_name)", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
+        try migrateCallerTables(db: db)
         try migrateInsightsCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
@@ -1157,10 +1158,13 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
 
         let sql = """
-        SELECT meeting_id, participant_identifier, display_name, email_address, insertion_order
-        FROM meeting_participants
-        WHERE meeting_id = ? AND is_suppressed = 0
-        ORDER BY insertion_order, participant_identifier
+        SELECT p.meeting_id, p.participant_identifier, p.display_name, p.email_address,
+               p.insertion_order, l.person_id
+        FROM meeting_participants p
+        LEFT JOIN caller_person_meeting_participants l
+          ON l.meeting_id = p.meeting_id AND l.participant_identifier = p.participant_identifier
+        WHERE p.meeting_id = ? AND p.is_suppressed = 0
+        ORDER BY p.insertion_order, p.participant_identifier
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1180,7 +1184,10 @@ public final class DictationStore {
                     emailAddress: sqlite3_column_type(statement, 3) == SQLITE_NULL
                         ? nil
                         : stringColumn(statement, index: 3),
-                    insertionOrder: Int(sqlite3_column_int64(statement, 4))
+                    insertionOrder: Int(sqlite3_column_int64(statement, 4)),
+                    callerPersonID: sqlite3_column_type(statement, 5) == SQLITE_NULL
+                        ? nil
+                        : UUID(uuidString: stringColumn(statement, index: 5))
                 ))
             case SQLITE_DONE:
                 return participants
@@ -1214,6 +1221,7 @@ public final class DictationStore {
     }
 
     private enum MeetingParticipantSource: String {
+        case automaticCall
         case calendar
         case manual
     }
@@ -1266,6 +1274,7 @@ public final class DictationStore {
                 try deleteMeetingParticipant(
                     meetingID: meetingID,
                     participantIdentifier: identifier,
+                    preserveCallerHistory: true,
                     db: db
                 )
             }
@@ -1296,11 +1305,12 @@ public final class DictationStore {
 
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
         do {
-            if try meetingParticipantSource(
+            let source = try meetingParticipantSource(
                 meetingID: meetingID,
                 participantIdentifier: normalizedIdentifier,
                 db: db
-            ) == .calendar {
+            )
+            if source == .calendar || source == .automaticCall {
                 try suppressMeetingParticipant(
                     meetingID: meetingID,
                     participantIdentifier: normalizedIdentifier,
@@ -1494,11 +1504,45 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        var historyStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "UPDATE caller_person_meeting_history SET is_suppressed = 1 WHERE meeting_id = ? AND participant_identifier = ?",
+            -1,
+            &historyStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(historyStatement) }
+        sqlite3_bind_int64(historyStatement, 1, meetingID)
+        sqlite3_bind_text(historyStatement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
+        guard sqlite3_step(historyStatement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        var associationStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "DELETE FROM caller_person_meeting_participants WHERE meeting_id = ? AND participant_identifier = ?",
+            -1,
+            &associationStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(associationStatement) }
+        sqlite3_bind_int64(associationStatement, 1, meetingID)
+        sqlite3_bind_text(associationStatement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
+        guard sqlite3_step(associationStatement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        try deleteOrphanCallerPeople(db: db)
     }
 
     private func deleteMeetingParticipant(
         meetingID: Int64,
         participantIdentifier: String,
+        preserveCallerHistory: Bool = false,
         db: OpaquePointer?
     ) throws {
         let sql = """
@@ -1515,6 +1559,20 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        guard !preserveCallerHistory else { return }
+
+        let historySQL = "DELETE FROM caller_person_meeting_history WHERE meeting_id = ? AND participant_identifier = ?"
+        var historyStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, historySQL, -1, &historyStatement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(historyStatement) }
+        sqlite3_bind_int64(historyStatement, 1, meetingID)
+        sqlite3_bind_text(historyStatement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
+        guard sqlite3_step(historyStatement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        try deleteOrphanCallerPeople(db: db)
     }
 
     @discardableResult
@@ -2518,29 +2576,38 @@ public final class DictationStore {
     public func clearMeetings() throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        try exec("DELETE FROM meeting_resume_snapshots", db: db)
-        try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
-        try exec("DELETE FROM meeting_participants", db: db)
-        try exec(
-            """
-            UPDATE meetings
-            SET title = 'Deleted Meeting',
-                raw_transcript = '',
-                formatted_notes = NULL,
-                manual_notes = '',
-                mic_audio_path = NULL,
-                system_audio_path = NULL,
-                saved_recording_path = NULL,
-                visual_context = NULL,
-                word_count = 0,
-                duration_seconds = 0,
-                deleted_at = strftime('%s','now'),
-                updated_at = strftime('%s','now'),
-                sync_dirty = 1
-            WHERE deleted_at IS NULL
-            """,
-            db: db
-        )
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            try exec("DELETE FROM meeting_resume_snapshots", db: db)
+            try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
+            try exec("DELETE FROM meeting_participants", db: db)
+            try exec("DELETE FROM caller_person_meeting_history", db: db)
+            try deleteOrphanCallerPeople(db: db)
+            try exec(
+                """
+                UPDATE meetings
+                SET title = 'Deleted Meeting',
+                    raw_transcript = '',
+                    formatted_notes = NULL,
+                    manual_notes = '',
+                    mic_audio_path = NULL,
+                    system_audio_path = NULL,
+                    saved_recording_path = NULL,
+                    visual_context = NULL,
+                    word_count = 0,
+                    duration_seconds = 0,
+                    deleted_at = strftime('%s','now'),
+                    updated_at = strftime('%s','now'),
+                    sync_dirty = 1
+                WHERE deleted_at IS NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
     }
 
     public func updateMeeting(id: Int64, title: String, formattedNotes: String) throws {
@@ -3235,6 +3302,22 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        var historyStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "DELETE FROM caller_person_meeting_history WHERE meeting_id = ?",
+            -1,
+            &historyStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(historyStatement) }
+        sqlite3_bind_int64(historyStatement, 1, meetingID)
+        guard sqlite3_step(historyStatement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        try deleteOrphanCallerPeople(db: db)
     }
 
     private func deleteComputerUseTrace(dictationID: Int64, db: OpaquePointer?) throws {
@@ -4498,6 +4581,7 @@ public final class DictationStore {
             let dictations = try purgeSoftDeletedRows(table: "dictations", deletedBefore: cutoff, db: db)
             try detachFollowUpSuccessorsOfPurgeableMeetings(deletedBefore: cutoff, db: db)
             let meetings = try purgeSoftDeletedRows(table: "meetings", deletedBefore: cutoff, db: db)
+            try deleteOrphanCallerPeople(db: db)
             try exec("COMMIT", db: db)
             return (dictations, meetings)
         } catch {
@@ -5027,7 +5111,24 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_changes(db) > 0
+        let applied = sqlite3_changes(db) > 0
+        if applied, record.isDeleted {
+            // A meeting deleted on another device loses its local People too,
+            // matching deleteMeeting, so no caller numbers linger until purge.
+            try deleteParticipants(ofMeetingRecordName: record.id, db: db)
+        }
+        return applied
+    }
+
+    private func deleteParticipants(ofMeetingRecordName recordName: String, db: OpaquePointer?) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id FROM meetings WHERE cloud_record_name = ?", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return }
+        try deleteMeetingParticipants(meetingID: sqlite3_column_int64(statement, 0), db: db)
     }
 
     private func normalizedFollowUpRecordName(_ followUpRecordName: String?, recordName: String) -> String? {
@@ -5141,6 +5242,12 @@ public final class DictationStore {
             followUpToRecordName: followUpToRecordName,
             visualContext: optionalStringColumn(statement, index: 26)
         )
+    }
+
+    /// The one connection entry point for the caller extension in
+    /// DictationStore+Callers.swift; the store's other SQLite helpers stay private.
+    func openCallerConnection() throws -> OpaquePointer? {
+        try openDatabase()
     }
 
     private func openDatabase() throws -> OpaquePointer? {
