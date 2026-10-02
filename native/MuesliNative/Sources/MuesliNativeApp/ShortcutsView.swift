@@ -6,9 +6,7 @@ struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var permissionMonitoringClientID = UUID()
-    @State private var recordingTarget: ShortcutTarget?
-    @State private var eventMonitor: Any?
-    @State private var pendingModifierKeyCode: UInt16?
+    @State private var recorder = HotkeyShortcutRecorder()
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
     @State private var quilShortcutMessage: String?
@@ -56,7 +54,13 @@ struct ShortcutsView: View {
             controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             stopRecording()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in stopRecording() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
+            recorder.windowDidResignKey(notification.object as? NSWindow)
+        }
     }
+
+    private var recordingTarget: ShortcutTarget? { recorder.target }
 
     private var isPushToTalkEnabled: Bool {
         appState.config.enablePushToTalk
@@ -68,12 +72,7 @@ struct ShortcutsView: View {
         ).missingPermissionsMessage
     }
 
-    private enum ShortcutTarget {
-        case dictation
-        case computerUse
-        case quil
-        case meetingRecording
-    }
+    private typealias ShortcutTarget = HotkeyShortcutTarget
 
     private var dictationShortcutSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
@@ -560,50 +559,14 @@ struct ShortcutsView: View {
     private func startRecording(_ target: ShortcutTarget) {
         stopRecording()
         clearShortcutMessage(for: target)
-        pendingModifierKeyCode = nil
-        recordingTarget = target
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [self] event in
-            if event.type == .keyDown {
-                if event.keyCode == 53 {
-                    stopRecording()
-                    return nil
-                }
-                let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
-                let modifierCount = [NSEvent.ModifierFlags.command, .control, .option, .shift]
-                    .filter { mods.contains($0) }.count
-                let allowsCombination = target == .meetingRecording || target == .quil
-                guard allowsCombination,
-                      (target != .quil || modifierCount == 1),
-                      modifierCount > 0,
-                      HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
-                    return event
-                }
-                pendingModifierKeyCode = nil
-                let newConfig = HotkeyConfig.combination(modifiers: mods, keyCode: event.keyCode)
-                commitShortcut(newConfig, for: target)
-                return nil
-            }
-
-            let keyCode = event.keyCode
-            guard HotkeyConfig.label(for: keyCode) != nil else { return event }
-            let flags = event.modifierFlags
-            let isDown: Bool
-            switch keyCode {
-            case 55, 54: isDown = flags.contains(.command)
-            case 56, 60: isDown = flags.contains(.shift)
-            case 58, 61: isDown = flags.contains(.option)
-            case 59, 62: isDown = flags.contains(.control)
-            case 63: isDown = flags.contains(.function)
-            default: isDown = false
-            }
-            if isDown {
-                pendingModifierKeyCode = keyCode
-            } else if keyCode == pendingModifierKeyCode {
-                let newConfig = HotkeyConfig(keyCode: keyCode, label: HotkeyConfig.label(for: keyCode)!)
-                pendingModifierKeyCode = nil
-                commitShortcut(newConfig, for: target)
-            }
-            return event
+        let failure = recorder.start(
+            target,
+            acquire: { controller.beginShortcutCapture() },
+            release: { controller.endShortcutCapture() },
+            commit: { commitShortcut($0, for: target) }
+        )
+        if let failure {
+            setShortcutMessage(failure, for: target)
         }
     }
 
@@ -620,7 +583,6 @@ struct ShortcutsView: View {
             result = controller.updateMeetingRecordingHotkey(config)
         }
         setShortcutMessage(result.message, for: target)
-        stopRecording()
     }
 
     private func clearShortcutMessage(for target: ShortcutTarget) {
@@ -645,10 +607,6 @@ struct ShortcutsView: View {
     }
 
     private func stopRecording() {
-        recordingTarget = nil
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            eventMonitor = nil
-        }
+        recorder.cancel()
     }
 }

@@ -45,8 +45,8 @@ final class PasteShortcutRecorder {
     }
 
     func start(controller: MuesliController) {
-        start(acquire: { controller.beginPasteShortcutCapture() },
-              release: { controller.endPasteShortcutCapture() },
+        start(acquire: { controller.beginShortcutCapture() },
+              release: { controller.endShortcutCapture() },
               conflicts: { controller.pasteShortcutConflict($0) },
               commit: { chord in controller.updateConfig { $0.pasteShortcut = .custom(chord) } })
     }

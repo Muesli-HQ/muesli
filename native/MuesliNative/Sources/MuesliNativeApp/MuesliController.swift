@@ -387,7 +387,7 @@ public final class MuesliController: NSObject {
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
-    private var isRecordingPasteShortcut = false
+    private var isCapturingShortcut = false
     private let computerUseRecorder = RouteAwareDictationRecorder()
     private let quilRecorder = RouteAwareDictationRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
@@ -4840,21 +4840,21 @@ public final class MuesliController: NSObject {
     }
 
     /// Recorder owns a temporary pause, never changes feature enablement/config.
-    func beginPasteShortcutCapture() -> Bool {
+    func beginShortcutCapture() -> Bool {
         let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
-        guard !isRecordingPasteShortcut, dictationState == .idle,
+        guard !isCapturingShortcut, dictationState == .idle,
               !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
               !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
               interactiveAudioSessionOwnership.canStart(.dictation),
               monitors.allSatisfy({ !$0.hasPendingOrActiveSession }) else { return false }
-        isRecordingPasteShortcut = true
+        isCapturingShortcut = true
         monitors.forEach { $0.suspendForShortcutCapture() }
         return true
     }
 
-    func endPasteShortcutCapture() {
-        guard isRecordingPasteShortcut else { return }
-        isRecordingPasteShortcut = false
+    func endShortcutCapture() {
+        guard isCapturingShortcut else { return }
+        isCapturingShortcut = false
         [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
             .forEach { $0.resumeAfterShortcutCapture() }
     }
