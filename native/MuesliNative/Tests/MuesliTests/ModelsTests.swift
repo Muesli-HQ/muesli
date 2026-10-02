@@ -2921,6 +2921,52 @@ struct HotkeyMonitorTests {
 
         #expect(events == ["prepare", "start", "stop"])
     }
+
+    @Test("registered chord ignores repeated presses and stays idle after Escape until released")
+    @MainActor
+    func registeredChordIgnoresRepeatsAndEscapeUntilRelease() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["prepare", "start"])
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.control, .option])
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        #expect(events == ["prepare", "start", "cancel"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "cancel"])
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "cancel", "prepare", "start", "stop"])
+    }
+
+    @Test("registered hotkey handlers only claim their own chord")
+    @MainActor
+    func registeredHotkeyHandlersOnlyClaimTheirOwnChord() {
+        let dictation = HotkeyMonitor()
+        let quill = HotkeyMonitor()
+
+        #expect(dictation.ownsRegisteredHotKeyForTests(dictation.registeredHotKeyIDForTests))
+        #expect(!dictation.ownsRegisteredHotKeyForTests(quill.registeredHotKeyIDForTests))
+        #expect(!quill.ownsRegisteredHotKeyForTests(dictation.registeredHotKeyIDForTests))
+    }
+
 }
 
 @Suite("MeetingResummarizationPolicy")

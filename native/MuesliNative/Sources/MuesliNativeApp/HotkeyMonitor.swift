@@ -93,6 +93,13 @@ final class HotkeyMonitor {
     private var localMonitor: Any?
     private var registeredHotKey: EventHotKeyRef?
     private var registeredHotKeyHandler: EventHandlerRef?
+    // Every monitor installs a handler on the same application target, so each
+    // registration needs its own ID for handlers to ignore other monitors' chords.
+    private static var lastRegisteredHotKeyID: UInt32 = 0
+    private let registeredHotKeyID: EventHotKeyID
+    // Tracks the physical chord, independent of the session: after Escape cancels
+    // a held chord, it stays down and must not start another session until released.
+    private var registeredHotKeyIsDown = false
     private var prepareWorkItem: DispatchWorkItem?
     private var startWorkItem: DispatchWorkItem?
     private var armCancelWorkItem: DispatchWorkItem?
@@ -131,6 +138,8 @@ final class HotkeyMonitor {
         self.doubleTapWindow = doubleTapWindow
         self.scheduleAfter = scheduleAfter
         self.now = now
+        Self.lastRegisteredHotKeyID &+= 1
+        registeredHotKeyID = EventHotKeyID(signature: 0x4D55_4553, id: Self.lastRegisteredHotKeyID) // "MUES"
     }
 
     func configureTriggerThreshold(milliseconds: Int) {
@@ -208,6 +217,7 @@ final class HotkeyMonitor {
             RemoveEventHandler(registeredHotKeyHandler)
             self.registeredHotKeyHandler = nil
         }
+        registeredHotKeyIsDown = false
     }
 
     func configure(keyCode: UInt16) {
@@ -508,11 +518,10 @@ final class HotkeyMonitor {
             &registeredHotKeyHandler
         )
         guard status == noErr else { return false }
-        let hotKeyID = EventHotKeyID(signature: 0x5155494C, id: 1) // "QUIL"
         guard RegisterEventHotKey(
             UInt32(keyCode),
             carbonModifiers(modifiers),
-            hotKeyID,
+            registeredHotKeyID,
             GetApplicationEventTarget(),
             0,
             &registeredHotKey
@@ -537,11 +546,18 @@ final class HotkeyMonitor {
         }
     }
 
+    fileprivate func ownsRegisteredHotKey(_ id: EventHotKeyID) -> Bool {
+        id.signature == registeredHotKeyID.signature && id.id == registeredHotKeyID.id
+    }
+
     fileprivate func handleRegisteredHotKey(kind: UInt32) {
         switch kind {
         case UInt32(kEventHotKeyPressed):
+            guard !registeredHotKeyIsDown else { return }
+            registeredHotKeyIsDown = true
             beginCombinationPushToTalk()
         case UInt32(kEventHotKeyReleased):
+            registeredHotKeyIsDown = false
             finishCombinationPushToTalk(cancelled: false)
         default:
             break
@@ -834,6 +850,16 @@ final class HotkeyMonitor {
     func handleRegisteredHotKeyPressForTests() {
         handleRegisteredHotKey(kind: UInt32(kEventHotKeyPressed))
     }
+
+    func handleRegisteredHotKeyReleaseForTests() {
+        handleRegisteredHotKey(kind: UInt32(kEventHotKeyReleased))
+    }
+
+    var registeredHotKeyIDForTests: EventHotKeyID { registeredHotKeyID }
+
+    func ownsRegisteredHotKeyForTests(_ id: EventHotKeyID) -> Bool {
+        ownsRegisteredHotKey(id)
+    }
 }
 
 private func muesliRegisteredHotKeyHandler(
@@ -843,6 +869,20 @@ private func muesliRegisteredHotKeyHandler(
 ) -> OSStatus {
     guard let event, let userData else { return OSStatus(eventNotHandledErr) }
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userData).takeUnretainedValue()
+    var hotKeyID = EventHotKeyID()
+    let status = GetEventParameter(
+        event,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        &hotKeyID
+    )
+    // Pass other monitors' chords down the handler chain.
+    guard status == noErr, monitor.ownsRegisteredHotKey(hotKeyID) else {
+        return OSStatus(eventNotHandledErr)
+    }
     monitor.handleRegisteredHotKey(kind: GetEventKind(event))
     return noErr
 }
