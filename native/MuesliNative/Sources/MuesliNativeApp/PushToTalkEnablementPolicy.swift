@@ -50,9 +50,12 @@ enum PushToTalkEnablementPolicy {
         }
 
         var missingPermissionsMessage: String {
-            requiresAccessibility
-                ? "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
-                : "Grant Microphone and Input Monitoring to use Push to Talk."
+            switch self {
+            case .voiceNote:
+                "Grant Microphone and Input Monitoring to use voice notes."
+            case .paste:
+                "Grant Microphone, Accessibility, and Input Monitoring to use dictation."
+            }
         }
     }
 

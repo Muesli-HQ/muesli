@@ -79,10 +79,10 @@ struct ShortcutsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Push to Talk")
+                    Text("Dictation")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Hold to record, release to transcribe")
+                    Text(dictationShortcutHelp)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -91,7 +91,7 @@ struct ShortcutsView: View {
                     Text(isPushToTalkEnabled ? "On" : "Off")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
-                    Toggle("Push to Talk", isOn: Binding(
+                    Toggle("Dictation", isOn: Binding(
                         get: { isPushToTalkEnabled },
                         set: updatePushToTalkEnabled
                     ))
@@ -317,19 +317,44 @@ struct ShortcutsView: View {
         }
     }
 
+    private var dictationShortcutHelp: String {
+        if appState.config.dictationHotkey.isCombination {
+            return "Hold the shortcut to start, hold again to finish."
+        }
+        return appState.config.dictationActivationMode == .toggle
+            ? "Tap to start, tap again to finish."
+            : "Hold to record, release to transcribe."
+    }
+
     private var pushToTalkControls: some View {
-        HStack(spacing: MuesliTheme.spacing12) {
-            Text("Shortcut")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
-            hotkeyBadge(appState.config.dictationHotkey)
-            compactChangeButton(for: .dictation)
-            Spacer(minLength: MuesliTheme.spacing16)
-            thresholdInput(
-                value: appState.config.hotkeyTriggerThresholdMS,
-                label: "Hold duration"
-            ) { value in
-                controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(spacing: MuesliTheme.spacing12) {
+                Text("Shortcut")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                hotkeyBadge(appState.config.dictationHotkey)
+                compactChangeButton(for: .dictation)
+                Spacer(minLength: MuesliTheme.spacing16)
+                if appState.config.dictationHotkey.isCombination
+                    || appState.config.dictationActivationMode == .hold {
+                    thresholdInput(
+                        value: appState.config.hotkeyTriggerThresholdMS,
+                        label: "Hold duration"
+                    ) { value in
+                        controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+                    }
+                }
+            }
+            if !appState.config.dictationHotkey.isCombination {
+                Picker("Activation", selection: Binding(
+                    get: { appState.config.dictationActivationMode },
+                    set: { value in controller.updateConfig { $0.dictationActivationMode = value } }
+                )) {
+                    Text("Hold to talk").tag(DictationActivationMode.hold)
+                    Text("Tap to toggle").tag(DictationActivationMode.toggle)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Dictation activation")
             }
         }
         .disabled(!isPushToTalkEnabled)
@@ -400,7 +425,7 @@ struct ShortcutsView: View {
 
     private var pushToTalkDisabledMessageText: String {
         appState.config.resolvedOnboardingUseCase.includesPushToTalk
-            ? "Push to Talk is turned off."
+            ? "Dictation is turned off."
             : "Dictation wasn’t enabled during setup."
     }
 
@@ -504,7 +529,7 @@ struct ShortcutsView: View {
                     Text("Hands-Free Mode")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Double-tap dictation, Quill, or CUA to start; tap again to stop")
+                    Text("Double-tap to start hands-free recording for Hold to talk dictation, Quill, or CUA; tap again to stop.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -544,6 +569,7 @@ struct ShortcutsView: View {
         .buttonStyle(.plain)
         .disabled(
             appState.config.dictationHotkey == .default
+                && appState.config.dictationActivationMode == .hold
                 && appState.config.computerUseHotkey == .computerUseDefault
                 && !appState.config.enableComputerUseHotkey
                 && appState.config.quilHotkey == .quilDefault
