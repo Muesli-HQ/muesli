@@ -156,6 +156,61 @@ struct MeetingHookIntegrationTests {
         )
     }
 
+    @Test("late canonical name and participant edits do not replay completion hooks")
+    func lateArchiveEditsDoNotReplayCompletion() async throws {
+        let store = try makeStore()
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: store.databasePath().path + suffix)
+            }
+        }
+        let support = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let configStore = ConfigStore(supportDirectory: support)
+        var config = AppConfig()
+        config.iCloudSyncEnabled = false
+        config.autoExportMarkdownEnabled = true
+        config.meetingHookEnabled = true
+        configStore.save(config)
+        let spy = MeetingHookDispatcherSpy()
+        let exports = ArchiveAutoExportSpy()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: support, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore, meetingHookDispatcher: spy,
+            meetingMarkdownAutoExporter: exports
+        )
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(), preparedRecordingSave: .none
+        )
+        let id = persistence.meetingID
+        #expect(spy.invocations.count == 1)
+        #expect(exports.meetingIDs == [id])
+        let canonical = "[12:20:01] Ana Example: Corrected canonical text"
+        controller.updateMeetingTranscript(id: id, transcript: canonical)
+        try await controller.attachMeetingParticipant(meetingID: id, participant: .init(
+            participantIdentifier: "contact:synthetic-card", displayName: "Ana Example"
+        ))
+        #expect(try await controller.meetingParticipants(meetingID: id).map(\.displayName) == ["Ana Example"])
+        try await controller.removeMeetingParticipant(meetingID: id, participantIdentifier: "contact:synthetic-card")
+        #expect(try await controller.meetingParticipants(meetingID: id).isEmpty)
+        #expect(try store.meeting(id: id)?.rawTranscript == canonical)
+        #expect(spy.invocations.count == 1)
+        #expect(spy.invocations.first?.meetingID == id)
+        #expect(exports.meetingIDs == [id])
+        #expect(exports.lookupFailures.isEmpty)
+
+        let event = MeetingHookEvent(
+            schemaVersion: 1, event: "meeting.completed", kind: "meeting", id: id,
+            completedAt: "2024-04-24T12:25:00Z"
+        )
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(event))
+        let payload = try #require(object as? [String: Any])
+        #expect(Set(payload.keys) == ["schemaVersion", "event", "kind", "id", "completedAt"])
+        #expect(payload["schemaVersion"] as? Int == 1)
+        #expect(payload["event"] as? String == "meeting.completed")
+        #expect(payload["id"] as? Int64 == id)
+    }
+
     private func makeStore() throws -> DictationStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-hook-integration-\(UUID().uuidString).db")
@@ -188,6 +243,19 @@ struct MeetingHookIntegrationTests {
             systemRecordingURL: nil,
             templateSnapshot: MeetingTemplates.auto.snapshot
         )
+    }
+}
+
+private final class ArchiveAutoExportSpy: MeetingMarkdownAutoExporting {
+    private(set) var meetingIDs: [Int64] = []
+    private(set) var lookupFailures: [Int64] = []
+
+    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig) {
+        meetingIDs.append(meeting.id)
+    }
+
+    func recordMeetingLookupFailure(meetingID: Int64, error: Error?) {
+        lookupFailures.append(meetingID)
     }
 }
 
