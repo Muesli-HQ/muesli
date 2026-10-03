@@ -27,6 +27,10 @@ final class InteractiveFloatingPanel: NSPanel {
     }
 }
 
+private final class FloatingIndicatorButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class HoverIndicatorView: NSView {
     weak var owner: FloatingIndicatorController?
@@ -47,7 +51,7 @@ final class HoverIndicatorView: NSView {
         }
         guard let hit = super.hitTest(point) else { return nil }
         // Labels and glass are decoration; keep clicks and drags on the pill
-        // responder. The explicit computer-use stop button owns its action.
+        // responder. Explicit meeting and computer-use buttons own their actions.
         return hit is NSButton ? hit : self
     }
 
@@ -222,6 +226,9 @@ final class FloatingIndicatorController: NSObject {
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
+    private var meetingDiscardButton: NSButton?
+    private var meetingPauseButton: NSButton?
+    private var meetingStopButton: NSButton?
     private var computerUseStopButton: NSButton?
     private var transcribingTitle = "Transcribing"
     private var instructionTranscriptText: String?
@@ -344,30 +351,21 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
+        // Meeting commands belong to the explicit buttons. The waveform/body
+        // remains available for dragging without accidentally ending a meeting.
+        guard !isMeetingRecording else { return }
         if isComputerUseCancellationAvailable {
             if (x ?? 0) < 34 { onCancelComputerUse?() }
             return
         }
         if state == .recording, let x {
             if x < 30 {
-                if isMeetingRecording {
-                    onToggleMeetingPause?()
-                } else {
-                    onCancelDictation?()
-                }
-            } else {
-                if isMeetingRecording {
-                    onStopMeeting?()
-                } else {
-                    onStopToggleDictation?()
-                }
-            }
-        } else if state == .recording {
-            if isMeetingRecording {
-                onStopMeeting?()
+                onCancelDictation?()
             } else {
                 onStopToggleDictation?()
             }
+        } else if state == .recording {
+            onStopToggleDictation?()
         }
     }
 
@@ -426,6 +424,12 @@ final class FloatingIndicatorController: NSObject {
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {
         isMeetingRecording = recording
         recordingWaveformMode = .level
+        if recording {
+            deferredLoadingMessage = nil
+            isShowingLoading = false
+            loadingSpinner?.stopAnimation(nil)
+            loadingSpinner?.isHidden = true
+        }
         if !recording {
             isMeetingRecordingPaused = false
             hideMeetingTranscript(reset: true)
@@ -466,11 +470,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
-        guard isMeetingRecordingPaused != paused else { return }
+        let changed = isMeetingRecordingPaused != paused
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
+        guard isMeetingRecording else { return }
+        guard changed || state != .recording || panel == nil else { return }
         hideMeetingTranscript()
-        guard isMeetingRecording, state == .recording else { return }
         setState(.recording, config: config)
     }
 
@@ -601,7 +606,10 @@ final class FloatingIndicatorController: NSObject {
         setState(.transcribing, config: config)
     }
 
-    func setState(_ state: DictationState, config: AppConfig) {
+    func setState(_ requestedState: DictationState, config: AppConfig) {
+        // The shared indicator also receives dictation completion/failure and
+        // warmup updates. They must not retire a still-active meeting's controls.
+        let state: DictationState = isMeetingRecording ? .recording : requestedState
         lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered
@@ -735,7 +743,7 @@ final class FloatingIndicatorController: NSObject {
 
             if state == .recording {
                 // Dictation uses cancel on the left. Meeting recordings use pause/resume.
-                iconLabel.isHidden = false
+                iconLabel.isHidden = isMeetingRecording
                 iconLabel.animator().alphaValue = 1
                 iconLabel.stringValue = recordingControlSymbol()
                 iconLabel.textColor = .white.withAlphaComponent(isMeetingRecording ? 0.86 : 0.45)
@@ -785,7 +793,11 @@ final class FloatingIndicatorController: NSObject {
         switch state {
         case .recording:
             ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
-            addStopLayer(in: targetFrame.size)
+            if isMeetingRecording {
+                removeStopLayer()
+            } else {
+                addStopLayer(in: targetFrame.size)
+            }
         case .transcribing:
             if #available(macOS 15, *) {
                 wandIconView?.addSymbolEffect(
@@ -800,6 +812,7 @@ final class FloatingIndicatorController: NSObject {
             break
         }
 
+        layoutMeetingControls(in: targetFrame.size)
         layoutComputerUseStopButton(in: targetFrame.size)
         panel.orderFrontRegardless()
         if state == .preparing {
@@ -1013,6 +1026,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        guard !isMeetingRecording else { return }
         if isDragging {
             deferredLoadingMessage = message
             return
@@ -1192,6 +1206,9 @@ final class FloatingIndicatorController: NSObject {
         preservesCollapsedLeftEdge = false
         panel?.close()
         panel = nil
+        meetingDiscardButton = nil
+        meetingPauseButton = nil
+        meetingStopButton = nil
         containerView = nil
         contentView = nil
         iconLabel = nil
@@ -1245,6 +1262,40 @@ final class FloatingIndicatorController: NSObject {
 
     // MARK: - Stop Layer (toggle dictation)
 
+    @objc private func discardMeetingFromPill() { onDiscardMeeting?() }
+    @objc private func pauseMeetingFromPill() { onToggleMeetingPause?() }
+    @objc private func stopMeetingFromPill() { onStopMeeting?() }
+
+    private func layoutMeetingControls(in size: NSSize) {
+        guard state == .recording, isMeetingRecording, let contentView else {
+            meetingDiscardButton?.isHidden = true
+            meetingPauseButton?.isHidden = true
+            meetingStopButton?.isHidden = true
+            return
+        }
+        func configure(_ existing: NSButton?, symbol: String, label: String,
+                       x: CGFloat, action: Selector) -> NSButton {
+            let button = existing ?? FloatingIndicatorButton(title: "", target: self, action: action)
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+            button.isBordered = false
+            button.contentTintColor = .white
+            button.toolTip = label
+            button.setAccessibilityLabel(label)
+            button.frame = NSRect(x: x, y: (size.height - 24) / 2, width: 24, height: 24)
+            button.isHidden = false
+            if button.superview == nil { contentView.addSubview(button) }
+            return button
+        }
+        meetingDiscardButton = configure(meetingDiscardButton, symbol: "xmark", label: "Discard meeting recording…",
+                                         x: 4, action: #selector(discardMeetingFromPill))
+        meetingPauseButton = configure(meetingPauseButton, symbol: isMeetingRecordingPaused ? "play.fill" : "pause.fill",
+                                       label: isMeetingRecordingPaused ? "Resume meeting" : "Pause meeting",
+                                       x: 64, action: #selector(pauseMeetingFromPill))
+        meetingStopButton = configure(meetingStopButton, symbol: "stop.fill", label: "Stop meeting recording",
+                                      x: 92, action: #selector(stopMeetingFromPill))
+    }
+
     private func addStopLayer(in size: NSSize) {
         removeStopLayer()
         guard let contentView else { return }
@@ -1295,7 +1346,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = (frameSize.width - totalWidth) / 2
+        let startX = isMeetingRecording ? 34 : (frameSize.width - totalWidth) / 2
         let minHeight: CGFloat = 4
 
         for i in 0..<barCount {
@@ -1314,7 +1365,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
-        let startX = (frameSize.width - totalWidth) / 2
+        let startX = isMeetingRecording ? 34 : (frameSize.width - totalWidth) / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
@@ -1627,7 +1678,7 @@ final class FloatingIndicatorController: NSObject {
             // Waveform bars replace mic icon during recording.
             wandIconView?.isHidden = true
             quillIconView?.isHidden = true
-            iconLabel?.isHidden = false   // keeps the ✕ cancel label
+            iconLabel?.isHidden = isMeetingRecording // Meetings have explicit controls.
             micIconView?.isHidden = true
 
         case .transcribing:
@@ -2110,7 +2161,9 @@ final class FloatingIndicatorController: NSObject {
                     : NSSize(width: 44, height: 28)
             }
         case .preparing: size = NSSize(width: 76, height: 22)
-        case .recording: size = NSSize(width: 76, height: 22)
+        case .recording: size = isMeetingRecording
+            ? NSSize(width: 120, height: 28)
+            : NSSize(width: 76, height: 22)
         case .transcribing:
             hideShortcutPillChrome()
             if let transcript = instructionTranscriptText {
