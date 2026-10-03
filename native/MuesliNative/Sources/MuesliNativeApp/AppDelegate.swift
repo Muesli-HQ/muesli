@@ -92,6 +92,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return .terminateLater
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Opening Muesli from Applications or Spotlight must still expose the
+        // meeting controls when its status item is hidden and its window closed.
+        if controller?.appState.isMeetingRecording == true {
+            controller?.openActiveMeetingNotes()
+        } else {
+            controller?.openHistoryWindow()
+        }
+        return true
+    }
+
     private static var hasConfiguredSparkleFeed: Bool {
         guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String else {
             return false
@@ -116,6 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(AppDelegate.stopMeeting(_:))
+            || menuItem.action == #selector(AppDelegate.discardMeeting(_:)) {
+            return controller?.appState.isMeetingRecording == true
+        }
         if menuItem.action == #selector(AppDelegate.checkForUpdates(_:)) {
             return updaterController != nil
         }
@@ -128,6 +143,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showMeetings(_ sender: Any?) {
         controller?.openHistoryWindow(tab: .meetings)
+    }
+
+    @objc func stopMeeting(_ sender: Any?) {
+        controller?.stopMeetingRecording()
+    }
+
+    @objc func discardMeeting(_ sender: Any?) {
+        guard controller?.appState.isMeetingRecording == true else { return }
+        controller?.discardMeetingWithConfirmation()
     }
 
     private func installStandardEditMenu() {
@@ -234,6 +258,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         viewMenu.addItem(meetingsItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        let meetingMenuItem = NSMenuItem(title: "Meeting", action: nil, keyEquivalent: "")
+        let meetingMenu = NSMenu(title: "Meeting")
+        let stopMeetingItem = NSMenuItem(
+            title: "Stop Recording",
+            action: #selector(AppDelegate.stopMeeting(_:)),
+            keyEquivalent: "."
+        )
+        stopMeetingItem.keyEquivalentModifierMask = [.command]
+        stopMeetingItem.target = self
+        meetingMenu.addItem(stopMeetingItem)
+        let discardMeetingItem = NSMenuItem(
+            title: "Discard Recording…",
+            action: #selector(AppDelegate.discardMeeting(_:)),
+            keyEquivalent: ""
+        )
+        discardMeetingItem.target = self
+        meetingMenu.addItem(discardMeetingItem)
+        meetingMenuItem.submenu = meetingMenu
+        mainMenu.addItem(meetingMenuItem)
 
         let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")

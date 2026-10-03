@@ -82,21 +82,27 @@ struct DashboardRootView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            let usesCompactQuickNotes = DashboardWindowLayout.usesCompactQuickNotes(
-                width: proxy.size.width,
-                hasOpenMeeting: hasOpenMeeting
-            )
-
-            DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
-                sidebarView
-                .frame(
-                    minWidth: sidebarPresentation.isCollapsed ? 68 : 240,
-                    idealWidth: sidebarPresentation.isCollapsed ? 68 : 260,
-                    maxWidth: sidebarPresentation.isCollapsed ? 68 : 300
+        VStack(spacing: 0) {
+            if appState.isMeetingRecording {
+                activeMeetingControls
+                Divider()
+            }
+            GeometryReader { proxy in
+                let usesCompactQuickNotes = DashboardWindowLayout.usesCompactQuickNotes(
+                    width: proxy.size.width,
+                    hasOpenMeeting: hasOpenMeeting
                 )
-            } detail: {
-                detailContent
+
+                DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
+                    sidebarView
+                    .frame(
+                        minWidth: sidebarPresentation.isCollapsed ? 68 : 240,
+                        idealWidth: sidebarPresentation.isCollapsed ? 68 : 260,
+                        maxWidth: sidebarPresentation.isCollapsed ? 68 : 300
+                    )
+                } detail: {
+                    detailContent
+                }
             }
         }
         .frame(
@@ -199,6 +205,55 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+    }
+
+    private var activeMeetingControls: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Label(
+                appState.isMeetingRecordingPaused ? "Meeting paused" : "Meeting recording",
+                systemImage: appState.isMeetingRecordingPaused ? "pause.circle.fill" : "record.circle"
+            )
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(MuesliTheme.recording)
+            .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Button {
+                controller.toggleMeetingRecordingPause()
+            } label: {
+                Label(
+                    appState.isMeetingRecordingPaused ? "Resume" : "Pause",
+                    systemImage: appState.isMeetingRecordingPaused ? "play.fill" : "pause.fill"
+                )
+            }
+
+            Button {
+                controller.stopMeetingRecording()
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .tint(MuesliTheme.recording)
+            .help("Stop meeting recording")
+
+            Menu {
+                Button("Open Meeting Notes") { controller.openActiveMeetingNotes() }
+                Divider()
+                Button("Discard Recording…", role: .destructive) {
+                    controller.discardMeetingWithConfirmation()
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Meeting actions")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .padding(.horizontal, MuesliTheme.spacing16)
+        .padding(.vertical, MuesliTheme.spacing12)
+        .background(MuesliTheme.backgroundRaised)
     }
 
     private var hasOpenMeeting: Bool {

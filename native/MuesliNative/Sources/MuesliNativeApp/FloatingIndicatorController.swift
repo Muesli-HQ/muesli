@@ -28,7 +28,7 @@ final class InteractiveFloatingPanel: NSPanel {
 }
 
 @MainActor
-private final class HoverIndicatorView: NSView {
+final class HoverIndicatorView: NSView {
     weak var owner: FloatingIndicatorController?
     private var trackingAreaRef: NSTrackingArea?
     private var mouseDownScreenLocation: NSPoint?
@@ -39,11 +39,19 @@ private final class HoverIndicatorView: NSView {
     /// visible grip (resting) or pill + capsule (hovered) should intercept
     /// input. Outside those rects clicks fall through to apps underneath.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let owner, !owner.pointerInteractiveRect(in: bounds).contains(point) {
+        // AppKit supplies this point in the superview's coordinates. The
+        // transcript expands the panel and offsets the pill within it.
+        let localPoint = convert(point, from: superview)
+        if let owner, !owner.pointerInteractiveRect(in: bounds).contains(localPoint) {
             return nil
         }
-        return super.hitTest(point)
+        guard let hit = super.hitTest(point) else { return nil }
+        // Labels and glass are decoration; keep clicks and drags on the pill
+        // responder. The explicit computer-use stop button owns its action.
+        return hit is NSButton ? hit : self
     }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

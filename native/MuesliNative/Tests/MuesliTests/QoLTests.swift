@@ -588,8 +588,76 @@ struct FloatingMeetingTranscriptTests {
     }
 }
 
-@Suite("Floating indicator pointer interaction")
+@Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
+    @MainActor
+    @Test("decorative views use the pill responder while explicit buttons retain their actions")
+    func decorativeHitTargets() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        let pill = HoverIndicatorView(frame: NSRect(x: 20, y: 30, width: 76, height: 22))
+        root.addSubview(pill)
+        let label = NSTextField(labelWithString: "Pause")
+        label.frame = NSRect(x: 0, y: 0, width: 24, height: 22)
+        pill.addSubview(label)
+        let button = NSButton(title: "Stop", target: nil, action: nil)
+        button.frame = NSRect(x: 48, y: 0, width: 28, height: 22)
+        pill.addSubview(button)
+        #expect(root.hitTest(NSPoint(x: 32, y: 41)) === pill)
+        #expect(root.hitTest(NSPoint(x: 80, y: 41)) === button)
+    }
+
+    @MainActor
+    @Test("visible meeting controls receive the first click after the transcript offsets the pill",
+          arguments: [IndicatorAnchor.topLeading, .topTrailing, .bottomLeading, .bottomTrailing, .midTrailing],
+          [false, true])
+    func meetingControlsWithTranscript(anchor: IndicatorAnchor, paused: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = anchor
+        config.showMeetingTranscriptOnIndicatorHover = true
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var stopCount = 0
+        var pauseCount = 0
+        indicator.onStopMeeting = { stopCount += 1 }
+        indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.setMeetingRecordingPaused(paused, config: config)
+        // Wait for the real idle-to-recording AppKit transition before hover.
+        try await Task.sleep(for: .milliseconds(350))
+        indicator.setHovered(true)
+
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let root = try #require(pill.superview)
+        let window = try #require(pill.window)
+        #expect(root.bounds.width > pill.bounds.width)
+        // Resolve through the actual parent hit-test, rather than calling the
+        // controller callback directly (which missed this regression).
+        for x in [CGFloat(12), 65] {
+            let localPoint = NSPoint(x: x, y: pill.bounds.midY)
+            let hit = try #require(root.hitTest(pill.convert(localPoint, to: root)))
+            #expect(hit === pill)
+            #expect(hit.acceptsFirstMouse(for: nil))
+            let point = pill.convert(localPoint, to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 1, clickCount: 1, pressure: 1
+                ))
+                window.sendEvent(event)
+            }
+        }
+        #expect(pauseCount == 1)
+        #expect(stopCount == 1)
+    }
+
     @MainActor
     @Test("loading pill accepts pointer input across its full bounds and defers updates during drag")
     func loadingPillDragging() throws {

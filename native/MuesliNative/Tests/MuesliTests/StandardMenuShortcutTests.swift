@@ -65,6 +65,36 @@ struct StandardMenuShortcutTests {
         #expect(meetings.keyEquivalentModifierMask == NSEvent.ModifierFlags.command)
     }
 
+    @Test("Meeting menu provides a stop shortcut and confirmed discard without a status icon")
+    func meetingMenuProvidesIndependentStop() throws {
+        let delegate = AppDelegate()
+        let menu = try requiredMenu(delegate.standardMenus().mainMenu.item(withTitle: "Meeting")?.submenu,
+                                    message: "Missing Meeting menu")
+        let stop = try requiredItem(menu.item(withTitle: "Stop Recording"), message: "Missing Stop command")
+        #expect(stop.action == #selector(AppDelegate.stopMeeting(_:)))
+        #expect(stop.target === delegate)
+        #expect(stop.keyEquivalent == ".")
+        #expect(stop.keyEquivalentModifierMask == [.command])
+        #expect(!delegate.validateMenuItem(stop))
+        let discard = try requiredItem(menu.item(withTitle: "Discard Recording…"), message: "Missing Discard command")
+        #expect(discard.action == #selector(AppDelegate.discardMeeting(_:)))
+        #expect(discard.keyEquivalent.isEmpty)
+        #expect(!delegate.validateMenuItem(discard))
+
+        // Exercise AppKit matching as well as the menu configuration, including
+        // punctuation (whose shifted key equivalents are easy to misconfigure).
+        let probe = MeetingMenuActionProbe()
+        stop.target = probe
+        stop.action = #selector(MeetingMenuActionProbe.stop(_:))
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
+            windowNumber: 0, context: nil, characters: ".", charactersIgnoringModifiers: ".",
+            isARepeat: false, keyCode: 47
+        ))
+        #expect(menu.performKeyEquivalent(with: event))
+        #expect(probe.stopCount == 1)
+    }
+
     private func standardMainMenu() -> NSMenu {
         AppDelegate().standardMenus().mainMenu
     }
@@ -82,6 +112,12 @@ struct StandardMenuShortcutTests {
         }
         return item
     }
+}
+
+@MainActor
+private final class MeetingMenuActionProbe: NSObject {
+    var stopCount = 0
+    @objc func stop(_ sender: Any?) { stopCount += 1 }
 }
 
 private struct MenuTestError: Error, CustomStringConvertible {
