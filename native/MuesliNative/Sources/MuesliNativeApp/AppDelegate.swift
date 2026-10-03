@@ -92,6 +92,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return .terminateLater
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Self.handleReopen(
+            hasVisibleWindows: flag,
+            isMeetingRecording: controller?.appState.isMeetingRecording == true,
+            openActiveNotes: { self.controller?.openActiveMeetingNotes() ?? false },
+            openHistory: { self.controller?.openHistoryWindow() }
+        )
+    }
+
+    static func handleReopen(
+        hasVisibleWindows: Bool,
+        isMeetingRecording: Bool,
+        openActiveNotes: () -> Bool,
+        openHistory: () -> Void
+    ) -> Bool {
+        // Preserve AppKit's ordinary reopen behavior and the user's current tab.
+        guard !hasVisibleWindows, isMeetingRecording else { return true }
+        // During native shutdown the recording flag can outlive the active ID.
+        if !openActiveNotes() { openHistory() }
+        return false // The meeting reopen has been handled here.
+    }
+
     private static var hasConfiguredSparkleFeed: Bool {
         guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String else {
             return false
@@ -116,6 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(AppDelegate.stopMeeting(_:))
+            || menuItem.action == #selector(AppDelegate.discardMeeting(_:)) {
+            return Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true)
+        }
         if menuItem.action == #selector(AppDelegate.checkForUpdates(_:)) {
             return updaterController != nil
         }
@@ -128,6 +154,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showMeetings(_ sender: Any?) {
         controller?.openHistoryWindow(tab: .meetings)
+    }
+
+    static func meetingCommandsEnabled(isMeetingRecording: Bool) -> Bool {
+        // Command-period belongs to modal cancellation while an alert is open.
+        isMeetingRecording && NSApp.modalWindow == nil
+            && !NSApp.windows.contains { $0.attachedSheet != nil }
+    }
+
+    @objc func stopMeeting(_ sender: Any?) {
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
+        controller?.stopMeetingRecording()
+    }
+
+    @objc func discardMeeting(_ sender: Any?) {
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
+        controller?.discardMeetingWithConfirmation()
     }
 
     private func installStandardEditMenu() {
@@ -234,6 +276,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         viewMenu.addItem(meetingsItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        let meetingMenuItem = NSMenuItem(title: "Meeting", action: nil, keyEquivalent: "")
+        let meetingMenu = NSMenu(title: "Meeting")
+        let stopMeetingItem = NSMenuItem(
+            title: "Stop Recording",
+            action: #selector(AppDelegate.stopMeeting(_:)),
+            keyEquivalent: "."
+        )
+        stopMeetingItem.keyEquivalentModifierMask = [.command]
+        stopMeetingItem.target = self
+        meetingMenu.addItem(stopMeetingItem)
+        let discardMeetingItem = NSMenuItem(
+            title: "Discard Recording…",
+            action: #selector(AppDelegate.discardMeeting(_:)),
+            keyEquivalent: ""
+        )
+        discardMeetingItem.target = self
+        meetingMenu.addItem(discardMeetingItem)
+        meetingMenuItem.submenu = meetingMenu
+        mainMenu.addItem(meetingMenuItem)
 
         let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")

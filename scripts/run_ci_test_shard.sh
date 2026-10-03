@@ -42,6 +42,7 @@ case "${shard}" in
       OnboardingFlowTests
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
+      FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
       NotchIndicatorTests
       RecordingIndicatorStyleTests
