@@ -439,6 +439,9 @@ struct FloatingMeetingTranscriptTests {
             at: NSPoint(x: 430, y: 400), in: frame
         ) == .copy)
         #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 368, y: 400), in: frame
+        ) == .togglePause)
+        #expect(FloatingMeetingTranscriptInteraction.action(
             at: NSPoint(x: 250, y: 250), in: frame
         ) == nil)
         #expect(FloatingMeetingTranscriptInteraction.action(
@@ -497,7 +500,8 @@ struct FloatingMeetingTranscriptTests {
         let controller = FloatingMeetingTranscriptPanelController(
             onHoverChanged: { _ in },
             onOpenNotes: {},
-            onDismiss: { dismissCount += 1 }
+            onDismiss: { dismissCount += 1 },
+            onTogglePause: {}
         )
 
         controller.show(in: container, frame: container.bounds)
@@ -630,6 +634,7 @@ struct FloatingIndicatorPointerInteractionTests {
         indicator.onDiscardMeeting = { discardCount += 1 }
         indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(paused, config: config)
+        indicator.powerProvider = { -24 }
         // Wait for the real idle-to-recording AppKit transition before hover.
         try await Task.sleep(for: .milliseconds(350))
         indicator.setHovered(true)
@@ -638,9 +643,22 @@ struct FloatingIndicatorPointerInteractionTests {
             .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
         let root = try #require(pill.superview)
         #expect(root.bounds.width > pill.bounds.width)
+        #expect(pill.bounds.size == NSSize(width: 76, height: 22))
+        let buttons = pill.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        #expect(buttons.count == 2)
+        // Check the animated geometry after multiple real timer ticks, not just
+        // setup: the timer previously moved the bars on top of a control.
+        let bars = try #require(pill.layer?.sublayers).filter { $0.cornerRadius == 1.5 && $0.frame.width == 3 }
+        #expect(bars.count == 5)
+        let waveform = bars.reduce(CGRect.null) { $0.union($1.frame) }
+        #expect(waveform.width == 27)
+        #expect(waveform.midX == pill.bounds.midX)
+        #expect(bars[0].frame.height == bars[4].frame.height)
+        #expect(bars[1].frame.height == bars[3].frame.height)
+        for button in buttons { #expect(!waveform.intersects(button.frame)) }
         // Resolve through the actual parent hit-test, rather than calling the
         // controller callback directly (which missed this regression).
-        for x in [CGFloat(76), 104, 16] {
+        for x in [CGFloat(64), 12] {
             let localPoint = NSPoint(x: x, y: pill.bounds.midY)
             let hit = try #require(root.hitTest(pill.convert(localPoint, to: root)) as? NSButton)
             #expect(hit.acceptsFirstMouse(for: nil))
@@ -648,6 +666,13 @@ struct FloatingIndicatorPointerInteractionTests {
             #expect(hit.target === indicator)
             #expect(NSApp.sendAction(action, to: hit.target, from: hit))
         }
+        let transcript = try #require(root.subviews.first { $0 !== pill })
+        let window = try #require(pill.window)
+        let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+        let pauseEvent = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        window.sendEvent(pauseEvent)
         #expect(pauseCount == 1)
         #expect(stopCount == 1)
         #expect(discardCount == 1)
@@ -679,23 +704,33 @@ struct FloatingIndicatorPointerInteractionTests {
             indicator.setHovered(true)
             let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
                 .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
-            let button = try #require(pill.subviews.compactMap { $0 as? NSButton }
-                .first { $0.toolTip == (paused ? "Resume meeting" : "Pause meeting") })
-            let action = try #require(button.action)
-            #expect(NSApp.sendAction(action, to: button.target, from: button))
+            let root = try #require(pill.superview)
+            let transcript = try #require(root.subviews.first { $0 !== pill })
+            let window = try #require(pill.window)
+            let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+            let event = try #require(NSEvent.mouseEvent(
+                with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
             // Dictation cleanup and warmup share this presentation controller.
             indicator.setState(.idle, config: config)
             indicator.setState(.transcribing, config: config)
             indicator.showLoading("Warming up dictation")
             indicator.closeIfIdle()
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
+            #expect(root.bounds.width > pill.bounds.width)
+            // Close only the hover transcript before measuring the compact pill.
+            indicator.setHovered(false)
             try await Task.sleep(for: .milliseconds(250))
             let frame = try #require(indicator.currentFrame)
             #expect(abs(frame.midX - originalFrame.midX) < 1)
             #expect(abs(frame.midY - originalFrame.midY) < 1)
-            #expect(frame.size == NSSize(width: 120, height: 28))
+            #expect(frame.size == NSSize(width: 76, height: 22))
             #expect(pill.window?.isVisible == true)
             #expect(indicator.powerProvider?() == -24)
-            #expect(button.toolTip == (paused ? "Resume meeting" : "Pause meeting"))
         }
         #expect(!paused)
         indicator.setMeetingRecording(false, config: config)

@@ -200,6 +200,9 @@ final class FloatingIndicatorController: NSObject {
         },
         onDismiss: { [weak self] in
             self?.dismissMeetingTranscript()
+        },
+        onTogglePause: { [weak self] in
+            self?.onToggleMeetingPause?()
         }
     )
     private var glassView: NSVisualEffectView?
@@ -227,7 +230,6 @@ final class FloatingIndicatorController: NSObject {
     var isToggleDictation = false
     private var stopLayer: CALayer?
     private var meetingDiscardButton: NSButton?
-    private var meetingPauseButton: NSButton?
     private var meetingStopButton: NSButton?
     private var computerUseStopButton: NSButton?
     private var transcribingTitle = "Transcribing"
@@ -470,11 +472,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
-        let changed = isMeetingRecordingPaused != paused
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
         guard isMeetingRecording else { return }
-        guard changed || state != .recording || panel == nil else { return }
+        // Updating the hover control must keep its panel open so Resume stays
+        // under the pointer. Only rebuild a missing presentation or the notch.
+        guard state != .recording || panel == nil || config.indicatorAnchor == .notch else { return }
         hideMeetingTranscript()
         setState(.recording, config: config)
     }
@@ -609,6 +612,9 @@ final class FloatingIndicatorController: NSObject {
     func setState(_ requestedState: DictationState, config: AppConfig) {
         // The shared indicator also receives dictation completion/failure and
         // warmup updates. They must not retire a still-active meeting's controls.
+        if isMeetingRecording, self.state == .recording, requestedState != .recording {
+            return
+        }
         let state: DictationState = isMeetingRecording ? .recording : requestedState
         lastLoadedConfig = config
         let previousState = self.state
@@ -742,7 +748,7 @@ final class FloatingIndicatorController: NSObject {
             contentView.layer?.borderColor = style.border.cgColor
 
             if state == .recording {
-                // Dictation uses cancel on the left. Meeting recordings use pause/resume.
+                // Dictation uses cancel on the left; meetings use native discard/stop buttons.
                 iconLabel.isHidden = isMeetingRecording
                 iconLabel.animator().alphaValue = 1
                 iconLabel.stringValue = recordingControlSymbol()
@@ -1207,7 +1213,6 @@ final class FloatingIndicatorController: NSObject {
         panel?.close()
         panel = nil
         meetingDiscardButton = nil
-        meetingPauseButton = nil
         meetingStopButton = nil
         containerView = nil
         contentView = nil
@@ -1263,13 +1268,11 @@ final class FloatingIndicatorController: NSObject {
     // MARK: - Stop Layer (toggle dictation)
 
     @objc private func discardMeetingFromPill() { onDiscardMeeting?() }
-    @objc private func pauseMeetingFromPill() { onToggleMeetingPause?() }
     @objc private func stopMeetingFromPill() { onStopMeeting?() }
 
     private func layoutMeetingControls(in size: NSSize) {
         guard state == .recording, isMeetingRecording, let contentView else {
             meetingDiscardButton?.isHidden = true
-            meetingPauseButton?.isHidden = true
             meetingStopButton?.isHidden = true
             return
         }
@@ -1277,23 +1280,20 @@ final class FloatingIndicatorController: NSObject {
                        x: CGFloat, action: Selector) -> NSButton {
             let button = existing ?? FloatingIndicatorButton(title: "", target: self, action: action)
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold))
             button.isBordered = false
             button.contentTintColor = .white
             button.toolTip = label
             button.setAccessibilityLabel(label)
-            button.frame = NSRect(x: x, y: (size.height - 24) / 2, width: 24, height: 24)
+            button.frame = NSRect(x: x, y: 0, width: 22, height: size.height)
             button.isHidden = false
             if button.superview == nil { contentView.addSubview(button) }
             return button
         }
         meetingDiscardButton = configure(meetingDiscardButton, symbol: "xmark", label: "Discard meeting recording…",
-                                         x: 4, action: #selector(discardMeetingFromPill))
-        meetingPauseButton = configure(meetingPauseButton, symbol: isMeetingRecordingPaused ? "play.fill" : "pause.fill",
-                                       label: isMeetingRecordingPaused ? "Resume meeting" : "Pause meeting",
-                                       x: 64, action: #selector(pauseMeetingFromPill))
+                                         x: 1, action: #selector(discardMeetingFromPill))
         meetingStopButton = configure(meetingStopButton, symbol: "stop.fill", label: "Stop meeting recording",
-                                      x: 92, action: #selector(stopMeetingFromPill))
+                                      x: size.width - 23, action: #selector(stopMeetingFromPill))
     }
 
     private func addStopLayer(in size: NSSize) {
@@ -1346,7 +1346,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = isMeetingRecording ? 34 : (frameSize.width - totalWidth) / 2
+        let startX = (frameSize.width - totalWidth) / 2
         let minHeight: CGFloat = 4
 
         for i in 0..<barCount {
@@ -1365,7 +1365,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
-        let startX = isMeetingRecording ? 34 : (frameSize.width - totalWidth) / 2
+        let startX = (frameSize.width - totalWidth) / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
@@ -2161,9 +2161,7 @@ final class FloatingIndicatorController: NSObject {
                     : NSSize(width: 44, height: 28)
             }
         case .preparing: size = NSSize(width: 76, height: 22)
-        case .recording: size = isMeetingRecording
-            ? NSSize(width: 120, height: 28)
-            : NSSize(width: 76, height: 22)
+        case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
             hideShortcutPillChrome()
             if let transcript = instructionTranscriptText {
