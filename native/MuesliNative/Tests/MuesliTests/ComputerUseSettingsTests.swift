@@ -40,6 +40,110 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("stalled settings planning times out before any mutation")
+    func stalledPlanning() async {
+        let h = Harness()
+        var cancelled = false
+        let result = await ComputerUseSettings.run(command: "Open Chrome", settings: [h.setting],
+            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: 0.02) { _, _ in
+                do { try await Task.sleep(for: .seconds(30)) }
+                catch { cancelled = true; throw error }
+                return ("continue_desktop_task", "{}")
+            }
+        #expect(result?.status == .timedOut)
+        #expect(cancelled)
+        #expect(h.applies == 0)
+    }
+
+    @Test("planning budget spans requests and rejects a late write")
+    func cumulativePlanning() async {
+        let h = Harness()
+        var time: TimeInterval = 0
+        var calls = 0
+        let result = await ComputerUseSettings.run(command: "Switch to notch", settings: [h.setting],
+            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: 10, now: { time }) { _, _ in
+                calls += 1
+                time += 6
+                return calls == 1
+                    ? ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
+                    : ("set_muesli_setting", #"{"setting":"indicator","value":"notch"}"#)
+            }
+        #expect(result?.status == .timedOut)
+        #expect(calls == 2)
+        #expect(h.applies == 0)
+    }
+
+    @Test("answering a question does not consume the planning budget")
+    func questionTimeExcluded() async {
+        let h = Harness()
+        var time: TimeInterval = 0
+        var calls = 0
+        let result = await ComputerUseSettings.run(command: "Switch indicator", settings: [h.setting],
+            config: { h.config }, persistedConfig: { h.saved }, ask: { _ in
+                time += 1_000
+                return "Notch"
+            }, planningTimeout: 10, now: { time }) { _, _ in
+                calls += 1
+                time += 1
+                switch calls {
+                case 1: return ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
+                case 2: return ("ask_user_question", #"{"question":"Which indicator?","options":["Notch","Classic"]}"#)
+                default: return ("set_muesli_setting", #"{"setting":"indicator","value":"notch"}"#)
+                }
+            }
+        #expect(result?.status == .done)
+        #expect(h.applies == 1)
+    }
+
+    @Test("Bodhan voice choices must work on all selected Bodhan models", arguments: BodhanModel.allCases)
+    func bodhanEffectiveChoices(model: BodhanModel) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.sttBackend = "bodhan"
+        initial.sttModel = model.rawValue
+        initial.meetingTranscriptionBackend = "bodhan"
+        initial.meetingTranscriptionModel = BodhanModel.flex.rawValue
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let definitions = controller.settingsDefinitions()
+        #expect(definitions.first { $0.id == "bodhan_language" }?.availability("en") == nil)
+        #expect(definitions.first { $0.id == "bodhan_output" }?.availability(BodhanOutputMode.native.rawValue) == nil)
+        for (id, value) in [("bodhan_language", "hne"), ("bodhan_output", BodhanOutputMode.mixed.rawValue)] {
+            let setting = try #require(definitions.first { $0.id == id })
+            let snapshot = setting.snapshot(config: controller.config)
+            #expect((snapshot.unavailable[value] != nil) == model.isCore)
+            #expect(setting.snapshot(config: controller.config, source: .manualUI).unavailable[value] == nil)
+            do {
+                _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
+                    snapshots: [snapshot], config: { controller.config }, persistedConfig: { configStore.load() })
+                #expect(!model.isCore)
+            } catch {
+                #expect(model.isCore)
+                #expect(setting.read(controller.config) == snapshot.current)
+                #expect(setting.read(configStore.load()) == snapshot.current)
+            }
+            // Manual model cards can still configure Flex before selecting it.
+            try await controller.applySetting(id, value: value)
+            #expect(setting.read(configStore.load()) == value)
+        }
+        // A model switch after inspection must invalidate even a forged "available" snapshot.
+        controller.updateConfig { $0.sttModel = BodhanModel.flex.rawValue }
+        let language = try #require(definitions.first { $0.id == "bodhan_language" })
+        let snapshot = language.snapshot(config: controller.config)
+        controller.updateConfig { $0.meetingTranscriptionModel = BodhanModel.core.rawValue }
+        await #expect(throws: (any Error).self) {
+            _ = try await MuesliSettings.apply(.init(setting: "bodhan_language", value: "hne"), settings: definitions,
+                snapshots: [snapshot], config: { controller.config }, persistedConfig: { configStore.load() })
+        }
+    }
+
     @Test("verified settings change succeeds without a desktop driver or screenshot")
     func verifiedChange() async {
         let h = Harness()
