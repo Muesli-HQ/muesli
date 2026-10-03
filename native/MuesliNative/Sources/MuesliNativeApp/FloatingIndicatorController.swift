@@ -616,6 +616,12 @@ final class FloatingIndicatorController: NSObject {
             return
         }
         let state: DictationState = isMeetingRecording ? .recording : requestedState
+        let restoresMeetingTranscript = isMeetingRecording && state == .recording
+            && meetingTranscriptPanel.isVisible && config.showMeetingTranscriptOnIndicatorHover
+            && config.indicatorAnchor != .notch
+        // Normalize the expanded panel before laying out its compact indicator;
+        // otherwise its old child offset survives inside a newly smaller window.
+        hideMeetingTranscript()
         lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered
@@ -734,13 +740,12 @@ final class FloatingIndicatorController: NSObject {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
+            context.duration = restoresMeetingTranscript ? 0 : duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
 
             panel.animator().setFrame(targetFrame, display: true)
             panel.animator().alphaValue = style.alpha
-
             contentView.animator().frame = NSRect(origin: .zero, size: targetFrame.size)
             contentView.layer?.cornerRadius = targetFrame.height / 2
             contentView.layer?.backgroundColor = style.background.cgColor
@@ -790,6 +795,14 @@ final class FloatingIndicatorController: NSObject {
 
             // Apply glass state last so it can override iconLabel visibility set above.
             applyGlassState(state, frameSize: targetFrame.size)
+        } completionHandler: { [weak self] in
+            // Animator proxies can apply even zero-duration geometry later.
+            // Expand only after the compact frame transition has finished.
+            guard restoresMeetingTranscript, let self,
+                  self.panel === panel, self.isMeetingRecording, self.state == .recording,
+                  self.lastLoadedConfig?.showMeetingTranscriptOnIndicatorHover == true,
+                  !self.notchIndicator.isVisible else { return }
+            self.showMeetingTranscript()
         }
 
         // Manage SF Symbol effects — stop everything first, then start for the new state.

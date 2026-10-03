@@ -93,14 +93,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // Opening Muesli from Applications or Spotlight must still expose the
-        // meeting controls when its status item is hidden and its window closed.
-        if controller?.appState.isMeetingRecording == true {
-            controller?.openActiveMeetingNotes()
-        } else {
-            controller?.openHistoryWindow()
-        }
-        return true
+        Self.handleReopen(
+            hasVisibleWindows: flag,
+            isMeetingRecording: controller?.appState.isMeetingRecording == true,
+            openActiveNotes: { self.controller?.openActiveMeetingNotes() ?? false },
+            openHistory: { self.controller?.openHistoryWindow() }
+        )
+    }
+
+    static func handleReopen(
+        hasVisibleWindows: Bool,
+        isMeetingRecording: Bool,
+        openActiveNotes: () -> Bool,
+        openHistory: () -> Void
+    ) -> Bool {
+        // Preserve AppKit's ordinary reopen behavior and the user's current tab.
+        guard !hasVisibleWindows, isMeetingRecording else { return true }
+        // During native shutdown the recording flag can outlive the active ID.
+        if !openActiveNotes() { openHistory() }
+        return false // The meeting reopen has been handled here.
     }
 
     private static var hasConfiguredSparkleFeed: Bool {
@@ -129,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(AppDelegate.stopMeeting(_:))
             || menuItem.action == #selector(AppDelegate.discardMeeting(_:)) {
-            return controller?.appState.isMeetingRecording == true
+            return Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true)
         }
         if menuItem.action == #selector(AppDelegate.checkForUpdates(_:)) {
             return updaterController != nil
@@ -145,12 +156,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller?.openHistoryWindow(tab: .meetings)
     }
 
+    static func meetingCommandsEnabled(isMeetingRecording: Bool) -> Bool {
+        // Command-period belongs to modal cancellation while an alert is open.
+        isMeetingRecording && NSApp.modalWindow == nil
+            && !NSApp.windows.contains { $0.attachedSheet != nil }
+    }
+
     @objc func stopMeeting(_ sender: Any?) {
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
         controller?.stopMeetingRecording()
     }
 
     @objc func discardMeeting(_ sender: Any?) {
-        guard controller?.appState.isMeetingRecording == true else { return }
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
         controller?.discardMeetingWithConfirmation()
     }
 

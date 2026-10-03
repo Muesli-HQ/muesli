@@ -739,6 +739,54 @@ struct FloatingIndicatorPointerInteractionTests {
     }
 
     @MainActor
+    @Test("visibility refresh preserves the expanded transcript and its pause control", arguments: [false, true])
+    func visibilityRefreshPreservesTranscript(paused: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        config.showMeetingTranscriptOnIndicatorHover = true
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var pauseCount = 0
+        indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.setMeetingRecordingPaused(paused, config: config)
+        indicator.powerProvider = { -24 }
+        try await Task.sleep(for: .milliseconds(350))
+        indicator.setHovered(true)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let root = try #require(pill.superview)
+        let transcript = try #require(root.subviews.first { $0 !== pill })
+        let window = try #require(pill.window)
+        let originalFrame = window.frame
+        for _ in 0..<3 {
+            indicator.ensureVisible(config: config)
+            try await Task.sleep(for: .milliseconds(250))
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
+            #expect(root.bounds.contains(transcript.frame))
+            #expect(root.bounds.contains(pill.frame))
+            #expect(window.frame == originalFrame)
+            let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+            let event = try #require(NSEvent.mouseEvent(
+                with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+        #expect(pauseCount == 3)
+        #expect(indicator.powerProvider?() == -24)
+        config.showMeetingTranscriptOnIndicatorHover = false
+        indicator.ensureVisible(config: config)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(transcript.superview == nil)
+        #expect(window.frame.size == NSSize(width: 76, height: 22))
+    }
+
+    @MainActor
     @Test("loading pill accepts pointer input across its full bounds and defers updates during drag")
     func loadingPillDragging() throws {
         let indicator = makeIndicator()
