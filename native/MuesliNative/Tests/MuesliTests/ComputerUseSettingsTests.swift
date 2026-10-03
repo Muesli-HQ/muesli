@@ -40,6 +40,133 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    final class ActivationHarness {
+        var config = AppConfig()
+        var saved = AppConfig()
+        var downloaded = true
+        var failMeeting = false
+        var writes = 0
+        init() {
+            config.sttModel = "old-dictation"
+            config.meetingTranscriptionModel = "old-meeting"
+            saved = config
+        }
+        var definitions: [MuesliSetting] {
+            let choices = [MuesliSetting.Choice(id: "model-a", label: "Model A"), .init(id: "model-b", label: "Model B")]
+            func target(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, String>) -> MuesliSetting {
+                .init(id: id, label: label, choices: choices, read: { $0[keyPath: key] },
+                    unavailable: { _ in self.downloaded ? nil : "Download required" }, apply: { value in
+                        if id == "meeting", self.failMeeting { throw MuesliSettings.Failure.rejected("Save failed") }
+                        self.writes += 1
+                        self.config[keyPath: key] = value
+                        self.saved = self.config
+                    })
+            }
+            let preference = MuesliSetting(id: "future_language", label: "Future language",
+                choices: [.init(id: "ml", label: "Malayalam")], read: { $0.bodhanLanguage }, unavailable: { _ in nil },
+                apply: { value in self.writes += 1; self.config.bodhanLanguage = value; self.saved = self.config },
+                activation: .init(label: "Future model", targets: [.init(id: "dictation", label: "Dictation"), .init(id: "meeting", label: "Meetings")],
+                    compatibleChoices: { _ in ["model-a", "model-b"] }, unavailable: { _ in
+                        self.config.sttModel.hasPrefix("model-") && self.config.meetingTranscriptionModel.hasPrefix("model-") ? nil : "Model not active"
+                    }))
+            return [preference, target("dictation", "Dictation", \.sttModel), target("meeting", "Meetings", \.meetingTranscriptionModel)]
+        }
+        func run(configure: Bool = false, ask: @escaping (ComputerUseQuestion) async throws -> String) async -> ComputerUsePlannerRuntimeResult? {
+            await ComputerUseSettings.run(command: "Set future language to Malayalam", settings: definitions,
+                config: { self.config }, persistedConfig: { self.saved }, refresh: { self.definitions }, ask: ask) { _, catalog in
+                    if catalog.first?.id == "activation_answer" { return ("choose_setting_answer", #"{"choice":"dictation"}"#) }
+                    if catalog.first?.choices.isEmpty == true { return ("inspect_muesli_setting", #"{"setting":"future_language"}"#) }
+                    return (configure ? "configure_muesli_setting" : "set_muesli_setting", #"{"setting":"future_language","value":"ml"}"#)
+                }
+        }
+    }
+
+    @Test("generic activation asks scope and model, then verifies both writes", arguments: ["Dictation", "Meetings", "Both", "Only save the preference"])
+    func activatePreference(scope: String) async {
+        let h = ActivationHarness()
+        var questions = 0
+        let result = await h.run { question in
+            questions += 1
+            #expect((2...4).contains(question.options.count))
+            return questions == 1 ? scope : "Model B"
+        }
+        #expect(result?.status == .done)
+        #expect(h.saved.bodhanLanguage == "ml")
+        #expect(h.saved.sttModel == (["Dictation", "Both"].contains(scope) ? "model-b" : "old-dictation"))
+        #expect(h.saved.meetingTranscriptionModel == (["Meetings", "Both"].contains(scope) ? "model-b" : "old-meeting"))
+        #expect(questions == (scope == "Only save the preference" ? 1 : 2))
+        if scope == "Only save the preference" { #expect(result?.message.contains("Saved for later") == true) }
+    }
+
+    @Test("explicit model activation asks even when the current model supports the preference")
+    func explicitActivation() async {
+        let h = ActivationHarness()
+        h.config.sttModel = "model-a"
+        h.config.meetingTranscriptionModel = "model-a"
+        h.saved = h.config
+        var questions = 0
+        let result = await h.run(configure: true) { _ in questions += 1; return questions == 1 ? "Dictation" : "Model B" }
+        #expect(result?.status == .done)
+        #expect(questions == 2)
+        #expect(h.saved.sttModel == "model-b")
+        #expect(h.saved.meetingTranscriptionModel == "model-a")
+    }
+
+    @Test("confirmed preference writes still reject manual-only prompts")
+    func confirmedPreferenceCannotEditPrompts() async {
+        let h = Harness()
+        h.voiceRestriction = "Manual only"
+        await #expect(throws: (any Error).self) {
+            _ = try await MuesliSettings.apply(.init(setting: "indicator", value: "notch"), settings: [h.setting],
+                snapshots: [h.setting.snapshot(config: h.config)], source: .confirmedPreference,
+                config: { h.config }, persistedConfig: { h.saved })
+        }
+        #expect(h.applies == 0)
+    }
+
+    @Test("activation accepts free-form answers through the planner")
+    func activationFreeform() async {
+        let h = ActivationHarness()
+        var questions = 0
+        let result = await h.run { _ in
+            questions += 1
+            return questions == 1 ? "just for my dictation please" : "Model A"
+        }
+        #expect(result?.status == .done)
+        #expect(h.saved.sttModel == "model-a")
+        #expect(h.saved.meetingTranscriptionModel == "old-meeting")
+    }
+
+    @Test("activation cancellation or stale choices make no writes", arguments: ["cancel", "removed", "edited"])
+    func activationPreflight(reason: String) async {
+        let h = ActivationHarness()
+        var questions = 0
+        let result = await h.run { _ in
+            questions += 1
+            if questions == 1 { return "Both" }
+            if reason == "cancel" { throw CancellationError() }
+            if reason == "removed" { h.downloaded = false }
+            if reason == "edited" { h.config.meetingTranscriptionModel = "manually-changed" }
+            return "Model A"
+        }
+        #expect(result?.status == (reason == "cancel" ? .cancelled : .failed))
+        #expect(h.writes == 0)
+        #expect(h.saved.bodhanLanguage != "ml")
+    }
+
+    @Test("partial activation reports the saved model and never claims nothing changed")
+    func activationPartialFailure() async {
+        let h = ActivationHarness()
+        h.failMeeting = true
+        var questions = 0
+        let result = await h.run { _ in questions += 1; return questions == 1 ? "Both" : "Model A" }
+        #expect(result?.status == .failed)
+        #expect(h.saved.sttModel == "model-a")
+        #expect(h.saved.bodhanLanguage != "ml")
+        #expect(result?.message.contains("Saved: Dictation") == true)
+        #expect(result?.message.contains("Nothing was changed") == false)
+    }
+
     @Test("stalled settings planning times out before any mutation")
     func stalledPlanning() async {
         let h = Harness()
