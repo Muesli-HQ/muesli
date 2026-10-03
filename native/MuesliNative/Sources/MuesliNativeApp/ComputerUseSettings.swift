@@ -20,11 +20,14 @@ enum ComputerUseSettings {
         refresh: (() -> [MuesliSetting])? = nil,
         prepare: ((String) async throws -> Void)? = nil,
         ask: ((ComputerUseQuestion) async throws -> String)? = nil,
+        planningTimeout: TimeInterval = 180,
+        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         plan: Planner? = nil
     ) async -> ComputerUsePlannerRuntimeResult? {
         var inspected: [MuesliSetting.Snapshot] = []
         var history: [Answer] = []
         var engaged = false
+        var planningRemaining = planningTimeout
         func currentSettings() -> [MuesliSetting] { refresh?() ?? settings }
         let discovery = Array(Set(settings.filter { $0.voiceRestriction == nil }.map(\.discovery)))
             .sorted { $0.id < $1.id }
@@ -36,17 +39,23 @@ enum ComputerUseSettings {
                     MuesliSetting.Snapshot(id: $0.id, label: $0.label, current: "", choices: [], unavailable: [:])
                 } : inspected
                 let call: (name: String, arguments: String)
-                if let plan {
-                    let context = history.isEmpty ? command : command + "\nUser answers: " + String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
-                    call = try await plan(context, catalog)
-                } else {
-                    let payload = Payload(command: command, availableSettings: discovery, settings: inspected, answers: history)
-                    call = try await ComputerUsePlannerClient.callTool(
-                        systemPrompt: instructions,
-                        userPrompt: String(decoding: try JSONEncoder().encode(payload), as: UTF8.self), imageDataURL: nil,
-                        model: ComputerUsePlannerClient.plannerModel(for: config()),
-                        reasoningEffort: config().computerUseReasoningEffort, tools: tools)
+                guard planningRemaining > 0 else { throw PlanningTimeout() }
+                let started = now()
+                call = try await boundedPlanning(seconds: planningRemaining) {
+                    if let plan {
+                        let context = history.isEmpty ? command : command + "\nUser answers: " + String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
+                        return try await plan(context, catalog)
+                    } else {
+                        let payload = Payload(command: command, availableSettings: discovery, settings: inspected, answers: history)
+                        return try await ComputerUsePlannerClient.callTool(
+                            systemPrompt: instructions,
+                            userPrompt: String(decoding: try JSONEncoder().encode(payload), as: UTF8.self), imageDataURL: nil,
+                            model: ComputerUsePlannerClient.plannerModel(for: config()),
+                            reasoningEffort: config().computerUseReasoningEffort, tools: tools)
+                    }
                 }
+                planningRemaining -= max(0, now() - started)
+                guard planningRemaining > 0 else { throw PlanningTimeout() }
                 try Task.checkCancellation()
                 switch call.name {
                 case "continue_desktop_task":
@@ -95,7 +104,7 @@ enum ComputerUseSettings {
                         guard let followUp = definitions.first(where: { $0.id == followUpID }), followUp.voiceRestriction == nil else {
                             throw Failure.rejected("The required follow-up setting is unavailable. Nothing was changed.")
                         }
-                        let choices = followUp.choices.filter { followUp.unavailable($0.id) == nil }
+                        let choices = followUp.choices.filter { followUp.availability($0.id) == nil }
                         guard !choices.isEmpty else {
                             return result(.failed, "No options are currently available for \(followUp.label). Check its requirements in Settings.")
                         }
@@ -120,12 +129,33 @@ enum ComputerUseSettings {
                 }
             }
             return result(.failed, "The settings request needs a more specific instruction. Nothing was changed.")
+        } catch is PlanningTimeout {
+            return result(.timedOut, "Understanding the command took too long. Please try again. Nothing was changed.")
         } catch is CancellationError {
             return result(.cancelled, "Cancelled. No further changes were made.")
         } catch ChatGPTAuthError.notAuthenticated {
             return result(.failed, "Connect ChatGPT to use voice settings.")
         } catch {
             return result(.failed, error.localizedDescription)
+        }
+    }
+
+    private struct PlanningTimeout: Error {}
+
+    /// A separate cumulative budget bounds routing/model requests. It never
+    /// consumes the desktop execution allowance or time spent answering questions.
+    private static func boundedPlanning(
+        seconds: TimeInterval,
+        operation: @escaping @MainActor () async throws -> (name: String, arguments: String)
+    ) async throws -> (name: String, arguments: String) {
+        try await withThrowingTaskGroup(of: (name: String, arguments: String).self) { group in
+            group.addTask { @MainActor in try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw PlanningTimeout()
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 

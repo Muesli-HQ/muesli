@@ -2905,7 +2905,7 @@ public final class MuesliController: NSObject {
     func applySetting(_ id: String, value: String) async throws {
         let definitions = settingsDefinitions()
         _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
-            snapshots: definitions.map { $0.snapshot(config: config) }, source: .manualUI, config: { self.config },
+            snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
             persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
             })

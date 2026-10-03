@@ -32,6 +32,7 @@ struct MuesliSetting {
     // Declared with the UI definition; never expose these choices to voice tools.
     var voiceRestriction: String? = nil
     var requestPermission: (() -> Void)? = nil
+    var voiceUnavailable: (String) -> String? = { _ in nil }
 
     func choice(for value: String) -> Choice? {
         if let choice = choices.first(where: { $0.id == value }) { return choice }
@@ -39,10 +40,14 @@ struct MuesliSetting {
         return Choice(id: value, label: hotkey.label)
     }
 
-    func snapshot(config: AppConfig) -> Snapshot {
+    func availability(_ value: String, source: MuesliSettings.ApplySource = .voice) -> String? {
+        unavailable(value) ?? (source == .voice ? voiceUnavailable(value) : nil)
+    }
+
+    func snapshot(config: AppConfig, source: MuesliSettings.ApplySource = .voice) -> Snapshot {
         Snapshot(id: id, label: label, current: read(config), choices: choices,
                  unavailable: Dictionary(uniqueKeysWithValues: choices.compactMap { choice in
-                     unavailable(choice.id).map { (choice.id, $0) }
+                     availability(choice.id, source: source).map { (choice.id, $0) }
                  }), shortcutCombination: shortcutAssignment?.combinationRules, followUpSelections: followUpSelections.isEmpty ? nil : followUpSelections)
     }
 }
@@ -81,7 +86,7 @@ enum MuesliSettings {
         guard setting.read(config()) == snapshot.current else {
             throw Failure.rejected("\(setting.label) changed while processing your command. Please try again.")
         }
-        if let reason = setting.unavailable(choice.id) { throw Failure.rejected(reason) }
+        if let reason = setting.availability(choice.id, source: source) { throw Failure.rejected(reason) }
         // Once the setter commits, finish readback even if Stop arrives.
         do {
             try await setting.apply(choice.id)

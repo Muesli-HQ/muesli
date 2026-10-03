@@ -139,3 +139,10 @@ controls must not construct the full catalog on each render.
 
 `ComputerUseSettingsTests` checks discovery of previously unknown settings and
 prevents independent toggle/menu bindings returning to the settings surfaces.
+
+CUA execution timeout excludes model thinking. Settings routing has a separate
+180-second cumulative planning deadline; clarification answer waits are excluded.
+Timeout/cancellation must not fall through to desktop execution or apply a late reply.
+Per-choice voice prerequisites belong on the canonical definition as
+`voiceUnavailable` and are rechecked at mutation time. Manual model cards may
+configure inactive models; voice must not report success for model-incompatible choices.

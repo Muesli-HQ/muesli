@@ -76,7 +76,7 @@ struct MuesliSettingControl: View {
     }
 
     private func filteredSnapshot(_ setting: MuesliSetting) -> MuesliSetting.Snapshot {
-        let state = setting.snapshot(config: controller.appState.config)
+        let state = setting.snapshot(config: controller.appState.config, source: .manualUI)
         guard let allowedChoiceIDs else { return state }
         return .init(id: state.id, label: state.label, current: state.current,
             choices: state.choices.filter { allowedChoiceIDs.contains($0.id) }, unavailable: state.unavailable)
