@@ -24,10 +24,11 @@ extension MuesliController {
                  voiceRestriction: String? = nil,
                  requestPermission: (() -> Void)? = nil,
                  voiceUnavailable: @escaping (String) -> String? = { _ in nil },
+                 activation: MuesliSettingActivation? = nil,
                  unavailable: @escaping (String) -> String? = { _ in nil },
                  apply: @escaping (String) async throws -> Void) {
             settings.append(.init(publicDiscovery: discovery, id: id, label: label, choices: choices, read: read,
-                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission, voiceUnavailable: voiceUnavailable))
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission, voiceUnavailable: voiceUnavailable, activation: activation))
         }
         func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>,
                     requestPermission: (() -> Void)? = nil,
@@ -173,21 +174,26 @@ extension MuesliController {
             read: { $0.resolvedAppleSpeechLanguage }) { self.selectAppleSpeechLanguage($0) }
         textMenu("cohere_language", "Cohere language", CohereTranscribeLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.cohereLanguage)
         textMenu("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.whisperLanguage)
-        add("bodhan_language", "Bodhan language", BodhanLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
-            read: { $0.bodhanLanguage }, voiceUnavailable: { value in
+        let bodhanTargets = [MuesliSettingActivation.Target(id: "dictation_model", label: "Dictation"),
+                             .init(id: "meeting_model", label: "Meetings")]
+        func bodhanActivation(supports: @escaping (BodhanModel, String) -> Bool) -> MuesliSettingActivation {
+            .init(label: "Bodhan", targets: bodhanTargets, compatibleChoices: { value in
+                Set(BodhanModel.allCases.filter { supports($0, value) }.map { "bodhan:" + $0.rawValue })
+            }, unavailable: { value in
                 let models = self.voiceBodhanModels()
-                guard !models.isEmpty, models.allSatisfy({ BodhanLanguage.choices(for: $0.rawValue).contains(where: { $0.rawValue == value }) }) else {
-                    return "This language is unavailable for the selected transcription models. Select a compatible Bodhan model first. Nothing was changed."
-                }
-                return nil
+                return !models.isEmpty && models.allSatisfy { supports($0, value) }
+                    ? nil : "A compatible Bodhan model is not active everywhere this preference applies. Choose where to activate it, or save the preference for later."
+            })
+        }
+        add("bodhan_language", "Bodhan language", BodhanLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.bodhanLanguage }, activation: bodhanActivation { model, value in
+                BodhanLanguage.choices(for: model.rawValue).contains { $0.rawValue == value }
             }) { value in
                 if let language = BodhanLanguage(rawValue: value) { self.selectBodhanLanguage(language) }
             }
         add("bodhan_output", "Bodhan Flex output script", BodhanOutputMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
-            read: { $0.resolvedBodhanOutputMode.rawValue }, voiceUnavailable: { value in
-                let models = self.voiceBodhanModels()
-                return !models.isEmpty && models.allSatisfy({ !$0.isCore || value == BodhanOutputMode.native.rawValue })
-                    ? nil : "This output script requires Bodhan Flex. Select Bodhan Flex first. Nothing was changed."
+            read: { $0.resolvedBodhanOutputMode.rawValue }, activation: bodhanActivation { model, value in
+                !model.isCore || value == BodhanOutputMode.native.rawValue
             }) { value in
                 if let mode = BodhanOutputMode(rawValue: value) { self.selectBodhanOutputMode(mode) }
             }

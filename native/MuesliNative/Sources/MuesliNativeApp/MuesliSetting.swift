@@ -15,6 +15,7 @@ struct MuesliSetting {
         let unavailable: [String: String]
         var shortcutCombination: ShortcutAssignment.CombinationRules? = nil
         var followUpSelections: [String: String]? = nil
+        var activation: String? = nil
     }
     struct Discovery: Codable, Hashable { let id: String; let label: String }
     var discovery: Discovery { publicDiscovery ?? Discovery(id: id, label: label) }
@@ -33,6 +34,7 @@ struct MuesliSetting {
     var voiceRestriction: String? = nil
     var requestPermission: (() -> Void)? = nil
     var voiceUnavailable: (String) -> String? = { _ in nil }
+    var activation: MuesliSettingActivation? = nil
 
     func choice(for value: String) -> Choice? {
         if let choice = choices.first(where: { $0.id == value }) { return choice }
@@ -41,21 +43,23 @@ struct MuesliSetting {
     }
 
     func availability(_ value: String, source: MuesliSettings.ApplySource = .voice) -> String? {
-        unavailable(value) ?? (source == .voice ? voiceUnavailable(value) : nil)
+        unavailable(value) ?? (source != .manualUI ? voiceUnavailable(value) : nil)
+            ?? (source == .voice ? activation?.unavailable(value) : nil)
     }
 
     func snapshot(config: AppConfig, source: MuesliSettings.ApplySource = .voice) -> Snapshot {
         Snapshot(id: id, label: label, current: read(config), choices: choices,
                  unavailable: Dictionary(uniqueKeysWithValues: choices.compactMap { choice in
                      availability(choice.id, source: source).map { (choice.id, $0) }
-                 }), shortcutCombination: shortcutAssignment?.combinationRules, followUpSelections: followUpSelections.isEmpty ? nil : followUpSelections)
+                 }), shortcutCombination: shortcutAssignment?.combinationRules, followUpSelections: followUpSelections.isEmpty ? nil : followUpSelections,
+                 activation: activation.map { "If inactive or incompatible, selecting a choice asks where to activate \($0.label), or whether to save the preference for later. Do not reject it solely for missing activation." })
     }
 }
 
 
 @MainActor
 enum MuesliSettings {
-    enum ApplySource { case voice, manualUI }
+    enum ApplySource { case voice, manualUI, confirmedPreference }
     struct Selection: Codable {
         let setting: String
         let value: String
@@ -78,7 +82,7 @@ enum MuesliSettings {
         guard let setting = settings.first(where: { $0.id == selection.setting }) else {
             throw Failure.rejected("That setting or option is unavailable. Nothing was changed.")
         }
-        if source == .voice, let reason = setting.voiceRestriction { throw Failure.rejected(reason) }
+        if source != .manualUI, let reason = setting.voiceRestriction { throw Failure.rejected(reason) }
         guard let choice = setting.choice(for: selection.value),
               let snapshot = snapshots.first(where: { $0.id == setting.id }) else {
             throw Failure.rejected("That setting or option is unavailable. Nothing was changed.")
