@@ -213,7 +213,7 @@ run_case appcast_metadata \
   "full_ci=true" \
   "workflow_ci=false" \
   "review_worthy=true" \
-  "native_or_packaging=true"
+  "native_or_packaging=false"
 
 run_case empty_input \
   "" \
@@ -262,5 +262,43 @@ run_case mixed_docs_and_source \
   "workflow_ci=false" \
   "review_worthy=true" \
   "native_or_packaging=true"
+
+# Exercise native gating separately from metadata validation and review. Mixed
+# changes must never let a cheap metadata path suppress expensive checks.
+run_gate_case() {
+  local name="$1" files="$2" native="$3"
+  local output="$tmpdir/$name.out"
+  local github_output="$tmpdir/$name.github-output"
+  : > "$github_output"
+  printf '%s\n' "$files" | GITHUB_OUTPUT="$github_output" "$CLASSIFIER" > "$output"
+  diff -u "$output" "$github_output"
+  for expected in "full_ci=true" "review_worthy=true" "native_or_packaging=$native"; do
+    if ! grep -qx "$expected" "$output"; then
+      echo "FAIL $name: expected $expected"
+      cat "$output"
+      exit 1
+    fi
+  done
+}
+
+for metadata in docs/appcast.xml docs/appcast-preprod.xml docs/index.html docs/llms.txt; do
+  run_gate_case metadata "$metadata" false
+  for native_path in \
+    native/MuesliNative/Sources/App.swift \
+    native/MuesliNative/Package.resolved \
+    scripts/release.sh \
+    scripts/verify_update_flow.sh \
+    scripts/classify_changed_files.sh \
+    assets/AppIcon.icns \
+    docs/download/Muesli.dmg \
+    .github/workflows/ci.yml \
+    tools/unknown-helper.sh; do
+    run_gate_case mixed "$metadata"$'\n'"$native_path" true
+    run_gate_case mixed_reversed "$native_path"$'\n'"$metadata" true
+  done
+done
+run_gate_case metadata_batch $'docs/appcast.xml\ndocs/index.html\ndocs/llms.txt\nREADME.md' false
+run_gate_case download_artifact "docs/download/Muesli.dmg" true
+run_gate_case empty_fails_closed "" true
 
 echo "classifier tests passed"

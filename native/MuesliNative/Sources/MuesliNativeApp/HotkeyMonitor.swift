@@ -39,7 +39,31 @@ enum HotkeyTriggerTiming {
     }
 }
 
+/// A capture pause is not an enable request. Only listeners running before the
+/// pause may resume, and an explicit stop while paused revokes that permission.
+struct HotkeyCaptureSuspension {
+    private(set) var isSuspended = false
+    private var shouldResume = false
+
+    mutating func begin(wasRunning: Bool) {
+        guard !isSuspended else { return }
+        isSuspended = true
+        shouldResume = wasRunning
+    }
+
+    mutating func stopped() { shouldResume = false }
+
+    mutating func end() -> Bool {
+        guard isSuspended else { return false }
+        let resume = shouldResume
+        isSuspended = false
+        shouldResume = false
+        return resume
+    }
+}
+
 final class HotkeyMonitor {
+    private var captureSuspension = HotkeyCaptureSuspension()
     enum CombinationActivation {
         case toggle
         case pushToTalk
@@ -85,6 +109,7 @@ final class HotkeyMonitor {
     private var lastTapUpTime: Date?
     private var lastTapWasShort = false
     private var toggleActive = false
+    private var sessionGeneration: UInt64 = 0
 
     private var prepareDelay: TimeInterval
     private var startDelay: TimeInterval
@@ -124,6 +149,7 @@ final class HotkeyMonitor {
     }
 
     func start() {
+        guard !captureSuspension.isSuspended else { return }
         guard !isRunning else { return }
 
         // Carbon registration itself does not require listen access, but the
@@ -163,8 +189,9 @@ final class HotkeyMonitor {
     }
 
     func stop() {
+        captureSuspension.stopped()
         finishActiveSessionBeforeReconfigure()
-        cancelTimers()
+        cancelCurrentSession()
         if let globalMonitor {
             NSEvent.removeMonitor(globalMonitor)
         }
@@ -181,14 +208,6 @@ final class HotkeyMonitor {
             RemoveEventHandler(registeredHotKeyHandler)
             self.registeredHotKeyHandler = nil
         }
-        targetKeyDown = false
-        otherKeyPressed = false
-        armed = false
-        prepared = false
-        active = false
-        toggleActive = false
-        combinationKeyDown = false
-        combinationTriggered = false
     }
 
     func configure(keyCode: UInt16) {
@@ -243,17 +262,7 @@ final class HotkeyMonitor {
         let wasActive = active
         let shouldCancel = prepared || armed || armCancelWorkItem != nil
 
-        targetKeyDown = false
-        otherKeyPressed = false
-        armed = false
-        prepared = false
-        active = false
-        toggleActive = false
-        combinationKeyDown = false
-        combinationTriggered = false
-        lastTapWasShort = false
-        lastTapUpTime = nil
-        cancelTimers()
+        cancelCurrentSession()
 
         if wasToggleActive {
             onToggleStop?()
@@ -281,8 +290,42 @@ final class HotkeyMonitor {
         }
     }
 
+    /// End an interaction without emitting lifecycle callbacks. The caller owns
+    /// audio/transcription cancellation. Reset before calling out so callbacks
+    /// cannot leave pending key work alive or stop an already-cancelled session.
+    /// Used for both held keys and hands-free sessions; safe to call repeatedly.
+    func cancelCurrentSession() {
+        sessionGeneration &+= 1
+        cancelTimers()
+        targetKeyDown = false
+        otherKeyPressed = false
+        armed = false
+        prepared = false
+        active = false
+        toggleActive = false
+        combinationKeyDown = false
+        combinationTriggered = false
+        lastTapWasShort = false
+        lastTapUpTime = nil
+    }
+
     var isRunning: Bool {
         globalMonitor != nil || localMonitor != nil || registeredHotKey != nil
+    }
+
+    var hasPendingOrActiveSession: Bool {
+        targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown
+    }
+
+    func suspendForShortcutCapture() {
+        guard !captureSuspension.isSuspended else { return }
+        let wasRunning = isRunning
+        stop()
+        captureSuspension.begin(wasRunning: wasRunning)
+    }
+
+    func resumeAfterShortcutCapture() {
+        if captureSuspension.end() { start() }
     }
 
     var isToggleRecording: Bool {
@@ -329,17 +372,19 @@ final class HotkeyMonitor {
         if type == .keyDown && keyCode == 53 {
             if combinationActivation == .pushToTalk,
                combinationKeyDown || prepared || active {
-                finishCombinationPushToTalk(cancelled: true)
+                cancelCurrentSession()
+                onCancel?()
                 return true
             }
             if toggleActive {
-                toggleActive = false
+                cancelCurrentSession()
                 fputs("[hotkey] escape → cancel combination toggle\n", stderr)
                 onCancel?()
                 return true
             }
             if combinationKeyDown {
-                cancelCombinationPending(notify: true)
+                cancelCurrentSession()
+                onCancel?()
                 return true
             }
             return false
@@ -573,10 +618,12 @@ final class HotkeyMonitor {
                         return
                     }
 
+                    let generation = sessionGeneration
                     if let onArm {
                         armed = true
                         onArm()
                     }
+                    guard sessionGeneration == generation, targetKeyDown else { return }
                     fputs("[hotkey] target key \(targetKeyCode) down\n", stderr)
                     scheduleTimers()
                 }
@@ -652,29 +699,8 @@ final class HotkeyMonitor {
     func handleKeyDown(keyCode: UInt16) {
         // Escape cancels any active recording
         if keyCode == 53 {
-            if toggleActive {
-                fputs("[hotkey] escape → cancel toggle\n", stderr)
-                toggleActive = false
-                cancelTimers()
-                onCancel?()
-                return
-            }
-            if active {
-                fputs("[hotkey] escape → cancel hold\n", stderr)
-                active = false
-                prepared = false
-                targetKeyDown = false
-                armed = false
-                cancelTimers()
-                onCancel?()
-                return
-            }
-            if armed || prepared {
-                fputs("[hotkey] escape → cancel armed hold\n", stderr)
-                targetKeyDown = false
-                armed = false
-                prepared = false
-                cancelTimers()
+            if toggleActive || active || armed || prepared || armCancelWorkItem != nil {
+                cancelCurrentSession()
                 onCancel?()
             }
             return
@@ -704,8 +730,9 @@ final class HotkeyMonitor {
 
     private func scheduleTimers() {
         let delays = timerDelays()
+        let generation = sessionGeneration
         let prepare = DispatchWorkItem { [weak self] in
-            guard let self, self.targetKeyDown, !self.otherKeyPressed, !self.prepared, !self.active else { return }
+            guard let self, self.sessionGeneration == generation, self.targetKeyDown, !self.otherKeyPressed, !self.prepared, !self.active else { return }
             self.armCancelWorkItem?.cancel()
             self.armCancelWorkItem = nil
             self.prepared = true
@@ -715,7 +742,7 @@ final class HotkeyMonitor {
             self.onPrepare?()
         }
         let start = DispatchWorkItem { [weak self] in
-            guard let self, self.targetKeyDown, !self.otherKeyPressed, !self.active else { return }
+            guard let self, self.sessionGeneration == generation, self.targetKeyDown, !self.otherKeyPressed, !self.active else { return }
             self.armCancelWorkItem?.cancel()
             self.armCancelWorkItem = nil
             if !self.prepared {
@@ -725,6 +752,8 @@ final class HotkeyMonitor {
                 fputs("[hotkey] prepared\n", stderr)
                 self.onPrepare?()
             }
+            // Preparation can synchronously cancel/reconfigure the interaction.
+            guard self.sessionGeneration == generation, self.targetKeyDown, !self.otherKeyPressed else { return }
             self.active = true
             fputs("[hotkey] start\n", stderr)
             self.onStart?()
