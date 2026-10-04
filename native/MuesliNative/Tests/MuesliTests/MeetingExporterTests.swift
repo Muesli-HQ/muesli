@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import MuesliNativeApp
 import MuesliCore
 
@@ -231,6 +232,149 @@ struct MeetingExporterTests {
         let name = MeetingExporter.suggestedFilename(meeting: meeting, content: .notes)
 
         #expect(name == "meeting-notes.pdf")
+    }
+
+    @Test("Filename uses the preferred manual export format extension")
+    func filenameUsesPreferredFormatExtension() {
+        let meeting = makeMeeting(title: "Q2 Planning")
+        let name = MeetingExporter.suggestedFilename(
+            meeting: meeting,
+            content: .notes,
+            fileExtension: MeetingManualExportFormat.markdown.fileExtension
+        )
+
+        #expect(name == "q2-planning-notes.md")
+    }
+
+    // MARK: - Manual export format
+
+    @Test("Manual export format resolves known and unknown raw values")
+    func manualExportFormatResolution() {
+        #expect(MeetingManualExportFormat.resolved("pdf") == .pdf)
+        #expect(MeetingManualExportFormat.resolved("markdown") == .markdown)
+        #expect(MeetingManualExportFormat.resolved("docx") == .pdf)
+        #expect(MeetingManualExportFormat.resolved("") == .pdf)
+    }
+
+    @Test("Manual export formats declare file extensions and content types")
+    func manualExportFormatExtensions() {
+        #expect(MeetingManualExportFormat.pdf.fileExtension == "pdf")
+        #expect(MeetingManualExportFormat.markdown.fileExtension == "md")
+        #expect(MeetingExporter.contentType(for: .pdf) == MeetingExporter.pdfType)
+        #expect(MeetingExporter.contentType(for: .markdown) == MeetingExporter.mdType)
+    }
+
+    // MARK: - Export outcome handling
+
+    private final class ExportIOSpy {
+        var pdfWrites: [URL] = []
+        var markdownWrites: [URL] = []
+        var openedFiles: [URL] = []
+        var errors: [String] = []
+        var writeError: Error?
+
+        var io: MeetingExporter.ManualExportIO {
+            MeetingExporter.ManualExportIO(
+                writePDF: { [self] _, url in
+                    if let writeError { throw writeError }
+                    pdfWrites.append(url)
+                },
+                writeMarkdown: { [self] _, url, completion in
+                    if let writeError {
+                        completion(writeError)
+                    } else {
+                        markdownWrites.append(url)
+                        completion(nil)
+                    }
+                },
+                openFile: { [self] url in openedFiles.append(url) },
+                showError: { [self] title, _ in errors.append(title) }
+            )
+        }
+    }
+
+    private let exportURL = URL(fileURLWithPath: "/tmp/muesli-export-test.out")
+
+    @Test("Cancelled export confirms no format and writes nothing")
+    func cancelledExportConfirmsNothing() {
+        let spy = ExportIOSpy()
+        var confirmedFormat: MeetingManualExportFormat?
+
+        MeetingExporter.processManualExport(
+            outcome: .cancelled,
+            markdown: "# Notes",
+            openAfterSaving: true,
+            onFormatConfirmed: { confirmedFormat = $0 },
+            io: spy.io
+        )
+
+        #expect(confirmedFormat == nil)
+        #expect(spy.pdfWrites.isEmpty)
+        #expect(spy.markdownWrites.isEmpty)
+        #expect(spy.openedFiles.isEmpty)
+    }
+
+    @Test("Confirmed save reports the selected format", arguments: MeetingManualExportFormat.allCases)
+    func confirmedSaveReportsFormat(format: MeetingManualExportFormat) {
+        let spy = ExportIOSpy()
+        var confirmedFormat: MeetingManualExportFormat?
+
+        MeetingExporter.processManualExport(
+            outcome: .confirmed(url: exportURL, format: format),
+            markdown: "# Notes",
+            openAfterSaving: true,
+            onFormatConfirmed: { confirmedFormat = $0 },
+            io: spy.io
+        )
+
+        #expect(confirmedFormat == format)
+        #expect(spy.pdfWrites == (format == .pdf ? [exportURL] : []))
+        #expect(spy.markdownWrites == (format == .markdown ? [exportURL] : []))
+    }
+
+    @Test("Open after saving enabled opens the file", arguments: MeetingManualExportFormat.allCases)
+    func openAfterSavingEnabledOpensFile(format: MeetingManualExportFormat) {
+        let spy = ExportIOSpy()
+
+        MeetingExporter.processManualExport(
+            outcome: .confirmed(url: exportURL, format: format),
+            markdown: "# Notes",
+            openAfterSaving: true,
+            io: spy.io
+        )
+
+        #expect(spy.openedFiles == [exportURL])
+    }
+
+    @Test("Open after saving disabled still writes but does not open", arguments: MeetingManualExportFormat.allCases)
+    func openAfterSavingDisabledDoesNotOpen(format: MeetingManualExportFormat) {
+        let spy = ExportIOSpy()
+
+        MeetingExporter.processManualExport(
+            outcome: .confirmed(url: exportURL, format: format),
+            markdown: "# Notes",
+            openAfterSaving: false,
+            io: spy.io
+        )
+
+        #expect(spy.pdfWrites.count + spy.markdownWrites.count == 1)
+        #expect(spy.openedFiles.isEmpty)
+    }
+
+    @Test("Write failure shows an error and does not open the file", arguments: MeetingManualExportFormat.allCases)
+    func writeFailureShowsErrorAndDoesNotOpen(format: MeetingManualExportFormat) {
+        let spy = ExportIOSpy()
+        spy.writeError = CocoaError(.fileWriteUnknown)
+
+        MeetingExporter.processManualExport(
+            outcome: .confirmed(url: exportURL, format: format),
+            markdown: "# Notes",
+            openAfterSaving: true,
+            io: spy.io
+        )
+
+        #expect(spy.errors == ["Export Failed"])
+        #expect(spy.openedFiles.isEmpty)
     }
 
     @Test("Truncates long titles in filename")
