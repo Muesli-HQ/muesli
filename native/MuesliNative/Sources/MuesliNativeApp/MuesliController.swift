@@ -387,6 +387,7 @@ public final class MuesliController: NSObject {
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
+    private var isRecordingPasteShortcut = false
     private let computerUseRecorder = RouteAwareDictationRecorder()
     private let quilRecorder = RouteAwareDictationRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
@@ -527,6 +528,8 @@ public final class MuesliController: NSObject {
     private var computerUseCommandStartedAt: Date?
     private var pendingComputerUseStopStartedAt: Date?
     private var pendingComputerUseStopSessionID: UUID?
+    private let computerUseQuestionPresenter = ComputerUseQuestionPresenter()
+    private var computerUseSettingsTaskID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
     private var hasRequestedComputerUseScreenRecordingAccess = false
@@ -2878,6 +2881,46 @@ public final class MuesliController: NSObject {
         selectBackend(option, makePrimaryDictationModel: false)
     }
 
+    func settingsShortcutPermission(enabled: Bool, pushToTalk: Bool,
+                                    permissions: OnboardingPermissionSnapshot? = nil) -> String? {
+        guard enabled else { return nil }
+        let snapshot = permissions ?? currentOnboardingPermissionSnapshot()
+        let allowed = pushToTalk
+            ? PushToTalkEnablementPolicy.PermissionProfile.resolved(for: config.resolvedOnboardingUseCase).hasRequiredPermissions(snapshot)
+            : ShortcutFeatureEnablementPolicy.hasRequiredPermissions(snapshot)
+        return allowed ? nil : "Grant the required microphone, Accessibility and Input Monitoring permissions in Settings first."
+    }
+
+    func requestPushToTalkSettingsPermissions() {
+        requestMissingPushToTalkPermissions(currentOnboardingPermissionSnapshot(),
+            profile: .resolved(for: config.resolvedOnboardingUseCase))
+    }
+
+    func requestSettingsPermissions() {
+        requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
+    }
+
+    func setSettingFromUI(_ id: String, value: String) {
+        Task { @MainActor in
+            do { try await applySetting(id, value: value) }
+            catch { presentErrorAlert(title: "Setting could not be changed", message: error.localizedDescription) }
+        }
+    }
+
+    func applySetting(_ id: String, value: String) async throws {
+        let definitions = settingsDefinitions()
+        _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
+            snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
+            persistedConfig: {
+                try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            })
+    }
+
+    func selectPrimaryDictationModelForComputerUse(_ option: BackendOption) {
+        guard canChangePrimaryDictationModel() else { return }
+        selectBackend(option, makePrimaryDictationModel: true)
+    }
+
     private func selectBackend(
         _ option: BackendOption,
         makePrimaryDictationModel: Bool
@@ -3414,6 +3457,8 @@ public final class MuesliController: NSObject {
                 config.postProcessorChatGPTModel = model
             case .some(.openAI):
                 config.postProcessorOpenAIModel = model
+            case .some(.anthropic):
+                config.postProcessorAnthropicModel = model
             case .some(.openRouter):
                 config.postProcessorOpenRouterModel = model
             case .some(.ollama):
@@ -4836,6 +4881,35 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.stop()
     }
 
+    /// Recorder owns a temporary pause, never changes feature enablement/config.
+    func beginPasteShortcutCapture() -> Bool {
+        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        guard !isRecordingPasteShortcut, dictationState == .idle,
+              !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
+              !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
+              interactiveAudioSessionOwnership.canStart(.dictation),
+              monitors.allSatisfy({ !$0.hasPendingOrActiveSession }) else { return false }
+        isRecordingPasteShortcut = true
+        monitors.forEach { $0.suspendForShortcutCapture() }
+        return true
+    }
+
+    func endPasteShortcutCapture() {
+        guard isRecordingPasteShortcut else { return }
+        isRecordingPasteShortcut = false
+        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+            .forEach { $0.resumeAfterShortcutCapture() }
+    }
+
+    func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
+        let candidate = HotkeyConfig.combination(modifiers: NSEvent.ModifierFlags(rawValue: UInt(chord.modifiers)), keyCode: chord.keyCode)
+        return [(config.enablePushToTalk, config.dictationHotkey),
+                (config.enableComputerUseHotkey, config.computerUseHotkey),
+                (config.enableQuilMode, config.quilHotkey),
+                (config.enableMeetingRecordingHotkey, config.meetingRecordingHotkey)]
+            .contains { $0.0 && $0.1.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0.1) }
+    }
+
     func downloadModelForOnboarding(
         _ backend: BackendOption,
         onboardingUseCase: OnboardingUseCase,
@@ -4955,7 +5029,8 @@ public final class MuesliController: NSObject {
         hotkey: HotkeyConfig,
         onboardingUseCase: OnboardingUseCase,
         summaryBackend: MeetingSummaryBackendOption?,
-        apiKey: String?
+        apiKey: String?,
+        anthropicWorkspaceID: String? = nil
     ) {
         var shouldRetainLegacyOpenRouterKey = false
         if summaryBackend == .openRouter,
@@ -4983,9 +5058,14 @@ public final class MuesliController: NSObject {
             if let summaryBackend {
                 config.meetingSummaryBackend = summaryBackend.backend
             }
+            if let anthropicWorkspaceID {
+                config.anthropicWorkspaceID = anthropicWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             if let apiKey, !apiKey.isEmpty {
                 if summaryBackend == .openAI {
                     config.openAIAPIKey = apiKey
+                } else if summaryBackend == .anthropic {
+                    config.anthropicAPIKey = apiKey
                 } else if summaryBackend == .openRouter,
                           shouldRetainLegacyOpenRouterKey {
                     // ConfigStore retries the migration and preserves this
@@ -5433,13 +5513,15 @@ public final class MuesliController: NSObject {
         showMeetingDocument(id: activeMeetingID)
     }
 
-    func openActiveMeetingNotes() {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
+    @discardableResult
+    func openActiveMeetingNotes() -> Bool {
+        guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         guard let activeMeetingID,
-              isMeetingRecording() || isStartingMeetingRecording else { return }
+              isMeetingRecording() || isStartingMeetingRecording else { return false }
         showMeetingDocument(id: activeMeetingID)
         appState.meetingNotesFocusRequest &+= 1
         presentHistoryWindow()
+        return true
     }
 
     func showMeetingTemplatesManager() {
@@ -5616,15 +5698,18 @@ public final class MuesliController: NSObject {
         selectMeetingSummaryBackend(option)
     }
 
-    func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption) -> Bool {
+    func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption, config summaryConfig: AppConfig? = nil) -> Bool {
+        let summaryConfig = summaryConfig ?? config
         switch provider {
         case .chatGPT: return appState.isChatGPTAuthenticated
-        case .openAI: return !resolvedOpenAIAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openAI: return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: summaryConfig).isEmpty
+        case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: summaryConfig).isEmpty
         case .openRouter:
-            return appState.isOpenRouterAuthenticated || !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey).isEmpty
         case .ollama: return true
-        case .lmStudio: return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
-        case .customLLM: return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
+        case .claudeCode: return ClaudeCodeSummarizer.executableURL(configuredPath: summaryConfig.claudeCodeExecutablePath) != nil
+        case .lmStudio: return MeetingSummaryClient.lmStudioHasRequiredSettings(config: summaryConfig)
+        case .customLLM: return MeetingSummaryClient.customLLMHasRequiredSettings(config: summaryConfig)
         default: return false
         }
     }
@@ -5652,6 +5737,11 @@ public final class MuesliController: NSObject {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         let summaryConfig = summaryConfig ?? config
+        let provider = MeetingSummaryBackendOption.resolved(summaryConfig.meetingSummaryBackend)
+        guard canUseSummaryProvider(provider, config: summaryConfig) else {
+            completion(.failure(MeetingSummaryError.notConfigured(backend: provider.label)))
+            return
+        }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }
@@ -5824,6 +5914,7 @@ public final class MuesliController: NSObject {
                 let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
                 let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
                 let formattedNotes: String
+                var summaryFailureWarning: String?
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = .summarizing
                 self.appState.meetingRetranscriptions[meeting.id]?.message = "Re-summarizing…"
                 self.setMeetingProcessingStage(.summarizingNotes, processingID: processingID)
@@ -5840,12 +5931,15 @@ public final class MuesliController: NSObject {
                 } catch {
                     try Task.checkCancellation()
                     fputs("[muesli-native] re-transcription summary generation failed: \(error)\n", stderr)
-                    formattedNotes = MeetingSummaryClient.summaryFailureNotes(
+                    formattedNotes = MeetingSummaryClient.notesAfterFailedRegeneration(
+                        existingNotes: meeting.formattedNotes,
+                        previousTranscript: meeting.rawTranscript,
                         transcript: rawTranscript,
                         meetingTitle: meeting.title,
                         error: error,
                         manualNotes: meeting.manualNotes
                     )
+                    summaryFailureWarning = "Summary could not be regenerated. The new transcript was saved separately from any retained note edits. \(error.localizedDescription)"
                 }
 
                 do {
@@ -5862,6 +5956,13 @@ public final class MuesliController: NSObject {
                 } catch {
                     if error is CancellationError { throw error }
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
+                }
+
+                if let summaryFailureWarning {
+                    let previousWarning = self.appState.meetingRetranscriptions[meeting.id]?.warning
+                    self.appState.meetingRetranscriptions[meeting.id]?.warning = [previousWarning, summaryFailureWarning]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
                 }
 
                 self.scheduleICloudSyncAfterLocalChange()
@@ -9622,6 +9723,7 @@ public final class MuesliController: NSObject {
                     var pasteLifecycleEvents: [PasteController.LifecycleEvent] = []
                     PasteController.paste(
                         text: replacement,
+                        shortcut: configSnapshot.pasteShortcut,
                         requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: { snapshot.isTargetStillFocused() },
@@ -9659,7 +9761,7 @@ public final class MuesliController: NSObject {
                                 deliveryStatus = "needs_attention"
                                 deliveryMessage = "Generated text is ready for manual paste"
                                 deliveryTraceBody = "Automatic paste was not accepted; generated text was retained on the clipboard"
-                                userMessage = "Generated — press ⌘V to paste"
+                                userMessage = "Generated — press \(configSnapshot.pasteShortcut.chordLabel) to paste"
                             } else {
                                 deliveryStatus = "needs_attention"
                                 deliveryMessage = "Automatic paste could not be completed"
@@ -9843,24 +9945,14 @@ public final class MuesliController: NSObject {
         meetingMonitor.refreshState()
     }
 
-    /// Denial must release an already armed session before any permission UI.
-    func ensureComputerUseScreenRecordingAccess(isGranted: Bool) -> Bool {
-        guard isGranted else {
-            handleComputerUseCancel()
-            return false
-        }
-        return true
-    }
-
-    private func handleComputerUseStart() {
-        guard canStartComputerUseCommand else { return }
-        guard ensureComputerUseScreenRecordingAccess(isGranted: CGPreflightScreenCaptureAccess()) else {
+    private func requestDesktopComputerUseScreenAccess() -> Bool {
+        guard CGPreflightScreenCaptureAccess() else {
             if !hasRequestedComputerUseScreenRecordingAccess {
                 hasRequestedComputerUseScreenRecordingAccess = true
                 // macOS owns this prompt and its Open System Settings action.
                 // Opening Settings ourselves as well leaves the prompt behind.
                 _ = CGRequestScreenCaptureAccess()
-                return
+                return false
             }
             // A denied request may no longer produce a system prompt. Offer a
             // Settings shortcut on a subsequent attempt, without requesting again.
@@ -9874,8 +9966,13 @@ public final class MuesliController: NSObject {
                     NSWorkspace.shared.open(url)
                 }
             }
-            return
+            return false
         }
+        return true
+    }
+
+    private func handleComputerUseStart() {
+        guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         indicator.instructionMode = .computerUse
         meetingMonitor.suppressWhileActive()
@@ -9908,7 +10005,7 @@ public final class MuesliController: NSObject {
         handleComputerUseStop()
     }
 
-    private func handleComputerUseCancel() {
+    func handleComputerUseCancel() {
         fputs("[cua] cancel\n", stderr)
         guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .computerUse) else {
             fputs("[cua] ignoring cleanup while dictation owns interactive audio\n", stderr)
@@ -9916,6 +10013,10 @@ public final class MuesliController: NSObject {
             return
         }
         computerUseCommandTask?.cancel()
+        computerUseQuestionPresenter.cancel()
+        // Let the settings executor verify a setter that may already have committed.
+        // It returns promptly on cancellation while thinking or asking a question.
+        if let settingsTaskID = computerUseSettingsTaskID, settingsTaskID == computerUseCommandTaskID { return }
         activeComputerUseTrace?.finish(status: "cancelled", message: "Stopped by the user.")
         activeComputerUseTrace = nil
         indicator.setComputerUseCancellationAvailable(false)
@@ -10177,10 +10278,12 @@ public final class MuesliController: NSObject {
             self.syncAppState()
         }
         activeComputerUseTrace = runTrace
-        let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
+        runTrace.record(ComputerUseTraceEvent(kind: "routing", title: "Understanding command",
+                                            body: "Choosing Muesli settings or desktop tools.", status: "running"))
+        let runtime = ComputerUsePlannerRuntime(config: config, onStatus: { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
-        }
+        })
         runtime.onEvent = { [weak self] event in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
@@ -10191,7 +10294,33 @@ public final class MuesliController: NSObject {
         }
 
         let result: ComputerUsePlannerRuntimeResult
-        if CGPreflightScreenCaptureAccess() {
+        computerUseSettingsTaskID = taskID
+        let settingsResult = await ComputerUseSettings.run(
+            command: transcript, settings: settingsDefinitions(),
+            config: { self.config }, persistedConfig: {
+                try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            }, refresh: { self.settingsDefinitions() }, prepare: { id in
+                if id == "apple_speech_language", #available(macOS 26.0, *),
+                   AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+                    self.appState.settingsAppleSpeechLanguages = await AppleSpeechLanguageOption.supportedOptions()
+                }
+            }, ask: { question in
+                self.presentComputerUseFloatingStatus("Waiting for your answer")
+                runTrace.record(ComputerUseTraceEvent(kind: "question", title: "Question",
+                    body: question.question, status: "waiting"))
+                let answer = try await self.computerUseQuestionPresenter.ask(question, present: { session in
+                    self.indicator.showComputerUseQuestion(session, config: self.config)
+                }, dismiss: {
+                    self.indicator.hideComputerUseQuestion()
+                })
+                self.presentComputerUseFloatingStatus("Thinking...")
+                return answer
+            })
+        if computerUseSettingsTaskID == taskID { computerUseSettingsTaskID = nil }
+        guard computerUseCommandTaskID == taskID else { return }
+        if let settingsResult {
+            result = settingsResult
+        } else if requestDesktopComputerUseScreenAccess() {
             result = await runtime.run(command: transcript)
         } else {
             result = ComputerUsePlannerRuntimeResult(
@@ -11675,6 +11804,7 @@ public final class MuesliController: NSObject {
                         PasteController.paste(
                             text: text,
                             appendDictationSentenceSpace: true,
+                            shortcut: self.config.pasteShortcut,
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
