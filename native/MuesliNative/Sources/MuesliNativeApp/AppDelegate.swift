@@ -107,8 +107,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         openActiveNotes: () -> Bool,
         openHistory: () -> Void
     ) -> Bool {
-        // Preserve AppKit's ordinary reopen behavior and the user's current tab.
-        guard !hasVisibleWindows, isMeetingRecording else { return true }
+        // Preserve the user's current tab when AppKit can bring a window forward.
+        guard !hasVisibleWindows else { return true }
+        // This menu-bar app manages history manually; AppKit has no untitled
+        // document to create when every window is closed.
+        guard isMeetingRecording else {
+            openHistory()
+            return false
+        }
         // During native shutdown the recording flag can outlive the active ID.
         if !openActiveNotes() { openHistory() }
         return false // The meeting reopen has been handled here.

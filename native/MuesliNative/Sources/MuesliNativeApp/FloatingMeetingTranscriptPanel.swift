@@ -42,6 +42,9 @@ enum FloatingMeetingTranscriptInteraction: Equatable {
         let headerMinY = panelFrame.maxY - 42
         guard point.y >= headerMinY else { return nil }
 
+        // Match header below: 16pt trailing padding, 24pt buttons, 8pt
+        // spacing. Each zone includes the gap before its button. Update these
+        // offsets with header geometry so AppKit and SwiftUI stay aligned.
         if point.x >= panelFrame.maxX - 48 {
             return .copy
         }

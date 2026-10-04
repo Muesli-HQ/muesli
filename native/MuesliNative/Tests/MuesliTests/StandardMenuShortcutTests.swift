@@ -67,6 +67,9 @@ struct StandardMenuShortcutTests {
 
     @Test("Meeting menu provides a stop shortcut and confirmed discard without a status icon")
     func meetingMenuProvidesIndependentStop() throws {
+        // NSMenu dispatches through NSApp, which another suite may otherwise
+        // initialize first. Keep this suite runnable in isolation.
+        _ = NSApplication.shared
         let delegate = AppDelegate()
         let menu = try requiredMenu(delegate.standardMenus().mainMenu.item(withTitle: "Meeting")?.submenu,
                                     message: "Missing Meeting menu")
@@ -86,6 +89,11 @@ struct StandardMenuShortcutTests {
         let probe = MeetingMenuActionProbe()
         stop.target = probe
         stop.action = #selector(MeetingMenuActionProbe.stop(_:))
+        // The controller-less delegate correctly disables the real command.
+        // Enable only this probe so matching tests do not depend on menu
+        // auto-validation timing or another suite's visible AppKit windows.
+        menu.autoenablesItems = false
+        stop.isEnabled = true
         let event = try #require(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
             windowNumber: 0, context: nil, characters: ".", charactersIgnoringModifiers: ".",
@@ -95,18 +103,32 @@ struct StandardMenuShortcutTests {
         #expect(probe.stopCount == 1)
     }
 
-    @Test("reopen preserves visible navigation and ordinary non-meeting behavior")
-    func reopenPreservesDefaultBehavior() {
-        for (visible, recording) in [(true, true), (true, false), (false, false)] {
+    @Test("reopen preserves visible navigation for both idle and recording states")
+    func reopenPreservesVisibleNavigation() {
+        for recording in [false, true] {
             var calls = 0
             let useDefault = AppDelegate.handleReopen(
-                hasVisibleWindows: visible, isMeetingRecording: recording,
+                hasVisibleWindows: true, isMeetingRecording: recording,
                 openActiveNotes: { calls += 1; return true },
                 openHistory: { calls += 1 }
             )
             #expect(useDefault)
             #expect(calls == 0)
         }
+    }
+
+    @Test("idle reopen explicitly opens history when every window is closed")
+    func idleReopenShowsHistory() {
+        var notesCalls = 0
+        var historyCalls = 0
+        let useDefault = AppDelegate.handleReopen(
+            hasVisibleWindows: false, isMeetingRecording: false,
+            openActiveNotes: { notesCalls += 1; return false },
+            openHistory: { historyCalls += 1 }
+        )
+        #expect(!useDefault)
+        #expect(notesCalls == 0)
+        #expect(historyCalls == 1)
     }
 
     @Test("closed meeting reopen falls back to history when active notes are unavailable", arguments: [false, true])
