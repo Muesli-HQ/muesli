@@ -741,6 +741,46 @@ struct ComputerUseSettingsTests {
         #expect(saved.quilModel == "gemma")
     }
 
+    @Test("free-form source follow-ups retain context and original readback", arguments: [false, true])
+    func sourceFreeformContext(manualEdit: Bool) async {
+        var config = AppConfig()
+        var saved = config
+        let originalModel = config.quilModel
+        var writes = 0
+        let source = MuesliSetting(id: "source", label: "Quill source", choices: [.init(id: "local", label: "Local")],
+            read: { _ in "hosted" }, unavailable: { _ in nil }, apply: { _ in Issue.record("Do not select a default model") },
+            followUpSelections: ["local": "model"])
+        let model = MuesliSetting(id: "model", label: "Local Quill model", choices: [.init(id: "gemma", label: "Gemma")],
+            read: { $0.quilModel }, unavailable: { _ in nil }, apply: { writes += 1; config.quilModel = $0; saved = config })
+        var calls = 0
+        var questions = 0
+        let result = await ComputerUseSettings.run(command: "Use local models for Quill", settings: [source, model],
+            config: { config }, persistedConfig: { saved }, ask: { _ in
+                questions += 1
+                if questions == 1 {
+                    if manualEdit { config.quilModel = "manually-selected"; saved = config }
+                    return "The Gemma one, please"
+                }
+                return "Gemma"
+            }) { context, snapshots in
+                calls += 1
+                if calls == 1 { return ("inspect_muesli_setting", #"{"setting":"source"}"#) }
+                if calls == 3 {
+                    #expect(context.contains("Use local models for Quill"))
+                    #expect(context.contains("Which local Quill model"))
+                    #expect(context.contains("The Gemma one, please"))
+                    #expect(Set(snapshots.map(\.id)) == ["source", "model"])
+                    #expect(snapshots.first { $0.id == "model" }?.current == originalModel)
+                }
+                // Exercise the previously failing retry of the original source.
+                return ("set_muesli_setting", #"{"setting":"source","value":"local"}"#)
+            }
+        #expect(questions == 2)
+        #expect(result?.status == (manualEdit ? .failed : .done))
+        #expect(writes == (manualEdit ? 0 : 1))
+        #expect(saved.quilModel == (manualEdit ? "manually-selected" : "gemma"))
+    }
+
     @Test("a committed change is verified even when cancellation arrives in its setter", arguments: [false, true])
     func cancelAfterCommit(throwsAfterSave: Bool) async throws {
         let h = Harness()

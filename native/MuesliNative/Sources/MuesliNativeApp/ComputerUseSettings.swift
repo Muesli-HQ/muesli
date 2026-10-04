@@ -108,7 +108,12 @@ enum ComputerUseSettings {
                         guard !choices.isEmpty else {
                             return result(.failed, "No options are currently available for \(followUp.label). Check its requirements in Settings.")
                         }
-                        inspected = [followUp.snapshot(config: config())]
+                        // Keep the source and its dependent choices together across
+                        // free-form answers and retries. Preserve the original readback
+                        // so a manual edit while answering still invalidates the change.
+                        if !inspected.contains(where: { $0.id == followUp.id }) {
+                            inspected.append(followUp.snapshot(config: config()))
+                        }
                         let label = followUp.label.prefix(1).lowercased() + followUp.label.dropFirst()
                         let question = ComputerUseQuestion(question: "Which \(label) would you like to use?",
                             options: Array(choices.prefix(3).map(\.label)) + ["Keep current settings"])
