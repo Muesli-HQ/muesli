@@ -707,12 +707,11 @@ struct SummaryModelPresetTests {
     @Test("OpenAI presets have valid model IDs")
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
-        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-sol" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(!SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.openAIModels.contains { $0.id.hasPrefix("gpt-5.") })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
             #expect(!preset.id.isEmpty)
@@ -723,13 +722,11 @@ struct SummaryModelPresetTests {
     @Test("ChatGPT presets include supported fast options")
     func chatGPTModels() {
         #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
-        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-sol" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
-        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id.hasPrefix("gpt-5.") })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.2" })
@@ -740,22 +737,31 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("ChatGPT transcript cleanup uses GPT-5.6 Terra by default")
+    @Test("ChatGPT transcript cleanup uses GPT-6 Luna by default")
     func chatGPTTranscriptCleanupModels() {
         let presets = SummaryModelPreset.chatGPTTranscriptCleanupModels
-        #expect(presets.first?.id == "gpt-5.6-terra")
+        #expect(presets.first?.id == "gpt-6-luna")
         #expect(presets.first?.label.contains("default") == true)
         #expect(Set(presets.map(\.id)) == Set([
-            "gpt-5.4-mini",
+            "gpt-6.1-sol",
             "gpt-6-astra",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
+            "gpt-6-sol",
+            "gpt-6-luna",
         ]))
 
         let backend = TranscriptCleanupBackendOption.hosted(.chatGPT)
-        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-5.6-terra")
-        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-5.6-terra")
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-6-luna")
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-6-luna")
+    }
+
+    @Test("Anthropic presets use current Claude API IDs")
+    func anthropicModels() {
+        #expect(SummaryModelPreset.anthropicModels.first?.id == "claude-sonnet-5-5")
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-opus-5-5" })
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-fable-5-1" })
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-haiku-4-5-20251001" })
+        let backend = TranscriptCleanupBackendOption.hosted(.anthropic)
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "claude-sonnet-5-5")
     }
 
     @Test("OpenRouter presets default to the provider-managed free router")
@@ -773,14 +779,13 @@ struct SummaryModelPresetTests {
         #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "openrouter/free")
     }
 
-    @Test("Computer use planner presets use GPT-5.6 Sol by default")
+    @Test("Computer use planner presets use GPT-6.1 Sol by default")
     func computerUsePlannerModels() {
-        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
+        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
-        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id.hasPrefix("gpt-5.") })
         for preset in SummaryModelPreset.computerUsePlannerModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
@@ -790,6 +795,9 @@ struct SummaryModelPresetTests {
     @Test("reasoning models expose only their supported efforts")
     func reasoningEffort() {
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-astra") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6.1-sol") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-sol") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-luna") == "medium")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-sol") == "high")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-terra") == "high")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-luna") == "high")
@@ -927,8 +935,10 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 6)
+        #expect(MeetingSummaryBackendOption.all.count == 8)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
+        #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
+        #expect(MeetingSummaryBackendOption.all.contains(.claudeCode))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
@@ -939,6 +949,8 @@ struct MeetingSummaryBackendTests {
     @Test("backend strings are lowercase")
     func backendStrings() {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
+        #expect(MeetingSummaryBackendOption.anthropic.backend == "anthropic")
+        #expect(MeetingSummaryBackendOption.claudeCode.backend == "claude_code")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
         #expect(MeetingSummaryBackendOption.lmStudio.backend == "lmstudio")
@@ -948,12 +960,33 @@ struct MeetingSummaryBackendTests {
     @Test("configured values resolve with ChatGPT fallback")
     func resolvedValues() {
         #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
+        #expect(MeetingSummaryBackendOption.resolved("anthropic") == .anthropic)
+        #expect(MeetingSummaryBackendOption.resolved("claude_code") == .claudeCode)
         #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
         #expect(MeetingSummaryBackendOption.resolved("lmstudio") == .lmStudio)
         #expect(MeetingSummaryBackendOption.resolved("custom_llm") == .customLLM)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
+    }
+
+    @Test("Claude Code is offered only when its executable is available")
+    func claudeCodeVisibility() throws {
+        var config = AppConfig()
+        config.claudeCodeExecutablePath = "/missing/muesli-test-claude"
+        #expect(MeetingSummaryBackendOption.selectable(config: config).contains(.anthropic))
+        #expect(!MeetingSummaryBackendOption.selectable(config: config).contains(.claudeCode))
+        #expect(MeetingSummaryBackendOption.selectable(config: config, selected: .claudeCode).contains(.claudeCode))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-claude-visibility-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        config.claudeCodeExecutablePath = executable.path
+        #expect(MeetingSummaryBackendOption.selectable(config: config).contains(.claudeCode))
     }
 
     @Test("Custom LLM format labels")
@@ -979,6 +1012,8 @@ struct AppConfigTests {
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
+        #expect(config.claudeCodeModel.isEmpty)
+        #expect(config.claudeCodeExecutablePath.isEmpty)
         #expect(config.meetingSummaryReasoningEffort == nil)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
         #expect(config.meetingRecordingSavePolicy == .never)
@@ -1048,6 +1083,27 @@ struct AppConfigTests {
         #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+    }
+
+    @Test("Anthropic cleanup uses its dedicated key and model")
+    func anthropicCleanupReadiness() {
+        let backend = TranscriptCleanupBackendOption.hosted(.anthropic)
+        var config = AppConfig()
+        if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil {
+            #expect(!TranscriptCleanupClient.hasRequiredSettings(
+                for: backend,
+                config: config,
+                isChatGPTAuthenticated: false
+            ))
+        }
+        config.anthropicAPIKey = "test-key"
+        config.postProcessorAnthropicModel = "claude-opus-5-5"
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: config) == "claude-opus-5-5")
     }
 
     @Test("LM Studio cleanup readiness requires model and valid URL")
@@ -1226,11 +1282,17 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.anthropicAPIKey = "anthropic-key"
+        config.anthropicWorkspaceID = "wrkspc_test"
+        config.anthropicModel = "claude-opus-5-5"
+        config.claudeCodeModel = "opus"
+        config.claudeCodeExecutablePath = "/custom/claude"
         config.meetingSummaryReasoningEffort = .xhigh
         config.meetingSummaryRetryCount = 5
         config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
         config.postProcessorChatGPTModel = "gpt-5.4-mini"
         config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.postProcessorAnthropicModel = "claude-fable-5-1"
         config.transcriptCleanupReasoningEffort = .low
         config.postProcessorOpenRouterModel = "openrouter/test-model"
         config.postProcessorOllamaModel = "qwen3.5"
@@ -1312,11 +1374,17 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.anthropicAPIKey == "anthropic-key")
+        #expect(decoded.anthropicWorkspaceID == "wrkspc_test")
+        #expect(decoded.anthropicModel == "claude-opus-5-5")
+        #expect(decoded.claudeCodeModel == "opus")
+        #expect(decoded.claudeCodeExecutablePath == "/custom/claude")
         #expect(decoded.meetingSummaryReasoningEffort == .xhigh)
         #expect(decoded.meetingSummaryRetryCount == 5)
         #expect(decoded.postProcessorBackend == "openrouter")
         #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
         #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorAnthropicModel == "claude-fable-5-1")
         #expect(decoded.transcriptCleanupReasoningEffort == .low)
         #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
         #expect(decoded.postProcessorOllamaModel == "qwen3.5")

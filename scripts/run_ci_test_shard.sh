@@ -19,6 +19,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      ComputerUseSettingsTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests
@@ -42,6 +43,7 @@ case "${shard}" in
       OnboardingFlowTests
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
+      FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
       NotchIndicatorTests
       RecordingIndicatorStyleTests
@@ -88,6 +90,7 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       QuilTransformationTests
@@ -145,6 +148,7 @@ case "${shard}" in
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
       MeetingSummaryClientTests
+      ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests

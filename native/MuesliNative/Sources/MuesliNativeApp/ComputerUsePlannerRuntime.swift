@@ -34,6 +34,7 @@ final class ComputerUsePlannerRuntime {
     private let config: AppConfig
     private let maxSteps: Int?
     private let timeoutSeconds: TimeInterval
+    private let now: () -> TimeInterval
     private let registry = ComputerUseElementRegistry()
     private let onStatus: StatusHandler
     private let observe: ObserveHandler
@@ -46,6 +47,7 @@ final class ComputerUsePlannerRuntime {
         config: AppConfig,
         maxSteps: Int? = 100,
         timeoutSeconds: TimeInterval? = nil,
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         onStatus: @escaping StatusHandler = { _ in },
         observe: @escaping ObserveHandler = { registry, includeScreenshot, target in
             ComputerUseObservationCapture.capture(
@@ -55,10 +57,9 @@ final class ComputerUsePlannerRuntime {
             )
         },
         plan: PlanHandler? = nil,
-        execute: @escaping ExecuteHandler = { toolCall, registry in
-            await ComputerUseToolExecutor.execute(toolCall, registry: registry)
-        }
+        execute: ExecuteHandler? = nil
     ) {
+        self.now = now
         self.config = config
         self.maxSteps = maxSteps
         self.timeoutSeconds = timeoutSeconds ?? TimeInterval(max(config.computerUseTimeoutSeconds, 1))
@@ -67,7 +68,9 @@ final class ComputerUsePlannerRuntime {
         self.plan = plan ?? { request in
             try await ComputerUsePlannerClient.planNextTool(request: request, config: config)
         }
-        self.execute = execute
+        self.execute = execute ?? { toolCall, registry in
+            await ComputerUseToolExecutor.execute(toolCall, registry: registry, pasteShortcut: config.pasteShortcut)
+        }
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
@@ -84,7 +87,7 @@ final class ComputerUsePlannerRuntime {
             return .init(status: .failed, message: message, traceEvents: traceLog.events)
         }
 
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var deadline = now() + timeoutSeconds
         var priorResults: [ComputerUseToolOutcome] = []
         var unchangedActionCounts: [String: Int] = [:]
         var unchangedObservationCounts: [String: Int] = [:]
@@ -104,7 +107,7 @@ final class ComputerUsePlannerRuntime {
             if Task.isCancelled {
                 return cancelledResult(traceEvents: traceLog.events, step: step)
             }
-            if Date() >= deadline {
+            if now() >= deadline {
                 traceLog.append(traceEvent(kind: "timed_out", title: "Timed out", body: "CUA timed out", status: "timed_out", step: step))
                 return .init(status: .timedOut, message: "CUA timed out", traceEvents: traceLog.events)
             }
@@ -124,6 +127,10 @@ final class ComputerUsePlannerRuntime {
 
             let response: ComputerUsePlannerResponse
             do {
+                // Only observation/action time counts. Model thinking and retry waits
+                // have their own transport limits and do not consume execution time.
+                let thinkingStarted = now()
+                defer { deadline += max(0, now() - thinkingStarted) }
                 response = try await planWithRetry(request, traceLog: traceLog)
             } catch is CancellationError {
                 return cancelledResult(traceEvents: traceLog.events, step: step)

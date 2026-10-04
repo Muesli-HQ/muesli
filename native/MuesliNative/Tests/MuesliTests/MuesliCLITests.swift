@@ -80,6 +80,16 @@ struct MuesliCLITests {
         #expect(CLISummaryClient.resolvedOpenRouterModel("custom/model") == "custom/model")
     }
 
+    @Test("CLI reads the app's dedicated Anthropic settings")
+    func cliAnthropicConfiguration() throws {
+        let data = Data(#"{"meeting_summary_backend":"anthropic","anthropic_api_key":"test-key","anthropic_workspace_id":"wrkspc_test","anthropic_model":"claude-opus-5-5"}"#.utf8)
+        let config = try JSONDecoder().decode(CLISummaryConfig.self, from: data)
+        #expect(config.meetingSummaryBackend == "anthropic")
+        #expect(config.anthropicAPIKey == "test-key")
+        #expect(config.anthropicWorkspaceID == "wrkspc_test")
+        #expect(config.anthropicModel == "claude-opus-5-5")
+    }
+
     @Test("migration runs before a read so a legacy database gains new columns")
     func migrationWarningsUpgradesLegacyDatabase() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -1,7 +1,7 @@
 import SwiftUI
 import MuesliCore
 
-private enum MeetingDocumentMode: Hashable {
+enum MeetingDocumentMode: Hashable {
     case notes
     case transcript
 }
@@ -234,14 +234,25 @@ struct MeetingDetailView: View {
             Text(retranscriptionErrorMessage ?? "The saved recording could not be re-transcribed.")
         }
         .alert("Re-summarize Notes?", isPresented: transcriptResummaryPromptBinding) {
-            Button("Re-summarize") {
-                resummarizeAfterTranscriptEdit()
+            if hasApiKey {
+                Button("Re-summarize") {
+                    resummarizeAfterTranscriptEdit()
+                }
+            } else {
+                Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                    transcriptResummaryPromptMeetingID = nil
+                    controller.openHistoryWindow(tab: .settings)
+                }
             }
             Button("Not Now", role: .cancel) {
                 transcriptResummaryPromptMeetingID = nil
             }
         } message: {
-            Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            if hasApiKey {
+                Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            } else {
+                Text("Your transcript edits were saved. Configure \(appState.selectedMeetingSummaryBackend.label) to regenerate notes. Existing notes are kept.")
+            }
         }
         .alert("Delete Meeting", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -1194,8 +1205,14 @@ struct MeetingDetailView: View {
             }
 
             Menu {
-                Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
-                    beginSummary(for: meeting)
+                if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
+                    Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                        beginSummary(for: meeting)
+                    }
+                } else {
+                    Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                        controller.openHistoryWindow(tab: .settings)
+                    }
                 }
                 Divider()
                 ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
@@ -1615,7 +1632,7 @@ struct MeetingDetailView: View {
             } else {
                 Image(systemName: "key.fill")
                     .foregroundStyle(MuesliTheme.accent)
-                Text("Add your API key in Settings to generate meeting notes")
+                Text("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings to generate meeting notes")
                     .font(MuesliTheme.callout())
                     .foregroundStyle(MuesliTheme.textSecondary)
                 Spacer()
@@ -1657,22 +1674,7 @@ struct MeetingDetailView: View {
     }
 
     private var hasApiKey: Bool {
-        let config = appState.config
-        if appState.selectedMeetingSummaryBackend == .chatGPT {
-            return appState.isChatGPTAuthenticated
-        } else if appState.selectedMeetingSummaryBackend == .openAI {
-            return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
-        } else if appState.selectedMeetingSummaryBackend == .ollama {
-            return true
-        } else if appState.selectedMeetingSummaryBackend == .lmStudio {
-            return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
-        } else if appState.selectedMeetingSummaryBackend == .customLLM {
-            return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
-        } else {
-            return !OpenRouterCredentialResolver.resolvedAPIKey(
-                legacyAPIKey: config.openRouterAPIKey
-            ).isEmpty
-        }
+        controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend)
     }
 
     private var primarySummaryActionLabel: String {
@@ -1698,10 +1700,46 @@ struct MeetingDetailView: View {
     private func activeCopyText(for meeting: MeetingRecord) -> String {
         switch documentMode {
         case .notes:
-            return isEditingNotes ? editableNotes : Self.notesContent(for: meeting)
+            return Self.copyContent(for: meeting, content: .notes,
+                                    editedText: isEditingNotes ? editableNotes : nil)
         case .transcript:
-            return isEditingTranscript ? editableTranscript : meeting.rawTranscript
+            return Self.copyContent(for: meeting, content: .transcript,
+                                    editedText: isEditingTranscript ? editableTranscript : nil)
         }
+    }
+
+    /// Composes exactly the body selected by Copy, including unsaved edits.
+    static func copyContent(
+        for meeting: MeetingRecord,
+        content: MeetingDocumentMode,
+        editedText: String? = nil
+    ) -> String {
+        var body: String
+        switch content {
+        case .notes:
+            body = editedText ?? notesCopyContent(for: meeting)
+            // The raw-notes editor includes a display-only title. Remove only
+            // that exact leading heading before adding the metadata title.
+            if editedText != nil, meeting.status != .noteOnly,
+               meeting.notesState != .structuredNotes {
+                let title = "# \(meeting.title)"
+                if body == title {
+                    body = ""
+                } else {
+                    for newline in ["\r\n", "\n"] {
+                        let prefix = title + newline
+                        if body.hasPrefix(prefix) {
+                            body = String(body.dropFirst(prefix.count))
+                            break
+                        }
+                    }
+                }
+            }
+        case .transcript:
+            body = editedText ?? meeting.rawTranscript
+        }
+        let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
+        return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
@@ -1744,6 +1782,16 @@ struct MeetingDetailView: View {
         }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+        }
+        return meeting.formattedNotes
+    }
+
+    static func notesCopyContent(for meeting: MeetingRecord) -> String {
+        if meeting.status == .noteOnly {
+            return meeting.manualNotes
+        }
+        if meeting.notesState != .structuredNotes {
+            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
     }
