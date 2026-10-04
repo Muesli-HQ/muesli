@@ -886,6 +886,8 @@ struct SummaryModelPreset {
     private static let unsupportedChatGPTModelIDs: Set<String> = [
         "chat-latest",
         "gpt-5.4-nano",
+        "gpt-5.5",
+        "gpt-5.6-sol",
     ]
 
     static let computerUsePlannerModels: [SummaryModelPreset] = [
@@ -916,8 +918,9 @@ struct SummaryModelPreset {
     }
 
     static func migratedFromGPT55(_ model: String) -> String {
-        model.trimmingCharacters(in: .whitespacesAndNewlines) == "gpt-5.5"
-            ? "gpt-5.6-sol"
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed == "gpt-5.5" || trimmed == "gpt-5.6-sol")
+            ? "gpt-6-luna"
             : model
     }
 }

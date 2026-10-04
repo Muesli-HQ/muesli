@@ -29,6 +29,10 @@ struct TranscriptCleanupPromptsManagerView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
             header
 
+            if !appState.config.enablePostProcessor {
+                cleanupDisabledNotice
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
                     presetSection(title: "Built-in Presets") {
@@ -116,6 +120,20 @@ struct TranscriptCleanupPromptsManagerView: View {
                 .help(isEditingPromptInProgress ? "Finish or cancel prompt editing before closing." : "Close prompt manager")
             }
         }
+    }
+
+    private var cleanupDisabledNotice: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(MuesliTheme.accent)
+            Text("AI transcript cleanup is currently off in Settings. Selecting or creating a preset will enable it.")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
     }
 
     private func presetSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {

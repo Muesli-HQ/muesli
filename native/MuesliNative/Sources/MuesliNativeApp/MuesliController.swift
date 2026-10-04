@@ -3481,7 +3481,11 @@ public final class MuesliController: NSObject {
             $0.activeTranscriptCleanupPromptId = preset.id
             $0.postProcessorSystemPrompt = preset.prompt
         }
-        preloadExperimentalTranscriptionFeatures()
+        if !config.enablePostProcessor {
+            setPostProcessorEnabled(true)
+        } else {
+            preloadExperimentalTranscriptionFeatures()
+        }
     }
 
     func createTranscriptCleanupPrompt(name: String, prompt: String) {
@@ -3494,7 +3498,11 @@ public final class MuesliController: NSObject {
             $0.activeTranscriptCleanupPromptId = preset.id
             $0.postProcessorSystemPrompt = preset.prompt
         }
-        preloadExperimentalTranscriptionFeatures()
+        if !config.enablePostProcessor {
+            setPostProcessorEnabled(true)
+        } else {
+            preloadExperimentalTranscriptionFeatures()
+        }
     }
 
     func updateTranscriptCleanupPrompt(id: String, name: String, prompt: String) {
