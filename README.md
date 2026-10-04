@@ -37,7 +37,7 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 | Feature | What you can do |
 |---|---|
 | **Quill** | Ask a question, rewrite selected text, or create text at the cursor with your voice. |
-| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. |
+| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. Bodhan Flex also offers romanized output in Latin letters. |
 | **Live meeting transcripts** | Use Apple Speech on macOS 26+. Live transcription is off by default. |
 | **Re-summarize meetings** | Choose a different summary model for a saved meeting. |
 | **BYOK dictation** | Use OpenAI or OpenRouter when you want hosted transcription. Local by default. |
@@ -53,7 +53,11 @@ By default, dictation uses an on-device model. You can instead opt into OpenAI S
 Select text and speak an instruction to rewrite it, or ask a question and generate text at the cursor with no selection. Choose your model in **Models → Quill**. If a required local model is missing or a selected account is signed out, Muesli prompts you to download the model or sign in before use.
 
 ### Meeting Transcription
-Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
+Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI or Anthropic API keys, free OpenRouter models, your ChatGPT Plus/Pro subscription, Claude Code, or local Ollama models.
+
+For Anthropic API summaries, choose **Anthropic** in Settings → Meetings → Meeting Summaries, enter your API key, and select a Claude model. A key not scoped to one Anthropic workspace also needs its workspace ID. Non-empty `ANTHROPIC_API_KEY` and `ANTHROPIC_WORKSPACE_ID` values override the saved values in the app and headless CLI. Claude Code sign-in remains a separate provider.
+
+The default OpenAI and ChatGPT meeting summary model is now GPT-6.1 Sol, and the default ChatGPT transcript cleanup model is GPT-6 Luna. Existing explicit model selections remain saved; accounts that left either model on its default will use the new default on their next request. Check the model choice in Settings if you prefer a different speed or price point.
 
 Live meeting transcripts have two explicit modes. **Nemotron 3.5** and **Apple Speech** supply live captions and the normal final raw transcript before diarization and note generation. The existing recorded-audio transcription pipeline remains available for missing or incomplete streaming results. **Parakeet Realtime EOU** provides provisional live previews while a separately selected meeting model creates the final transcript. Apple Speech adds system-supported languages on macOS 26+, while Parakeet Realtime EOU remains the low-latency English option. Settings always shows which model owns the final transcript.
 
@@ -64,7 +68,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 ## Features
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech, and experimental Gemma 4 E2B.
+- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech (Flex includes native, mixed-script, and romanized output), and experimental Gemma 4 E2B.
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
 - **Quill voice writing and answers** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
@@ -82,14 +86,14 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 - **iCloud Text Sync & iPhone Bridge** — Privately sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through iCloud. Audio recordings are never synced.
 - **Optional transcript cleanup** — Refine dictated text locally with **[S1-mini by Superwhisper](https://huggingface.co/superwhisper/s1-mini-GGUF)**, Muesli's GGUF cleanup models, or on-device Gemma 4 E2B; hosted providers are also available when preferred. S1-mini is for English dictation. Missing local cleanup models prompt a download and open **Models → Cleanup**.
 - **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
-- **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any saved meeting with a different summary model.
+- **AI meeting notes** — BYOK with OpenAI or Anthropic, connect OpenRouter, sign in with ChatGPT, use your local Claude Code installation and sign-in, or run Ollama. Anthropic uses the Messages API with your own key; Claude Code runs `claude -p` through your configured account or proxy. Neither runs the model on-device. Auto-generated meeting titles. Re-summarize any saved meeting with a different summary model.
 - **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
-- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings.
+- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings. Use the CUA shortcut to change supported Muesli settings by voice, such as “switch to the notch” or “change the Quill shortcut to Left Control.” Ambiguous settings requests offer choices and a free-form answer; changes are validated and saved before showing Done.
 - **Post-meeting hooks** — Run a user-supplied executable after completed meetings. Hooks receive a JSON payload on stdin and log results in the app support directory.
 - **Personal dictionary** — Add custom words, phrase matches, and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
 - **Model management** — Download, delete, and switch between models from the Models tab. Background downloads that don't block the app.
 - **Configurable hotkeys** — Choose any modifier key (Cmd, Option, Ctrl, Fn, Shift) for dictation.
-- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, OpenRouter, or Ollama. Progress saved on every step — survives crashes and manual quits.
+- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, Anthropic, OpenRouter, or Ollama. Claude Code is offered when its CLI is already installed, with a sign-in status check. Progress saved on every step — survives crashes and manual quits.
 - **Launch at Login** — Start Muesli automatically with macOS login items, with approval-state refresh in Settings.
 - **Dark & light mode** — Adaptive theme with toggle in sidebar.
 - **SwiftUI dashboard** — Dictation history, meeting notes (Notes-style split view), meeting folders, dictionary, models, shortcuts, settings, about page.
@@ -242,7 +246,7 @@ Generate markdown notes with the configured API/local summary backend when avail
 muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes.md
 ```
 
-`--summarize` uses configured OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
+`--summarize` uses configured Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM settings. When Claude Code is already installed, Muesli offers it under Settings → Meeting Summaries. Muesli passes the prompt on stdin, disables Claude's tools and MCP servers for this call, and does not save a Claude session. Your Claude Code user settings, including any configured provider or hooks, still apply. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
 
 Save the import into Muesli as `source = audio_import`:
 
@@ -360,7 +364,7 @@ Important meeting fields:
 | SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Bodhan Core | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 25 languages, including English; auto-detect | Final transcription |
-| Bodhan Flex | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 27 languages, including English; auto-detect | Final transcription |
+| Bodhan Flex | CoreML + MLX | CoreML encoder + autoregressive decoder | ~2.46 GB FP16 / ~1.27 GB INT8 weights | 27 languages, including English; auto-detect; native, mixed-script, or romanized output | Final transcription |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
 | Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
 | Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
@@ -369,7 +373,7 @@ Important meeting fields:
 | Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
 | Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
 
-**Bodhan Core and Flex** replace the former seven-language AI4Bharat IndicASR integration. Core uses native-script output, including many English terms spoken within Indic utterances. Flex supports mixed-script output—Indic text in its native script and English terms in Latin letters—and spoken-number formatting. Output quality varies, so try both from the production model catalog. Each card has a precision dropdown beside the language selector, with independently downloadable FP16 and INT8 choices. Both require macOS 15 or later and warm up before the app reports readiness. Longer recordings are processed in overlapping chunks.
+**Bodhan Core and Flex** replace the former seven-language AI4Bharat IndicASR integration. Core uses native-script output, including many English terms spoken within Indic utterances. Flex offers Native, Mixed, and Romanized output. Mixed keeps Indic words in their native script and English terms in Latin letters, with spoken-number formatting; Romanized writes the spoken language in Latin letters. Select the output mode on the Flex card or in transcription settings; Mixed remains the default. Both precisions support all three modes without an additional model download. Output quality varies, so try both from the production model catalog. Each card has a precision dropdown beside the language selector, with independently downloadable FP16 and INT8 choices. Both require macOS 15 or later and warm up before the app reports readiness. Longer recordings are processed in overlapping chunks.
 
 Both FP16 and INT8 use a CoreML encoder and a native MLX decoder. The precision dropdown changes weight precision for both components, with no development settings required. Fresh FP16 downloads include the MLX decoder instead of the older CoreML decoder and cross-projection packages. The variants have separate downloads and can be removed independently. INT8 is **weight-only quantization**: activations and KV cache remain floating point. The 1.27 GB figure covers encoder and MLX decoder weights, excluding compilation caches. These are storage sizes, not RAM requirements: runtime memory also includes activations, decoder KV cache, and CoreML/MLX allocations. CoreML device placement is runtime-dependent; Neural Engine execution is not guaranteed.
 
@@ -454,7 +458,7 @@ Muesli uses macOS Calendar through EventKit. A direct Google Calendar sign-in is
 | Speaker diarization | pyannote via FluidAudio (CoreML on ANE) |
 | Camera detection | CoreMediaIO property listeners (event-driven) |
 | System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
-| Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
+| Meeting notes | OpenAI / Anthropic (BYOK), OpenRouter, ChatGPT subscription (OAuth), Claude Code, or Ollama |
 | Calendar | Apple EventKit (macOS Calendar accounts) |
 | Sync | CloudKit private database for text-only iCloud sync |
 | Automation | Computer Use planner and post-meeting executable hooks |

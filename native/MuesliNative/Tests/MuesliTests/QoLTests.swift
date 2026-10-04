@@ -448,6 +448,9 @@ struct FloatingMeetingTranscriptTests {
             at: NSPoint(x: 430, y: 400), in: frame
         ) == .copy)
         #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 368, y: 400), in: frame
+        ) == .togglePause)
+        #expect(FloatingMeetingTranscriptInteraction.action(
             at: NSPoint(x: 250, y: 250), in: frame
         ) == nil)
         #expect(FloatingMeetingTranscriptInteraction.action(
@@ -506,7 +509,8 @@ struct FloatingMeetingTranscriptTests {
         let controller = FloatingMeetingTranscriptPanelController(
             onHoverChanged: { _ in },
             onOpenNotes: {},
-            onDismiss: { dismissCount += 1 }
+            onDismiss: { dismissCount += 1 },
+            onTogglePause: {}
         )
 
         controller.show(in: container, frame: container.bounds)
@@ -597,8 +601,216 @@ struct FloatingMeetingTranscriptTests {
     }
 }
 
-@Suite("Floating indicator pointer interaction")
+@Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
+    @MainActor
+    @Test("decorative views use the pill responder while explicit buttons retain their actions")
+    func decorativeHitTargets() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        let pill = HoverIndicatorView(frame: NSRect(x: 20, y: 30, width: 76, height: 22))
+        root.addSubview(pill)
+        let label = NSTextField(labelWithString: "Pause")
+        label.frame = NSRect(x: 0, y: 0, width: 24, height: 22)
+        pill.addSubview(label)
+        let button = NSButton(title: "Stop", target: nil, action: nil)
+        button.frame = NSRect(x: 48, y: 0, width: 28, height: 22)
+        pill.addSubview(button)
+        #expect(root.hitTest(NSPoint(x: 32, y: 41)) === pill)
+        #expect(root.hitTest(NSPoint(x: 80, y: 41)) === button)
+    }
+
+    @MainActor
+    @Test("visible meeting controls receive the first click after the transcript offsets the pill",
+          arguments: [IndicatorAnchor.topLeading, .topTrailing, .bottomLeading, .bottomTrailing, .midTrailing],
+          [false, true])
+    func meetingControlsWithTranscript(anchor: IndicatorAnchor, paused: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = anchor
+        config.showMeetingTranscriptOnIndicatorHover = true
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var stopCount = 0
+        var pauseCount = 0
+        var discardCount = 0
+        indicator.onStopMeeting = { stopCount += 1 }
+        indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.onDiscardMeeting = { discardCount += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.setMeetingRecordingPaused(paused, config: config)
+        indicator.powerProvider = { -24 }
+        // Wait for the real idle-to-recording AppKit transition before hover.
+        try await Task.sleep(for: .milliseconds(350))
+        indicator.setHovered(true)
+
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let root = try #require(pill.superview)
+        #expect(root.bounds.width > pill.bounds.width)
+        #expect(pill.bounds.size == NSSize(width: 76, height: 22))
+        let buttons = pill.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        #expect(buttons.count == 2)
+        // Check the animated geometry after multiple real timer ticks, not just
+        // setup: the timer previously moved the bars on top of a control.
+        let bars = try #require(pill.layer?.sublayers).filter { $0.cornerRadius == 1.5 && $0.frame.width == 3 }
+        #expect(bars.count == 5)
+        let waveform = bars.reduce(CGRect.null) { $0.union($1.frame) }
+        #expect(waveform.width == 27)
+        #expect(waveform.midX == pill.bounds.midX)
+        #expect(bars[0].frame.height == bars[4].frame.height)
+        #expect(bars[1].frame.height == bars[3].frame.height)
+        for button in buttons { #expect(!waveform.intersects(button.frame)) }
+        // Resolve through the actual parent hit-test, rather than calling the
+        // controller callback directly (which missed this regression).
+        for x in [CGFloat(64), 12] {
+            let localPoint = NSPoint(x: x, y: pill.bounds.midY)
+            let hit = try #require(root.hitTest(pill.convert(localPoint, to: root)) as? NSButton)
+            #expect(hit.acceptsFirstMouse(for: nil))
+            let action = try #require(hit.action)
+            #expect(hit.target === indicator)
+            #expect(NSApp.sendAction(action, to: hit.target, from: hit))
+        }
+        let transcript = try #require(root.subviews.first { $0 !== pill })
+        let window = try #require(pill.window)
+        let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+        let pauseEvent = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        window.sendEvent(pauseEvent)
+        #expect(pauseCount == 1)
+        #expect(stopCount == 1)
+        #expect(discardCount == 1)
+    }
+
+    @MainActor
+    @Test("pause and resume retain meeting controls despite late dictation updates", arguments: [false, true])
+    func pauseResumeRetainsPill(showIdleIndicator: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        config.showFloatingIndicator = showIdleIndicator
+        config.showMeetingTranscriptOnIndicatorHover = true
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var paused = false
+        indicator.onToggleMeetingPause = {
+            paused.toggle()
+            indicator.setMeetingRecordingPaused(paused, config: config)
+        }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.powerProvider = { -24 }
+        try await Task.sleep(for: .milliseconds(350))
+        let originalFrame = try #require(indicator.currentFrame)
+        for _ in 0..<6 {
+            indicator.setHovered(true)
+            let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+                .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+            let root = try #require(pill.superview)
+            let transcript = try #require(root.subviews.first { $0 !== pill })
+            let window = try #require(pill.window)
+            let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+            let event = try #require(NSEvent.mouseEvent(
+                with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
+            // Dictation cleanup and warmup share this presentation controller.
+            indicator.setState(.idle, config: config)
+            indicator.setState(.transcribing, config: config)
+            indicator.showLoading("Warming up dictation")
+            indicator.closeIfIdle()
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
+            #expect(root.bounds.width > pill.bounds.width)
+            // Close only the hover transcript before measuring the compact pill.
+            indicator.setHovered(false)
+            try await Task.sleep(for: .milliseconds(250))
+            let frame = try #require(indicator.currentFrame)
+            #expect(abs(frame.midX - originalFrame.midX) < 1)
+            #expect(abs(frame.midY - originalFrame.midY) < 1)
+            #expect(frame.size == NSSize(width: 76, height: 22))
+            #expect(pill.window?.isVisible == true)
+            #expect(indicator.powerProvider?() == -24)
+        }
+        #expect(!paused)
+        indicator.setMeetingRecording(false, config: config)
+        try await Task.sleep(for: .milliseconds(250))
+        if !showIdleIndicator { #expect(indicator.currentFrame == nil) }
+    }
+
+    @MainActor
+    @Test("visibility refresh preserves the expanded transcript and its pause control", arguments: [false, true])
+    func visibilityRefreshPreservesTranscript(paused: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        config.showMeetingTranscriptOnIndicatorHover = true
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var pauseCount = 0
+        indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.setMeetingRecordingPaused(paused, config: config)
+        indicator.powerProvider = { -24 }
+        try await Task.sleep(for: .milliseconds(350))
+        indicator.setHovered(true)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let root = try #require(pill.superview)
+        let transcript = try #require(root.subviews.first { $0 !== pill })
+        let window = try #require(pill.window)
+        let originalFrame = window.frame
+        for _ in 0..<3 {
+            indicator.ensureVisible(config: config)
+            try await Task.sleep(for: .milliseconds(250))
+            #expect(transcript.superview === root)
+            #expect(!transcript.isHidden)
+            #expect(root.bounds.contains(transcript.frame))
+            #expect(root.bounds.contains(pill.frame))
+            #expect(window.frame == originalFrame)
+            let pausePoint = NSPoint(x: transcript.frame.maxX - 92, y: transcript.frame.maxY - 21)
+            let event = try #require(NSEvent.mouseEvent(
+                with: .leftMouseDown, location: pausePoint, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+        #expect(pauseCount == 3)
+        #expect(indicator.powerProvider?() == -24)
+        config.showMeetingTranscriptOnIndicatorHover = false
+        indicator.ensureVisible(config: config)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(transcript.superview == nil)
+        #expect(window.frame.size == NSSize(width: 76, height: 22))
+    }
+
+    @MainActor
+    @Test("loading pill accepts pointer input across its full bounds and defers updates during drag")
+    func loadingPillDragging() throws {
+        let indicator = makeIndicator()
+        defer { indicator.close() }
+        indicator.showLoading("Transcribing audio…")
+        let frame = try #require(indicator.currentFrame)
+        let bounds = NSRect(origin: .zero, size: frame.size)
+        #expect(indicator.pointerInteractiveRect(in: bounds) == bounds)
+        indicator.pointerInteractionBegan()
+        indicator.showLoading("Generating a much longer summary stage…")
+        #expect(indicator.currentFrame == frame)
+        indicator.hideLoading() // A cancelled import must not reappear on mouse-up.
+        indicator.pointerInteractionEnded()
+    }
+
     @Test("small pointer movement remains a click while deliberate movement drags")
     func dragThreshold() {
         let start = NSPoint(x: 100, y: 100)
@@ -613,8 +825,8 @@ struct FloatingIndicatorPointerInteractionTests {
     }
 
     @MainActor
-    @Test("single-click retains its existing meeting command")
-    func singleClickStillRuns() {
+    @Test("clicking the meeting waveform does not stop or discard")
+    func meetingBodyDoesNotStop() {
         let indicator = makeIndicator()
         var stopCount = 0
         indicator.onStopMeeting = { stopCount += 1 }
@@ -622,7 +834,8 @@ struct FloatingIndicatorPointerInteractionTests {
 
         indicator.handleClick(atX: 50)
 
-        #expect(stopCount == 1)
+        indicator.handleClick()
+        #expect(stopCount == 0)
         indicator.close()
     }
 

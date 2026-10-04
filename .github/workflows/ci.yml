@@ -85,11 +85,19 @@ jobs:
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
+      - name: Test release cache identity and workflow policy
+        run: |
+          python3 ./scripts/test_ci_release_cache.py
+          python3 ./scripts/test_ci_release_cache_cleanup.py
+
   # MLX Swift 0.31.6 requires Swift 6.3; Xcode 26.6 is available on macos-26.
   # Drafts get debug tests and packaging feedback; release compilation is
   # required once ready for review, and on main/manual runs.
   build_release:
     needs: changes
+    outputs:
+      cache_key: ${{ steps.release-cache.outputs.key }}
+      cache_save_outcome: ${{ steps.save-release.outcome }}
     if: >-
       needs.changes.outputs.native_or_packaging == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -108,8 +116,139 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Identify compatible release cache
+        id: release-cache
+        env:
+          CACHE_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: python3 scripts/ci_release_cache.py prepare
+
+      - name: Begin measured release pipeline
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin pipeline
+
+      - name: Begin restore timing
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin restore
+
+      # Only PRs restore; main and manual runs always compile from a clean scratch
+      # directory. The sole fallback retains the complete compatibility fingerprint.
+      - name: Restore compatible main release artifacts
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        id: restore-release
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+          restore-keys: ${{ steps.release-cache.outputs.prefix }}
+
+      - name: End restore timing
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end restore
+
       - name: Build (release)
-        run: swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
+        # Always compile, including on an exact hit. Missing/evicted caches build cold.
+        run: python3 scripts/ci_release_cache.py build
+
+      # Metadata lookup only: never download artifacts into the clean main build.
+      # Exact commit only: an older compatible snapshot must not suppress refresh.
+      - name: Check for existing exact main cache
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        id: lookup-release
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+          lookup-only: true
+
+      - name: Begin save timing
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin save
+
+      - name: Save clean main release artifacts
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        id: save-release
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+
+      - name: End save timing
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end save
+
+      - name: End measured release pipeline
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end pipeline
+
+      - name: Report release build and cache overhead
+        if: always()
+        continue-on-error: true
+        env:
+          CACHE_MATCHED_KEY: ${{ steps.restore-release.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.restore-release.outputs.cache-hit }}
+          CACHE_RESTORE_OUTCOME: ${{ steps.restore-release.outcome }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-release.outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ steps.lookup-release.outcome }}
+          CACHE_EXISTING_KEY: ${{ steps.lookup-release.outputs.cache-matched-key }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: python3 scripts/ci_release_cache.py report
+
+      - name: Upload release build measurements
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-measurements
+          path: ci-release-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Only this trusted-main maintenance job can delete caches. PR build jobs keep
+  # read-only repository permissions; cleanup never gates compilation/tests.
+  release_cache_cleanup:
+    needs: build_release
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+      needs.build_release.result == 'success' &&
+      needs.build_release.outputs.cache_save_outcome == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retain the newest three main release caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ needs.build_release.outputs.cache_key }}
+          CACHE_SAVE_OUTCOME: ${{ needs.build_release.outputs.cache_save_outcome }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: python3 scripts/ci_release_cache_cleanup.py --delete
 
   # Swift tests — includes AppleSpeechAnalyzerBackendTests on macOS 26 in
   # dictation-transcription; a separate same-toolchain job would duplicate it.

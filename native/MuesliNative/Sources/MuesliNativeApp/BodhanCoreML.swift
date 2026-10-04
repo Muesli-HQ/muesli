@@ -28,7 +28,8 @@ final class BodhanCoreML {
         let prompts: [String: [Int]]
         let mixed_prompts: [String: [Int]]?
 
-        /// The exported decoder has a fixed vocabulary and at most 512 cached positions.
+        /// Both decoder runtimes share this vocabulary and prompt validation.
+        /// The 512-position cache limit belongs to the CoreML export, not the MLX decoder.
         func validate(vocabularySize: Int = 7152) throws {
             func valid(_ prompt: [Int]) -> Bool {
                 (4...256).contains(prompt.count) && prompt.allSatisfy { (0..<vocabularySize).contains($0) }
@@ -39,6 +40,22 @@ final class BodhanCoreML {
                   mixed_prompts.map({ Set($0.keys) == Set(prompts.keys) && $0.values.allSatisfy(valid) }) ?? true else {
                 throw NSError(domain: "BodhanASR", code: 30, userInfo: [NSLocalizedDescriptionKey: "Invalid Bodhan tokenizer vocabulary or language prompts. Download the model again."])
             }
+        }
+
+        /// Derive the upstream mode tokens without changing pinned tokenizer assets.
+        func prompt(language: String, mode: BodhanOutputMode) throws -> [Int] {
+            guard var prompt = (mode == .mixed ? mixed_prompts : prompts)?[language] else {
+                throw NSError(domain: "BodhanASR", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing language prompt."])
+            }
+            if mode == .romanized {
+                guard prompt.count == 10, pieces.indices.contains(prompt[6]), pieces.indices.contains(prompt[7]),
+                      pieces[prompt[6]] == "<|noitn|>", pieces[prompt[7]] == "<|noromanized|>",
+                      let romanized = pieces.firstIndex(of: "<|romanized|>"), romanized < special_count else {
+                    throw NSError(domain: "BodhanASR", code: 30, userInfo: [NSLocalizedDescriptionKey: "This tokenizer does not support romanized output."])
+                }
+                prompt[7] = romanized
+            }
+            return prompt
         }
 
         func automaticPrefix() throws -> [Int] {
@@ -216,7 +233,7 @@ final class BodhanCoreML {
         }
     }
 
-    func transcribe(samples: [Float], language: String? = nil, mixedScript: Bool = false) throws -> Result {
+    func transcribe(samples: [Float], language: String? = nil, outputMode: BodhanOutputMode = .native) throws -> Result {
         let trace = BodhanProfiling.begin("BodhanTranscription")
         defer { BodhanProfiling.end("BodhanTranscription", trace) }
         let entryQoS = qos_class_self().rawValue
@@ -255,7 +272,7 @@ final class BodhanCoreML {
         let encoderSeconds = Date().timeIntervalSince(encodeStart)
         if let mlx {
             var result = try mlx.generate(acoustic: acoustic, length: length, tokenizer: tokenizer, language: language,
-                                    mixed: mixedScript, frontendSeconds: frontendSeconds,
+                                    outputMode: outputMode, frontendSeconds: frontendSeconds,
                                     encoderSeconds: encoderSeconds, encoderPolicy: encoderPolicy)
             result.decoderRuntime = selectedDecoderRuntime
             result.encoderAsset = encoderAsset
@@ -298,18 +315,15 @@ final class BodhanCoreML {
                 if score > best { selected = code; best = score }
             }
         }
-        guard let chosen = selected, let prompt = tokenizer.prompts[chosen] else {
+        guard let chosen = selected, tokenizer.prompts[chosen] != nil else {
             throw NSError(domain: "BodhanASR", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing language prompt."])
         }
-        if mixedScript && tokenizer.mixed_prompts?[chosen] == nil {
-            throw NSError(domain: "BodhanASR", code: 7, userInfo: [NSLocalizedDescriptionKey: "The Flex mixed-script tokenizer is missing. Download the model again."])
-        }
-        var ids = (mixedScript ? tokenizer.mixed_prompts?[chosen] : nil) ?? prompt
+        var ids = try tokenizer.prompt(language: chosen, mode: outputMode)
         let state = decoder.makeState()
         var position = 0
         var tokens: [Int] = []
         var ended = false
-        for _ in 0..<256 {
+        for _ in 0..<min(outputMode.maximumGeneratedTokens, 512 - ids.count) {
             if Task<Never,Never>.isCancelled { throw CancellationError() }
             let logits = try decode(ids,position:position,state:state)
             let selectionStart = Date()

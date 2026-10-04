@@ -308,7 +308,9 @@ struct BackendOption: Equatable {
     }
 
     var supportsMeetingTranscription: Bool {
-        !isStreamingDictationBackend
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
+            || Self.bodhanFamily.contains(self) || self == .appleSpeechAnalyzer
+            || self == .nemotron35Multilingual
     }
 
     var isSystemManaged: Bool {
@@ -819,6 +821,16 @@ enum ReasoningEffortPolicy {
                 efforts: [.low, .medium, .high, .xhigh, .max],
                 defaultEffort: .high
             )
+        case "gpt-6.1-sol":
+            return Capabilities(
+                efforts: [.low, .medium, .high, .xhigh, .max],
+                defaultEffort: .medium
+            )
+        case "gpt-6-sol", "gpt-6-luna":
+            return Capabilities(
+                efforts: [.off, .low, .medium, .high, .xhigh, .max],
+                defaultEffort: .medium
+            )
         case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
             return Capabilities(
                 efforts: [.off, .low, .medium, .high, .xhigh, .max],
@@ -837,33 +849,38 @@ struct SummaryModelPreset {
     let label: String
 
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
-        SummaryModelPreset(id: "gpt-5.4-nano", label: "GPT-5.4 Nano"),
-        SummaryModelPreset(id: "gpt-5.4", label: "GPT-5.4"),
-        SummaryModelPreset(id: "gpt-5.4-pro", label: "GPT-5.4 Pro"),
-        SummaryModelPreset(id: "gpt-5-mini", label: "GPT-5 Mini"),
-        SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+    ]
+
+    static let anthropicModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+    ]
+
+    static let claudeCodeModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "sonnet", label: "Claude Sonnet"),
+        SummaryModelPreset(id: "opus", label: "Claude Opus"),
+        SummaryModelPreset(id: "haiku", label: "Claude Haiku"),
     ]
 
     static let chatGPTTranscriptCleanupModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra (default)"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol"),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
     ]
 
     private static let unsupportedChatGPTModelIDs: Set<String> = [
@@ -872,13 +889,10 @@ struct SummaryModelPreset {
     ]
 
     static let computerUsePlannerModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
-        SummaryModelPreset(id: "gpt-5.4", label: "GPT-5.4"),
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini"),
-        SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
@@ -1041,9 +1055,11 @@ extension MeetingSummaryBackendOption {
         switch self {
         case .chatGPT: return \.chatGPTModel
         case .openAI: return \.openAIModel
+        case .anthropic: return \.anthropicModel
         case .openRouter: return \.openRouterModel
         case .ollama: return \.ollamaModel
         case .lmStudio: return \.lmStudioModel
+        case .claudeCode: return \.claudeCodeModel
         default: return \.customLLMModel
         }
     }
@@ -1061,6 +1077,8 @@ extension MeetingSummaryBackendOption {
         switch self {
         case .chatGPT: presets = SummaryModelPreset.chatGPTModels
         case .openAI: presets = SummaryModelPreset.openAIModels
+        case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
         case .openRouter:
             presets = [SummaryModelPreset.openRouterModels[0]]
                 + openRouterModels.filter { $0.id != "openrouter/free" }
@@ -1078,6 +1096,11 @@ struct MeetingSummaryBackendOption: Equatable {
     static let openAI = MeetingSummaryBackendOption(
         backend: "openai",
         label: "OpenAI"
+    )
+
+    static let anthropic = MeetingSummaryBackendOption(
+        backend: "anthropic",
+        label: "Anthropic"
     )
 
     static let openRouter = MeetingSummaryBackendOption(
@@ -1100,12 +1123,23 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "LM Studio"
     )
 
+    static let claudeCode = MeetingSummaryBackendOption(
+        backend: "claude_code",
+        label: "Claude Code"
+    )
+
     static let customLLM = MeetingSummaryBackendOption(
         backend: "custom_llm",
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
+        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+              selected != .claudeCode else { return all }
+        return all.filter { $0 != .claudeCode }
+    }
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
@@ -1768,6 +1802,7 @@ struct AppConfig: Codable {
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
+    var bodhanOutputMode: String = BodhanOutputMode.mixed.rawValue
     var bodhanLanguage: String = BodhanLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
@@ -1792,6 +1827,7 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    var pasteShortcut: PasteShortcut = .automatic
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var quilHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -1806,10 +1842,15 @@ struct AppConfig: Codable {
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
     var openAIAPIKey: String = ""
+    var anthropicAPIKey: String = ""
+    var anthropicWorkspaceID: String = ""
     var openRouterAPIKey: String = ""
     var openAIModel: String = ""
+    var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var claudeCodeModel: String = ""
+    var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
     var meetingSummaryRetryCount: Int = MeetingSummaryRetryPolicy.defaultRetryCount
     var ollamaURL: String = "http://localhost:11434"
@@ -1856,6 +1897,7 @@ struct AppConfig: Codable {
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
     var postProcessorChatGPTModel: String = ""
     var postProcessorOpenAIModel: String = ""
+    var postProcessorAnthropicModel: String = ""
     var transcriptCleanupReasoningEffort: ReasoningEffort?
     var postProcessorOpenRouterModel: String = ""
     var postProcessorOllamaModel: String = ""
@@ -1913,6 +1955,7 @@ struct AppConfig: Codable {
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
         // Retained wire key for existing language preferences and synced configs.
+        case bodhanOutputMode = "bodhan_output_mode"
         case bodhanLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
@@ -1937,6 +1980,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case pasteShortcut = "paste_shortcut"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case quilHotkeyTriggerThresholdMS = "quil_hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
@@ -1951,10 +1995,15 @@ struct AppConfig: Codable {
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
         case openAIAPIKey = "openai_api_key"
+        case anthropicAPIKey = "anthropic_api_key"
+        case anthropicWorkspaceID = "anthropic_workspace_id"
         case openRouterAPIKey = "openrouter_api_key"
         case openAIModel = "openai_model"
+        case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case claudeCodeModel = "claude_code_model"
+        case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
         case meetingSummaryRetryCount = "meeting_summary_retry_count"
         case ollamaURL = "ollama_url"
@@ -1999,6 +2048,7 @@ struct AppConfig: Codable {
         case activePostProcessorId = "active_post_processor_id"
         case postProcessorChatGPTModel = "post_processor_chatgpt_model"
         case postProcessorOpenAIModel = "post_processor_openai_model"
+        case postProcessorAnthropicModel = "post_processor_anthropic_model"
         case transcriptCleanupReasoningEffort = "transcript_cleanup_reasoning_effort"
         case postProcessorOpenRouterModel = "post_processor_openrouter_model"
         case postProcessorOllamaModel = "post_processor_ollama_model"
@@ -2068,6 +2118,7 @@ struct AppConfig: Codable {
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
+        bodhanOutputMode = BodhanOutputMode.resolved(try? c.decode(String.self, forKey: .bodhanOutputMode)).rawValue
         bodhanLanguage = BodhanLanguage.resolvedCode(try? c.decode(String.self, forKey: .bodhanLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
@@ -2119,6 +2170,7 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )
@@ -2147,16 +2199,21 @@ struct AppConfig: Codable {
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
         indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
         openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
+        anthropicAPIKey = (try? c.decode(String.self, forKey: .anthropicAPIKey)) ?? defaults.anthropicAPIKey
+        anthropicWorkspaceID = (try? c.decode(String.self, forKey: .anthropicWorkspaceID)) ?? defaults.anthropicWorkspaceID
         openRouterAPIKey = (try? c.decode(String.self, forKey: .openRouterAPIKey)) ?? defaults.openRouterAPIKey
         openAIModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
         )
+        anthropicModel = (try? c.decode(String.self, forKey: .anthropicModel)) ?? defaults.anthropicModel
         openRouterModel = (try? c.decode(String.self, forKey: .openRouterModel)) ?? defaults.openRouterModel
         chatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             SummaryModelPreset.migratedFromGPT55(
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
         )
+        claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
+        claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
         meetingSummaryReasoningEffort = try? c.decode(
             ReasoningEffort.self,
             forKey: .meetingSummaryReasoningEffort
@@ -2240,6 +2297,7 @@ struct AppConfig: Codable {
         postProcessorOpenAIModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .postProcessorOpenAIModel)) ?? defaults.postProcessorOpenAIModel
         )
+        postProcessorAnthropicModel = (try? c.decode(String.self, forKey: .postProcessorAnthropicModel)) ?? defaults.postProcessorAnthropicModel
         transcriptCleanupReasoningEffort = try? c.decode(
             ReasoningEffort.self,
             forKey: .transcriptCleanupReasoningEffort
@@ -2287,6 +2345,8 @@ struct AppConfig: Codable {
     var resolvedDictationProvider: DictationProvider {
         DictationProvider.resolved(dictationProvider)
     }
+
+    var resolvedBodhanOutputMode: BodhanOutputMode { BodhanOutputMode.resolved(bodhanOutputMode) }
 
     var resolvedBodhanLanguage: BodhanLanguage {
         BodhanLanguage.resolved(bodhanLanguage)
