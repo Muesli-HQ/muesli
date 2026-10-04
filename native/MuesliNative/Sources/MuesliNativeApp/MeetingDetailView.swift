@@ -1,7 +1,7 @@
 import SwiftUI
 import MuesliCore
 
-private enum MeetingDocumentMode: Hashable {
+enum MeetingDocumentMode: Hashable {
     case notes
     case transcript
 }
@@ -1679,27 +1679,48 @@ struct MeetingDetailView: View {
     }
 
     private func activeCopyText(for meeting: MeetingRecord) -> String {
-        let body: String
-        let isEditing: Bool
-
         switch documentMode {
         case .notes:
-            isEditing = isEditingNotes
-            body = isEditing ? editableNotes : Self.notesCopyContent(for: meeting)
+            return Self.copyContent(for: meeting, content: .notes,
+                                    editedText: isEditingNotes ? editableNotes : nil)
         case .transcript:
-            isEditing = isEditingTranscript
-            body = isEditing ? editableTranscript : meeting.rawTranscript
+            return Self.copyContent(for: meeting, content: .transcript,
+                                    editedText: isEditingTranscript ? editableTranscript : nil)
         }
-
-        let wordCount = isEditing ? Self.countWords(body) : meeting.wordCount
-        let header = MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount)
-        return header + body
     }
 
-    private static func countWords(_ text: String) -> Int {
-        text.components(separatedBy: CharacterSet.whitespaces)
-            .filter { !$0.isEmpty }
-            .count
+    /// Composes exactly the body selected by Copy, including unsaved edits.
+    static func copyContent(
+        for meeting: MeetingRecord,
+        content: MeetingDocumentMode,
+        editedText: String? = nil
+    ) -> String {
+        var body: String
+        switch content {
+        case .notes:
+            body = editedText ?? notesCopyContent(for: meeting)
+            // The raw-notes editor includes a display-only title. Remove only
+            // that exact leading heading before adding the metadata title.
+            if editedText != nil, meeting.status != .noteOnly,
+               meeting.notesState != .structuredNotes {
+                let title = "# \(meeting.title)"
+                if body == title {
+                    body = ""
+                } else {
+                    for newline in ["\r\n", "\n"] {
+                        let prefix = title + newline
+                        if body.hasPrefix(prefix) {
+                            body = String(body.dropFirst(prefix.count))
+                            break
+                        }
+                    }
+                }
+            }
+        case .transcript:
+            body = editedText ?? meeting.rawTranscript
+        }
+        let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
+        return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
