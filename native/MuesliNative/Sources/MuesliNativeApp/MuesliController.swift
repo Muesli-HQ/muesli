@@ -2891,6 +2891,11 @@ public final class MuesliController: NSObject {
         return allowed ? nil : "Grant the required microphone, Accessibility and Input Monitoring permissions in Settings first."
     }
 
+    func requestPushToTalkSettingsPermissions() {
+        requestMissingPushToTalkPermissions(currentOnboardingPermissionSnapshot(),
+            profile: .resolved(for: config.resolvedOnboardingUseCase))
+    }
+
     func requestSettingsPermissions() {
         requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
     }

@@ -8,9 +8,13 @@ extension MuesliController {
     /// Voice applies to selected transcription models; manual model cards can
     /// also configure a shared preference before switching to another model.
     private func voiceBodhanModels() -> [BodhanModel] {
-        [(config.sttBackend, config.sttModel),
-         (config.meetingTranscriptionBackend, config.meetingTranscriptionModel)]
-            .compactMap { backend, model in backend == "bodhan" ? BodhanModel(rawValue: model) : nil }
+        var models = [(config.sttBackend, config.sttModel)]
+        // The saved meeting model is only a recovery fallback when live speech
+        // produces the final transcript; it must not restrict active dictation.
+        if !(config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript) {
+            models.append((config.meetingTranscriptionBackend, config.meetingTranscriptionModel))
+        }
+        return models.compactMap { backend, model in backend == "bodhan" ? BodhanModel(rawValue: model) : nil }
     }
 
     func settingsDefinitions() -> [MuesliSetting] {
@@ -123,7 +127,7 @@ extension MuesliController {
         }
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
-        toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in
+        toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestPushToTalkSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in
             if self.updatePushToTalkEnabled(enabled, requestPermissions: enabled) == .needsPermissions {
                 throw MuesliSettings.Failure.rejected("Push to talk needs permission. Complete setup in Settings before using the shortcut.")
             }

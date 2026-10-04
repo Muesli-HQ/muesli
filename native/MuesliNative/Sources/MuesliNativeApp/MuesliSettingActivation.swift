@@ -83,17 +83,20 @@ struct MuesliSettingActivation {
             throw MuesliSettings.Failure.rejected(reason)
         }
         var completed: [String] = []
+        var pendingWrite: String?
         var attemptedWrite = false
         do {
             if let modelID {
                 for id in targetIDs {
                     try Task.checkCancellation()
                     let current = definitions()
-                    guard current.contains(where: { $0.id == id }) else { throw MuesliSettings.Failure.rejected("Model setting disappeared.") }
+                    guard let target = current.first(where: { $0.id == id }) else { throw MuesliSettings.Failure.rejected("Model setting disappeared.") }
+                    pendingWrite = "\(target.label): \(target.choice(for: modelID)?.label ?? modelID)"
                     attemptedWrite = true
                     let message = try await MuesliSettings.apply(.init(setting: id, value: modelID), settings: current,
                         snapshots: baseline, config: config, persistedConfig: persistedConfig)
                     completed.append(message)
+                    pendingWrite = nil
                 }
             }
             try Task.checkCancellation()
@@ -110,6 +113,7 @@ struct MuesliSettingActivation {
                     return target.read(config()) == modelID && target.read(saved) == modelID
                 }) else { throw MuesliSettings.Failure.rejected("Model selection changed during activation.") }
             }
+            pendingWrite = "\(preference.label): \(preference.choice(for: selection.value)?.label ?? selection.value)"
             attemptedWrite = true
             let message = try await MuesliSettings.apply(selection, settings: current, snapshots: [snapshot],
                 source: .confirmedPreference, config: config, persistedConfig: persistedConfig)
@@ -122,7 +126,9 @@ struct MuesliSettingActivation {
             return completed.joined(separator: "; ") + (otherModels ? ". Other models remain unchanged and may not use this preference." : "")
         } catch {
             guard attemptedWrite else { throw error }
-            let saved = completed.isEmpty ? "A setting may have changed." : "Saved: " + completed.joined(separator: "; ") + "."
+            let saved = (completed.isEmpty ? "" : "Saved: " + completed.joined(separator: "; ") + ". ")
+                + (pendingWrite.map { "Could not verify saving \($0); it may have changed." }
+                   ?? "The remaining steps did not complete; check the saved selections.")
             throw MuesliSettings.Failure.rejected("Could not finish the whole request. \(saved) Check Settings before retrying.")
         }
     }

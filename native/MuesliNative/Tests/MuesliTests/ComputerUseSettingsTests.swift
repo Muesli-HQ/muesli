@@ -45,6 +45,7 @@ struct ComputerUseSettingsTests {
         var saved = AppConfig()
         var downloaded = true
         var failMeeting = false
+        var skipModelSave = false
         var writes = 0
         init() {
             config.sttModel = "old-dictation"
@@ -59,7 +60,7 @@ struct ComputerUseSettingsTests {
                         if id == "meeting", self.failMeeting { throw MuesliSettings.Failure.rejected("Save failed") }
                         self.writes += 1
                         self.config[keyPath: key] = value
-                        self.saved = self.config
+                        if !self.skipModelSave { self.saved = self.config }
                     })
             }
             let preference = MuesliSetting(id: "future_language", label: "Future language",
@@ -167,6 +168,19 @@ struct ComputerUseSettingsTests {
         #expect(result?.message.contains("Nothing was changed") == false)
     }
 
+    @Test("unverified model writes name the attempted setting and model")
+    func activationUnverifiedWrite() async {
+        let h = ActivationHarness()
+        h.skipModelSave = true
+        var questions = 0
+        let result = await h.run { _ in questions += 1; return questions == 1 ? "Dictation" : "Model A" }
+        #expect(result?.status == .failed)
+        #expect(h.config.sttModel == "model-a")
+        #expect(h.saved.sttModel == "old-dictation")
+        #expect(result?.message.contains("Could not verify saving Dictation: Model A") == true)
+        #expect(result?.message.contains("Nothing was changed") == false)
+    }
+
     @Test("stalled settings planning times out before any mutation")
     func stalledPlanning() async {
         let h = Harness()
@@ -235,6 +249,7 @@ struct ComputerUseSettingsTests {
         initial.sttModel = model.rawValue
         initial.meetingTranscriptionBackend = "bodhan"
         initial.meetingTranscriptionModel = BodhanModel.flex.rawValue
+        initial.enableLiveStreamingPartials = false
         configStore.save(initial)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
@@ -265,6 +280,16 @@ struct ComputerUseSettingsTests {
         let language = try #require(definitions.first { $0.id == "bodhan_language" })
         let snapshot = language.snapshot(config: controller.config)
         controller.updateConfig { $0.meetingTranscriptionModel = BodhanModel.core.rawValue }
+        // Final-producing live models supersede the saved Core meeting model.
+        for backend in [MeetingLiveCaptionBackend.appleSpeech, .nemotron35] {
+            controller.updateConfig {
+                $0.enableLiveStreamingPartials = true
+                $0.meetingLiveCaptionBackend = backend.rawValue
+            }
+            #expect(language.availability("hne") == nil)
+        }
+        controller.updateConfig { $0.enableLiveStreamingPartials = false }
+        #expect(language.availability("hne") != nil)
         await #expect(throws: (any Error).self) {
             _ = try await MuesliSettings.apply(.init(setting: "bodhan_language", value: "hne"), settings: definitions,
                 snapshots: [snapshot], config: { controller.config }, persistedConfig: { configStore.load() })
