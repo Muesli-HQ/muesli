@@ -5471,13 +5471,15 @@ public final class MuesliController: NSObject {
         showMeetingDocument(id: activeMeetingID)
     }
 
-    func openActiveMeetingNotes() {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
+    @discardableResult
+    func openActiveMeetingNotes() -> Bool {
+        guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         guard let activeMeetingID,
-              isMeetingRecording() || isStartingMeetingRecording else { return }
+              isMeetingRecording() || isStartingMeetingRecording else { return false }
         showMeetingDocument(id: activeMeetingID)
         appState.meetingNotesFocusRequest &+= 1
         presentHistoryWindow()
+        return true
     }
 
     func showMeetingTemplatesManager() {
