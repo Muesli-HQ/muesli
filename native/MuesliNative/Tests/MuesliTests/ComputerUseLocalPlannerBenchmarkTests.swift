@@ -26,7 +26,7 @@ struct ComputerUseLocalPlannerBenchmarkTests {
             config: { config }, persistedConfig: { saved })
         #expect(result?.status == .done)
         #expect(!saved.soundEnabled)
-        print("CUA_BENCHMARK settings-round-trip status=\(String(describing: result?.status)) saved=\(saved.soundEnabled)")
+        print("CUA_BENCHMARK settings-round-trip status=\(String(describing: result?.status)) saved=\(saved.soundEnabled) message=\(result?.message ?? "no settings result")")
         if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
     }
 
