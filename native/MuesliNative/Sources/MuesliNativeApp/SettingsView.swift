@@ -1883,11 +1883,6 @@ struct SettingsView: View {
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
-                Text(isLocalPlanner
-                     ? "Writing tasks use the Writing model under Quill. Select an on-device writing model there."
-                     : "Writing tasks use the Writing model configured under Quill.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
                 if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
