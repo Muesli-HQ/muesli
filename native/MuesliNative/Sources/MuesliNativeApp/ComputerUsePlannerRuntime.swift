@@ -140,6 +140,16 @@ final class ComputerUsePlannerRuntime {
                 let thinkingStarted = now()
                 defer { deadline += max(0, now() - thinkingStarted) }
                 response = try await planWithRetry(request, traceLog: traceLog)
+                if response.toolCall.tool == .editText,
+                   response.toolCall.elementID != nil, response.toolCall.elementIndex != nil {
+                    do {
+                        _ = try ComputerUseTextEditing.resolveTarget(response.toolCall,
+                            byID: { registry.element(for: $0) }, byIndex: { registry.element(for: $0) })
+                    } catch {
+                        throw ComputerUsePlannerError.invalidToolCall(name: "edit_text",
+                            arguments: formatToolCall(response.toolCall), message: error.localizedDescription)
+                    }
+                }
             } catch is CancellationError {
                 return cancelledResult(traceEvents: traceLog.events, step: step)
             } catch ComputerUsePlannerError.invalidToolCall(let name, let arguments, let message) {

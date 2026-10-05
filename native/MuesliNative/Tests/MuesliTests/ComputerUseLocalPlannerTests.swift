@@ -1,9 +1,46 @@
 import Foundation
+import ApplicationServices
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("On-device CUA planner")
 struct ComputerUseLocalPlannerTests {
+    @Test @MainActor func unresolvedDualTargetRequestsBoundedPlannerRepair() async {
+        var plans = 0
+        let runtime = ComputerUsePlannerRuntime(config: AppConfig(),
+            prepareEdit: { _, _ in
+                Issue.record("Unresolved target must never reach writing generation")
+                return PreparedComputerUseTextEdit { .failed("unexpected") }
+            }, observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { _ in
+                plans += 1
+                return ComputerUsePlannerResponse(toolCall: .init(tool: .editText,
+                    elementID: "missing", elementIndex: 1, instruction: "Rewrite", scope: "field"))
+            }, execute: { _, _ in Issue.record("No action may execute"); return .failed("unexpected") })
+        let result = await runtime.run(command: "Rewrite")
+        #expect(result.status == .failed)
+        #expect(plans == 3)
+        #expect(result.traceEvents.filter { $0.kind == "planner_repair" }.count == 3)
+    }
+
+    @Test @MainActor func dualTargetIdentifiersMustResolveAndAgree() throws {
+        let first = AXUIElementCreateApplication(1)
+        let same = AXUIElementCreateApplication(1)
+        let second = AXUIElementCreateApplication(2)
+        let call = ComputerUseToolCall(tool: .editText, elementID: "e1", elementIndex: 1, instruction: "Rewrite", scope: "field")
+        let resolved = try ComputerUseTextEditing.resolveTarget(call, byID: { _ in first }, byIndex: { _ in same })
+        #expect(CFEqual(resolved, first))
+        for (idTarget, indexTarget): (AXUIElement?, AXUIElement?) in [(first, second), (nil, first), (first, nil), (nil, nil)] {
+            #expect(throws: (any Error).self) {
+                try ComputerUseTextEditing.resolveTarget(call, byID: { _ in idTarget }, byIndex: { _ in indexTarget })
+            }
+        }
+        let idOnly = ComputerUseToolCall(tool: .editText, elementID: "e1", instruction: "Rewrite", scope: "field")
+        #expect(CFEqual(try ComputerUseTextEditing.resolveTarget(idOnly, byID: { _ in first }, byIndex: { _ in nil }), first))
+        let indexOnly = ComputerUseToolCall(tool: .editText, elementIndex: 1, instruction: "Rewrite", scope: "field")
+        #expect(CFEqual(try ComputerUseTextEditing.resolveTarget(indexOnly, byID: { _ in nil }, byIndex: { _ in first }), first))
+    }
+
     let tools: [[String: Any]] = [["name": "launch_app", "parameters": ["type": "object",
         "properties": ["app_name": ["type": "string"]], "required": ["app_name"], "additionalProperties": false]]]
 

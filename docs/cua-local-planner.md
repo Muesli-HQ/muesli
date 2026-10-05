@@ -79,6 +79,8 @@ disable CUA's writing tool. A local planner refuses a hosted writing backend;
 select a downloaded on-device Writing model as well. No automatic model switch
 or cloud fallback occurs.
 
+The tool accepts an element ID, an index, or both when both resolve to the same AX element. Conflicting or unresolved references are rejected at capture and rechecked before writing.
+
 The tool requires an observed editable AX element and an explicit `selection` or
 `field` scope. Selection scope replaces the highlighted range, or inserts at a
 zero-length cursor range; field scope replaces the entire field. Source text is

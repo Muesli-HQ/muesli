@@ -111,15 +111,31 @@ enum ComputerUseTextEditing {
         return .executed("Text updated and verified; nothing was sent or submitted")
     }
 
+    static func resolveTarget(_ call: ComputerUseToolCall,
+                              byID: (String) -> AXUIElement?,
+                              byIndex: (Int) -> AXUIElement?) throws -> AXUIElement {
+        let identified = call.elementID.flatMap(byID)
+        let indexed = call.elementIndex.flatMap(byIndex)
+        if call.elementID != nil && identified == nil || call.elementIndex != nil && indexed == nil {
+            throw ComputerUsePlannerError.invalidResponse("A supplied text target no longer resolves. Refresh the observation and supply a current target.")
+        }
+        if let identified, let indexed, !CFEqual(identified, indexed) {
+            throw ComputerUsePlannerError.invalidResponse("element_id and element_index identify different fields. Supply one observed target or a matching pair. No text was changed.")
+        }
+        guard let element = identified ?? indexed else {
+            throw ComputerUsePlannerError.invalidResponse("Text editing requires an observed target.")
+        }
+        return element
+    }
+
     private static func capture(_ call: ComputerUseToolCall, registry: ComputerUseElementRegistry) throws -> Target {
         guard AXIsProcessTrusted() else { throw QuilTransformationError.accessibilityPermissionRequired }
-        let resolve: () -> AXUIElement? = {
-            if let index = call.elementIndex { return registry.element(for: index) }
-            return call.elementID.flatMap { registry.element(for: $0) }
+        let resolve: () throws -> AXUIElement = {
+            try resolveTarget(call, byID: { registry.element(for: $0) }, byIndex: { registry.element(for: $0) })
         }
+        let element = try resolve()
         var writable = DarwinBoolean(false)
-        guard let element = resolve(),
-              [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(string(element, kAXRoleAttribute) ?? ""),
+        guard [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(string(element, kAXRoleAttribute) ?? ""),
               string(element, kAXSubroleAttribute) != kAXSecureTextFieldSubrole,
               AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &writable) == .success,
               writable.boolValue, let original = string(element, kAXValueAttribute) else {
@@ -143,7 +159,7 @@ enum ComputerUseTextEditing {
             editRange = NSRange(location: 0, length: (original as NSString).length)
         }
         return Target(text: (original as NSString).substring(with: editRange), isCurrent: {
-            guard let current = resolve(), CFEqual(current, element),
+            guard let current = try? resolve(), CFEqual(current, element),
                   string(element, kAXValueAttribute) == original else { return false }
             return call.scope != "selection" || (focusedInOwningApp(element) && range(element) == selectedRange)
         }, write: { replacement in
