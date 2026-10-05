@@ -271,3 +271,89 @@ struct ComputerUseLocalPlannerTests {
         #expect(writes == 1)
     }
 }
+
+extension ComputerUseLocalPlannerTests {
+    @Test @MainActor func reviewRejectedWriteAndMismatchedReadbackNeverRestoreCaret() {
+        for accepted in [false, true] {
+            var writes = 0
+            let result = ComputerUseTextEditing.applyReplacement(original: "Before",
+                editRange: NSRange(location: 0, length: 6), replacement: "After", restoreSelection: true,
+                write: { _ in writes += 1; return accepted }, read: { "Unexpected" },
+                setSelection: { _ in Issue.record("Must not touch caret after unverified text"); return true },
+                readSelection: { nil })
+            #expect(result.status == .failed)
+            #expect(writes == 1)
+            #expect(result.message.contains(accepted ? "accepted but readback" : "rejected"))
+        }
+    }
+
+    @Test @MainActor func reviewCaretSetterSuccessStillRequiresReadback() {
+        var value = "Before"
+        let result = ComputerUseTextEditing.applyReplacement(original: value,
+            editRange: NSRange(location: 0, length: 6), replacement: "After", restoreSelection: true,
+            write: { value = $0; return true }, read: { value },
+            setSelection: { _ in true }, readSelection: { NSRange(location: 0, length: 0) })
+        #expect(value == "After")
+        #expect(result.status == .failed)
+        #expect(result.message.contains("Text was updated"))
+    }
+
+    @Test @MainActor func reviewStopAfterPreparationPreventsWrite() async throws {
+        var writes = 0
+        let task = Task { @MainActor in
+            let target = ComputerUseTextEditing.Target(text: "Before", isCurrent: { true },
+                write: { _ in writes += 1; return .executed("written") })
+            let prepared = try await ComputerUseTextEditing.prepare(target: target, instruction: "Rewrite") { _, _ in "After" }
+            withUnsafeCurrentTask { $0?.cancel() }
+            return prepared.apply()
+        }
+        #expect(try await task.value.status == .cancelled)
+        #expect(writes == 0)
+    }
+
+    @Test @MainActor func reviewTimeoutBeforePreparedWriteHasTerminalTrace() async {
+        var prepared = false
+        var readsAfterPreparation = 0
+        var writes = 0
+        let runtime = ComputerUsePlannerRuntime(config: AppConfig(), timeoutSeconds: 5, now: {
+            guard prepared else { return 0 }
+            readsAfterPreparation += 1
+            // First read excludes 100s of generation; next simulates 6s of execution delay.
+            return readsAfterPreparation == 1 ? 100 : 106
+        }, prepareEdit: { _, _ in
+            prepared = true
+            return PreparedComputerUseTextEdit { writes += 1; return .executed("written") }
+        }, observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+        plan: { _ in ComputerUsePlannerResponse(toolCall: .init(tool: .editText,
+            elementID: "e1", instruction: "Rewrite", scope: "field")) },
+        execute: { _, _ in Issue.record("Unexpected execution"); return .failed("unexpected") })
+        let result = await runtime.run(command: "Rewrite")
+        #expect(result.status == .timedOut)
+        #expect(writes == 0)
+        #expect(result.traceEvents.last?.kind == "timed_out")
+    }
+
+    @Test func reviewInvalidScopeAndUnexpectedArgumentsAreRejected() throws {
+        let definitions = ComputerUseToolRegistry.nativeToolDefinitions()
+        #expect(definitions.allSatisfy { ($0["parameters"] as? [String: Any])?["additionalProperties"] as? Bool == false })
+        for scope in ["Selection", "", "whole"] {
+            #expect(ComputerUseToolCall(tool: .editText, elementID: "e1", instruction: "Rewrite", scope: scope).validationFailure() != nil)
+        }
+        #expect(throws: (any Error).self) {
+            try ComputerUseLocalPlanner.decode(#"{"name":"edit_text","arguments":{"element_id":"e1","instruction":"Rewrite","scope":"field","extra":"unexpected"}}"#, tools: definitions)
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_CUA_CONTEXT_PROBE"] == "1"))
+    func reviewRealGemmaRejectsOversizedPromptBeforeGeneration() async throws {
+        let model = try #require(ComputerUseLocalPlanner.models.first { $0.available })
+        do {
+            _ = try await model.backend.generate(systemPrompt: "Select one tool.",
+                userPrompt: String(repeating: "This is a deliberately oversized observation. ", count: 6000),
+                toolsJSON: "[]")
+            Issue.record("Oversized prompt must not generate")
+        } catch let error as ComputerUsePlannerError {
+            #expect(error.localizedDescription.contains("too large"))
+        }
+    }
+}
