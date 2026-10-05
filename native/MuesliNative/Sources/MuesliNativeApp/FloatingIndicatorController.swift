@@ -60,9 +60,6 @@ final class HoverIndicatorView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let trackingAreaRef {
-            removeTrackingArea(trackingAreaRef)
-        }
         // .inVisibleRect would discard a narrowed rect and track the full
         // bounds, so only include it when the interactive rect is the full
         // bounds (classic style); shortcut-pill tracks its explicit rect.
@@ -70,6 +67,21 @@ final class HoverIndicatorView: NSView {
         var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
         if interactiveRect.equalTo(bounds) {
             options.insert(.inVisibleRect)
+        }
+        if owner?.usesIdleHoverTracking == true, let trackingAreaRef,
+           trackingAreaRef.options.subtracting(.assumeInside) == options,
+           options.contains(.inVisibleRect) || trackingAreaRef.rect == interactiveRect {
+            // AppKit keeps .inVisibleRect synchronized during animated resizing.
+            // Retain its entered/exited state instead of replacing it each frame.
+            return
+        }
+        if let trackingAreaRef {
+            removeTrackingArea(trackingAreaRef)
+        }
+        if owner?.shouldAssumePointerInsideTrackingArea == true {
+            // Explicit shortcut regions do change shape. Preserve the known
+            // inside state so their replacement still delivers the next exit.
+            options.insert(.assumeInside)
         }
         let tracking = NSTrackingArea(
             rect: interactiveRect,
@@ -353,8 +365,9 @@ final class FloatingIndicatorController: NSObject {
             deferredLoadingMessage = nil
             showLoading(message)
         }
-        if state == .idle, isHovered {
-            scheduleHoverExit()
+        if usesIdleHoverTracking {
+            contentView?.updateTrackingAreas()
+            reconcileIdleHover()
         }
     }
 
@@ -854,10 +867,11 @@ final class FloatingIndicatorController: NSObject {
             applyGlassState(state, frameSize: targetFrame.size)
         } completionHandler: { [weak self] in
             guard let self, self.panel === panel else { return }
-            // Replacing tracking areas during resize can lose mouseExited.
-            // Reconcile after the transition, even if no exit was delivered.
+            // Geometry may change under a stationary pointer. Reconcile once
+            // at completion; subsequent movement belongs to the tracking area.
             if self.state == .idle, self.isHovered {
-                self.scheduleHoverExit()
+                self.contentView?.updateTrackingAreas()
+                self.reconcileIdleHover()
             }
             // Animator proxies can apply even zero-duration geometry later.
             // Expand only after the compact frame transition has finished.
@@ -1276,16 +1290,29 @@ final class FloatingIndicatorController: NSObject {
             guard let self, self.state == .idle, !self.isShowingLoading,
                   !self.isDragging, self.isHovered, !self.notchIndicator.isVisible,
                   self.panel?.isVisible == true else { return }
-            // Keep the resize debounce, but continue checking while expanded.
-            // An inside result must not rely on a later tracking-area exit.
-            if self.pointerIsInsidePanel() {
-                self.scheduleHoverExit()
-            } else {
-                self.setHovered(false)
-            }
+            self.hoverExitWorkItem = nil
+            self.reconcileIdleHover()
         }
         hoverExitWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: workItem)
+    }
+
+    /// Geometry/interaction completion and mouse-exit events reconcile once.
+    /// Keep a stationary hover dormant: no repeating timer or global monitor.
+    private func reconcileIdleHover() {
+        guard state == .idle, !isShowingLoading, !isDragging, isHovered,
+              !notchIndicator.isVisible, panel?.isVisible == true else { return }
+        if !pointerIsInsidePanel() {
+            setHovered(false)
+        }
+    }
+
+    fileprivate var usesIdleHoverTracking: Bool {
+        state == .idle && !isShowingLoading && !isComputerUseCursorMode
+    }
+
+    fileprivate var shouldAssumePointerInsideTrackingArea: Bool {
+        state == .idle && isHovered && !isShowingLoading && pointerIsInsidePanel()
     }
 
     func closeIfIdle() {
