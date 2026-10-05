@@ -172,6 +172,38 @@ struct WindowAppearanceTests {
         return lifecycle.appearanceCount > 0
     }
 
+    @Test("expanded sidebar fits the window when the folder tree is taller than it")
+    func expandedSidebarScrollsLongFolderTree() {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-sidebar-test-\(UUID().uuidString)", isDirectory: true)
+        let store = DictationStore(databaseURL: supportDirectory.appendingPathComponent("muesli.db"))
+        try? store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: supportDirectory)
+        )
+        // 40 visible folder rows are far taller than the minimum window.
+        controller.appState.folders = (1...40).map { index in
+            MeetingFolder(id: Int64(index), name: "Folder \(index)", createdAt: "2026-01-01T00:00:00Z")
+        }
+
+        let height = DashboardWindowLayout.minimumContentHeight
+        let hostingController = NSHostingController(
+            rootView: SidebarView(appState: controller.appState, controller: controller)
+        )
+        let fitted = hostingController.sizeThatFits(in: NSSize(width: 260, height: height))
+
+        // Without a scroll container the stack cannot shrink below the height
+        // of every row, so it reports far more than the window offers.
+        #expect(fitted.height <= height)
+    }
+
     @Test("dashboard wires the production sidebar toggle and compact meeting header")
     func dashboardWiresProductionSidebarAndCompactMeetingComposition() {
         let supportDirectory = FileManager.default.temporaryDirectory

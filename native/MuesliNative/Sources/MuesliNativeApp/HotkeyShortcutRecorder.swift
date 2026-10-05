@@ -1,24 +1,17 @@
 import AppKit
 import Observation
 
-enum HotkeyShortcutTarget: Equatable {
-    case dictation
-    case computerUse
-    case quil
-    case meetingRecording
-}
-
 /// Records either one bare modifier or a modifier chord, and completes only after
 /// every recorded key is released so resumed global monitors never see its tail.
 struct HotkeyShortcutCaptureState {
-    let target: HotkeyShortcutTarget
+    let target: ShortcutAssignment
     private(set) var completed: HotkeyConfig?
     private(set) var rejectedChord = false
     private var bareModifierKeyCode: UInt16?
     private var pendingCombination: HotkeyConfig?
     private var combinationKeyIsDown = false
 
-    init(target: HotkeyShortcutTarget) {
+    init(target: ShortcutAssignment) {
         self.target = target
     }
 
@@ -70,7 +63,7 @@ struct HotkeyShortcutCaptureState {
         completed = pendingCombination
     }
 
-    static func accepts(_ hotkey: HotkeyConfig, for target: HotkeyShortcutTarget) -> Bool {
+    static func accepts(_ hotkey: HotkeyConfig, for target: ShortcutAssignment) -> Bool {
         switch target {
         case .dictation:
             return hotkey.isValidDictationShortcut
@@ -107,7 +100,7 @@ final class HotkeyShortcutRecorder {
     static let busyMessage = "Finish recording or processing before changing shortcuts."
     static let installFailedMessage = "Could not start shortcut recording. Try again."
 
-    private(set) var target: HotkeyShortcutTarget?
+    private(set) var target: ShortcutAssignment?
     private(set) var rejectedChord = false
     /// The window that was key when capture started; only its resignation ends capture.
     private(set) weak var window: NSWindow?
@@ -136,7 +129,7 @@ final class HotkeyShortcutRecorder {
 
     /// Returns a message when capture could not start.
     func start(
-        _ target: HotkeyShortcutTarget,
+        _ target: ShortcutAssignment,
         acquire: () -> Bool,
         release: @escaping () -> Void,
         commit: @escaping (HotkeyConfig) -> Void

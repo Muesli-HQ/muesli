@@ -35,17 +35,24 @@ enum FloatingMeetingTranscriptInteraction: Equatable {
     case dismiss
     case copy
     case openMeeting
+    case togglePause
 
     static func action(at point: NSPoint, in panelFrame: NSRect) -> Self? {
         guard panelFrame.contains(point) else { return nil }
         let headerMinY = panelFrame.maxY - 42
         guard point.y >= headerMinY else { return nil }
 
+        // Match header below: 16pt trailing padding, 24pt buttons, 8pt
+        // spacing. Each zone includes the gap before its button. Update these
+        // offsets with header geometry so AppKit and SwiftUI stay aligned.
         if point.x >= panelFrame.maxX - 48 {
             return .copy
         }
-        if point.x >= panelFrame.maxX - 88 {
+        if point.x >= panelFrame.maxX - 80 {
             return .dismiss
+        }
+        if point.x >= panelFrame.maxX - 112 {
+            return .togglePause
         }
         return .openMeeting
     }
@@ -106,16 +113,19 @@ final class FloatingMeetingTranscriptPanelController {
     private let onHoverChanged: (Bool) -> Void
     private let onOpenNotes: () -> Void
     private let onDismiss: () -> Void
+    private let onTogglePause: () -> Void
     private var hostingView: FirstMouseHostingView<FloatingMeetingTranscriptPanelView>?
 
     init(
         onHoverChanged: @escaping (Bool) -> Void,
         onOpenNotes: @escaping () -> Void,
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        onTogglePause: @escaping () -> Void
     ) {
         self.onHoverChanged = onHoverChanged
         self.onOpenNotes = onOpenNotes
         self.onDismiss = onDismiss
+        self.onTogglePause = onTogglePause
     }
 
     var isVisible: Bool {
@@ -195,6 +205,8 @@ final class FloatingMeetingTranscriptPanelController {
             copyTranscript()
         case .openMeeting:
             onOpenNotes()
+        case .togglePause:
+            onTogglePause()
         }
         return true
     }
@@ -209,7 +221,8 @@ final class FloatingMeetingTranscriptPanelController {
                 model: model,
                 onHoverChanged: onHoverChanged,
                 onOpenNotes: onOpenNotes,
-                onDismiss: onDismiss
+                onDismiss: onDismiss,
+                onTogglePause: onTogglePause
             )
         )
         hostingView.wantsLayer = true
@@ -222,6 +235,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
     let onHoverChanged: (Bool) -> Void
     let onOpenNotes: () -> Void
     let onDismiss: () -> Void
+    let onTogglePause: () -> Void
 
     private var partialYou: String {
         model.presentation.partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -277,6 +291,16 @@ private struct FloatingMeetingTranscriptPanelView: View {
             Text(model.isPaused ? "Paused" : "Live")
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
+            Button(action: onTogglePause) {
+                Image(systemName: model.isPaused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.isPaused ? "Resume meeting" : "Pause meeting")
+            .help(model.isPaused ? "Resume meeting" : "Pause meeting")
             Button(action: onDismiss) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 12, weight: .semibold))

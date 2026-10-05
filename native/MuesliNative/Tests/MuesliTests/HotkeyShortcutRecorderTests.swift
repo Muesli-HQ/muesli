@@ -76,7 +76,7 @@ struct HotkeyShortcutRecorderTests {
     }
 
     struct ChordRule: Sendable, CustomTestStringConvertible {
-        let target: HotkeyShortcutTarget
+        let target: ShortcutAssignment
         let modifiers: NSEvent.ModifierFlags
         let keyCode: UInt16
         let accepted: Bool
