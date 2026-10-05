@@ -192,6 +192,7 @@ final class FloatingIndicatorController: NSObject {
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
+    private let pointerLocation: () -> NSPoint
     private var isMeetingRecording = false
     private var isMeetingRecordingPaused = false
     private var isMeetingTranscriptManuallyDismissed = false
@@ -250,8 +251,9 @@ final class FloatingIndicatorController: NSObject {
         case waiting
     }
 
-    init(configStore: ConfigStore) {
+    init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
         self.configStore = configStore
+        self.pointerLocation = pointerLocation
         super.init()
         notchIndicator.onOpenHome = { [weak self] in self?.onOpenHome?() }
         notchIndicator.onCancel = { [weak self] in self?.cancelNotchActivity() }
@@ -351,7 +353,7 @@ final class FloatingIndicatorController: NSObject {
             deferredLoadingMessage = nil
             showLoading(message)
         }
-        if state == .idle, isHovered, !pointerIsInsidePanel() {
+        if state == .idle, isHovered {
             scheduleHoverExit()
         }
     }
@@ -701,6 +703,7 @@ final class FloatingIndicatorController: NSObject {
             recordingWaveformMode = .level
         }
         if state != .idle {
+            hoverExitWorkItem?.cancel()
             isHovered = false
         }
         preservesCollapsedLeftEdge = state == .idle && isHovered
@@ -850,10 +853,16 @@ final class FloatingIndicatorController: NSObject {
             // Apply glass state last so it can override iconLabel visibility set above.
             applyGlassState(state, frameSize: targetFrame.size)
         } completionHandler: { [weak self] in
+            guard let self, self.panel === panel else { return }
+            // Replacing tracking areas during resize can lose mouseExited.
+            // Reconcile after the transition, even if no exit was delivered.
+            if self.state == .idle, self.isHovered {
+                self.scheduleHoverExit()
+            }
             // Animator proxies can apply even zero-duration geometry later.
             // Expand only after the compact frame transition has finished.
-            guard restoresMeetingTranscript, let self,
-                  self.panel === panel, self.isMeetingRecording, self.state == .recording,
+            guard restoresMeetingTranscript,
+                  self.isMeetingRecording, self.state == .recording,
                   self.lastLoadedConfig?.showMeetingTranscriptOnIndicatorHover == true,
                   !self.notchIndicator.isVisible else { return }
             self.showMeetingTranscript()
@@ -897,6 +906,7 @@ final class FloatingIndicatorController: NSObject {
     /// Retire the floating surface without retiring the shared recording source.
     func prepareForNotchPresentation() {
         hoverExitWorkItem?.cancel()
+        isHovered = false
         hideMeetingTranscript()
         stopWaveformAnimation()
         panel?.orderOut(nil)
@@ -1024,6 +1034,8 @@ final class FloatingIndicatorController: NSObject {
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
         hideShortcutPillChrome()
         guard state == .idle else { return }
+        hoverExitWorkItem?.cancel()
+        isHovered = false
         notchIndicator.hide()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -1113,6 +1125,8 @@ final class FloatingIndicatorController: NSObject {
         guard let panel, let contentView, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
+        hoverExitWorkItem?.cancel()
+        isHovered = false
         isShowingLoading = true
         preservesCollapsedLeftEdge = false
         let loadingSize = loadingPillSize(message: message, screen: screen)
@@ -1255,12 +1269,20 @@ final class FloatingIndicatorController: NSObject {
             scheduleMeetingTranscriptHoverExit()
             return
         }
-        guard state == .idle, !isShowingLoading, isHovered else { return }
+        guard state == .idle, !isShowingLoading, !isDragging, isHovered,
+              !notchIndicator.isVisible, panel?.isVisible == true else { return }
         hoverExitWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard !self.pointerIsInsidePanel() else { return }
-            self.setHovered(false)
+            guard let self, self.state == .idle, !self.isShowingLoading,
+                  !self.isDragging, self.isHovered, !self.notchIndicator.isVisible,
+                  self.panel?.isVisible == true else { return }
+            // Keep the resize debounce, but continue checking while expanded.
+            // An inside result must not rely on a later tracking-area exit.
+            if self.pointerIsInsidePanel() {
+                self.scheduleHoverExit()
+            } else {
+                self.setHovered(false)
+            }
         }
         hoverExitWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: workItem)
@@ -1280,6 +1302,8 @@ final class FloatingIndicatorController: NSObject {
         powerProvider = nil
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
+        isHovered = false
+        isDragging = false
         preservesCollapsedLeftEdge = false
         panel?.close()
         panel = nil
@@ -2588,7 +2612,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func pointerIsInsidePanel() -> Bool {
-        indicatorScreenFrame?.contains(NSEvent.mouseLocation) == true
+        guard let panel, let contentView else { return false }
+        // Shortcut-pill's transparent canvas is larger than its visible grip.
+        // Use the same region as hit testing and tracking, in screen coordinates.
+        let interactiveRect = pointerInteractiveRect(in: contentView.bounds)
+        let windowRect = contentView.convert(interactiveRect, to: nil)
+        return panel.convertToScreen(windowRect).contains(pointerLocation())
     }
 }
 
