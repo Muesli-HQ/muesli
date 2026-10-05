@@ -13,8 +13,12 @@ than guess image targets. App actions still use Muesli's existing driver and mac
 permissions. The model cannot submit arbitrary AppleScript or shell programs.
 
 Local selection never falls back to ChatGPT. Missing models fail locally rather
-than starting a download. Model output is parsed as one JSON tool call and checked
-against the supplied schema before the existing executor validates and performs it.
+than starting a download. Gemma uses LiteRT's native tool declarations and constrained
+decoding. The adapter accepts exactly one structured tool call, validates its name
+and arguments against the offered schema, and then invokes the existing executor.
+Text-only responses, multiple calls and invalid arguments are rejected, with at most
+one repair attempt. Settings mutation tools are withheld until inspection and then
+restricted to the inspected setting IDs; executor checks remain in place.
 Clarification history, settings prerequisites, fresh availability checks and save
 verification use the same path as hosted planning.
 
@@ -49,7 +53,7 @@ MUESLI_CUA_BENCHMARK=1 swift test --package-path native/MuesliNative \
 Set `MUESLI_CUA_BENCHMARK_MODEL` to a registered planner ID to compare one model at
 a time. Add the same fixtures for future runtime adapters before comparing results.
 
-## Initial E4B measurements
+## Initial E4B measurements (before native tool calling)
 
 On the development Mac, the four synthetic planner fixtures produced three exact
 results: settings discovery, settings mutation, and Calculator launch. The cursor
@@ -86,11 +90,22 @@ writing output before mutation. Literal `type_text`, `paste_text` and `set_value
 remain for exact supplied text, while planner instructions prefer `edit_text`
 for generating prose. This routing is model-guided, not a keyword parser.
 
-The initial E4B writing benchmark successfully shortened “Please send the report
-when you have time.” to “Send the report when you have time.” through the shared
-writing service and an isolated target. However, its planner emitted `edittext`
-instead of `edit_text`, even after one format-repair turn. That delegation test
-currently fails and executes no edit. The integration is experimental; successful
-rewrite generation alone does not demonstrate a reliable CUA writing workflow.
+The native-tool E4B writing benchmark selects `edit_text` with the correct spelling,
+but omits the observed element target. The runtime decoder rejects it and executes
+no edit. Writing generation separately succeeds through the shared service on an
+isolated target. The integration remains experimental; successful generation alone
+does not demonstrate reliable CUA writing delegation.
 The opt-in `writingDelegationWithGemma` and `writingGenerationWithGemma` tests keep
 these two measurements separate.
+
+## Native tool calling results
+
+The unchanged five-command, five-round settings matrix improved from **0/25 to
+25/25 successful verified changes**, with 7.20s average completion and 7.09s warm
+average. See the [full comparison and raw results](benchmarks/cua-gemma-e4b-settings-native-2026-10-05.md).
+These are isolated settings fixtures, not live voice or full-catalog measurements.
+
+The separate fixed prompts passed settings inspection, settings mutation and
+Calculator launch. Cursor arguments remain incorrect: requested (120, 80), emitted
+(20, 800). Constrained decoding improves syntax; it does not guarantee correct
+values or observed targets. No desktop actions are executed by these benchmarks.

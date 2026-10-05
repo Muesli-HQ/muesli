@@ -708,11 +708,25 @@ actor Gemma4LiteRTTranscriber {
         )
     }
 
+    func generateToolResponse(systemPrompt: String, userPrompt: String,
+                              model: Gemma4LiteRTModel, toolsJSON: String) async throws -> String {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        try await prepareEngine(model: model, contextTokens: 16384, localOnly: true)
+        try Task.checkCancellation()
+        let response = try generateTextPrepared(systemPrompt: systemPrompt, userPrompt: userPrompt,
+                                                maxOutputTokens: 768, toolsJSON: toolsJSON)
+        try Task.checkCancellation()
+        return response
+    }
+
     private func generateTextPrepared(
         systemPrompt: String,
         userPrompt: String,
         maxOutputTokens: Int32,
-        audioURL: URL? = nil
+        audioURL: URL? = nil,
+        toolsJSON: String? = nil
     ) throws -> String {
         guard let engine else { throw TranscriberError.notLoaded }
         guard let sessionConfig = litert_lm_session_config_create() else {
@@ -738,7 +752,16 @@ actor Gemma4LiteRTTranscriber {
             role: "system",
             contents: [["type": "text", "text": systemPrompt]]
         )
-        litert_lm_conversation_config_set_system_message(conversationConfig, systemMessageJSON)
+        if let toolsJSON {
+            // The C API wraps this content in a system message itself.
+            let content = String(decoding: try JSONSerialization.data(withJSONObject:
+                ["type": "text", "text": systemPrompt]), as: UTF8.self)
+            litert_lm_conversation_config_set_system_message(conversationConfig, content)
+            litert_lm_conversation_config_set_tools(conversationConfig, toolsJSON)
+            litert_lm_conversation_config_set_enable_constrained_decoding(conversationConfig, true)
+        } else {
+            litert_lm_conversation_config_set_system_message(conversationConfig, systemMessageJSON)
+        }
         guard let conversation = litert_lm_conversation_create(engine, conversationConfig) else {
             throw TranscriberError.failedToCreateConversation
         }
@@ -758,7 +781,8 @@ actor Gemma4LiteRTTranscriber {
         guard let responseCString = litert_lm_json_response_get_string(jsonResponse) else {
             throw TranscriberError.invalidResponse
         }
-        return try Self.textContent(fromResponseJSON: String(cString: responseCString))
+        let response = String(cString: responseCString)
+        return toolsJSON == nil ? try Self.textContent(fromResponseJSON: response) : response
     }
 
     func shutdown() async {

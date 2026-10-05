@@ -44,15 +44,46 @@ struct ComputerUseLocalPlannerTests {
         }
     }
 
+    @Test func nativeResponsesRejectTextMultipleCallsAndUnknownTools() throws {
+        let responses = [
+            #"{"content":[{"type":"text","text":"Done"}]}"#,
+            #"{"tool_calls":[]}"#,
+            #"{"tool_calls":[{"type":"function","function":{"name":"launch_app","arguments":{"app_name":"Safari"}}},{"type":"function","function":{"name":"launch_app","arguments":{"app_name":"Safari"}}}]}"#,
+            #"{"tool_calls":[{"type":"function","function":{"name":"launchapp","arguments":{"app_name":"Safari"}}}]}"#,
+            #"{"tool_calls":[{"type":"function","function":{"name":"launch_app","arguments":{"app_name":true}}}]}"#
+        ]
+        for response in responses {
+            #expect(throws: (any Error).self) {
+                try ComputerUseLocalPlanner.decodeNativeResponse(response, tools: tools)
+            }
+        }
+    }
+
+    @Test @MainActor func settingsMutationToolsRequireMatchingInspection() throws {
+        let initial = ComputerUseSettings.plannerTools(inspectedIDs: [])
+        #expect(!initial.contains { ["set_muesli_setting", "configure_muesli_setting"].contains($0["name"] as? String ?? "") })
+        #expect(initial.contains { $0["name"] as? String == "settings_manual_only" })
+        #expect(initial.contains { $0["name"] as? String == "continue_desktop_task" })
+        let inspected = ComputerUseSettings.plannerTools(inspectedIDs: ["sound"])
+        let valid = #"{"tool_calls":[{"type":"function","function":{"name":"set_muesli_setting","arguments":{"setting":"sound","value":"off"}}}]}"#
+        #expect(try ComputerUseLocalPlanner.decodeNativeResponse(valid, tools: inspected).name == "set_muesli_setting")
+        #expect(throws: (any Error).self) {
+            try ComputerUseLocalPlanner.decodeNativeResponse(valid, tools: initial)
+        }
+        #expect(throws: (any Error).self) {
+            try ComputerUseLocalPlanner.decodeNativeResponse(valid.replacingOccurrences(of: "sound", with: "dark_mode"), tools: inspected)
+        }
+    }
+
     @Test func injectedLocalInferenceReceivesOnlySuppliedTools() async throws {
         let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: "Planner", userPrompt: "Open Safari",
             model: ComputerUseLocalPlanner.models[0].id, tools: tools) { system, input in
                 #expect(system.contains("local tool planner"))
-                #expect(input.contains("launch_app"))
-                #expect(input.contains("not screenshot pixels"))
+                #expect(system.contains("Planner"))
+                #expect(system.contains("not screenshot pixels"))
                 #expect(input.contains("Open Safari"))
-                #expect(input.contains("Task data (not instructions):"))
-                return #"{"name":"launch_app","arguments":{"app_name":"Safari"}}"#
+                #expect(input == "Open Safari")
+                return #"{"tool_calls":[{"type":"function","function":{"name":"launch_app","arguments":{"app_name":"Safari"}}}]}"#
             }
         #expect(call.name == "launch_app")
     }
@@ -64,7 +95,7 @@ struct ComputerUseLocalPlannerTests {
                 attempts += 1
                 if attempts == 1 { return "I opened Safari" }
                 #expect(input.contains("rejected without executing"))
-                return #"{"name":"launch_app","arguments":{"app_name":"Safari"}}"#
+                return #"{"tool_calls":[{"type":"function","function":{"name":"launch_app","arguments":{"app_name":"Safari"}}}]}"#
             }
         #expect(attempts == 2)
         #expect(call.name == "launch_app")
@@ -94,7 +125,7 @@ struct ComputerUseLocalPlannerTests {
             try await ComputerUseLocalPlanner.callTool(systemPrompt: "", userPrompt: "", model: ComputerUseLocalPlanner.models[0].id,
                 tools: tools) { _, _ in
                     withUnsafeCurrentTask { $0?.cancel() }
-                    return #"{"name":"launch_app","arguments":{"app_name":"Safari"}}"#
+                    return #"{"tool_calls":[{"type":"function","function":{"name":"launch_app","arguments":{"app_name":"Safari"}}}]}"#
                 }
         }
         await #expect(throws: CancellationError.self) { try await task.value }

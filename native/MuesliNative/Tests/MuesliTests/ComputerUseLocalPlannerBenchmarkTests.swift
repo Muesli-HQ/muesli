@@ -53,12 +53,7 @@ struct ComputerUseLocalPlannerBenchmarkTests {
             for (name, system, prompt, tools, expected) in cases {
                 let start = Date()
                 do {
-                    let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: system, userPrompt: prompt, model: model.id, tools: tools) { system, prompt in
-                        guard #available(macOS 15, *) else { throw ComputerUsePlannerError.invalidResponse("Requires macOS 15") }
-                        let output = try await model.backend.generate(systemPrompt: system, userPrompt: prompt)
-                        print("CUA_BENCHMARK_RAW \(name): \(output)")
-                        return output
-                    }
+                    let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: system, userPrompt: prompt, model: model.id, tools: tools)
                     print("CUA_BENCHMARK model=\(model.id) case=\(name) seconds=\(Date().timeIntervalSince(start)) tool=\(call.name) arguments=\(call.arguments)")
                     #expect(call.name == expected)
                     let args = try #require(try JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any])
@@ -85,11 +80,7 @@ struct ComputerUseLocalPlannerBenchmarkTests {
         let model = try #require(ComputerUseLocalPlanner.models.first { $0.available && (selected == nil || selected == $0.id) })
         let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: ComputerUsePlannerClient.instructions,
             userPrompt: #"{"command":"Rewrite the entire text field to be shorter","latest_window_state":{"app_name":"TextEdit","elements":[{"element_id":"e1","element_index":1,"role":"AXTextArea","value":"Please send the report when you have time."}]},"prior_steps":[]}"#,
-            model: model.id, tools: ComputerUseToolRegistry.nativeToolDefinitions()) { system, prompt in
-                let output = try await model.backend.generate(systemPrompt: system, userPrompt: prompt)
-                print("CUA_WRITING_RAW \(output)")
-                return output
-            }
+            model: model.id, tools: ComputerUseToolRegistry.nativeToolDefinitions())
         print("CUA_WRITING_BENCHMARK tool=\(call.name) args=\(call.arguments)")
         #expect(call.name == "edit_text")
         let decoded = try ComputerUsePlannerResponse.decodeNativeToolCall(name: call.name, arguments: call.arguments).toolCall
