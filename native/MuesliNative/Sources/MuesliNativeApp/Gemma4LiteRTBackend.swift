@@ -318,6 +318,7 @@ enum Gemma4LiteRTModelStore {
 
 @available(macOS 15, *)
 actor Gemma4LiteRTTranscriber {
+    static let shared = Gemma4LiteRTTranscriber()
     static let maxOutputTokens: Int32 = 128
     static let maxCleanupOutputTokens: Int32 = 1024
     static let maxAudioDurationSeconds = 30.0
@@ -325,6 +326,7 @@ actor Gemma4LiteRTTranscriber {
     private var engine: OpaquePointer?
     private var isLoading = false
     private var loadedModel: Gemma4LiteRTModel?
+    private var loadedContextTokens: Int32 = 0
 
     deinit {
         if let engine {
@@ -394,19 +396,21 @@ actor Gemma4LiteRTTranscriber {
 
     private func prepareEngine(
         model: Gemma4LiteRTModel,
+        contextTokens: Int32 = 4096,
+        localOnly: Bool = false,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         if engine != nil {
-            if loadedModel == model { return }
+            if loadedModel == model && loadedContextTokens >= contextTokens { return }
             shutdownEngine()
         }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 loadWaiters.append(continuation)
             }
-            if loadedModel != model {
-                try await prepareEngine(model: model, progress: progress, progressSnapshot: progressSnapshot)
+            if loadedModel != model || loadedContextTokens < contextTokens {
+                try await prepareEngine(model: model, contextTokens: contextTokens, localOnly: localOnly, progress: progress, progressSnapshot: progressSnapshot)
             }
             return
         }
@@ -414,7 +418,7 @@ actor Gemma4LiteRTTranscriber {
         isLoading = true
         let generation = loadGeneration
         do {
-            try await loadEngine(model: model, progress: progress, progressSnapshot: progressSnapshot, generation: generation)
+            try await loadEngine(model: model, contextTokens: contextTokens, localOnly: localOnly, progress: progress, progressSnapshot: progressSnapshot, generation: generation)
             isLoading = false
             completeLoadWaiters()
         } catch {
@@ -426,16 +430,23 @@ actor Gemma4LiteRTTranscriber {
 
     private func loadEngine(
         model: Gemma4LiteRTModel,
+        contextTokens: Int32,
+        localOnly: Bool,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?,
         generation: Int
     ) async throws {
         let fileManager = FileManager.default
-        let modelURL = try await Gemma4LiteRTModelStore.ensureModelDownloaded(
-            model: model,
-            progress: progress,
-            progressSnapshot: progressSnapshot
-        )
+        let modelURL: URL
+        if localOnly {
+            modelURL = Gemma4LiteRTModelStore.resolvedModelURL(for: model)
+            guard Gemma4LiteRTModelStore.isAvailableLocally(model: model) else {
+                throw TranscriberError.modelMissing(path: modelURL.path)
+            }
+        } else {
+            modelURL = try await Gemma4LiteRTModelStore.ensureModelDownloaded(
+                model: model, progress: progress, progressSnapshot: progressSnapshot)
+        }
         try checkLoadGeneration(generation)
         progressSnapshot?(ModelDownloadProgress.preparing(modelID: model.repoID, message: "Preparing \(model.label)..."))
         guard fileManager.fileExists(atPath: modelURL.path) else {
@@ -455,7 +466,7 @@ actor Gemma4LiteRTTranscriber {
             throw TranscriberError.failedToCreateSettings
         }
         defer { litert_lm_engine_settings_delete(settings) }
-        litert_lm_engine_settings_set_max_num_tokens(settings, 4096)
+        litert_lm_engine_settings_set_max_num_tokens(settings, contextTokens)
         litert_lm_engine_settings_set_cache_dir(settings, cacheDirectory.path)
         let modelSupportsMTP = Self.supportsMTP(modelURL: modelURL)
         let enableMTP = Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: modelSupportsMTP)
@@ -468,6 +479,7 @@ actor Gemma4LiteRTTranscriber {
         }
         engine = loadedEngine
         loadedModel = model
+        loadedContextTokens = contextTokens
         progress?(1.0, nil)
         Gemma4LiteRTLogging.log(
             "engine ready; backend=\(backend) audioBackend=cpu mtp=\(enableMTP) cache=\(cacheDirectory.path)"
@@ -680,11 +692,15 @@ actor Gemma4LiteRTTranscriber {
         systemPrompt: String,
         userPrompt: String,
         model: Gemma4LiteRTModel,
-        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens
+        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens,
+        contextTokens: Int32 = 4096,
+        localOnly: Bool = false
     ) async throws -> String {
         await acquireOperation()
         defer { releaseOperation() }
-        try await prepareEngine(model: model)
+        try Task.checkCancellation()
+        try await prepareEngine(model: model, contextTokens: contextTokens, localOnly: localOnly)
+        try Task.checkCancellation()
         return try generateTextPrepared(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
@@ -745,7 +761,9 @@ actor Gemma4LiteRTTranscriber {
         return try Self.textContent(fromResponseJSON: String(cString: responseCString))
     }
 
-    func shutdown() {
+    func shutdown() async {
+        await acquireOperation()
+        defer { releaseOperation() }
         shutdownEngine()
     }
 

@@ -491,7 +491,7 @@ actor TranscriptionCoordinator {
     @available(macOS 15, *)
     private var gemma4LiteRTTranscriber: Gemma4LiteRTTranscriber {
         if _gemma4LiteRTTranscriber == nil {
-            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber()
+            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber.shared
         }
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }

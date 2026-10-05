@@ -1856,15 +1856,17 @@ struct SettingsView: View {
                     settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Account", controlWidth: meetingControlWidth) {
-                    chatGPTAccountControl()
+                if !ComputerUseLocalPlanner.isLocal(ComputerUsePlannerClient.plannerModel(for: appState.config)) {
+                    settingsRow("Account", controlWidth: meetingControlWidth) {
+                        chatGPTAccountControl()
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
                     settingsControl("cua_model")
                 }
                 let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
-                if !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                if !ComputerUseLocalPlanner.isLocal(plannerModel), !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
                         settingsControl("cua_thinking")

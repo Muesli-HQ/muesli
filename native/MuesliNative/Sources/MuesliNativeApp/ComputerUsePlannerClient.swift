@@ -107,6 +107,10 @@ enum ComputerUsePlannerClient {
         reasoningEffort: ReasoningEffort?,
         tools: [[String: Any]] = ComputerUseToolRegistry.nativeToolDefinitions()
     ) async throws -> (name: String, arguments: String) {
+        if ComputerUseLocalPlanner.isLocal(model) {
+            return try await ComputerUseLocalPlanner.callTool(systemPrompt: systemPrompt,
+                userPrompt: userPrompt, model: model, tools: tools)
+        }
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
         let body = requestBody(
             systemPrompt: systemPrompt,

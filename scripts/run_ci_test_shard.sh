@@ -20,6 +20,8 @@ case "${shard}" in
       ConfigStoreTests
       DictationStoreTests
       ComputerUseSettingsTests
+      ComputerUseLocalPlannerTests
+      ComputerUseLocalPlannerBenchmarkTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests

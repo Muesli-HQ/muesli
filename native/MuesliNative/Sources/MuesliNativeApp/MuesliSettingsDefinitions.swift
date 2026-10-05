@@ -133,7 +133,19 @@ extension MuesliController {
             }
         }
         toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
-        presets("cua_model", "Computer use planner model", SummaryModelPreset.computerUsePlannerModels, \.computerUsePlannerModel)
+        let localPlanners = ComputerUseLocalPlanner.models.filter(\.available)
+        add("cua_model", "Computer use planner model",
+            SummaryModelPreset.computerUsePlannerModels.map { Choice(id: $0.id, label: $0.label) }
+                + localPlanners.map { Choice(id: $0.id, label: $0.label) },
+            read: { ComputerUsePlannerClient.plannerModel(for: $0) }, unavailable: { value in
+                if ComputerUseLocalPlanner.isLocal(value),
+                   !ComputerUseLocalPlanner.models.contains(where: { $0.id == value && $0.available }) {
+                    return "Download this on-device planner in Models first."
+                }
+                return nil
+            }) { value in
+                self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
+            }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
                requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
