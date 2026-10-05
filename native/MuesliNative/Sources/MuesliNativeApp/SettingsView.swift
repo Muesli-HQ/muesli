@@ -1283,12 +1283,12 @@ struct SettingsView: View {
                     settingsControl("quill_sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Model source", controlWidth: meetingControlWidth) {
+                settingsRow("Writing model source", description: "Shared by Quill and Computer Use writing tasks.", controlWidth: meetingControlWidth) {
                     settingsControl("quill_source")
                 }
                 if selectedQuilBackend.isOnDevice {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Quill model", controlWidth: meetingControlWidth) {
+                    settingsRow("Writing model", controlWidth: meetingControlWidth) {
                         if quilLocalModels.isEmpty {
                             compactActionButton("View local models", systemImage: "arrow.right") {
                                 controller.showModels(category: .quill)
@@ -1371,7 +1371,7 @@ struct SettingsView: View {
         }
         if backend != .hosted(.customLLM) {
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Quill model", controlWidth: meetingControlWidth) {
+            settingsRow("Writing model", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.quilModel,
                     placeholder: TranscriptCleanupClient.defaultModel(for: backend)
@@ -1865,6 +1865,9 @@ struct SettingsView: View {
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
                     settingsControl("cua_model")
                 }
+                Text("Writing tasks use the Writing model configured under Quill. On-device Computer Use requires an on-device writing model.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
                 let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
                 if !ComputerUseLocalPlanner.isLocal(plannerModel), !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)

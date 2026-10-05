@@ -20,7 +20,7 @@ enum ComputerUseLocalPlanner {
     // accelerators are not exposed until a local adapter can ground them.
     static let desktopTools: Set<ComputerUseToolName> = [
         .listApps, .launchApp, .listWindows, .getAppState, .getWindowState,
-        .moveCursor, .clickElement, .setValue, .typeText, .pasteText,
+        .moveCursor, .clickElement, .editText, .setValue, .typeText, .pasteText,
         .pressKey, .hotkey, .scroll, .finish, .fail
     ]
     static func supportedTools(_ tools: [[String: Any]]) -> [[String: Any]] {
@@ -69,6 +69,8 @@ enum ComputerUseLocalPlanner {
                 guard attempt == 0 else { throw error }
                 // One bounded format-repair turn. No rejected call is ever executed.
                 request = input + "\nYour previous response was rejected without executing it: " + String(output.prefix(2000))
+                    + "\nValidation error: " + error.localizedDescription
+                    + "\nAllowed tool names (copy exactly, preserving underscores): " + tools.compactMap { $0["name"] as? String }.joined(separator: ", ")
                     + "\nCorrect the format: the name field must contain the exact tool name as a string; arguments must contain its parameter object. Return only valid JSON matching the supplied schema."
             }
         }
@@ -80,10 +82,15 @@ enum ComputerUseLocalPlanner {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == ["name", "arguments"],
               let name = object["name"] as? String,
-              let arguments = object["arguments"] as? [String: Any],
-              let tool = tools.first(where: { $0["name"] as? String == name }),
-              let schema = tool["parameters"] as? [String: Any], valid(arguments, schema: schema) else {
+              let arguments = object["arguments"] as? [String: Any] else {
             throw ComputerUsePlannerError.invalidResponse("The on-device model did not return one valid tool call. Nothing was executed.")
+        }
+        guard let tool = tools.first(where: { $0["name"] as? String == name }) else {
+            let names = tools.compactMap { $0["name"] as? String }.joined(separator: ", ")
+            throw ComputerUsePlannerError.invalidResponse("Unknown tool name \(name). Use one of these exact names, including underscores: \(names).")
+        }
+        guard let schema = tool["parameters"] as? [String: Any], valid(arguments, schema: schema) else {
+            throw ComputerUsePlannerError.invalidResponse("Arguments for \(name) do not match its parameter schema. Use only its declared properties and include every required property.")
         }
         return (name, String(decoding: try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]), as: UTF8.self))
     }

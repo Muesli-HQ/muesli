@@ -343,7 +343,7 @@ extension MuesliController {
             case .gemma4(let model): self.selectGemma4PostProcessor(model)
             }
         }
-        add("quill_source", "Quill model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
+        add("quill_source", "Quill writing model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
             read: { QuilModelSourceOption.resolved(for: .resolved($0.quilBackend)).id },
             followUpSelections: [QuilModelSourceOption.localModels.id: "quill_local_model"], unavailable: { value in
                 value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
@@ -360,7 +360,7 @@ extension MuesliController {
             }
             if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }
         }
-        add("quill_local_model", "Local Quill model", localQuill.map { .init(id: $0.quilModelID, label: $0.quilLabel) },
+        add("quill_local_model", "Local Quill writing model", localQuill.map { .init(id: $0.quilModelID, label: $0.quilLabel) },
             read: { $0.quilModel }) { value in
             guard let model = localQuill.first(where: { $0.quilModelID == value }) else { return }
             self.updateConfig { $0.quilBackend = model.quilBackend.backend; $0.quilModel = model.quilModelID }

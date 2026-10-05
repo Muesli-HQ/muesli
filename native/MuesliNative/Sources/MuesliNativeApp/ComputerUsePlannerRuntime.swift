@@ -39,6 +39,8 @@ final class ComputerUsePlannerRuntime {
     private let onStatus: StatusHandler
     private let observe: ObserveHandler
     private let plan: PlanHandler
+    typealias PrepareEditHandler = @MainActor (ComputerUseToolCall, ComputerUseElementRegistry) async throws -> PreparedComputerUseTextEdit
+    private let prepareEdit: PrepareEditHandler
     private let execute: ExecuteHandler
     private let maxPlannerRetries = 1
     private let maxUnchangedObservationLoops = 4
@@ -48,6 +50,8 @@ final class ComputerUsePlannerRuntime {
         maxSteps: Int? = 100,
         timeoutSeconds: TimeInterval? = nil,
         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        writingCoordinator: TranscriptionCoordinator? = nil,
+        prepareEdit: PrepareEditHandler? = nil,
         onStatus: @escaping StatusHandler = { _ in },
         observe: @escaping ObserveHandler = { registry, includeScreenshot, target in
             ComputerUseObservationCapture.capture(
@@ -59,6 +63,10 @@ final class ComputerUsePlannerRuntime {
         plan: PlanHandler? = nil,
         execute: ExecuteHandler? = nil
     ) {
+        let writer = writingCoordinator ?? TranscriptionCoordinator()
+        self.prepareEdit = prepareEdit ?? { call, registry in
+            try await ComputerUseTextEditing.prepare(call, registry: registry, config: config, coordinator: writer)
+        }
         self.now = now
         self.config = config
         self.maxSteps = maxSteps
@@ -266,7 +274,29 @@ final class ComputerUsePlannerRuntime {
                     step: step
                 ))
                 let beforeObservation = observation
-                let result = await execute(toolCall, registry)
+                let result: ComputerUseExecutionResult
+                if toolCall.tool == .editText {
+                    do {
+                        let prepared: PreparedComputerUseTextEdit
+                        do {
+                            let thinkingStarted = now()
+                            defer { deadline += max(0, now() - thinkingStarted) }
+                            onStatus("Writing")
+                            prepared = try await prepareEdit(toolCall, registry)
+                        }
+                        try Task.checkCancellation()
+                        guard now() < deadline else {
+                            return .init(status: .timedOut, message: "CUA timed out before applying text", traceEvents: traceLog.events)
+                        }
+                        result = prepared.apply()
+                    } catch is CancellationError {
+                        result = .cancelled()
+                    } catch {
+                        result = .failed(error.localizedDescription)
+                    }
+                } else {
+                    result = await execute(toolCall, registry)
+                }
                 traceLog.append(traceEvent(
                     kind: "tool_result",
                     title: "Tool result",
@@ -568,7 +598,7 @@ final class ComputerUsePlannerRuntime {
 
     private func shouldTrackForRepetition(_ tool: ComputerUseToolName) -> Bool {
         switch tool {
-        case .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .drag, .pressKey, .hotkey, .typeText, .pasteText, .setValue, .scroll, .navigateURL, .navigateActiveBrowserTab, .openNewBrowserTab, .activateBrowserTab:
+        case .editText, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .drag, .pressKey, .hotkey, .typeText, .pasteText, .setValue, .scroll, .navigateURL, .navigateActiveBrowserTab, .openNewBrowserTab, .activateBrowserTab:
             return true
         case .listApps, .launchApp, .listWindows, .getAppState, .getWindowState, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
@@ -583,7 +613,7 @@ final class ComputerUsePlannerRuntime {
             return ComputerUseObservationTarget(appName: appName, bundleID: nil)
         }
         switch toolCall.tool {
-        case .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag:
+        case .editText, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag:
             return fallback
         default:
             return nil
@@ -662,6 +692,8 @@ final class ComputerUsePlannerRuntime {
             return "Pressed key"
         case .scroll:
             return "Scrolled"
+        case .editText:
+            return "Updated text"
         case .setValue:
             return "Set value"
         case .drag:
@@ -684,6 +716,8 @@ final class ComputerUsePlannerRuntime {
             return "Performing action"
         case .moveCursor:
             return toolCall.label?.isEmpty == false ? "Moving to \(toolCall.label!)" : "Moving cursor"
+        case .editText:
+            return "Writing"
         case .setValue:
             return "Setting value"
         case .typeText:

@@ -419,7 +419,8 @@ actor TranscriptionCoordinator {
                 systemPrompt: QuilTransformationPrompt.system,
                 userPrompt: userPrompt,
                 model: gemmaModel,
-                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens,
+                localOnly: true
             )
         default:
             return try await TranscriptCleanupClient.generate(

@@ -78,4 +78,45 @@ struct ComputerUseLocalPlannerBenchmarkTests {
             if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
         }
     }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK"] == "1"))
+    func writingDelegationWithGemma() async throws {
+        let selected = ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK_MODEL"]
+        let model = try #require(ComputerUseLocalPlanner.models.first { $0.available && (selected == nil || selected == $0.id) })
+        let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: ComputerUsePlannerClient.instructions,
+            userPrompt: #"{"command":"Rewrite the entire text field to be shorter","latest_window_state":{"app_name":"TextEdit","elements":[{"element_id":"e1","element_index":1,"role":"AXTextArea","value":"Please send the report when you have time."}]},"prior_steps":[]}"#,
+            model: model.id, tools: ComputerUseToolRegistry.nativeToolDefinitions()) { system, prompt in
+                let output = try await model.backend.generate(systemPrompt: system, userPrompt: prompt)
+                print("CUA_WRITING_RAW \(output)")
+                return output
+            }
+        print("CUA_WRITING_BENCHMARK tool=\(call.name) args=\(call.arguments)")
+        #expect(call.name == "edit_text")
+        let decoded = try ComputerUsePlannerResponse.decodeNativeToolCall(name: call.name, arguments: call.arguments).toolCall
+        #expect(decoded.scope == "field")
+        #expect(decoded.elementID == "e1" || decoded.elementIndex == 1)
+        if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK"] == "1"))
+    func writingGenerationWithGemma() async throws {
+        let selected = ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK_MODEL"]
+        let model = try #require(ComputerUseLocalPlanner.models.first { $0.available && (selected == nil || selected == $0.id) })
+        var config = AppConfig()
+        config.quilBackend = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        config.quilModel = String(model.id.dropFirst("local:gemma4-litert:".count))
+        let original = "Please send the report when you have time."
+        var output = original
+        let target = ComputerUseTextEditing.Target(text: original, isCurrent: { output == original }, write: { output = $0; return .executed("verified test target") })
+        let edit = try await ComputerUseTextEditing.prepare(target: target, instruction: "Make this shorter, preserving the request to send the report.") { text, instruction in
+            try await WritingService.generate(selectedText: text, instruction: instruction, config: config,
+                coordinator: TranscriptionCoordinator(), localOnly: true)
+        }
+        #expect(edit.apply().status == .executed)
+        #expect(!output.isEmpty)
+        #expect(output.count < original.count)
+        #expect(output.lowercased().contains("report"))
+        print("CUA_WRITING_BENCHMARK output=\(output)")
+        if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
+    }
 }

@@ -116,6 +116,12 @@ enum ComputerUseToolRegistry {
             "action_name": .string("Advertised AX action name, for example AXShowMenu, AXConfirm, AXCancel, AXIncrement, AXDecrement, or AXScrollDownByPage."),
             "label": .string("Human target label for trace and safety."),
         ], risk: "only invokes advertised AX actions; confirmation for risky labels"),
+        definition(.editText, "Write or rewrite text with the shared Quill writing model. Reads the actual observed AX text field, checks for edits during generation, then replaces only the requested scope without sending/submitting. Prefer this for composing, translating or rewriting; use literal text tools for exact supplied text. Only supports readable, writable plain-text AX fields; never falls back to blind pasting.", required: ["instruction", "scope"], properties: [
+            "element_index": .integer("Editable element index from the latest state."),
+            "element_id": .string("Editable element ID from the latest state."),
+            "instruction": .string("User's writing request, preserving their intended meaning."),
+            "scope": .string("selection replaces the selected range or inserts at its cursor; field rewrites the entire field. Never use field for a selection-only request.", enumValues: ["selection", "field"]),
+        ], risk: "revalidates target and text; does not send or submit"),
         definition(.setValue, "Set an AX element value by element_index/element_id from the latest state.", required: ["value"], properties: [
             "element_index": .integer("Temporary element index from the latest state."),
             "element_id": .string("Temporary element id from the latest state."),

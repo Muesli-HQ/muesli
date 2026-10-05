@@ -59,3 +59,38 @@ not reliable unattended control. E2B was not downloaded and was not measured.
 A separate settings round trip through the real local planner and shared executor
 completed successfully in about 11 seconds using isolated test settings. These
 measurements do not establish general desktop task accuracy.
+
+## Shared writing with Quill
+
+Quill remains the direct “write here” shortcut. Computer Use handles “do this”
+workflows and delegates composition, rewriting and translation to `edit_text`.
+Both use the Writing model configured under Quill, with the existing generation
+prompt, length limits and output validation. The Quill shortcut toggle does not
+disable CUA's writing tool. A local planner refuses a hosted writing backend;
+select a downloaded on-device Writing model as well. No automatic model switch
+or cloud fallback occurs.
+
+The tool requires an observed editable AX element and an explicit `selection` or
+`field` scope. Selection scope replaces the highlighted range, or inserts at a
+zero-length cursor range; field scope replaces the entire field. Source text is
+read by the tool rather than supplied by the planner. This initial adapter needs
+a readable, writable plain-text AX value and (for selection scope) a valid range.
+It does not focus the app, use clipboard fallback, or send/submit content. Quill's
+direct shortcut retains its existing selection/paste adapter for other supported
+editors. Changes to the captured text or selection invalidate the pending CUA edit;
+the result is read back after writing. A readback mismatch reports that the write
+was accepted but could not be verified, and stops rather than retrying blindly.
+
+Writing generation is excluded from CUA's execution timeout. Stop discards late
+writing output before mutation. Literal `type_text`, `paste_text` and `set_value`
+remain for exact supplied text, while planner instructions prefer `edit_text`
+for generating prose. This routing is model-guided, not a keyword parser.
+
+The initial E4B writing benchmark successfully shortened “Please send the report
+when you have time.” to “Send the report when you have time.” through the shared
+writing service and an isolated target. However, its planner emitted `edittext`
+instead of `edit_text`, even after one format-repair turn. That delegation test
+currently fails and executes no edit. The integration is experimental; successful
+rewrite generation alone does not demonstrate a reliable CUA writing workflow.
+The opt-in `writingDelegationWithGemma` and `writingGenerationWithGemma` tests keep
+these two measurements separate.
