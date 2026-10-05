@@ -1,8 +1,13 @@
 # On-device Computer Use planner
 
-Download Gemma 4 E2B or E4B in Models, then select its **(on device)** entry in
-Settings → Computer Use → Planner model. Requires macOS 15 or later. Only downloaded
-local models are offered. Existing ChatGPT model selections keep their current behavior.
+Download Gemma 4 E2B or E4B in Models, then choose **On-device** under
+Settings → Computer Use → Planner backend. Select the downloaded model in
+**Planner model**. Requires macOS 15 or later. On-device hides ChatGPT sign-in and
+Thinking; ChatGPT shows its own models and account controls. Without a downloaded
+local model, On-device is unavailable and the UI explains where to download one.
+Existing selections determine the backend automatically. Switching backends selects
+the default ChatGPT model or the first available local model; reselecting the active
+backend preserves its current model. Meeting-summary selections stay independent.
 For an entirely local voice pipeline, also select an on-device dictation model.
 
 The initial local planner uses text: the settings index and inspected choices,

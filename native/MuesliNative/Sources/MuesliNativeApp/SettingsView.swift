@@ -1856,20 +1856,39 @@ struct SettingsView: View {
                     settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                if !ComputerUseLocalPlanner.isLocal(ComputerUsePlannerClient.plannerModel(for: appState.config)) {
+                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
+                let isLocalPlanner = ComputerUseLocalPlanner.isLocal(plannerModel)
+                settingsRow("Planner backend", controlWidth: meetingControlWidth) {
+                    settingsControl("cua_backend")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                if !isLocalPlanner {
                     settingsRow("Account", controlWidth: meetingControlWidth) {
-                        chatGPTAccountControl()
+                        chatGPTAccountControl(selectMeetingSummaryBackend: false)
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                 }
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
-                    settingsControl("cua_model")
+                    MuesliSettingControl(controller: controller, id: "cua_model",
+                        allowedChoiceIDs: isLocalPlanner
+                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
                 }
-                Text("Writing tasks use the Writing model configured under Quill. On-device Computer Use requires an on-device writing model.")
+                if isLocalPlanner {
+                    Text("Planning runs on this Mac. No ChatGPT sign-in is needed.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                } else if !ComputerUseLocalPlanner.models.contains(where: \.available) {
+                    Text("Download Gemma in Models to enable the On-device backend.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Text(isLocalPlanner
+                     ? "Writing tasks use the Writing model under Quill. Select an on-device writing model there."
+                     : "Writing tasks use the Writing model configured under Quill.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
-                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
-                if !ComputerUseLocalPlanner.isLocal(plannerModel), !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
                         settingsControl("cua_thinking")
