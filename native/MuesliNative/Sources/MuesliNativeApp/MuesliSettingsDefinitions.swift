@@ -125,6 +125,16 @@ extension MuesliController {
                     }
                 }, shortcutAssignment: target))
         }
+        add("dictation_activation", "Dictation key combination activation", [
+            .init(id: HotkeyMonitor.CombinationActivation.pushToTalk.rawValue, label: "Hold to talk"),
+            .init(id: HotkeyMonitor.CombinationActivation.toggle.rawValue, label: "Toggle"),
+        ], read: { $0.dictationCombinationActivation.rawValue }, unavailable: { value in
+            value == HotkeyMonitor.CombinationActivation.toggle.rawValue && !self.config.dictationHotkey.isCombination
+                ? "Toggle activation needs a dictation key combination. Assign one first." : nil
+        }) { value in
+            guard let activation = HotkeyMonitor.CombinationActivation(rawValue: value) else { return }
+            self.updateDictationCombinationActivation(activation)
+        }
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
         toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestPushToTalkSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in

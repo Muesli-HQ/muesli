@@ -23,7 +23,7 @@ struct HotkeyShortcutCaptureState {
         let modifiers = HotkeyConfig.supportedCombinationModifiers(from: flags)
         guard !modifiers.isEmpty else { return }
         let candidate = HotkeyConfig.combination(modifiers: modifiers, keyCode: keyCode)
-        guard Self.accepts(candidate, for: target) else {
+        guard target.acceptsCombination(candidate) else {
             rejectedChord = true
             return
         }
@@ -61,19 +61,6 @@ struct HotkeyShortcutCaptureState {
         guard let pendingCombination, !combinationKeyIsDown,
               HotkeyConfig.supportedCombinationModifiers(from: flags).isEmpty else { return }
         completed = pendingCombination
-    }
-
-    static func accepts(_ hotkey: HotkeyConfig, for target: ShortcutAssignment) -> Bool {
-        switch target {
-        case .dictation:
-            return hotkey.isValidDictationShortcut
-        case .quil:
-            return ShortcutHotkeyPolicy.isValidQuilShortcut(hotkey)
-        case .meetingRecording:
-            return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
-        case .computerUse:
-            return false
-        }
     }
 
     private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags {

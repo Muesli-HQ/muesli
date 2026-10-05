@@ -536,10 +536,39 @@ struct ComputerUseSettingsTests {
         #expect(conflict?.message == ShortcutHotkeyPolicy.conflictMessage)
         #expect(ShortcutAssignment.value(for: configStore.load().quilHotkey) == "control+k")
         #expect(await run("quill_hotkey", "command+shift+k")?.status == .failed)
-        #expect(await run("dictation_hotkey", "control+k")?.status == .failed)
         #expect(await run("cua_hotkey", "key:999")?.status == .failed)
         #expect(await run("meeting_hotkey", "command+escape")?.status == .failed)
         #expect(ShortcutAssignment.value(for: configStore.load().quilHotkey) == "control+k")
+        // Dictation accepts its own combinations, and voice reads them back exactly.
+        #expect(await run("dictation_hotkey", "shift+space")?.status == .failed)
+        #expect(await run("dictation_hotkey", "command+v")?.status == .failed)
+        #expect(await run("dictation_hotkey", "command+space")?.status == .done)
+        #expect(ShortcutAssignment.value(for: configStore.load().dictationHotkey) == "command+space")
+        #expect(await run("dictation_hotkey", "control+option+f5")?.status == .done)
+        #expect(configStore.load().dictationHotkey == .combination(modifiers: [.control, .option], keyCode: 96))
+    }
+
+    @Test("dictation activation is a setting and toggle requires a key combination")
+    func dictationActivationSetting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        configStore.save(AppConfig())
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("dictation_activation", value: "toggle")
+        }
+        #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
+        try await controller.applySetting("dictation_hotkey", value: "control+space")
+        try await controller.applySetting("dictation_activation", value: "toggle")
+        #expect(configStore.load().dictationCombinationActivation == .toggle)
+        try await controller.applySetting("dictation_activation", value: "push_to_talk")
+        #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
     }
 
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")
@@ -548,15 +577,34 @@ struct ComputerUseSettingsTests {
             for key in ShortcutAssignment.singleKeys {
                 #expect(target.hotkey(for: ShortcutAssignment.value(for: key)) == key)
             }
-            for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+1", "control+k+", "run shell"] {
+            for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+k+", "control+escape", "run shell"] {
                 #expect(target.hotkey(for: invalid) == nil)
             }
         }
         #expect(ShortcutAssignment.quil.hotkey(for: "command+k") != nil)
         #expect(ShortcutAssignment.quil.hotkey(for: "command+shift+k") == nil)
+        #expect(ShortcutAssignment.quil.hotkey(for: "control+1") == nil)
         #expect(ShortcutAssignment.meetingRecording.hotkey(for: "command+control+option+shift+k") != nil)
-        #expect(ShortcutAssignment.dictation.combinationRules == nil)
+        #expect(ShortcutAssignment.meetingRecording.hotkey(for: "control+1") == nil)
+        #expect(ShortcutAssignment.computerUse.hotkey(for: "control+1") == nil)
         #expect(ShortcutAssignment.computerUse.combinationRules == nil)
+        #expect(ShortcutAssignment.quil.combinationRules?.keys.contains("space") == false)
+    }
+
+    @Test("dictation combination values round-trip every recordable key and enforce dictation rules")
+    func dictationShortcutValueRules() throws {
+        let rules = try #require(ShortcutAssignment.dictation.combinationRules)
+        #expect(rules.maximumModifiers == 4)
+        for name in ["k", "1", "space", "minus", "left", "f5"] { #expect(rules.keys.contains(name)) }
+        for code in UInt16(0)...127 where HotkeyConfig.keyLabel(for: code) != nil {
+            let hotkey = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: code)
+            #expect(ShortcutAssignment.dictation.hotkey(for: ShortcutAssignment.value(for: hotkey)) == hotkey)
+        }
+        #expect(ShortcutAssignment.value(for: .combination(modifiers: .command, keyCode: 49)) == "command+space")
+        #expect(ShortcutAssignment.dictation.hotkey(for: "command+space") != nil)
+        #expect(ShortcutAssignment.dictation.hotkey(for: "command+k") == nil)
+        #expect(ShortcutAssignment.dictation.hotkey(for: "shift+k") == nil)
+        #expect(ShortcutAssignment.dictation.hotkey(for: "control+←") == nil)
     }
 
     @Test("source-only voice requests ask for a model without changing settings", arguments: [0, 1, 2])

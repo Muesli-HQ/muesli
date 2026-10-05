@@ -33,24 +33,44 @@ enum ShortcutAssignment: String, CaseIterable {
 
     var maximumModifiers: Int {
         switch self {
-        case .dictation, .computerUse: 0
+        case .computerUse: 0
         case .quil: 1
-        case .meetingRecording: 4
+        case .dictation, .meetingRecording: 4
+        }
+    }
+
+    /// The single rule for which modifier-plus-key combinations each shortcut accepts.
+    func acceptsCombination(_ hotkey: HotkeyConfig) -> Bool {
+        switch self {
+        case .dictation: hotkey.isValidDictationShortcut
+        case .quil: ShortcutHotkeyPolicy.isValidQuilShortcut(hotkey)
+        case .meetingRecording: hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
+        case .computerUse: false
         }
     }
 
     struct CombinationRules: Codable {
         let modifiers: [String]
-        let letters: [String]
+        let keys: [String]
         let maximumModifiers: Int
         let valueFormat: String
     }
 
     var combinationRules: CombinationRules? {
         guard maximumModifiers > 0 else { return nil }
-        return .init(modifiers: Self.modifiers.map(\.name), letters: Self.letters.map(\.name),
-                     maximumModifiers: maximumModifiers,
-                     valueFormat: "Join modifiers in listed order and one lowercase letter with +, e.g. control+k. Do not infer left/right for single modifier keys.")
+        let singleModifierNote = "Do not infer left/right for single modifier keys."
+        let valueFormat = switch self {
+        case .dictation:
+            "Join modifiers in listed order and one listed key with +, e.g. control+space. Shift cannot be the only modifier, and command alone works only with digits, space, arrows, and function keys. \(singleModifierNote)"
+        default:
+            "Join modifiers in listed order and one listed key with +, e.g. control+k. \(singleModifierNote)"
+        }
+        return .init(modifiers: Self.modifiers.map(\.name), keys: combinationKeys.map(\.name),
+                     maximumModifiers: maximumModifiers, valueFormat: valueFormat)
+    }
+
+    private var combinationKeys: [(name: String, code: UInt16)] {
+        self == .dictation ? Self.keys : Self.keys.filter { HotkeyConfig.letterLabel(for: $0.code) != nil }
     }
 
     static let singleKeys: [HotkeyConfig] = (UInt16(0)...127).compactMap { code in
@@ -59,16 +79,22 @@ enum ShortcutAssignment: String, CaseIterable {
     private static let modifiers: [(name: String, flags: NSEvent.ModifierFlags)] = [
         ("command", .command), ("control", .control), ("option", .option), ("shift", .shift)
     ]
-    private static let letters: [(name: String, code: UInt16)] = (UInt16(0)...127).compactMap { code in
-        HotkeyConfig.letterLabel(for: code).map { ($0.lowercased(), code) }
+    /// Value names for every key that can anchor a combination; symbols get spelled-out names.
+    private static let keys: [(name: String, code: UInt16)] = (UInt16(0)...127).compactMap { code in
+        HotkeyConfig.keyLabel(for: code).map { (symbolNames[$0] ?? $0.lowercased(), code) }
     }.sorted { $0.name < $1.name }
+    private static let symbolNames: [String: String] = [
+        "=": "equal", "-": "minus", "[": "left_bracket", "]": "right_bracket", "\\": "backslash",
+        ";": "semicolon", "'": "quote", ",": "comma", ".": "period", "/": "slash", "`": "grave",
+        "←": "left", "→": "right", "↓": "down", "↑": "up",
+    ]
 
     static func value(for hotkey: HotkeyConfig) -> String {
         guard hotkey.isCombination, let flags = hotkey.resolvedCombinationModifiers,
-              let code = hotkey.combinationKeyCode, let letter = HotkeyConfig.letterLabel(for: code) else {
+              let code = hotkey.combinationKeyCode, let key = keys.first(where: { $0.code == code }) else {
             return "key:\(hotkey.keyCode)"
         }
-        return (modifiers.filter { flags.contains($0.flags) }.map(\.name) + [letter.lowercased()]).joined(separator: "+")
+        return (modifiers.filter { flags.contains($0.flags) }.map(\.name) + [key.name]).joined(separator: "+")
     }
 
     func hotkey(for value: String) -> HotkeyConfig? {
@@ -76,15 +102,15 @@ enum ShortcutAssignment: String, CaseIterable {
         guard maximumModifiers > 0 else { return nil }
         let parts = value.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2, parts.count - 1 <= maximumModifiers,
-              let letter = Self.letters.first(where: { $0.name == parts.last }) else { return nil }
+              let key = combinationKeys.first(where: { $0.name == parts.last }) else { return nil }
         var flags: NSEvent.ModifierFlags = []
         for name in parts.dropLast() {
             guard let modifier = Self.modifiers.first(where: { $0.name == name }),
                   !flags.contains(modifier.flags) else { return nil }
             flags.insert(modifier.flags)
         }
-        let key = HotkeyConfig.combination(modifiers: flags, keyCode: letter.code)
-        return Self.value(for: key) == value ? key : nil
+        let hotkey = HotkeyConfig.combination(modifiers: flags, keyCode: key.code)
+        return Self.value(for: hotkey) == value && acceptsCombination(hotkey) ? hotkey : nil
     }
 
     @MainActor

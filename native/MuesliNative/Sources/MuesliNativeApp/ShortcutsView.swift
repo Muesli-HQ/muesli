@@ -94,16 +94,8 @@ struct ShortcutsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
             Spacer(minLength: MuesliTheme.spacing16)
-            Picker("Activation", selection: Binding(
-                get: { appState.config.dictationCombinationActivation },
-                set: { controller.updateDictationCombinationActivation($0) }
-            )) {
-                Text("Hold to talk").tag(HotkeyMonitor.CombinationActivation.pushToTalk)
-                Text("Toggle").tag(HotkeyMonitor.CombinationActivation.toggle)
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 200)
+            MuesliSettingControl(controller: controller, id: "dictation_activation")
+                .frame(width: 200)
         }
         .disabled(!isPushToTalkEnabled || recordingTarget != nil)
         .opacity(isPushToTalkEnabled ? 1 : 0.55)
