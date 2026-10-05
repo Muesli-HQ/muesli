@@ -104,6 +104,12 @@ enum ComputerUseLocalPlanner {
     }
 
     private static func valid(_ value: Any, schema: [String: Any]) -> Bool {
+        if let alternatives = schema["anyOf"] as? [[String: Any]],
+           !alternatives.contains(where: { valid(value, schema: $0) }) { return false }
+        if let required = schema["required"] as? [String] {
+            guard let object = value as? [String: Any], required.allSatisfy({ object[$0] != nil }) else { return false }
+        }
+        if schema["type"] == nil { return schema["required"] != nil || schema["anyOf"] != nil }
         if let choices = schema["enum"] as? [String], let text = value as? String, !choices.contains(text) { return false }
         switch schema["type"] as? String {
         case "object":

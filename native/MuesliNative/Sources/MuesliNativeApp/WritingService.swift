@@ -19,7 +19,7 @@ enum WritingService {
         let text = try await coordinator.transformSelectedTextForQuil(
             selectedText: selectedText, instruction: instruction, appContext: appContext,
             backend: TranscriptCleanupBackendOption.resolved(config.quilBackend),
-            model: config.quilModel, config: config)
+            model: config.quilModel, config: config, localOnly: localOnly)
         try Task.checkCancellation()
         return text
     }
@@ -83,6 +83,34 @@ enum ComputerUseTextEditing {
         return NSRange(location: result.location, length: result.length)
     }
 
+    private static func focusedInOwningApp(_ element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return false }
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+            kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused else { return false }
+        return CFEqual(focused, element)
+    }
+
+    static func applyReplacement(original: String, editRange: NSRange, replacement: String,
+                                 restoreSelection: Bool,
+                                 write: (String) -> Bool, read: () -> String?,
+                                 setSelection: (NSRange) -> Bool, readSelection: () -> NSRange?) -> ComputerUseExecutionResult {
+        let value = (original as NSString).replacingCharacters(in: editRange, with: replacement)
+        guard write(value) else { return .failed("The text field rejected the edit") }
+        guard read() == value else {
+            return .failed("The text write was accepted but readback did not match. Inspect the field before retrying.")
+        }
+        if restoreSelection {
+            let caret = NSRange(location: editRange.location + (replacement as NSString).length, length: 0)
+            guard setSelection(caret), readSelection() == caret else {
+                return .failed("Text was updated, but the cursor position could not be verified. Inspect the field before continuing.")
+            }
+        }
+        return .executed("Text updated and verified; nothing was sent or submitted")
+    }
+
     private static func capture(_ call: ComputerUseToolCall, registry: ComputerUseElementRegistry) throws -> Target {
         guard AXIsProcessTrusted() else { throw QuilTransformationError.accessibilityPermissionRequired }
         let resolve: () -> AXUIElement? = {
@@ -104,6 +132,12 @@ enum ComputerUseTextEditing {
                   selectedRange.length <= (original as NSString).length - selectedRange.location else {
                 throw ComputerUsePlannerError.invalidResponse("The text field does not expose a valid selection or cursor range.")
             }
+            var selectionWritable = DarwinBoolean(false)
+            guard focusedInOwningApp(element),
+                  AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString,
+                      &selectionWritable) == .success, selectionWritable.boolValue else {
+                throw ComputerUsePlannerError.invalidResponse("Selection editing requires the target app's focused field and a writable cursor range.")
+            }
             editRange = selectedRange
         } else {
             editRange = NSRange(location: 0, length: (original as NSString).length)
@@ -111,16 +145,17 @@ enum ComputerUseTextEditing {
         return Target(text: (original as NSString).substring(with: editRange), isCurrent: {
             guard let current = resolve(), CFEqual(current, element),
                   string(element, kAXValueAttribute) == original else { return false }
-            return call.scope != "selection" || range(element) == selectedRange
+            return call.scope != "selection" || (focusedInOwningApp(element) && range(element) == selectedRange)
         }, write: { replacement in
-            let value = (original as NSString).replacingCharacters(in: editRange, with: replacement)
-            guard AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success else {
-                return .failed("The text field rejected the edit")
-            }
-            guard string(element, kAXValueAttribute) == value else {
-                return .failed("The text write was accepted but readback did not match. Inspect the field before retrying.")
-            }
-            return .executed("Text updated and verified; nothing was sent or submitted")
+            applyReplacement(original: original, editRange: editRange, replacement: replacement,
+                restoreSelection: call.scope == "selection",
+                write: { AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, $0 as CFString) == .success },
+                read: { string(element, kAXValueAttribute) },
+                setSelection: { selection in
+                    var range = CFRange(location: selection.location, length: selection.length)
+                    guard let value = AXValueCreate(.cfRange, &range) else { return false }
+                    return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
+                }, readSelection: { range(element) })
         })
     }
 }

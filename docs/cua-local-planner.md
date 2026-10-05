@@ -87,7 +87,12 @@ a readable, writable plain-text AX value and (for selection scope) a valid range
 It does not focus the app, use clipboard fallback, or send/submit content. Quill's
 direct shortcut retains its existing selection/paste adapter for other supported
 editors. Changes to the captured text or selection invalidate the pending CUA edit;
-the result is read back after writing. A readback mismatch reports that the write
+selection edits also require the field to remain focused within its owning app,
+without requiring that app to be foreground. Whole-field edits stay bound to the
+explicitly observed target, so switching apps does not redirect background work.
+Selection edits restore and verify a collapsed caret after the replacement using
+UTF-16 offsets. If caret restoration fails, the result explicitly says the text
+was updated. The text is read back after writing. A readback mismatch reports that the write
 was accepted but could not be verified, and stops rather than retrying blindly.
 
 Writing generation is excluded from CUA's execution timeout. Stop discards late
@@ -95,11 +100,13 @@ writing output before mutation. Literal `type_text`, `paste_text` and `set_value
 remain for exact supplied text, while planner instructions prefer `edit_text`
 for generating prose. This routing is model-guided, not a keyword parser.
 
-The native-tool E4B writing benchmark selects `edit_text` with the correct spelling,
-but omits the observed element target. The runtime decoder rejects it and executes
-no edit. Writing generation separately succeeds through the shared service on an
-isolated target. The integration remains experimental; successful generation alone
-does not demonstrate reliable CUA writing delegation.
+The initial native-tool E4B writing benchmark omitted its observed target. After
+requiring either target identifier in the schema and explicitly describing that
+requirement, the October 6 probe returned `edit_text` with `element_id: e1` and
+`scope: field`, passing the unchanged assertion. The schema change alone still
+failed before the description clarification. This is one successful synthetic
+delegation probe, not an end-to-end editor accuracy claim. Writing generation
+separately succeeds through the shared service on an isolated target.
 The opt-in `writingDelegationWithGemma` and `writingGenerationWithGemma` tests keep
 these two measurements separate.
 
@@ -114,3 +121,16 @@ The separate fixed prompts passed settings inspection, settings mutation and
 Calculator launch. Cursor arguments remain incorrect: requested (120, 80), emitted
 (20, 800). Constrained decoding improves syntax; it does not guarantee correct
 values or observed targets. No desktop actions are executed by these benchmarks.
+
+## Planner limits and writing privacy
+
+Before local generation, the runtime tokenizes the combined instructions, tool
+schemas and task text and reserves 768 output tokens plus 2,048 tokens for template
+overhead within the 16K context. This is a conservative preflight, not an exact
+measurement of the runtime's rendered template. Oversized requests fail explicitly
+without silently truncating element references or falling back to ChatGPT.
+
+When a hosted Writing model is selected with a hosted planner, the requested
+selection (or the entire field for field scope) is sent to that writing provider.
+On-device CUA enforces local writing. The no-download policy is passed explicitly
+from local CUA; direct Quill retains its existing model-availability checks.

@@ -116,7 +116,7 @@ enum ComputerUseToolRegistry {
             "action_name": .string("Advertised AX action name, for example AXShowMenu, AXConfirm, AXCancel, AXIncrement, AXDecrement, or AXScrollDownByPage."),
             "label": .string("Human target label for trace and safety."),
         ], risk: "only invokes advertised AX actions; confirmation for risky labels"),
-        definition(.editText, "Write or rewrite text with the shared Quill writing model. Reads the actual observed AX text field, checks for edits during generation, then replaces only the requested scope without sending/submitting. Prefer this for composing, translating or rewriting; use literal text tools for exact supplied text. Only supports readable, writable plain-text AX fields; never falls back to blind pasting.", required: ["instruction", "scope"], properties: [
+        definition(.editText, "Write or rewrite text with the shared Quill writing model. You MUST supply element_id or element_index copied from the observed editable field; instruction and scope alone are not a valid call. Reads the actual observed AX text field, checks for edits during generation, then replaces only the requested scope without sending/submitting. Prefer this for composing, translating or rewriting; use literal text tools for exact supplied text. Only supports readable, writable plain-text AX fields; never falls back to blind pasting.", required: ["instruction", "scope"], properties: [
             "element_index": .integer("Editable element index from the latest state."),
             "element_id": .string("Editable element ID from the latest state."),
             "instruction": .string("User's writing request, preserving their intended meaning."),
@@ -253,12 +253,16 @@ enum ComputerUseToolRegistry {
             .reduce(into: [String: Any]()) { partial, entry in
                 partial[entry.key] = entry.value.jsonSchema
             }
-        return [
+        var parameters: [String: Any] = [
             "type": definition.schema.type,
             "properties": properties,
             "required": definition.schema.required.filter { $0 != "tool" },
             "additionalProperties": definition.schema.additionalProperties,
         ]
+        if definition.name == .editText {
+            parameters["anyOf"] = [["required": ["element_id"]], ["required": ["element_index"]]]
+        }
+        return parameters
     }
 
     private static func definition(

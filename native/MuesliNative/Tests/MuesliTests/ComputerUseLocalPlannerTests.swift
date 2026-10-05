@@ -7,6 +7,51 @@ struct ComputerUseLocalPlannerTests {
     let tools: [[String: Any]] = [["name": "launch_app", "parameters": ["type": "object",
         "properties": ["app_name": ["type": "string"]], "required": ["app_name"], "additionalProperties": false]]]
 
+    @Test func writingSchemaRequiresEitherObservedTarget() throws {
+        let definitions = ComputerUseToolRegistry.nativeToolDefinitions()
+        for target in ["\"element_id\":\"e1\"", "\"element_index\":1"] {
+            let call = "{\"name\":\"edit_text\",\"arguments\":{\"instruction\":\"Shorten\",\"scope\":\"field\",\(target)}}"
+            #expect(try ComputerUseLocalPlanner.decode(call, tools: definitions).name == "edit_text")
+        }
+        #expect(throws: (any Error).self) {
+            try ComputerUseLocalPlanner.decode(#"{"name":"edit_text","arguments":{"instruction":"Shorten","scope":"field"}}"#, tools: definitions)
+        }
+    }
+
+    @Test func plannerContextBudgetReservesOutputAndTemplateSpace() throws {
+        guard #available(macOS 15, *) else { return }
+        try Gemma4LiteRTTranscriber.validatePlannerTokenBudget(13568)
+        #expect(throws: (any Error).self) {
+            try Gemma4LiteRTTranscriber.validatePlannerTokenBudget(13569)
+        }
+    }
+
+    @Test @MainActor func selectionWriteRestoresUTF16CaretAndReportsPartialFailure() {
+        for acceptsCaret in [true, false] {
+            var value = "A old Z"
+            var caret: NSRange?
+            let result = ComputerUseTextEditing.applyReplacement(original: value,
+                editRange: NSRange(location: 2, length: 3), replacement: "😀",
+                restoreSelection: true, write: { value = $0; return true }, read: { value },
+                setSelection: { caret = $0; return acceptsCaret }, readSelection: { caret })
+            #expect(value == "A 😀 Z")
+            #expect(caret == NSRange(location: 4, length: 0))
+            #expect(result.status == (acceptsCaret ? .executed : .failed))
+            if !acceptsCaret { #expect(result.message.contains("Text was updated")) }
+        }
+    }
+
+    @Test @MainActor func fieldWriteDoesNotMoveSelection() {
+        var value = "Before"
+        let result = ComputerUseTextEditing.applyReplacement(original: value,
+            editRange: NSRange(location: 0, length: 6), replacement: "After",
+            restoreSelection: false, write: { value = $0; return true }, read: { value },
+            setSelection: { _ in Issue.record("Whole-field editing must not set selection"); return false },
+            readSelection: { nil })
+        #expect(result.status == .executed)
+        #expect(value == "After")
+    }
+
     @Test func textPlannerDoesNotOfferVisualCoordinateClicks() {
         let names = ComputerUseLocalPlanner.supportedTools(ComputerUseToolRegistry.nativeToolDefinitions()).compactMap { $0["name"] as? String }
         #expect(names.contains("launch_app"))

@@ -715,10 +715,26 @@ actor Gemma4LiteRTTranscriber {
         try Task.checkCancellation()
         try await prepareEngine(model: model, contextTokens: 16384, localOnly: true)
         try Task.checkCancellation()
+        guard let engine,
+              let tokens = litert_lm_engine_tokenize(engine, systemPrompt + "\n" + toolsJSON + "\n" + userPrompt) else {
+            throw TranscriberError.invalidResponse
+        }
+        let inputTokens = litert_lm_tokenize_result_get_num_tokens(tokens)
+        litert_lm_tokenize_result_delete(tokens)
+        try Self.validatePlannerTokenBudget(inputTokens)
         let response = try generateTextPrepared(systemPrompt: systemPrompt, userPrompt: userPrompt,
                                                 maxOutputTokens: 768, toolsJSON: toolsJSON)
         try Task.checkCancellation()
         return response
+    }
+
+    /// Reserve output plus conservative template overhead; do not silently truncate
+    /// observed element references or the user's request.
+    static func validatePlannerTokenBudget(_ inputTokens: Int) throws {
+        guard inputTokens <= 16384 - 768 - 2048 else {
+            throw ComputerUsePlannerError.invalidResponse(
+                "This request is too large for the on-device planner's context. Try a smaller task or a hosted planner. Nothing was executed.")
+        }
     }
 
     private func generateTextPrepared(

@@ -286,6 +286,7 @@ final class ComputerUsePlannerRuntime {
                         }
                         try Task.checkCancellation()
                         guard now() < deadline else {
+                            traceLog.append(traceEvent(kind: "timed_out", title: "Timed out", body: "CUA timed out before applying text", status: "timed_out", step: step))
                             return .init(status: .timedOut, message: "CUA timed out before applying text", traceEvents: traceLog.events)
                         }
                         result = prepared.apply()
