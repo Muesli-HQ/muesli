@@ -119,4 +119,92 @@ struct ComputerUseLocalPlannerBenchmarkTests {
         print("CUA_WRITING_BENCHMARK output=\(output)")
         if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
     }
+
+    /// Five rounds over the same five-setting fixture, reset and persisted to a
+    /// temporary file for every attempt. No speech input or live UI mutations.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_CUA_SETTINGS_MATRIX"] == "1"))
+    func settingsLatencyMatrix() async throws {
+        let selected = ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK_MODEL"]
+        let model = try #require(ComputerUseLocalPlanner.models.first { $0.available && (selected == nil || selected == $0.id) })
+        let cases = [
+            ("sound", "Turn sound effects off.", "off"),
+            ("dark_mode", "Turn dark mode on.", "on"),
+            ("pause_media", "Turn pause media during dictation on.", "on"),
+            ("open_dashboard", "Turn open dashboard on launch off.", "off"),
+            ("indicator_style", "Change recording indicator style to notch.", "notch")
+        ]
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reportPath = ProcessInfo.processInfo.environment["MUESLI_CUA_MATRIX_REPORT"] ?? "/tmp/cua-settings-matrix-results.json"
+        var records: [[String: Any]] = []
+        if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
+        func values(_ c: AppConfig) -> [String: String] {
+            ["sound": c.soundEnabled ? "on" : "off", "dark_mode": c.darkMode ? "on" : "off",
+             "pause_media": c.pauseMediaDuringDictation ? "on" : "off",
+             "open_dashboard": c.openDashboardOnLaunch ? "on" : "off",
+             "indicator_style": c.recordingIndicatorStyle.rawValue]
+        }
+        for round in 1...5 {
+            for (id, command, expected) in cases {
+                var config = AppConfig()
+                config.computerUsePlannerModel = model.id
+                config.soundEnabled = true
+                config.darkMode = false
+                config.pauseMediaDuringDictation = false
+                config.openDashboardOnLaunch = true
+                config.selectRecordingIndicatorStyle(.classic)
+                let initial = values(config)
+                var mutations: [String] = []
+                let file = directory.appendingPathComponent("settings.json")
+                try JSONEncoder().encode(config).write(to: file, options: .atomic)
+                func save(_ id: String) throws {
+                    try JSONEncoder().encode(config).write(to: file, options: .atomic)
+                    mutations.append(id)
+                }
+                func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>) -> MuesliSetting {
+                    MuesliSetting(id: id, label: label, choices: [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+                        read: { $0[keyPath: key] ? "on" : "off" }, unavailable: { _ in nil }, apply: {
+                            config[keyPath: key] = $0 == "on"
+                            try save(id)
+                        })
+                }
+                let settings = [
+                    toggle("sound", "Sound effects", \.soundEnabled),
+                    toggle("dark_mode", "Dark mode", \.darkMode),
+                    toggle("pause_media", "Pause media during dictation", \.pauseMediaDuringDictation),
+                    toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch),
+                    MuesliSetting(id: "indicator_style", label: "Recording indicator style",
+                        choices: RecordingIndicatorStyle.allCases.map { .init(id: $0.rawValue, label: $0 == .classic ? "Classic floating pill" : $0.title) },
+                        read: { $0.recordingIndicatorStyle.rawValue }, unavailable: { _ in nil }, apply: {
+                            let style = try #require(RecordingIndicatorStyle(rawValue: $0))
+                            config.selectRecordingIndicatorStyle(style)
+                            try save("indicator_style")
+                        })
+                ]
+                let started = ProcessInfo.processInfo.systemUptime
+                let result = await ComputerUseSettings.run(command: command, settings: settings,
+                    config: { config }, persistedConfig: { try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: file)) })
+                let seconds = ProcessInfo.processInfo.systemUptime - started
+                let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: file))
+                let final = values(saved)
+                let otherSettingsUnchanged = initial.allSatisfy { $0.key == id || final[$0.key] == $0.value }
+                let success = result?.status == .done && final[id] == expected && otherSettingsUnchanged && mutations == [id]
+                let record: [String: Any] = ["model": model.id, "round": round, "setting": id, "command": command,
+                    "expected": expected, "actual": final[id] ?? "missing", "success": success,
+                    "seconds": seconds, "coldStart": records.isEmpty, "mutations": mutations,
+                    "otherSettingsUnchanged": otherSettingsUnchanged,
+                    "status": result.map { String(describing: $0.status) } ?? "desktop_fallthrough",
+                    "message": result?.message ?? "Routed to desktop"]
+                records.append(record)
+                try JSONSerialization.data(withJSONObject: records, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: URL(fileURLWithPath: reportPath), options: .atomic)
+                let line = String(decoding: try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), as: UTF8.self)
+                FileHandle.standardOutput.write(Data(("CUA_MATRIX " + line + "\n").utf8))
+            }
+        }
+        if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }
+        #expect(records.count == 25)
+        #expect(records.allSatisfy { $0["success"] as? Bool == true }, "See per-attempt matrix report; failures are retained rather than retried outside the harness.")
+    }
 }
