@@ -51,7 +51,7 @@ enum ComputerUseSettings {
                             systemPrompt: instructions,
                             userPrompt: String(decoding: try JSONEncoder().encode(payload), as: UTF8.self), imageDataURL: nil,
                             model: ComputerUsePlannerClient.plannerModel(for: config()),
-                            reasoningEffort: config().computerUseReasoningEffort, tools: tools)
+                            reasoningEffort: config().computerUseReasoningEffort, tools: plannerTools(inspectedIDs: inspected.map(\.id)))
                     }
                 }
                 planningRemaining -= max(0, now() - started)
@@ -248,6 +248,21 @@ enum ComputerUseSettings {
     For tasks about OTHER apps, websites, macOS System Settings, or computer use unrelated to Muesli settings, call continue_desktop_task. Do not change Muesli for such tasks.
     No screenshots or UI clicking are needed for Muesli settings. Never invent choices or shortcut components, install models, edit credentials or execute code.
     """
+    static func plannerTools(inspectedIDs: [String]) -> [[String: Any]] {
+        tools.compactMap { tool in
+            guard let name = tool["name"] as? String,
+                  ["set_muesli_setting", "configure_muesli_setting"].contains(name) else { return tool }
+            guard !inspectedIDs.isEmpty else { return nil }
+            var scoped = tool
+            var parameters = scoped["parameters"] as? [String: Any] ?? [:]
+            var properties = parameters["properties"] as? [String: Any] ?? [:]
+            properties["setting"] = ["type": "string", "enum": inspectedIDs]
+            parameters["properties"] = properties
+            scoped["parameters"] = parameters
+            return scoped
+        }
+    }
+
     static var tools: [[String: Any]] {
         func tool(_ name: String, _ description: String, _ properties: [String: Any]) -> [String: Any] {
             ["type": "function", "name": name, "description": description, "strict": true,

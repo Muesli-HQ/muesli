@@ -350,7 +350,8 @@ actor TranscriptionCoordinator {
         appContext: String?,
         backend: TranscriptCleanupBackendOption,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        localOnly: Bool = false
     ) async throws -> String {
         let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInstruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
@@ -370,7 +371,7 @@ actor TranscriptionCoordinator {
             userPrompt: userPrompt,
             backend: backend,
             resolvedModel: resolvedModel,
-            config: config
+            config: config, localOnly: localOnly
         )
         do {
             return try QuilTransformationOutput.validated(raw)
@@ -380,7 +381,7 @@ actor TranscriptionCoordinator {
                 userPrompt: correctivePrompt,
                 backend: backend,
                 resolvedModel: resolvedModel,
-                config: config
+                config: config, localOnly: localOnly
             )
             return try QuilTransformationOutput.validated(correctedRaw)
         }
@@ -390,7 +391,8 @@ actor TranscriptionCoordinator {
         userPrompt: String,
         backend: TranscriptCleanupBackendOption,
         resolvedModel: String,
-        config: AppConfig
+        config: AppConfig,
+        localOnly: Bool
     ) async throws -> String {
         switch backend {
         case .local:
@@ -419,7 +421,8 @@ actor TranscriptionCoordinator {
                 systemPrompt: QuilTransformationPrompt.system,
                 userPrompt: userPrompt,
                 model: gemmaModel,
-                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens,
+                localOnly: localOnly
             )
         default:
             return try await TranscriptCleanupClient.generate(
@@ -491,7 +494,7 @@ actor TranscriptionCoordinator {
     @available(macOS 15, *)
     private var gemma4LiteRTTranscriber: Gemma4LiteRTTranscriber {
         if _gemma4LiteRTTranscriber == nil {
-            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber()
+            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber.shared
         }
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }

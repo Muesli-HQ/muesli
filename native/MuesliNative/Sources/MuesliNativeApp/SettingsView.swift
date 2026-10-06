@@ -1283,12 +1283,12 @@ struct SettingsView: View {
                     settingsControl("quill_sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Model source", controlWidth: meetingControlWidth) {
+                settingsRow("Writing model source", description: "Shared by Quill and Computer Use writing tasks.", controlWidth: meetingControlWidth) {
                     settingsControl("quill_source")
                 }
                 if selectedQuilBackend.isOnDevice {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Quill model", controlWidth: meetingControlWidth) {
+                    settingsRow("Writing model", controlWidth: meetingControlWidth) {
                         if quilLocalModels.isEmpty {
                             compactActionButton("View local models", systemImage: "arrow.right") {
                                 controller.showModels(category: .quill)
@@ -1371,7 +1371,7 @@ struct SettingsView: View {
         }
         if backend != .hosted(.customLLM) {
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Quill model", controlWidth: meetingControlWidth) {
+            settingsRow("Writing model", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.quilModel,
                     placeholder: TranscriptCleanupClient.defaultModel(for: backend)
@@ -1856,15 +1856,34 @@ struct SettingsView: View {
                     settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Account", controlWidth: meetingControlWidth) {
-                    chatGPTAccountControl()
+                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
+                let isLocalPlanner = ComputerUseLocalPlanner.isLocal(plannerModel)
+                settingsRow("Planner backend", controlWidth: meetingControlWidth) {
+                    settingsControl("cua_backend")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Planner model", controlWidth: meetingControlWidth) {
-                    settingsControl("cua_model")
+                if !isLocalPlanner {
+                    settingsRow("Account", controlWidth: meetingControlWidth) {
+                        chatGPTAccountControl(selectMeetingSummaryBackend: false)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
                 }
-                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
-                if !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                settingsRow("Planner model", controlWidth: meetingControlWidth) {
+                    MuesliSettingControl(controller: controller, id: "cua_model",
+                        allowedChoiceIDs: isLocalPlanner
+                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
+                }
+                if isLocalPlanner {
+                    Text("Planning runs on this Mac. No ChatGPT sign-in is needed.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                } else if !ComputerUseLocalPlanner.models.contains(where: \.available) {
+                    Text("Download Gemma in Models to enable the On-device backend.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
                         settingsControl("cua_thinking")

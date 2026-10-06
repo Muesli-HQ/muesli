@@ -106,6 +106,8 @@ enum ComputerUseToolExecutor {
             return click(toolCall, registry: registry)
         case .performSecondaryAction:
             return performSecondaryAction(toolCall, registry: registry)
+        case .editText:
+            return .unsupported("edit_text requires the runtime writing preparation step")
         case .setValue:
             return setValue(toolCall, registry: registry)
         case .drag:
