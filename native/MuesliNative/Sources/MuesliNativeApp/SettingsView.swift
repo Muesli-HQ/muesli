@@ -3537,15 +3537,12 @@ struct SettingsView: View {
         onBeginEditing: (() -> Void)? = nil,
         onChange: @escaping (String) -> Void
     ) -> some View {
-        PastableTextField(
+        SettingsModelTextField(
             text: currentModel,
             placeholder: placeholder,
             onBeginEditing: onBeginEditing,
-            onChange: { value in
-                onChange(value.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+            onChange: onChange
         )
-        .frame(height: 22)
     }
 
     @ViewBuilder
@@ -3819,22 +3816,44 @@ struct PastableSecureField: NSViewRepresentable {
     }
 }
 
+/// Model IDs stay local to the field editor until Return or focus loss.
+struct SettingsModelTextField: View {
+    let text: String
+    let placeholder: String
+    var onBeginEditing: (() -> Void)? = nil
+    let onChange: (String) -> Void
+
+    var body: some View {
+        PastableTextField(
+            text: text,
+            placeholder: placeholder,
+            onBeginEditing: onBeginEditing,
+            commitsOnEndEditing: true,
+            onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
+        .frame(height: 22)
+    }
+}
+
 /// Plain text field with the same accessory-app edit shortcuts as secure fields.
 struct PastableTextField: NSViewRepresentable {
     let text: String
     let placeholder: String
     let onBeginEditing: (() -> Void)?
+    let commitsOnEndEditing: Bool
     let onChange: (String) -> Void
 
     init(
         text: String,
         placeholder: String,
         onBeginEditing: (() -> Void)? = nil,
+        commitsOnEndEditing: Bool = false,
         onChange: @escaping (String) -> Void
     ) {
         self.text = text
         self.placeholder = placeholder
         self.onBeginEditing = onBeginEditing
+        self.commitsOnEndEditing = commitsOnEndEditing
         self.onChange = onChange
     }
 
@@ -3847,37 +3866,80 @@ struct PastableTextField: NSViewRepresentable {
         field.bezelStyle = .roundedBezel
         field.delegate = context.coordinator
         field.stringValue = text
+        if commitsOnEndEditing {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.lineBreakMode = .byTruncatingMiddle
+            field.toolTip = text.isEmpty ? nil : text
+        }
         return field
     }
 
     func updateNSView(_ nsView: EditableNSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
         context.coordinator.onBeginEditing = onBeginEditing
         context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBeginEditing: onBeginEditing, onChange: onChange)
+        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing,
+                    onBeginEditing: onBeginEditing, onChange: onChange)
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
         var onBeginEditing: (() -> Void)?
         var onChange: (String) -> Void
+        private let commitsOnEndEditing: Bool
+        private var configuredText: String
+        private var editingStartText: String?
+        private var isEditing = false
 
-        init(onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+        init(text: String, commitsOnEndEditing: Bool,
+             onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+            self.configuredText = text
+            self.commitsOnEndEditing = commitsOnEndEditing
             self.onBeginEditing = onBeginEditing
             self.onChange = onChange
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+            editingStartText = configuredText
             onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
+            if commitsOnEndEditing {
+                field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue
+                return
+            }
             onChange(field.stringValue)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField, isEditing else { return }
+            isEditing = false
+            let value = field.stringValue
+            let changed = value != editingStartText
+            editingStartText = nil
+            guard commitsOnEndEditing else { return }
+            if changed {
+                configuredText = value
+                onChange(value)
+            } else {
+                // An external update may have arrived during an unchanged edit.
+                field.stringValue = configuredText
+            }
+            field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue
+        }
+
+        func synchronize(_ field: NSTextField, text: String) {
+            configuredText = text
+            // SwiftUI can refresh from unrelated state while the user types.
+            // Replacing stringValue here resets the live field editor/caret.
+            guard !isEditing, field.currentEditor() == nil else { return }
+            if field.stringValue != text { field.stringValue = text }
+            if commitsOnEndEditing { field.toolTip = text.isEmpty ? nil : text }
         }
     }
 }

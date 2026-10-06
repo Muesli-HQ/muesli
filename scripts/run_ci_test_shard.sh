@@ -146,6 +146,7 @@ case "${shard}" in
       CustomLLMAPIKeyResolutionTests
       CustomLLMHeaderPropagationTests
       CustomLLMRequestHeadersTests
+      SettingsModelFieldTests
       MeetingSummaryClientTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
