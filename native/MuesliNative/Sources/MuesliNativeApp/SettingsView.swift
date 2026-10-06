@@ -1798,6 +1798,7 @@ struct SettingsView: View {
             PastableTextField(
                 text: appState.config.customLLMAPIKeyCommand,
                 placeholder: "e.g. /opt/homebrew/bin/vault print token",
+                commitsOnEndEditing: true,
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
             )
             .frame(height: 22)
@@ -3829,6 +3830,7 @@ struct SettingsModelTextField: View {
             placeholder: placeholder,
             onBeginEditing: onBeginEditing,
             commitsOnEndEditing: true,
+            showsFullValueOnHover: true,
             onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         )
         .frame(height: 22)
@@ -3841,6 +3843,7 @@ struct PastableTextField: NSViewRepresentable {
     let placeholder: String
     let onBeginEditing: (() -> Void)?
     let commitsOnEndEditing: Bool
+    let showsFullValueOnHover: Bool
     let onChange: (String) -> Void
 
     init(
@@ -3848,12 +3851,14 @@ struct PastableTextField: NSViewRepresentable {
         placeholder: String,
         onBeginEditing: (() -> Void)? = nil,
         commitsOnEndEditing: Bool = false,
+        showsFullValueOnHover: Bool = false,
         onChange: @escaping (String) -> Void
     ) {
         self.text = text
         self.placeholder = placeholder
         self.onBeginEditing = onBeginEditing
         self.commitsOnEndEditing = commitsOnEndEditing
+        self.showsFullValueOnHover = showsFullValueOnHover
         self.onChange = onChange
     }
 
@@ -3869,7 +3874,7 @@ struct PastableTextField: NSViewRepresentable {
         if commitsOnEndEditing {
             field.cell?.usesSingleLineMode = true
             field.cell?.lineBreakMode = .byTruncatingMiddle
-            field.toolTip = text.isEmpty ? nil : text
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
         }
         return field
     }
@@ -3881,7 +3886,7 @@ struct PastableTextField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing,
+        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: showsFullValueOnHover,
                     onBeginEditing: onBeginEditing, onChange: onChange)
     }
 
@@ -3896,16 +3901,18 @@ struct PastableTextField: NSViewRepresentable {
         var onBeginEditing: (() -> Void)?
         var onChange: (String) -> Void
         private let commitsOnEndEditing: Bool
+        private let showsFullValueOnHover: Bool
         private var configuredText: String
         private var editingStartText: String?
         private var draftText: String?
         private var isEditing = false
         private weak var editingField: NSTextField?
 
-        init(text: String, commitsOnEndEditing: Bool,
+        init(text: String, commitsOnEndEditing: Bool, showsFullValueOnHover: Bool,
              onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
             self.configuredText = text
             self.commitsOnEndEditing = commitsOnEndEditing
+            self.showsFullValueOnHover = showsFullValueOnHover
             self.onBeginEditing = onBeginEditing
             self.onChange = onChange
         }
@@ -3930,7 +3937,7 @@ struct PastableTextField: NSViewRepresentable {
             guard let field = obj.object as? NSTextField else { return }
             if commitsOnEndEditing {
                 draftText = field.stringValue
-                field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue
+                if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
                 return
             }
             onChange(field.stringValue)
@@ -3968,7 +3975,7 @@ struct PastableTextField: NSViewRepresentable {
                 // An external update may have arrived during an unchanged edit.
                 field.stringValue = configuredText
             }
-            field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue
+            if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
         }
 
         func synchronize(_ field: NSTextField, text: String) {
@@ -3977,7 +3984,7 @@ struct PastableTextField: NSViewRepresentable {
             // Replacing stringValue here resets the live field editor/caret.
             guard !isEditing, field.currentEditor() == nil else { return }
             if field.stringValue != text { field.stringValue = text }
-            if commitsOnEndEditing { field.toolTip = text.isEmpty ? nil : text }
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
         }
     }
 }

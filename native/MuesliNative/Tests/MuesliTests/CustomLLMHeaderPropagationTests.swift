@@ -154,10 +154,11 @@ struct CustomLLMHeaderPropagationTests {
         #expect(result == "Cleaned text")
     }
 
-    @Test("CLI summary sends additional headers and prefers its environment key")
-    func cliHeaders() async throws {
+    @Test("CLI summary normalizes keys and sends headers in both API formats",
+          arguments: ["openai", "anthropic"], ["environment-key", " \t environment-key \n", " \t\n"])
+    func cliHeaders(format: String, environmentKey: String) async throws {
         let previousAPIKey = getenv("CUSTOM_LLM_API_KEY").map { String(cString: $0) }
-        setenv("CUSTOM_LLM_API_KEY", "environment-key", 1)
+        setenv("CUSTOM_LLM_API_KEY", environmentKey, 1)
         defer {
             if let previousAPIKey {
                 setenv("CUSTOM_LLM_API_KEY", previousAPIKey, 1)
@@ -166,23 +167,33 @@ struct CustomLLMHeaderPropagationTests {
             }
         }
 
+        let expectedKey = environmentKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "static-key" : "environment-key"
         CustomLLMHeaderPropagationURLProtocol.install { request in
             #expect(request.value(forHTTPHeaderField: "source") == "muesli")
             #expect(request.value(forHTTPHeaderField: "org-id") == "2")
-            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer environment-key")
+            if format == "anthropic" {
+                #expect(request.value(forHTTPHeaderField: "x-api-key") == expectedKey)
+            } else {
+                #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(expectedKey)")
+            }
             let body = try? JSONSerialization.jsonObject(
                 with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)
             ) as? [String: Any]
             #expect(body?["max_tokens"] as? Int == 2500)
             #expect(body?["max_completion_tokens"] == nil)
-            return .init(data: Data(#"{"choices":[{"message":{"content":"CLI notes"}}]}"#.utf8))
+            let response = format == "anthropic"
+                ? #"{"content":[{"type":"text","text":"CLI notes"}]}"#
+                : #"{"choices":[{"message":{"content":"CLI notes"}}]}"#
+            return .init(data: Data(response.utf8))
         }
         defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
 
         var config = CLISummaryConfig()
         config.meetingSummaryBackend = "custom_llm"
         config.customLLMURL = "https://headers.example.test/v1"
-        config.customLLMAPIKey = "static-key"
+        config.customLLMAPIKey = " \t static-key \n"
+        config.customLLMFormat = format
         config.customLLMModel = "custom-model"
         config.customLLMHeaders = customHeaders()
 

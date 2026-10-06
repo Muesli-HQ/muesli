@@ -165,9 +165,42 @@ struct SettingsModelFieldTests {
         #expect(field.delegate == nil)
     }
 
+    @Test("API key commands expose only the completed edit to requests")
+    func commandCommitsOnEndEditing() throws {
+        _ = NSApplication.shared
+        let original = "/opt/homebrew/bin/vault print old-token"
+        let replacement = "/opt/homebrew/bin/vault print new-token"
+        var configuredCommand = original
+        var saves = 0
+        let view = PastableTextField(text: original, placeholder: "command", commitsOnEndEditing: true) {
+            configuredCommand = $0
+            saves += 1
+        }
+        let (window, _, field) = try makeHost(root: AnyView(view))
+        defer { window.close() }
+        let help = "Runs shell code with your user permissions."
+        field.toolTip = help
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        for character in replacement {
+            editor.insertText(String(character), replacementRange: editor.selectedRange())
+            #expect(configuredCommand == original)
+            #expect(saves == 0)
+        }
+        editor.insertNewline(nil)
+        #expect(configuredCommand == replacement)
+        #expect(saves == 1)
+        #expect(field.toolTip == help)
+    }
+
     private func makeField(text: String, onChange: @escaping (String) -> Void) throws
         -> (NSWindow, NSHostingView<AnyView>, EditableNSTextField) {
-        let host = NSHostingView(rootView: AnyView(SettingsModelTextField(text: text, placeholder: "model", onChange: onChange)))
+        try makeHost(root: AnyView(SettingsModelTextField(text: text, placeholder: "model", onChange: onChange)))
+    }
+
+    private func makeHost(root: AnyView) throws
+        -> (NSWindow, NSHostingView<AnyView>, EditableNSTextField) {
+        let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: 275, height: 44)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

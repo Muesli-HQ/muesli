@@ -1295,14 +1295,16 @@ enum CLISummaryClient {
             } catch {
                 throw CLISummaryError.unavailable(error.localizedDescription)
             }
+            let apiKey = (ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+                ?? config.customLLMAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if config.customLLMFormat == "anthropic" {
                 guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "https://api.anthropic.com" : config.customLLMURL, endpointSuffix: "v1/messages") else {
                     throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
                 }
-                let apiKey = ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
-                    .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-                    ?? config.customLLMAPIKey
-                guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                guard !apiKey.isEmpty else {
                     throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
                 }
                 return try await anthropicSummary(
@@ -1317,9 +1319,6 @@ enum CLISummaryClient {
             guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "http://localhost:8080" : config.customLLMURL, endpointSuffix: "v1/chat/completions") else {
                 throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
             }
-            let apiKey = ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
-                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-                ?? config.customLLMAPIKey
             return try await chatCompletionsSummary(
                 backend: "Custom LLM",
                 url: url,
