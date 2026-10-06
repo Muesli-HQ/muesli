@@ -71,8 +71,7 @@ struct OnboardingProgressTests {
             userName: "Test User",
             selectedBackendKey: "fluidaudio",
             selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
-            hotkeyKeyCode: 55,
-            hotkeyLabel: "Left Cmd",
+            hotkey: HotkeyConfig(keyCode: 55, label: "Left Cmd"),
             modelDownloadProgress: 0.42,
             modelDownloadStatus: "189 MB of 450 MB"
         )
@@ -82,6 +81,54 @@ struct OnboardingProgressTests {
 
         #expect(decoded.modelDownloadProgress == 0.42)
         #expect(decoded.modelDownloadStatus == "189 MB of 450 MB")
+    }
+
+    @Test("combination dictation shortcut survives onboarding progress round trip")
+    func combinationDictationShortcutRoundTrips() throws {
+        let chord = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        let progress = OnboardingProgress(
+            currentStep: OnboardingFlow.dictationTestStep,
+            userName: "Test User",
+            selectedBackendKey: "fluidaudio",
+            selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+            hotkey: chord
+        )
+
+        let decoded = try JSONDecoder().decode(OnboardingProgress.self, from: JSONEncoder().encode(progress))
+
+        #expect(decoded.hotkey == chord)
+        #expect(decoded.hotkey.label == "⌃⌥Space")
+    }
+
+    @Test("legacy and invalid onboarding shortcuts resume with a live hotkey")
+    func legacyAndInvalidOnboardingShortcuts() throws {
+        let legacy = try JSONDecoder().decode(OnboardingProgress.self, from: Data("""
+        {
+          "schemaVersion": 4,
+          "currentStep": 2,
+          "userName": "Test User",
+          "selectedBackendKey": "fluidaudio",
+          "selectedModelKey": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          "hotkeyKeyCode": 55,
+          "hotkeyLabel": "Left Cmd"
+        }
+        """.utf8))
+        #expect(legacy.hotkey == HotkeyConfig(keyCode: 55, label: "Left Cmd"))
+
+        // A combination saved without its key code would otherwise register nothing.
+        let truncated = try JSONDecoder().decode(OnboardingProgress.self, from: Data("""
+        {
+          "schemaVersion": 4,
+          "currentStep": 2,
+          "userName": "Test User",
+          "selectedBackendKey": "fluidaudio",
+          "selectedModelKey": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          "hotkeyKeyCode": 65535,
+          "hotkeyLabel": "⌘⇧D",
+          "hotkeyCombinationModifiers": 1179648
+        }
+        """.utf8))
+        #expect(truncated.hotkey == .default)
     }
 
     @Test("dictation monitor starts at and after its resume threshold")
@@ -135,8 +182,7 @@ struct OnboardingProgressTests {
                 userName: "Test User",
                 selectedBackendKey: "fluidaudio",
                 selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
-                hotkeyKeyCode: 55,
-                hotkeyLabel: "Left Cmd"
+                hotkey: HotkeyConfig(keyCode: 55, label: "Left Cmd")
             )
             let roundTripped = try JSONDecoder().decode(
                 OnboardingProgress.self,
