@@ -38,8 +38,8 @@ struct SettingsModelFieldTests {
         for character in modelID {
             editor.insertText(String(character), replacementRange: editor.selectedRange())
             // Simulate a Settings redraw with the still-persisted value.
-            host.rootView = SettingsModelTextField(text: controller.config.customLLMModel,
-                                                   placeholder: "model", onChange: onChange)
+            host.rootView = AnyView(SettingsModelTextField(text: controller.config.customLLMModel,
+                                                          placeholder: "model", onChange: onChange))
             host.layoutSubtreeIfNeeded()
             #expect(field.currentEditor() === editor)
         }
@@ -78,7 +78,7 @@ struct SettingsModelFieldTests {
         #expect(field.cell?.lineBreakMode == .byTruncatingMiddle)
         #expect(field.cell?.usesSingleLineMode == true)
         let replacement = "other/provider/\(modelID)"
-        host.rootView = SettingsModelTextField(text: replacement, placeholder: "model", onChange: { _ in })
+        host.rootView = AnyView(SettingsModelTextField(text: replacement, placeholder: "model", onChange: { _ in }))
         host.layoutSubtreeIfNeeded()
         #expect(field.stringValue == replacement)
         #expect(field.toolTip == replacement)
@@ -109,9 +109,65 @@ struct SettingsModelFieldTests {
         #expect(saved == ["source"])
     }
 
+    @Test("removing an active model field saves its draft once")
+    func navigationCommitsDraft() async throws {
+        _ = NSApplication.shared
+        var saved: [String] = []
+        let (window, host, field) = try makeField(text: "old-model") { saved.append($0) }
+        defer { window.close() }
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.insertText(modelID, replacementRange: editor.selectedRange())
+        #expect(saved.isEmpty)
+        host.rootView = AnyView(Text("Another Settings page"))
+        host.layoutSubtreeIfNeeded()
+        // Drain any commit scheduled outside SwiftUI's teardown transaction.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(saved == [modelID])
+        #expect(window.makeFirstResponder(nil))
+        #expect(saved == [modelID])
+    }
+
+    @Test("closing the window preserves an active model edit")
+    func closingWindowCommitsDraft() async throws {
+        _ = NSApplication.shared
+        var saved: [String] = []
+        let (window, _, field) = try makeField(text: "old-model") { saved.append($0) }
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.insertText(modelID, replacementRange: editor.selectedRange())
+        window.close()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(saved == [modelID])
+    }
+
+    @Test("teardown without an AppKit end-edit notification saves exactly once")
+    func teardownWithoutEndNotification() async throws {
+        _ = NSApplication.shared
+        var saved: [String] = []
+        let (window, _, field) = try makeField(text: "old-model") { saved.append($0) }
+        defer { window.close() }
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.insertText(modelID, replacementRange: editor.selectedRange())
+        let coordinator = try #require(field.delegate as? PastableTextField.Coordinator)
+        PastableTextField.dismantleNSView(field, coordinator: coordinator)
+        #expect(saved.isEmpty)
+        coordinator.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(saved == [modelID])
+        #expect(field.delegate == nil)
+    }
+
     private func makeField(text: String, onChange: @escaping (String) -> Void) throws
-        -> (NSWindow, NSHostingView<SettingsModelTextField>, EditableNSTextField) {
-        let host = NSHostingView(rootView: SettingsModelTextField(text: text, placeholder: "model", onChange: onChange))
+        -> (NSWindow, NSHostingView<AnyView>, EditableNSTextField) {
+        let host = NSHostingView(rootView: AnyView(SettingsModelTextField(text: text, placeholder: "model", onChange: onChange)))
         host.frame = NSRect(x: 0, y: 0, width: 275, height: 44)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

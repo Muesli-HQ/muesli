@@ -3885,13 +3885,22 @@ struct PastableTextField: NSViewRepresentable {
                     onBeginEditing: onBeginEditing, onChange: onChange)
     }
 
+    static func dismantleNSView(_ nsView: EditableNSTextField, coordinator: Coordinator) {
+        // AppKit does not guarantee an end-edit notification during removal.
+        // Save outside SwiftUI's teardown transaction to avoid publishing into it.
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
+    }
+
     class Coordinator: NSObject, NSTextFieldDelegate {
         var onBeginEditing: (() -> Void)?
         var onChange: (String) -> Void
         private let commitsOnEndEditing: Bool
         private var configuredText: String
         private var editingStartText: String?
+        private var draftText: String?
         private var isEditing = false
+        private weak var editingField: NSTextField?
 
         init(text: String, commitsOnEndEditing: Bool,
              onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
@@ -3904,12 +3913,23 @@ struct PastableTextField: NSViewRepresentable {
         func controlTextDidBeginEditing(_ obj: Notification) {
             isEditing = true
             editingStartText = configuredText
+            if let field = obj.object as? NSTextField {
+                draftText = field.stringValue
+                editingField = field
+                if commitsOnEndEditing, let window = field.window {
+                    NotificationCenter.default.addObserver(
+                        self, selector: #selector(windowWillClose(_:)),
+                        name: NSWindow.willCloseNotification, object: window
+                    )
+                }
+            }
             onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             if commitsOnEndEditing {
+                draftText = field.stringValue
                 field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue
                 return
             }
@@ -3917,15 +3937,33 @@ struct PastableTextField: NSViewRepresentable {
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField, isEditing else { return }
+            guard let field = obj.object as? NSTextField else { return }
+            finishEditing(field)
+        }
+
+        @objc private func windowWillClose(_ notification: Notification) {
+            guard let field = editingField else { return }
+            finishEditing(field)
+        }
+
+        func finishEditing(_ field: NSTextField, deferCommit: Bool = false) {
+            guard isEditing else { return }
             isEditing = false
-            let value = field.stringValue
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            editingField = nil
+            let value = draftText ?? field.stringValue
             let changed = value != editingStartText
             editingStartText = nil
+            draftText = nil
             guard commitsOnEndEditing else { return }
             if changed {
                 configuredText = value
-                onChange(value)
+                let commit = onChange
+                if deferCommit {
+                    DispatchQueue.main.async { commit(value) }
+                } else {
+                    commit(value)
+                }
             } else {
                 // An external update may have arrived during an unchanged edit.
                 field.stringValue = configuredText
