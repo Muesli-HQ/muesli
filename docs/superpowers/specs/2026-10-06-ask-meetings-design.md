@@ -1,7 +1,7 @@
 # Ask Meetings: design for the first PR
 
 Date: 2026-10-06 (Asia/Kolkata)
-Status: Written design awaiting user review; product implementation has not started.
+Status: Approved by the user on 2026-10-06; product implementation has not started.
 Branch: `codex/ask-meetings`
 
 ## Intent and agreed scope
@@ -25,7 +25,7 @@ Success means a user can ask a factual question, follow up, inspect a supporting
 ### Scope
 
 - Default: **All saved meetings**. Options: a folder, explicitly selected meetings, and an optional date range.
-- Folder scope follows the existing direct-folder behavior; it does not silently include descendants. Date bounds use meeting start time and the device time zone, with an exclusive upper bound at the next local day.
+- Folder scope includes only meetings directly assigned to the selected folder; it does not silently include descendants. Date bounds use meeting start time and the device time zone, with an exclusive upper bound at the next local day.
 - Include nondeleted saved meetings with usable transcript or notes. Exclude recording/processing meetings and unsaved drafts. A failed recording with a usable saved transcript is eligible; failure boilerplate alone is not evidence. Note-only meetings are eligible and identify their evidence as notes.
 - Store the scope with the conversation and with each turn. Scope changes apply to subsequent questions and start fresh model context, marked by a visible scope-change divider. Historical answers retain their original scope and remain readable, but are not sent as context for the new scope.
 - Source eligibility comes from the database independently of the browser's loaded rows. Older records remain searchable.
@@ -139,8 +139,9 @@ Paths are relative to `native/MuesliNative/Sources/`; line numbers describe the 
 
 The dedicated page supports cross-meeting work and history better than a small search popup. Citation previews preserve conversational context, while source navigation provides verification. Local lexical retrieval avoids new accounts and model downloads; its recall limit is explicit. Reusing existing provider settings keeps configuration consistent, although different models may vary in citation quality and context capacity. Conservative source deletion prevents chat from becoming a hidden copy of deleted meeting content.
 
-Tool preflight found git, gh, Swift/Xcode entry points, xcodegen, cmake, and Bun. Native Swift/Xcode commands currently fail because the installed Xcode license has not been accepted. The user must review/accept it before native validation can pass. The user supplied the commit author and Signed-off-by identity; use per-command Git settings without changing global configuration. No implementation or tests have run yet.
+Tool preflight found git, gh, Swift/Xcode entry points, xcodegen, cmake, and Bun. The earlier Xcode license blocker is resolved: the current host reports macOS 27.0, Xcode 27.0 (27A266a), and Apple Swift 6.4. This is newer than the repository's documented Xcode 26.6 / Swift 6.3 toolchain; compilation will confirm compatibility without modifying the toolchain. The user supplied the commit author and Signed-off-by identity; use per-command Git settings without changing global configuration. No implementation or product tests have run yet.
 
 ## Change record
 
 2026-10-06 : Record approved feature scope and implementation constraints for review : Added this design on `codex/ask-meetings`; product code unchanged.
+2026-10-06 : Record written-design approval and recheck readiness : User approved the spec and existing connection reuse; Xcode license preflight now passes. Corrected the description of direct-folder chat scope without changing its behavior.
