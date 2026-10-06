@@ -160,6 +160,7 @@ case "${shard}" in
       RouteAwareMeetingMicRecorderTests
       CalendarEventQueryTests
       CalendarMonitorLifecycleTests
+      CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )
