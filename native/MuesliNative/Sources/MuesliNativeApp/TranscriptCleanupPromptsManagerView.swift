@@ -126,7 +126,7 @@ struct TranscriptCleanupPromptsManagerView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: "info.circle")
                 .foregroundStyle(MuesliTheme.accent)
-            Text("AI transcript cleanup is currently off in Settings. Selecting or creating a preset will enable it.")
+            Text("AI transcript cleanup is currently off in Settings. Selecting or creating a preset will attempt to enable it.")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
             Spacer()
@@ -174,7 +174,7 @@ struct TranscriptCleanupPromptsManagerView: View {
             actionButton("Use", systemImage: "checkmark") {
                 controller.selectTranscriptCleanupPrompt(id: preset.id)
             }
-            .disabled(activePromptID == preset.id)
+            .disabled(activePromptID == preset.id && appState.config.enablePostProcessor)
 
             actionButton("Duplicate", systemImage: "doc.on.doc") {
                 beginDuplicatingPrompt(name: preset.name, prompt: preset.prompt)
@@ -192,7 +192,7 @@ struct TranscriptCleanupPromptsManagerView: View {
             actionButton("Use", systemImage: "checkmark") {
                 controller.selectTranscriptCleanupPrompt(id: preset.id)
             }
-            .disabled(activePromptID == preset.id)
+            .disabled(activePromptID == preset.id && appState.config.enablePostProcessor)
 
             actionButton("Edit", systemImage: "pencil") {
                 beginEditingPrompt(preset)
