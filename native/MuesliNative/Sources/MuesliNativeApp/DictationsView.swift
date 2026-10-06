@@ -178,7 +178,7 @@ struct DictationsView: View {
         let useCase = appState.config.resolvedOnboardingUseCase
         if appState.config.enablePushToTalk
             && (useCase.includesDictation || !useCase.includesVoiceNotes) {
-            return "Hold \(appState.config.dictationHotkey.label) to start dictating"
+            return appState.config.dictationStartPrompt
         }
         if useCase.includesVoiceNotes {
             return "Click Record Voice Note to capture your first note"
