@@ -1846,6 +1846,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(appState.config.customLLMHeaders.count >= CustomLLMRequestHeaders.maximumCount)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .frame(width: meetingControlWidth, alignment: .trailing)
             .padding(.vertical, 5)
