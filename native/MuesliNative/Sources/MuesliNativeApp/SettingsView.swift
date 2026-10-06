@@ -1584,11 +1584,12 @@ struct SettingsView: View {
         settingsSection("Meeting Summaries") {
             settingsRow(
                 "Summary backend",
-                description: "Remote summaries may send transcripts, notes, screen context, and participant names.",
+                description: "Remote backends may receive meeting data.",
                 controlWidth: meetingControlWidth
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
+                        .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
                     if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
@@ -1779,6 +1780,8 @@ struct SettingsView: View {
             .frame(height: 22)
         }
         settingsDescription(CustomLLMConnectionGuidance.endpointHelp)
+            .lineLimit(1)
+            .help("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
@@ -1798,9 +1801,10 @@ struct SettingsView: View {
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
             )
             .frame(height: 22)
-            .help("Runs via /bin/sh before each request. Use an absolute executable path.")
+            .help("Runs shell code via /bin/sh with your user permissions before each request. Use an absolute executable path. Non-empty output replaces the saved API key; failures fall back to it.")
         }
-        settingsDescription("Optional. Runs shell code with your user permissions before each request. Non-empty output takes precedence over the static API key; failures fall back to the static key.")
+        settingsDescription("Optional shell command for an API key; falls back to the saved key.")
+            .lineLimit(1)
         Divider().background(MuesliTheme.surfaceBorder)
         HStack(alignment: .top) {
             Text("Headers")
@@ -1851,7 +1855,9 @@ struct SettingsView: View {
             settingsDescription(message)
                 .foregroundStyle(MuesliTheme.recording)
         } else {
-            settingsDescription("Optional headers for gateway routing, authentication, or metadata. Values are stored in the owner-only config file, never logged, and managed HTTP headers cannot be overridden.")
+            settingsDescription("Optional headers for authentication or gateway routing.")
+                .lineLimit(1)
+                .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
         }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {

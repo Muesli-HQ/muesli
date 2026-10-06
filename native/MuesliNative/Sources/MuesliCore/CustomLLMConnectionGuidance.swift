@@ -2,7 +2,7 @@ import Foundation
 
 /// Explains transport failures without including endpoint URLs or credentials.
 public enum CustomLLMConnectionGuidance {
-    public static let endpointHelp = "For a server on your LAN or elsewhere, use HTTPS with a certificate trusted by your Mac. You can enable TLS on the server or use a reverse proxy such as Caddy. The HTTP localhost example is for a server running on this Mac."
+    public static let endpointHelp = "Use HTTPS for LAN/remote servers; HTTP is for localhost."
 
     public static func message(for error: Error) -> String? {
         guard let error = error as? URLError else { return nil }
