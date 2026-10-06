@@ -1032,6 +1032,8 @@ struct AppConfigTests {
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)
         #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMAPIKeyCommand.isEmpty)
+        #expect(config.customLLMHeaders.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
         #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
@@ -1184,6 +1186,16 @@ struct AppConfigTests {
             isChatGPTAuthenticated: false
         ))
 
+        config.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "Authorization", value: "forbidden"),
+        ]
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+        config.customLLMHeaders = []
+
         config.customLLMFormat = CustomLLMFormat.anthropic.rawValue
         config.customLLMAPIKey = ""
 
@@ -1280,6 +1292,11 @@ struct AppConfigTests {
         config.lmStudioModel = "local-model"
         config.customLLMURL = "https://example.com"
         config.customLLMAPIKey = "custom-key"
+        config.customLLMAPIKeyCommand = "/usr/local/bin/credential-helper"
+        config.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "source", value: "muesli"),
+            CustomLLMRequestHeader(name: "org-id", value: "2"),
+        ]
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
         config.anthropicAPIKey = "anthropic-key"
@@ -1372,6 +1389,9 @@ struct AppConfigTests {
         #expect(decoded.lmStudioModel == "local-model")
         #expect(decoded.customLLMURL == "https://example.com")
         #expect(decoded.customLLMAPIKey == "custom-key")
+        #expect(decoded.customLLMAPIKeyCommand == "/usr/local/bin/credential-helper")
+        #expect(decoded.customLLMHeaders.map(\.name) == ["source", "org-id"])
+        #expect(decoded.customLLMHeaders.map(\.value) == ["muesli", "2"])
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
         #expect(decoded.anthropicAPIKey == "anthropic-key")
@@ -1578,6 +1598,8 @@ struct AppConfigTests {
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)
         #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMAPIKeyCommand.isEmpty)
+        #expect(config.customLLMHeaders.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
         #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)

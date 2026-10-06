@@ -1584,11 +1584,12 @@ struct SettingsView: View {
         settingsSection("Meeting Summaries") {
             settingsRow(
                 "Summary backend",
-                description: "Remote summaries may send transcripts, notes, screen context, and participant names.",
+                description: "Remote backends may receive meeting data.",
                 controlWidth: meetingControlWidth
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
+                        .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
                     if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
@@ -1778,6 +1779,9 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
+        settingsDescription(CustomLLMConnectionGuidance.endpointHelp)
+            .lineLimit(1)
+            .help("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
@@ -1790,6 +1794,68 @@ struct SettingsView: View {
             .frame(height: 22)
         }
         Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("API Key Command", controlWidth: meetingControlWidth) {
+            PastableTextField(
+                text: appState.config.customLLMAPIKeyCommand,
+                placeholder: "e.g. /opt/homebrew/bin/vault print token",
+                commitsOnEndEditing: true,
+                onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
+            )
+            .frame(height: 22)
+            .help("Runs shell code via /bin/sh with your user permissions before each request. Use an absolute executable path. Non-empty output replaces the saved API key; failures fall back to it.")
+        }
+        settingsDescription("Optional shell command for an API key; falls back to the saved key.")
+            .lineLimit(1)
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow(
+            "Headers",
+            description: "Optional authentication or routing headers.",
+            controlWidth: meetingControlWidth
+        ) {
+            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                ForEach(appState.config.customLLMHeaders) { header in
+                    HStack(spacing: 6) {
+                        PastableTextField(
+                            text: header.name,
+                            placeholder: "Header name",
+                            onChange: { updateCustomLLMHeader(id: header.id, name: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        PastableTextField(
+                            text: header.value,
+                            placeholder: "Value",
+                            onChange: { updateCustomLLMHeader(id: header.id, value: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        Button {
+                            removeCustomLLMHeader(id: header.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .frame(width: 20, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove header")
+                    }
+                }
+                compactActionButton("Add Header", systemImage: "plus") {
+                    controller.updateConfig {
+                        $0.customLLMHeaders.append(CustomLLMRequestHeader())
+                    }
+                }
+                .disabled(appState.config.customLLMHeaders.count >= CustomLLMRequestHeaders.maximumCount)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(width: meetingControlWidth, alignment: .trailing)
+            .padding(.vertical, 5)
+        }
+        .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
+        if let message = customLLMHeadersValidationMessage {
+            settingsDescription(message)
+                .foregroundStyle(MuesliTheme.recording)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
             settingsModelTextField(
                 currentModel: model,
@@ -1797,6 +1863,29 @@ struct SettingsView: View {
                     ? "claude-3-5-sonnet-20241022"
                     : "custom-model-id"
             ) { val in onModelChange(val) }
+        }
+    }
+
+    private var customLLMHeadersValidationMessage: String? {
+        do {
+            _ = try CustomLLMRequestHeaders.validated(appState.config.customLLMHeaders)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func updateCustomLLMHeader(id: String, name: String? = nil, value: String? = nil) {
+        controller.updateConfig { config in
+            guard let index = config.customLLMHeaders.firstIndex(where: { $0.id == id }) else { return }
+            if let name { config.customLLMHeaders[index].name = name }
+            if let value { config.customLLMHeaders[index].value = value }
+        }
+    }
+
+    private func removeCustomLLMHeader(id: String) {
+        controller.updateConfig {
+            $0.customLLMHeaders.removeAll { $0.id == id }
         }
     }
 
@@ -3449,15 +3538,12 @@ struct SettingsView: View {
         onBeginEditing: (() -> Void)? = nil,
         onChange: @escaping (String) -> Void
     ) -> some View {
-        PastableTextField(
+        SettingsModelTextField(
             text: currentModel,
             placeholder: placeholder,
             onBeginEditing: onBeginEditing,
-            onChange: { value in
-                onChange(value.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+            onChange: onChange
         )
-        .frame(height: 22)
     }
 
     @ViewBuilder
@@ -3731,22 +3817,48 @@ struct PastableSecureField: NSViewRepresentable {
     }
 }
 
+/// Model IDs stay local to the field editor until Return or focus loss.
+struct SettingsModelTextField: View {
+    let text: String
+    let placeholder: String
+    var onBeginEditing: (() -> Void)? = nil
+    let onChange: (String) -> Void
+
+    var body: some View {
+        PastableTextField(
+            text: text,
+            placeholder: placeholder,
+            onBeginEditing: onBeginEditing,
+            commitsOnEndEditing: true,
+            showsFullValueOnHover: true,
+            onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
+        .frame(height: 22)
+    }
+}
+
 /// Plain text field with the same accessory-app edit shortcuts as secure fields.
 struct PastableTextField: NSViewRepresentable {
     let text: String
     let placeholder: String
     let onBeginEditing: (() -> Void)?
+    let commitsOnEndEditing: Bool
+    let showsFullValueOnHover: Bool
     let onChange: (String) -> Void
 
     init(
         text: String,
         placeholder: String,
         onBeginEditing: (() -> Void)? = nil,
+        commitsOnEndEditing: Bool = false,
+        showsFullValueOnHover: Bool = false,
         onChange: @escaping (String) -> Void
     ) {
         self.text = text
         self.placeholder = placeholder
         self.onBeginEditing = onBeginEditing
+        self.commitsOnEndEditing = commitsOnEndEditing
+        self.showsFullValueOnHover = showsFullValueOnHover
         self.onChange = onChange
     }
 
@@ -3759,37 +3871,120 @@ struct PastableTextField: NSViewRepresentable {
         field.bezelStyle = .roundedBezel
         field.delegate = context.coordinator
         field.stringValue = text
+        if commitsOnEndEditing {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.lineBreakMode = .byTruncatingMiddle
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
+        }
         return field
     }
 
     func updateNSView(_ nsView: EditableNSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
         context.coordinator.onBeginEditing = onBeginEditing
         context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBeginEditing: onBeginEditing, onChange: onChange)
+        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: showsFullValueOnHover,
+                    onBeginEditing: onBeginEditing, onChange: onChange)
+    }
+
+    static func dismantleNSView(_ nsView: EditableNSTextField, coordinator: Coordinator) {
+        // AppKit does not guarantee an end-edit notification during removal.
+        // Save outside SwiftUI's teardown transaction to avoid publishing into it.
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
         var onBeginEditing: (() -> Void)?
         var onChange: (String) -> Void
+        private let commitsOnEndEditing: Bool
+        private let showsFullValueOnHover: Bool
+        private var configuredText: String
+        private var editingStartText: String?
+        private var draftText: String?
+        private var isEditing = false
+        private weak var editingField: NSTextField?
 
-        init(onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+        init(text: String, commitsOnEndEditing: Bool, showsFullValueOnHover: Bool,
+             onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+            self.configuredText = text
+            self.commitsOnEndEditing = commitsOnEndEditing
+            self.showsFullValueOnHover = showsFullValueOnHover
             self.onBeginEditing = onBeginEditing
             self.onChange = onChange
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+            editingStartText = configuredText
+            if let field = obj.object as? NSTextField {
+                draftText = field.stringValue
+                editingField = field
+                if commitsOnEndEditing, let window = field.window {
+                    NotificationCenter.default.addObserver(
+                        self, selector: #selector(windowWillClose(_:)),
+                        name: NSWindow.willCloseNotification, object: window
+                    )
+                }
+            }
             onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
+            if commitsOnEndEditing {
+                draftText = field.stringValue
+                if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+                return
+            }
             onChange(field.stringValue)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            finishEditing(field)
+        }
+
+        @objc private func windowWillClose(_ notification: Notification) {
+            guard let field = editingField else { return }
+            finishEditing(field)
+        }
+
+        func finishEditing(_ field: NSTextField, deferCommit: Bool = false) {
+            guard isEditing else { return }
+            isEditing = false
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            editingField = nil
+            let value = draftText ?? field.stringValue
+            let changed = value != editingStartText
+            editingStartText = nil
+            draftText = nil
+            guard commitsOnEndEditing else { return }
+            if changed {
+                configuredText = value
+                let commit = onChange
+                if deferCommit {
+                    DispatchQueue.main.async { commit(value) }
+                } else {
+                    commit(value)
+                }
+            } else {
+                // An external update may have arrived during an unchanged edit.
+                field.stringValue = configuredText
+            }
+            if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+        }
+
+        func synchronize(_ field: NSTextField, text: String) {
+            configuredText = text
+            // SwiftUI can refresh from unrelated state while the user types.
+            // Replacing stringValue here resets the live field editor/caret.
+            guard !isEditing, field.currentEditor() == nil else { return }
+            if field.stringValue != text { field.stringValue = text }
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
         }
     }
 }
