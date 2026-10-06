@@ -1806,13 +1806,11 @@ struct SettingsView: View {
         settingsDescription("Optional shell command for an API key; falls back to the saved key.")
             .lineLimit(1)
         Divider().background(MuesliTheme.surfaceBorder)
-        HStack(alignment: .top) {
-            Text("Headers")
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .layoutPriority(1)
-                .padding(.top, 8)
-            Spacer(minLength: 20)
+        settingsRow(
+            "Headers",
+            description: "Optional authentication or routing headers.",
+            controlWidth: meetingControlWidth
+        ) {
             VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
                 ForEach(appState.config.customLLMHeaders) { header in
                     HStack(spacing: 6) {
@@ -1851,14 +1849,10 @@ struct SettingsView: View {
             .frame(width: meetingControlWidth, alignment: .trailing)
             .padding(.vertical, 5)
         }
-        .frame(minHeight: 32)
+        .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
         if let message = customLLMHeadersValidationMessage {
             settingsDescription(message)
                 .foregroundStyle(MuesliTheme.recording)
-        } else {
-            settingsDescription("Optional headers for authentication or gateway routing.")
-                .lineLimit(1)
-                .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
         }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
