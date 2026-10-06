@@ -385,15 +385,15 @@ struct ComputerUsePlannerModelTests {
         config.chatGPTModel = "gpt-5.4-mini"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == ComputerUsePlannerClient.defaultModel)
-        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-sol")
+        #expect(ComputerUsePlannerClient.defaultModel == "gpt-6.1-sol")
 
         config.computerUsePlannerModel = "gpt-5.4"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == "gpt-5.4")
     }
 
-    @Test("uses fixed High reasoning for every GPT-5.6 planner tier")
-    func usesHighReasoningForGPT56Family() {
+    @Test("uses model defaults when no computer use preference is stored")
+    func usesModelDefaultReasoning() {
         for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
             let body = ComputerUsePlannerClient.requestBody(
                 systemPrompt: "System",
@@ -407,16 +407,32 @@ struct ComputerUsePlannerModelTests {
         }
     }
 
-    @Test("keeps GPT-5.4 Mini available without changing its reasoning behavior")
-    func preservesGPT54MiniReasoning() {
-        let body = ComputerUsePlannerClient.requestBody(
+    @Test("forwards computer use reasoning independently")
+    func forwardsComputerUseReasoning() {
+        let defaultBody = ComputerUsePlannerClient.requestBody(
             systemPrompt: "System",
             userPrompt: "User",
             imageDataURL: nil,
             model: "gpt-5.4-mini"
         )
+        let selectedBody = ComputerUsePlannerClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            imageDataURL: nil,
+            model: "gpt-5.4-mini",
+            reasoningEffort: .xhigh
+        )
+        let invalidBody = ComputerUsePlannerClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            imageDataURL: nil,
+            model: "gpt-5.4-mini",
+            reasoningEffort: .max
+        )
 
-        #expect(body["reasoning"] == nil)
+        #expect((defaultBody["reasoning"] as? [String: String])?["effort"] == "none")
+        #expect((selectedBody["reasoning"] as? [String: String])?["effort"] == "xhigh")
+        #expect((invalidBody["reasoning"] as? [String: String])?["effort"] == "none")
     }
 }
 
@@ -524,6 +540,28 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
         #expect(result.message == "blocked")
+    }
+
+    @Test("thinking is excluded from the execution budget; actions still exhaust it", arguments: [false, true])
+    @MainActor
+    func executionOnlyTimeout(slowAction: Bool) async {
+        var clock: TimeInterval = 0
+        var calls = 0
+        let runtime = ComputerUsePlannerRuntime(config: AppConfig(), timeoutSeconds: 10, now: { clock },
+            observe: { _, _, _ in Self.observation() },
+            plan: { _ in
+                clock += 100 // much longer than the execution allowance
+                calls += 1
+                return ComputerUsePlannerResponse(toolCall: calls == 1
+                    ? ComputerUseToolCall(tool: .launchApp, appName: "Chrome")
+                    : ComputerUseToolCall(tool: .finish, reason: "Done"))
+            }, execute: { _, _ in
+                clock += slowAction ? 11 : 1
+                return .executed("Opened Chrome")
+            })
+        let result = await runtime.run(command: "Open Chrome")
+        #expect(result.status == (slowAction ? .timedOut : .done))
+        #expect(calls == (slowAction ? 1 : 2))
     }
 
     @Test("timeout produces timed out runtime result")

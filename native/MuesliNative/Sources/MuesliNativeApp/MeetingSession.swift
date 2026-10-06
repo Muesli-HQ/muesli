@@ -220,6 +220,7 @@ final class MeetingSession {
     /// if the meeting ends dead.
     var onSystemAudioHealthEpisode: ((MeetingSystemAudioHealthEvent) -> Void)?
     var manualNotesProvider: (() async -> String?)?
+    var participantNamesProvider: (() async -> [String])?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
@@ -641,7 +642,7 @@ final class MeetingSession {
         fputs("[meeting] recording discarded\n", stderr)
     }
 
-    func stop() async throws -> MeetingSessionResult {
+    func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
@@ -700,6 +701,10 @@ final class MeetingSession {
             }
         }
 
+        // Persist retained audio before final ASR or summary work can fail.
+        // Retention is best-effort and must not bypass ASR or session teardown.
+        await onRecordingReady?(retainedRecordingURL, retainedRecordingWriterError)
+
         var micTailFinalized = false
         var systemTailFinalized = false
         if usesStreamingFinalTranscript {
@@ -745,6 +750,7 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -870,6 +876,7 @@ final class MeetingSession {
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
         let manualNotes = await manualNotesProvider?()
+        let participantNames = await participantNamesProvider?() ?? []
         let formattedNotes: String
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
@@ -879,6 +886,7 @@ final class MeetingSession {
                 template: templateSnapshot,
                 existingNotes: nil,
                 manualNotesToRetain: manualNotes,
+                participantNames: participantNames,
                 visualContext: visualContext.isEmpty ? nil : visualContext,
                 previousMeetingNotes: previousMeetingNotes
             )
@@ -1052,6 +1060,7 @@ final class MeetingSession {
                         backend: backend,
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1263,6 +1272,7 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 bodhanLanguage: config.resolvedBodhanLanguage,
+                bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1374,6 +1384,7 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1409,6 +1420,7 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 bodhanLanguage: config.resolvedBodhanLanguage,
+                bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage

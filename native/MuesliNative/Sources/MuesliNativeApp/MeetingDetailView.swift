@@ -1,7 +1,7 @@
 import SwiftUI
 import MuesliCore
 
-private enum MeetingDocumentMode: Hashable {
+enum MeetingDocumentMode: Hashable {
     case notes
     case transcript
 }
@@ -87,7 +87,10 @@ struct MeetingDetailView: View {
     let backLabel: String
     @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
     @State private var isSummarizing = false
-    @State private var isRetranscribing = false
+    private var isRetranscribing: Bool {
+        guard let id = meeting?.id else { return false }
+        return appState.meetingRetranscriptions[id]?.isRunning == true
+    }
     @State private var isEditingNotes = false
     @State private var isEditingTranscript = false
     @State private var editableTitle: String
@@ -106,6 +109,7 @@ struct MeetingDetailView: View {
     @State private var manualNotesSaveStatusTask: DispatchWorkItem?
     @State private var summaryErrorMessage: String?
     @State private var retranscriptionErrorMessage: String?
+    @State private var pendingRetranscriptionBackend: BackendOption?
     @State private var showDeleteConfirmation = false
     @State private var transcriptResummaryPromptMeetingID: Int64?
     @State private var transcriptEditOriginalTranscript: String?
@@ -142,6 +146,8 @@ struct MeetingDetailView: View {
             if let meeting {
                 VStack(alignment: .leading, spacing: 0) {
                     header(meeting)
+
+                    retranscriptionStatus(for: meeting)
 
                     Divider()
                         .background(MuesliTheme.surfaceBorder)
@@ -190,6 +196,24 @@ struct MeetingDetailView: View {
         } message: {
             Text(summaryErrorMessage ?? "The updated meeting notes could not be saved.")
         }
+        .confirmationDialog("Re-transcribe saved recording?", isPresented: Binding(
+            get: { pendingRetranscriptionBackend != nil },
+            set: { if !$0 { pendingRetranscriptionBackend = nil } }
+        ), titleVisibility: .visible) {
+            Button("Re-transcribe") {
+                if let model = pendingRetranscriptionBackend, let meeting {
+                    controller.retranscribe(meeting: controller.meeting(id: meeting.id) ?? meeting, backend: model) { result in
+                        if case .failure(let error) = result, appState.meetingRetranscriptions[meeting.id] == nil {
+                            retranscriptionErrorMessage = error.localizedDescription
+                        }
+                    }
+                }
+                pendingRetranscriptionBackend = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
+        } message: {
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
+        }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {
                 retranscriptionErrorMessage = nil
@@ -198,14 +222,25 @@ struct MeetingDetailView: View {
             Text(retranscriptionErrorMessage ?? "The saved recording could not be re-transcribed.")
         }
         .alert("Re-summarize Notes?", isPresented: transcriptResummaryPromptBinding) {
-            Button("Re-summarize") {
-                resummarizeAfterTranscriptEdit()
+            if hasApiKey {
+                Button("Re-summarize") {
+                    resummarizeAfterTranscriptEdit()
+                }
+            } else {
+                Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                    transcriptResummaryPromptMeetingID = nil
+                    controller.openHistoryWindow(tab: .settings)
+                }
             }
             Button("Not Now", role: .cancel) {
                 transcriptResummaryPromptMeetingID = nil
             }
         } message: {
-            Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            if hasApiKey {
+                Text("Your transcript edits may change the generated notes. Re-summarize now to update them from the edited transcript.")
+            } else {
+                Text("Your transcript edits were saved. Configure \(appState.selectedMeetingSummaryBackend.label) to regenerate notes. Existing notes are kept.")
+            }
         }
         .alert("Delete Meeting", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -322,6 +357,7 @@ struct MeetingDetailView: View {
                 .layoutPriority(1)
 
                 if showsManualNotesEditor(for: meeting) {
+                    recordingRecoveryHeaderAction(for: meeting)
                     compactRecordingControls(for: meeting)
                 } else {
                     compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
@@ -430,7 +466,10 @@ struct MeetingDetailView: View {
         appliedTemplate: MeetingTemplateSnapshot
     ) -> some View {
         if showsManualNotesEditor(for: meeting) {
-            recordingControlGroup(for: meeting)
+            HStack(spacing: MuesliTheme.spacing8) {
+                recordingRecoveryHeaderAction(for: meeting)
+                recordingControlGroup(for: meeting)
+            }
         } else {
             compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
         }
@@ -805,39 +844,69 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
-    private func retranscribeAction(for meeting: MeetingRecord) -> some View {
-        if meeting.savedRecordingPath != nil {
-            if isRetranscribing {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Re-transcribing...")
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+    private func retranscribeAction(for meeting: MeetingRecord, accessibilityIdentifier: String) -> some View {
+        if meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+           meeting.status != .recording, meeting.status != .noteOnly {
+            Menu {
+                let models = BackendOption.downloadedMeetingTranscription
+                if models.isEmpty { Text("Download a meeting model in Settings") }
+                ForEach(models, id: \.model) { model in
+                    Button(model.label) {
+                        pendingRetranscriptionBackend = model
+                    }
                 }
-                .padding(.horizontal, MuesliTheme.spacing8)
-            } else {
-                iconButton("arrow.clockwise", label: "Re-transcribe") {
-                    startRetranscription(for: meeting)
-                }
-                .disabled(meeting.status == .recording || meeting.status == .processing || isEditingNotes || isEditingTranscript)
+            } label: {
+                Label("Re-transcribe", systemImage: "waveform")
             }
+            .disabled(!controller.canRetranscribeMeeting(meeting) || isSummarizing || isEditingNotes || isEditingTranscript)
+            .accessibilityIdentifier(accessibilityIdentifier)
         }
     }
 
-    private func startRetranscription(for meeting: MeetingRecord) {
-        isRetranscribing = true
-        controller.retranscribe(meeting: meeting) { [meeting] result in
-            isRetranscribing = false
-            switch result {
-            case .success:
-                if let updated = controller.meeting(id: meeting.id) {
-                    syncLocalState(with: updated)
-                }
-            case .failure(let error):
-                retranscriptionErrorMessage = error.localizedDescription
-            }
+    @ViewBuilder
+    private func recordingRecoveryHeaderAction(for meeting: MeetingRecord) -> some View {
+        if Self.showsRecordingRecoveryAction(for: meeting) {
+            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
         }
+    }
+
+    @ViewBuilder
+    private func retranscriptionStatus(for meeting: MeetingRecord) -> some View {
+        if appState.meetingRetranscriptions[meeting.id] != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    if let job = appState.meetingRetranscriptions[meeting.id] {
+                        if job.isRunning { ProgressView().controlSize(.small) }
+                        Text(job.message).font(.callout)
+                        Spacer()
+                        if job.isRunning {
+                            Button("Cancel") { controller.cancelMeetingRetranscription(id: meeting.id) }
+                        } else {
+                            Button("Dismiss") { appState.meetingRetranscriptions[meeting.id] = nil }
+                        }
+                    }
+                }
+                if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
+                    if job.phase == .transcribing || job.phase == .diarizing { ProgressView(value: job.fraction) }
+                    if !job.preview.isEmpty {
+                        Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
+                    }
+                }
+                if let warning = appState.meetingRetranscriptions[meeting.id]?.warning {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("meeting.retranscription.diarizationWarning")
+                }
+            }
+            .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+            .padding(.bottom, 12)
+            .accessibilityIdentifier("meeting.retranscription.status")
+        }
+    }
+
+    static func showsRecordingRecoveryAction(for meeting: MeetingRecord) -> Bool {
+        meeting.status == .failed && meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     @ViewBuilder
@@ -894,8 +963,6 @@ struct MeetingDetailView: View {
     private func contentToolbar(for meeting: MeetingRecord) -> some View {
         HStack {
             Spacer()
-
-            retranscribeAction(for: meeting)
 
             Button(action: {
                 controller.copyToClipboard(activeCopyText(for: meeting))
@@ -1130,8 +1197,14 @@ struct MeetingDetailView: View {
             }
 
             Menu {
-                Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
-                    beginSummary(for: meeting)
+                if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
+                    Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                        beginSummary(for: meeting)
+                    }
+                } else {
+                    Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                        controller.openHistoryWindow(tab: .settings)
+                    }
                 }
                 Divider()
                 ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
@@ -1161,6 +1234,8 @@ struct MeetingDetailView: View {
                 Label(primarySummaryActionLabel(for: meeting), systemImage: "sparkles")
             }
             .disabled(isSummarizing || isRetranscribing)
+
+            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.menu.models")
 
             Button {
                 toggleEditing(for: meeting)
@@ -1549,7 +1624,7 @@ struct MeetingDetailView: View {
             } else {
                 Image(systemName: "key.fill")
                     .foregroundStyle(MuesliTheme.accent)
-                Text("Add your API key in Settings to generate meeting notes")
+                Text("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings to generate meeting notes")
                     .font(MuesliTheme.callout())
                     .foregroundStyle(MuesliTheme.textSecondary)
                 Spacer()
@@ -1591,22 +1666,7 @@ struct MeetingDetailView: View {
     }
 
     private var hasApiKey: Bool {
-        let config = appState.config
-        if appState.selectedMeetingSummaryBackend == .chatGPT {
-            return appState.isChatGPTAuthenticated
-        } else if appState.selectedMeetingSummaryBackend == .openAI {
-            return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
-        } else if appState.selectedMeetingSummaryBackend == .ollama {
-            return true
-        } else if appState.selectedMeetingSummaryBackend == .lmStudio {
-            return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
-        } else if appState.selectedMeetingSummaryBackend == .customLLM {
-            return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
-        } else {
-            return !OpenRouterCredentialResolver.resolvedAPIKey(
-                legacyAPIKey: config.openRouterAPIKey
-            ).isEmpty
-        }
+        controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend)
     }
 
     private var primarySummaryActionLabel: String {
@@ -1632,10 +1692,46 @@ struct MeetingDetailView: View {
     private func activeCopyText(for meeting: MeetingRecord) -> String {
         switch documentMode {
         case .notes:
-            return isEditingNotes ? editableNotes : Self.notesContent(for: meeting)
+            return Self.copyContent(for: meeting, content: .notes,
+                                    editedText: isEditingNotes ? editableNotes : nil)
         case .transcript:
-            return isEditingTranscript ? editableTranscript : meeting.rawTranscript
+            return Self.copyContent(for: meeting, content: .transcript,
+                                    editedText: isEditingTranscript ? editableTranscript : nil)
         }
+    }
+
+    /// Composes exactly the body selected by Copy, including unsaved edits.
+    static func copyContent(
+        for meeting: MeetingRecord,
+        content: MeetingDocumentMode,
+        editedText: String? = nil
+    ) -> String {
+        var body: String
+        switch content {
+        case .notes:
+            body = editedText ?? notesCopyContent(for: meeting)
+            // The raw-notes editor includes a display-only title. Remove only
+            // that exact leading heading before adding the metadata title.
+            if editedText != nil, meeting.status != .noteOnly,
+               meeting.notesState != .structuredNotes {
+                let title = "# \(meeting.title)"
+                if body == title {
+                    body = ""
+                } else {
+                    for newline in ["\r\n", "\n"] {
+                        let prefix = title + newline
+                        if body.hasPrefix(prefix) {
+                            body = String(body.dropFirst(prefix.count))
+                            break
+                        }
+                    }
+                }
+            }
+        case .transcript:
+            body = editedText ?? meeting.rawTranscript
+        }
+        let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
+        return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
@@ -1678,6 +1774,16 @@ struct MeetingDetailView: View {
         }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+        }
+        return meeting.formattedNotes
+    }
+
+    static func notesCopyContent(for meeting: MeetingRecord) -> String {
+        if meeting.status == .noteOnly {
+            return meeting.manualNotes
+        }
+        if meeting.notesState != .structuredNotes {
+            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
     }
@@ -2114,6 +2220,8 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }
         if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }

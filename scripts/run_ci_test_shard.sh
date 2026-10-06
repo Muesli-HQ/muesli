@@ -19,6 +19,9 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      ComputerUseSettingsTests
+      ComputerUseLocalPlannerTests
+      ComputerUseLocalPlannerBenchmarkTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests
@@ -42,7 +45,10 @@ case "${shard}" in
       OnboardingFlowTests
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
+      FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
+      NotchIndicatorTests
+      RecordingIndicatorStyleTests
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
@@ -86,6 +92,7 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       QuilTransformationTests
@@ -125,16 +132,23 @@ case "${shard}" in
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
+      MeetingContactResolverTests
       MeetingDetectorTests
       MeetingParticipantStoreTests
       MeetingProcessingStageTests
       MeetingRecordingWriterTests
+      MeetingRecordingTranscriberTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
+      CustomLLMAPIKeyResolutionTests
+      CustomLLMHeaderPropagationTests
+      CustomLLMRequestHeadersTests
+      SettingsModelFieldTests
       MeetingSummaryClientTests
+      ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
