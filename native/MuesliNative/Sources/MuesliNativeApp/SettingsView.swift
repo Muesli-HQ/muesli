@@ -2081,9 +2081,7 @@ struct SettingsView: View {
 
             settingsSection("Manual Export") {
                 settingsRow("Open file after exporting") {
-                    settingsSwitch(isOn: appState.config.openFileAfterManualExport) { newValue in
-                        controller.updateConfig { $0.openFileAfterManualExport = newValue }
-                    }
+                    settingsControl("open_after_manual_export")
                 }
                 Text("Opens the exported file in its default app after saving from the Export menu. The Export menu also remembers your last-used format.")
                     .font(MuesliTheme.caption())

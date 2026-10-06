@@ -474,6 +474,7 @@ struct ComputerUseSettingsTests {
             ("summary_anthropic_model", SummaryModelPreset.anthropicModels.last!.id),
             ("cleanup_anthropic_model", SummaryModelPreset.anthropicModels.last!.id),
             ("summary_claude_code_model", "sonnet"), ("summary_claude_code_model", ""),
+            ("open_after_manual_export", "off"),
         ] {
             let snapshots = settings.map { $0.snapshot(config: controller.config) }
             _ = try await MuesliSettings.apply(.init(setting: setting, value: value), settings: settings,
@@ -484,6 +485,8 @@ struct ComputerUseSettingsTests {
         #expect(controller.config.recordingIndicatorStyle == .classic)
         #expect(!controller.config.soundEnabled)
         #expect(!configStore.load().soundEnabled)
+        #expect(!controller.config.openFileAfterManualExport)
+        #expect(!configStore.load().openFileAfterManualExport)
     }
 
     @Test("shortcut catalog applies all four assignments, validates combinations, and preserves conflicts")
