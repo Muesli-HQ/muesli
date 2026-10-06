@@ -118,4 +118,49 @@ struct MeetingChatRetrievalTests {
         }
         #expect(indexed == 0)
     }
+
+    @Test func warmSearchDoesNotReadUnchangedMeetingContent() throws {
+        let store = try database()
+        _ = try insert(store, text: "sunflower launch")
+        let changedID = try insert(store, text: "routine review")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        let cold = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(cold.metrics.reindexedMeetingCount == 2)
+        let warm = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(warm.metrics.reindexedMeetingCount == 0)
+        #expect(warm.metrics.sourceSnapshotCount == 0)
+        try store.updateMeetingTranscript(id: changedID, rawTranscript: "sunflower changed")
+        let updated = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(updated.metrics.reindexedMeetingCount == 1)
+        #expect(updated.metrics.sourceSnapshotCount == 1)
+        #expect(updated.passages.contains { $0.meetingID == changedID })
+    }
+
+    @Test func boundsBroadRecapCandidateDecodingAndMarksTruncation() throws {
+        let store = try database()
+        _ = try insert(store, text: (0..<600).map { "[00:00:01] You: Item \($0)." }.joined(separator: "\n"))
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(evidence.metrics.decodedCandidateCount <= 257)
+        #expect(evidence.coverage.isPartialRecap)
+    }
+
+    @Test func benchmarkWarmArchiveSearch() throws {
+        let store = try database()
+        for index in 0..<1_000 {
+            _ = try insert(store, text: "[00:00:01] You: Project \(index) reviewed.\n" + String(repeating: "Routine discussion.\n", count: 30))
+        }
+        let target = try insert(store, text: "[00:00:05] You: The sunflower contract was approved.")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.retrieve(question: "sunflower", scope: .init())
+        var milliseconds: [Double] = []
+        for _ in 0..<7 {
+            let start = Date()
+            let evidence = try retrieval.retrieve(question: "sunflower", scope: .init())
+            milliseconds.append(Date().timeIntervalSince(start) * 1_000)
+            #expect(evidence.passages.first?.meetingID == target)
+            #expect(evidence.metrics.sourceSnapshotCount == 0)
+        }
+        print("Synthetic 1,001-meeting archive warm search milliseconds: \(milliseconds.sorted())")
+        // Report timing without a flaky wall-clock assertion; deterministic work bounds are asserted above.
+    }
 }

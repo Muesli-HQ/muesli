@@ -83,6 +83,8 @@ Keep these separate from the already large controller and meeting-detail files. 
 
 Use the existing meeting summary provider, model, reasoning settings, endpoint configuration, and credential resolution: ChatGPT, OpenAI, OpenRouter, Ollama, LM Studio, and Custom LLM. Approval of this design confirms reuse of the user's existing in-app connection for meeting chat rather than provisioning a new OpenAI API key. Missing credentials are handled through the existing Settings UX.
 
+Following the user's speed priority, local retrieval performs no model calls. For answer generation, the recommended fast profile within ChatGPT/OpenAI is the already-supported `gpt-5.4-mini` with no additional reasoning effort, while retaining citation validation. Other connections retain a model that is actually configured/available; do not download a local model or switch providers automatically. The fast-answer versus selected-answer preference is being clarified; search optimization is independent of that choice. Official model guidance: https://developers.openai.com/api/docs/models/gpt-5.4-mini .
+
 Introduce a shared text-generation boundary only where needed to reuse the existing Responses, chat-completions, and Anthropic-messages transports. Preserve summary-specific prompting and tests. Chat does not fall back to another provider after a failure, switch a local selection to a cloud service, or change saved model defaults.
 
 Automated tests use mocked transports and synthetic content. This design does not authorize the assistant to read production meeting data or send production content for live validation. Any later live smoke test uses explicitly approved synthetic input and the selected connection.
@@ -91,6 +93,7 @@ Automated tests use mocked transports and synthetic content. This design does no
 
 - Read immutable source snapshots from SQLite: meeting ID, title, start time, status/folder, transcript, manual/generated notes, participant display names where available, and a content revision/hash.
 - Search the entire eligible corpus with local passage indexing and SQLite FTS5. A parameterized escaped text-query fallback is required if FTS5 is unavailable; initialization cannot break app launch. Rebuild derived index entries for changed content and remove tombstoned content before querying.
+- Search speed is a user priority. Maintain a SQLite dirty-source queue and indexed scope metadata so warm queries do not reread unchanged transcripts or take a writer lock. Reconcile only new/edited meetings; offer background index preparation before the first question. Search requires no AI/network round trip. Limit candidate decoding to 256 passages plus one overflow sentinel, applying scope restrictions before the limit, and mark broad recaps as partial when that limit applies.
 - Keep transcript passage boundaries, speaker labels, and original timestamps. Notes use paragraph/heading boundaries. Indexing normalizes text for matching while preserving the exact original excerpt and location for citations.
 - Use scope metadata for date/folder/selected-ID restrictions, then local lexical relevance to choose passages. Include the current question plus a bounded previous user-question context to support follow-ups. Broad recap prompts select representative notes/passages within the scope and report incomplete coverage when bounded.
 - This first PR has no embedding service, vector dependency, or provider-specific tool-calling requirement. Lexical retrieval can miss paraphrases; surface insufficient evidence and allow scope narrowing rather than claiming exhaustive semantic recall.
@@ -128,6 +131,7 @@ Paths are relative to `native/MuesliNative/Sources/`; line numbers describe the 
 - [ ] Transcript and note citations show accurate metadata/excerpts; unknown IDs, fabricated timestamps, and invalid navigation targets are rejected.
 - [ ] Each provider's request/response contract is covered with mocked transport, including authentication/configuration failure, cancellation, and malformed replies. Existing meeting-summary tests continue passing.
 - [ ] Coverage metadata distinguishes corpus search from evidence reviewed. Small complete-scope recaps include all eligible fixtures; oversized scope recaps are visibly partial.
+- [ ] Warm search reads zero unchanged source snapshots; an edit reindexes only that meeting. Report cold/warm timings on a synthetic 1,001-meeting archive and verify bounded candidate decoding without flaky wall-clock test thresholds.
 - [ ] Stopping, retrying, switching chats, deleting chats, and restarting cannot duplicate questions, lose completed history, or misroute late responses.
 - [ ] Local deletion, synced tombstones, history wiping, edits during generation, and transitively dependent turns follow the lifecycle rules above.
 - [ ] Copy/Markdown/PDF retain readable references and excerpts; edited drafts stay distinct from original answers. PDF pagination and save-sheet cancellation are checked.
@@ -145,3 +149,4 @@ Tool preflight found git, gh, Swift/Xcode entry points, xcodegen, cmake, and Bun
 
 2026-10-06 : Record approved feature scope and implementation constraints for review : Added this design on `codex/ask-meetings`; product code unchanged.
 2026-10-06 : Record written-design approval and recheck readiness : User approved the spec and existing connection reuse; Xcode license preflight now passes. Corrected the description of direct-folder chat scope without changing its behavior.
+2026-10-06 : Prioritize search responsiveness following user direction : Added incremental source indexing, bounded candidate reads, and a synthetic warm-search benchmark. AI answer model preference is a separate pending clarification.

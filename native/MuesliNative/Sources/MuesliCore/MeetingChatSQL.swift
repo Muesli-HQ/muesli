@@ -59,6 +59,25 @@ enum MeetingChatSQL {
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_dependencies_source ON meeting_chat_dependencies(meeting_id)",
             "CREATE TABLE IF NOT EXISTS meeting_chat_passages (id TEXT PRIMARY KEY, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, text TEXT NOT NULL, body TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_passages_source ON meeting_chat_passages(meeting_id)",
+            "CREATE TABLE IF NOT EXISTS meeting_chat_dirty_sources (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE)",
+            "CREATE TABLE IF NOT EXISTS meeting_chat_index_state (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, start_time REAL NOT NULL, folder_id INTEGER)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_chat_index_scope ON meeting_chat_index_state(folder_id,start_time)",
+            """
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_inserted AFTER INSERT ON meetings
+            WHEN NEW.deleted_at IS NULL BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources VALUES(NEW.id); END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_edited
+            AFTER UPDATE OF title,start_time,folder_id,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
+            WHEN NEW.deleted_at IS NULL BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources VALUES(NEW.id); END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_deleted AFTER UPDATE OF deleted_at ON meetings
+            WHEN NEW.deleted_at IS NOT NULL BEGIN
+              DELETE FROM meeting_chat_index_state WHERE meeting_id=NEW.id;
+              DELETE FROM meeting_chat_dirty_sources WHERE meeting_id=NEW.id;
+            END
+            """,
             """
             CREATE TRIGGER IF NOT EXISTS meeting_chat_source_deleted AFTER UPDATE OF deleted_at ON meetings
             WHEN NEW.deleted_at IS NOT NULL
@@ -79,17 +98,33 @@ enum MeetingChatSQL {
             """
         ]
         for sql in statements { try execute(sql, db: db) }
+        for (name, event, owner) in [("inserted", "INSERT", "NEW"), ("edited", "UPDATE", "NEW"), ("removed", "DELETE", "OLD")] {
+            try execute("""
+                CREATE TRIGGER IF NOT EXISTS meeting_chat_participant_\(name) AFTER \(event) ON meeting_participants
+                BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources
+                  SELECT id FROM meetings WHERE id=\(owner).meeting_id AND deleted_at IS NULL; END
+                """, db: db)
+        }
+        try execute("""
+            INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM meetings
+            WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_incremental_index_v1')
+            """, db: db)
+        try execute("INSERT OR IGNORE INTO local_migrations VALUES('meeting_chat_incremental_index_v1',strftime('%s','now'))", db: db)
     }
 
     static func invalidateSources(meetingIDs: [Int64], db: OpaquePointer?) throws {
         for id in meetingIDs {
             try execute("UPDATE meeting_chat_turns SET state='sourceDeleted', body=json_set(body,'$.state','sourceDeleted','$.originalAnswer',NULL,'$.editableDraft',NULL,'$.citations',json('[]'),'$.error',NULL) WHERE id IN (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=?)", [.integer(id)], db: db)
             try execute("DELETE FROM meeting_chat_passages WHERE meeting_id=?", [.integer(id)], db: db)
+            try execute("DELETE FROM meeting_chat_index_state WHERE meeting_id=?", [.integer(id)], db: db)
+            try execute("DELETE FROM meeting_chat_dirty_sources WHERE meeting_id=?", [.integer(id)], db: db)
         }
     }
     static func clear(db: OpaquePointer?) throws {
         try execute("DELETE FROM meeting_chat_sessions", db: db)
         try execute("DELETE FROM meeting_chat_passages", db: db)
+        try execute("DELETE FROM meeting_chat_index_state", db: db)
+        try execute("DELETE FROM meeting_chat_dirty_sources", db: db)
     }
 
     static func snapshots(scope: MeetingChatScope, db: OpaquePointer?, afterID: Int64 = 0, limit: Int = 200) throws -> [MeetingChatSourceSnapshot] {

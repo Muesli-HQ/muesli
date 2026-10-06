@@ -22,8 +22,21 @@ public struct MeetingChatEvidence: Sendable {
     public var passages: [MeetingChatPassage]
     public var dependencies: [MeetingChatDependency]
     public var coverage: MeetingChatCoverage
-    public init(scope: MeetingChatScope, passages: [MeetingChatPassage], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage) {
+    public var metrics: MeetingChatRetrievalMetrics
+    public init(scope: MeetingChatScope, passages: [MeetingChatPassage], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage, metrics: MeetingChatRetrievalMetrics = .init()) {
         self.scope = scope; self.passages = passages; self.dependencies = dependencies; self.coverage = coverage
+        self.metrics = metrics
+    }
+}
+
+/// Work counters contain no meeting content and let tests prove that warm queries avoid source scans.
+public struct MeetingChatRetrievalMetrics: Sendable {
+    public var sourceSnapshotCount: Int
+    public var reindexedMeetingCount: Int
+    public var decodedCandidateCount: Int
+    public init(sourceSnapshotCount: Int = 0, reindexedMeetingCount: Int = 0, decodedCandidateCount: Int = 0) {
+        self.sourceSnapshotCount = sourceSnapshotCount; self.reindexedMeetingCount = reindexedMeetingCount
+        self.decodedCandidateCount = decodedCandidateCount
     }
 }
 
