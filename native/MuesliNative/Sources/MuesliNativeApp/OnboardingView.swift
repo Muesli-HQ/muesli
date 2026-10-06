@@ -548,7 +548,7 @@ struct OnboardingView: View {
     private var dictationTestSubtitle: AttributedString {
         let markdown: String
         if isSelectedModelReadyForDictationTest, isSelectedHotkeyToggle {
-            markdown = "Hold **\(selectedHotkey.label)** to start, then hold it again when done.\nYour words should appear below."
+            markdown = "Press **\(selectedHotkey.label)** to start, then press it again when done.\nYour words should appear below."
         } else if isSelectedModelReadyForDictationTest {
             markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
                 ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
@@ -1417,7 +1417,9 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
+                Text(isSelectedHotkeyToggle
+                    ? "Press your key combination to record, then press it again to transcribe."
+                    : "Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -1581,7 +1583,7 @@ struct OnboardingView: View {
                             ProgressView()
                                 .controlSize(.small)
                             Text(isSelectedHotkeyToggle
-                                ? "Listening... hold \(selectedHotkey.label) again when done"
+                                ? "Listening... press \(selectedHotkey.label) again when done"
                                 : "Listening... release \(selectedHotkey.label) when done")
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textSecondary)
@@ -1590,7 +1592,7 @@ struct OnboardingView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "keyboard")
                                 .font(.system(size: 14))
-                            Text("Hold \(selectedHotkey.label) to start")
+                            Text("\(isSelectedHotkeyToggle ? "Press" : "Hold") \(selectedHotkey.label) to start")
                                 .font(MuesliTheme.body())
                         }
                         .foregroundStyle(MuesliTheme.textTertiary)

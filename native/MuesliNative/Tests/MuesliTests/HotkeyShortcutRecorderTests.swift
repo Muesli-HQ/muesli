@@ -5,6 +5,50 @@ import Testing
 @Suite("Hotkey shortcut recorder", .serialized)
 @MainActor
 struct HotkeyShortcutRecorderTests {
+    @Test("toggle setup refuses a bare modifier and keeps capturing until a chord is released")
+    func toggleRequiresCombination() throws {
+        var handler: ((NSEvent) -> NSEvent?)?
+        var saved: [HotkeyConfig] = []
+        var releases = 0
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        _ = recorder.start(.dictation, requiresCombination: true, acquire: { true },
+            release: { releases += 1 }, commit: { saved.append($0) })
+        _ = handler?(try event(.flagsChanged, key: 59, flags: .control))
+        _ = handler?(try event(.flagsChanged, key: 59))
+        #expect(recorder.target == .dictation)
+        #expect(recorder.requiresCombination)
+        #expect(recorder.rejectedChord)
+        #expect(saved.isEmpty)
+
+        _ = handler?(try event(.keyDown, key: 2, flags: [.control, .option]))
+        #expect(!recorder.rejectedChord)
+        _ = handler?(try event(.keyUp, key: 2, flags: [.control, .option]))
+        #expect(saved.isEmpty)
+        _ = handler?(try event(.flagsChanged, key: 59, flags: .option))
+        _ = handler?(try event(.flagsChanged, key: 58))
+        #expect(saved == [.combination(modifiers: [.control, .option], keyCode: 2)])
+        #expect(releases == 1)
+        #expect(recorder.target == nil)
+        #expect(!recorder.requiresCombination)
+    }
+
+    @Test("cancelling toggle setup clears its intent without saving")
+    func cancelToggleSetup() throws {
+        var handler: ((NSEvent) -> NSEvent?)?
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        for escape in [false, true] {
+            _ = recorder.start(.dictation, requiresCombination: true, acquire: { true }, release: {},
+                commit: { _ in Issue.record("Cancelled toggle setup saved a shortcut") })
+            if escape { _ = handler?(try event(.keyDown, key: 53)) }
+            else { recorder.cancel() }
+            #expect(recorder.target == nil)
+            #expect(!recorder.requiresCombination)
+        }
+        _ = recorder.start(.dictation, acquire: { true }, release: {}, commit: { _ in })
+        #expect(!recorder.requiresCombination)
+        recorder.cancel()
+    }
+
     @Test("bare modifier commits on release only when pressed alone")
     func bareModifier() {
         var capture = HotkeyShortcutCaptureState(target: .dictation)

@@ -761,6 +761,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
+        hotkeyMonitor.combinationToggleRequiresHold = false
         hotkeyMonitor.registersCombinationGlobally = true
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
@@ -1736,6 +1737,7 @@ public final class MuesliController: NSObject {
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
         quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
@@ -2913,13 +2915,23 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func applySetting(_ id: String, value: String) async throws {
-        let definitions = settingsDefinitions()
+    func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
+        if dictationToggleShortcut != nil,
+           id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
+            throw MuesliSettings.Failure.rejected("A captured toggle shortcut can only set dictation Toggle mode.")
+        }
+        let definitions = settingsDefinitions(dictationToggleShortcut: dictationToggleShortcut)
         _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
             snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
             persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
             })
+        if let dictationToggleShortcut {
+            let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath()))
+            guard config.dictationHotkey == dictationToggleShortcut, saved.dictationHotkey == dictationToggleShortcut else {
+                throw MuesliSettings.Failure.rejected("The toggle shortcut could not be verified. Check Shortcuts before using it.")
+            }
+        }
     }
 
     func selectPrimaryDictationModelForComputerUse(_ option: BackendOption) {
@@ -4489,8 +4501,20 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = validateDictationHotkey(hotkey)
+        guard result.didUpdate else { return result }
+        updateConfig {
+            $0.dictationHotkey = hotkey
+            if !hotkey.isCombination { $0.dictationCombinationActivation = .pushToTalk }
+        }
+        hotkeyMonitor.configure(hotkey)
+        configureComputerUseHotkeyMonitor()
+        return result
+    }
+
+    private func validateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateDictationHotkey(
             hotkey,
@@ -4509,23 +4533,49 @@ public final class MuesliController: NSObject {
            ShortcutHotkeyPolicy.hotkeysConflict(hotkey, Self.hotkey(for: pasteChord)) {
             return .conflict(message: ShortcutHotkeyPolicy.pasteConflictMessage)
         }
-        updateConfig { $0.dictationHotkey = hotkey }
-        hotkeyMonitor.configure(hotkey)
-        configureComputerUseHotkeyMonitor()
         return result
     }
 
-    func updateDictationCombinationActivation(_ activation: HotkeyMonitor.CombinationActivation) {
-        updateConfig { $0.dictationCombinationActivation = activation }
-        hotkeyMonitor.combinationActivation = activation
-        // Ends any session started under the previous activation before it can be misread.
-        hotkeyMonitor.configure(config.dictationHotkey)
+    var dictationActivationUnavailableReason: String? {
+        ShortcutHotkeyPolicy.dictationActivationUnavailableReason(
+            state: dictationState,
+            hasHotkeySession: hotkeyMonitor.hasPendingOrActiveSession,
+            isCapturingShortcut: isCapturingShortcut
+        )
+    }
+
+    func updateDictationCombinationActivation(_ activation: HotkeyMonitor.CombinationActivation, shortcut: HotkeyConfig? = nil) throws {
+        if let reason = dictationActivationUnavailableReason {
+            throw MuesliSettings.Failure.rejected(reason)
+        }
+        let hotkey = shortcut ?? config.dictationHotkey
+        if activation == .toggle && !hotkey.isCombination {
+            throw MuesliSettings.Failure.rejected("Toggle activation needs a dictation key combination. Assign one first.")
+        }
+        if let shortcut {
+            guard activation == .toggle else {
+                throw MuesliSettings.Failure.rejected("Shortcut setup requires Toggle mode.")
+            }
+            let result = validateDictationHotkey(shortcut)
+            guard result.didUpdate else {
+                throw MuesliSettings.Failure.rejected(result.message ?? "Choose another shortcut.")
+            }
+        }
+        guard activation != config.dictationCombinationActivation || shortcut != nil else { return }
+        updateConfig {
+            if let shortcut { $0.dictationHotkey = shortcut }
+            $0.dictationCombinationActivation = activation
+        }
+        if let shortcut {
+            hotkeyMonitor.configure(shortcut)
+            configureComputerUseHotkeyMonitor()
+        }
     }
 
     @discardableResult
     func updateComputerUseHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateComputerUseHotkey(
             hotkey,
@@ -4549,7 +4599,7 @@ public final class MuesliController: NSObject {
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.quilHotkey) {
-                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
             }
             let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
                 currentHotkey: config.computerUseHotkey,
@@ -4558,8 +4608,7 @@ public final class MuesliController: NSObject {
                 isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
             )
             guard resolution.result.didUpdate else {
-                fputs("[hotkeys] rejected computer use enable because fallback conflicts with another shortcut\n", stderr)
-                configureComputerUseHotkeyMonitor()
+                fputs("[hotkeys] rejected computer use enable because it overlaps another shortcut\n", stderr)
                 return resolution.result
             }
             updateConfig { config in
@@ -4600,7 +4649,7 @@ public final class MuesliController: NSObject {
     @discardableResult
     func updateMeetingRecordingHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             hotkey,
@@ -4622,7 +4671,7 @@ public final class MuesliController: NSObject {
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.meetingRecordingHotkey, config.quilHotkey) {
-                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
             }
             let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
                 config.meetingRecordingHotkey,
@@ -4932,6 +4981,21 @@ public final class MuesliController: NSObject {
         let candidate = Self.hotkey(for: chord)
         return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
             .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
+    }
+
+    @discardableResult
+    func updatePasteShortcut(
+        _ shortcut: PasteShortcut,
+        resolve: (PasteShortcut) -> PasteKeyChord? = PasteKeyboardLayout.resolve
+    ) -> ShortcutHotkeyUpdateResult {
+        guard let chord = resolve(shortcut) else {
+            return .unavailable(message: "Could not resolve paste for this keyboard layout. Record a custom paste shortcut instead.")
+        }
+        guard !pasteShortcutConflict(chord) else {
+            return .conflict(message: "That paste shortcut overlaps with another Muesli shortcut. Change it in Shortcuts first.")
+        }
+        updateConfig { $0.pasteShortcut = shortcut }
+        return .updated
     }
 
     func downloadModelForOnboarding(

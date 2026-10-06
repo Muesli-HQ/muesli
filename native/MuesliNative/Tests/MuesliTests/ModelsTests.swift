@@ -2978,6 +2978,109 @@ struct HotkeyMonitorTests {
         #expect(events == ["prepare", "start", "cancel", "prepare", "start", "stop"])
     }
 
+    @Test("dictation toggle starts on press, ignores repeats, and stops on the next press")
+    @MainActor
+    func immediateDictationToggleLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(startDelay: 0.5)
+        monitor.configure(.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start"])
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 1)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start", "stop"])
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start", "stop", "start", "cancel"])
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("rejected immediate toggle does not cancel other work or retry until release")
+    @MainActor
+    func rejectedImmediateToggleWaitsForRelease() {
+        let monitor = HotkeyMonitor()
+        monitor.configure(.combination(modifiers: .control, keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var starts = 0
+        var cancels = 0
+        monitor.onToggleStart = {
+            starts += 1
+            monitor.cancelToggleMode()
+        }
+        monitor.onCancel = { cancels += 1 }
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: .control)
+        #expect(starts == 1)
+        #expect(cancels == 0)
+        #expect(!monitor.isToggleRecording)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(starts == 2)
+        #expect(cancels == 0)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+    }
+
+    @Test("immediate toggle requires the exact chord and a new key press")
+    @MainActor
+    func immediateToggleExactChord() {
+        let monitor = HotkeyMonitor()
+        monitor.configure(.combination(modifiers: .control, keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("stop") }
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: [])
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: [.control, .shift])
+        #expect(events.isEmpty)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        #expect(events == ["start"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 49, flags: .control)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        #expect(events == ["start", "stop"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 49, flags: .control)
+    }
+
+    @Test("immediate combination policy does not turn modifier taps into toggle")
+    @MainActor
+    func immediatePolicyPreservesModifierHold() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.1, startDelay: 0.25)
+        monitor.configure(.default)
+        monitor.combinationToggleRequiresHold = false
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: .option)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: [])
+        scheduler.advance(by: 1)
+        #expect(events.isEmpty)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: .option)
+        scheduler.advance(by: 0.3)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: [])
+        #expect(events == ["start", "stop"])
+    }
+
     @Test("registered toggle chord starts and stops only after the hold threshold")
     @MainActor
     func registeredToggleChordLifecycle() {
@@ -3260,6 +3363,45 @@ struct WordCountTests {
 
 @Suite("HotkeyConfig")
 struct HotkeyConfigTests {
+    @Test("shortcut overlaps are symmetric and include modifier prefixes")
+    func shortcutPrefixOverlaps() {
+        let modifiers: [(UInt16, UInt16, NSEvent.ModifierFlags)] = [
+            (55, 54, .command), (59, 62, .control), (58, 61, .option), (56, 60, .shift)
+        ]
+        for (left, right, flag) in modifiers {
+            let chord = HotkeyConfig.combination(modifiers: [flag, .control], keyCode: 2)
+            for key in [left, right] {
+                let bare = HotkeyConfig(keyCode: key, label: "modifier")
+                #expect(ShortcutHotkeyPolicy.hotkeysConflict(bare, chord))
+                #expect(ShortcutHotkeyPolicy.hotkeysConflict(chord, bare))
+            }
+            #expect(!ShortcutHotkeyPolicy.hotkeysConflict(
+                HotkeyConfig(keyCode: left, label: "left"), HotkeyConfig(keyCode: right, label: "right")))
+        }
+        let controlD = HotkeyConfig.combination(modifiers: .control, keyCode: 2)
+        let controlShiftD = HotkeyConfig.combination(modifiers: [.control, .shift], keyCode: 2)
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(controlD, controlShiftD))
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(controlShiftD, controlD))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .combination(modifiers: .control, keyCode: 3)))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .combination(modifiers: .option, keyCode: 2)))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .quilDefault))
+    }
+
+    @Test("activation changes require idle dictation and no held shortcut or shortcut capture")
+    func activationChangesRequireIdle() {
+        for state in [DictationState.idle, .preparing, .recording, .transcribing] {
+            for hasHotkeySession in [false, true] {
+                for isCapturingShortcut in [false, true] {
+                    let reason = ShortcutHotkeyPolicy.dictationActivationUnavailableReason(
+                        state: state, hasHotkeySession: hasHotkeySession,
+                        isCapturingShortcut: isCapturingShortcut
+                    )
+                    #expect((reason == nil) == (state == .idle && !hasHotkeySession && !isCapturingShortcut))
+                }
+            }
+        }
+    }
+
 
     @Test("default is Right Option")
     func defaultConfig() {
@@ -3287,7 +3429,7 @@ struct HotkeyConfigTests {
             .computerUseDefault,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: true
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Computer Use Command", hotkey: .computerUseDefault)))
 
         #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
             .computerUseDefault,
@@ -3299,25 +3441,25 @@ struct HotkeyConfigTests {
             .default,
             dictationHotkey: .default,
             isComputerUseEnabled: true
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
 
         #expect(ShortcutHotkeyPolicy.validateComputerUseHotkey(
             .default,
             dictationHotkey: .default,
             isComputerUseEnabled: false
-        ) == .updated)
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
     }
 
-    @Test("hotkey policy moves computer use key when enabling with a stale conflict")
-    func hotkeyPolicyMovesComputerUseKeyWhenEnablingWithStaleConflict() {
+    @Test("hotkey policy preserves computer use key when rejecting a stale conflict")
+    func hotkeyPolicyPreservesComputerUseKeyWhenEnablingWithStaleConflict() {
         let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
             currentHotkey: .default,
             dictationHotkey: .default
         )
 
-        #expect(resolution.hotkey == .computerUseDefault)
-        #expect(resolution.result.didUpdate)
-        #expect(resolution.result.message == "Computer Use Command moved to Right Cmd to avoid matching Push to Talk.")
+        #expect(resolution.hotkey == .default)
+        #expect(!resolution.result.didUpdate)
+        #expect(resolution.result.message == ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default))
     }
 
     @Test("hotkey policy rejects computer use enable when fallback conflicts with meeting recording")
@@ -3330,7 +3472,7 @@ struct HotkeyConfigTests {
         )
 
         #expect(resolution.hotkey == .default)
-        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
     }
 
     @Test("hotkey policy rejects computer use enable when current shortcut conflicts with meeting recording")
@@ -3343,7 +3485,7 @@ struct HotkeyConfigTests {
         )
 
         #expect(resolution.hotkey == .computerUseDefault)
-        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Meeting Recording", hotkey: .computerUseDefault)))
     }
 
     @Test("combination conflicts ignore unsupported modifier flags")
@@ -3375,7 +3517,7 @@ struct HotkeyConfigTests {
         let uncommon = HotkeyConfig.combination(modifiers: [.command, .option, .control], keyCode: 46)
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             uncommon,
-            dictationHotkey: .default,
+            dictationHotkey: .quilDefault,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: false
         )
@@ -3466,7 +3608,7 @@ struct HotkeyConfigTests {
             isComputerUseEnabled: false,
             meetingRecordingHotkey: .meetingRecordingDefault,
             isMeetingRecordingEnabled: true
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Meeting Recording", hotkey: .meetingRecordingDefault)))
         #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
             .meetingRecordingDefault,
             computerUseHotkey: .computerUseDefault,
@@ -3477,7 +3619,7 @@ struct HotkeyConfigTests {
             dictationHotkey: .meetingRecordingDefault,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: false
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .meetingRecordingDefault)))
         #expect(ShortcutHotkeyPolicy.validateQuilHotkey(
             HotkeyConfig.combination(modifiers: .control, keyCode: 12),
             dictationHotkey: HotkeyConfig.combination(modifiers: [.control, .capsLock], keyCode: 12),
@@ -3485,7 +3627,7 @@ struct HotkeyConfigTests {
             isComputerUseEnabled: false,
             meetingRecordingHotkey: .meetingRecordingDefault,
             isMeetingRecordingEnabled: false
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .combination(modifiers: .control, keyCode: 12))))
     }
 
     @Test("combination dictation shortcuts round-trip and invalid saved shortcuts fall back")
@@ -3506,6 +3648,15 @@ struct HotkeyConfigTests {
             from: Data(#"{"dictation_combination_activation": "double_tap"}"#.utf8)
         )
         #expect(unknownActivation.dictationCombinationActivation == .pushToTalk)
+
+        let orphanedToggle = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"dictation_combination_activation": "toggle"}"#.utf8)
+        )
+        #expect(orphanedToggle.dictationCombinationActivation == .pushToTalk)
+        #expect(!orphanedToggle.isDictationCombinationToggle)
+        #expect(orphanedToggle.dictationStartPrompt == "Hold \(HotkeyConfig.default.label) to dictate")
+        #expect(decoded.isDictationCombinationToggle)
+        #expect(decoded.dictationStartPrompt == "Press \(decoded.dictationHotkey.label) to dictate")
 
         for invalid in [
             #"{"keyCode": 65535, "label": "⇧A", "combinationModifiers": 131072, "combinationKeyCode": 0}"#,

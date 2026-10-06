@@ -79,6 +79,8 @@ final class HotkeyMonitor {
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var combinationActivation: CombinationActivation = .toggle
+    /// Meeting shortcuts retain their hold guard; dictation opts into press-to-toggle.
+    var combinationToggleRequiresHold = true
     var registersCombinationGlobally = false
 
     // Combination mode (e.g. Cmd+Shift+R)
@@ -392,7 +394,7 @@ final class HotkeyMonitor {
                 onCancel?()
                 return true
             }
-            if combinationKeyDown {
+            if combinationKeyDown && !combinationTriggered {
                 cancelCurrentSession()
                 onCancel?()
                 return true
@@ -436,12 +438,17 @@ final class HotkeyMonitor {
         return true
     }
 
-    /// The chord must stay held for the start delay before it toggles, so a brief
-    /// press cannot start or stop a session.
     private func armCombinationToggle() {
+        guard !combinationKeyDown else { return }
         combinationKeyDown = true
         combinationTriggered = false
         combinationWorkItem?.cancel()
+        if !combinationToggleRequiresHold {
+            combinationWorkItem = nil
+            combinationTriggered = true
+            fireCombinationToggle()
+            return
+        }
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.combinationKeyDown, !self.combinationTriggered else { return }
             self.combinationTriggered = true
@@ -482,8 +489,7 @@ final class HotkeyMonitor {
     }
 
     private func fireCombinationToggle() {
-        combinationKeyDown = false
-
+        // Keep the physical press latched until release, including immediate toggles.
         if toggleActive {
             fputs("[hotkey] combination → toggle stop\n", stderr)
             toggleActive = false

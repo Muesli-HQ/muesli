@@ -84,26 +84,22 @@ struct ShortcutsView: View {
     private var recordingTarget: ShortcutTarget? { recorder.target }
 
     private var isDictationCombinationToggle: Bool {
-        appState.config.dictationHotkey.isCombination
-            && appState.config.dictationCombinationActivation == .toggle
+        appState.config.isDictationCombinationToggle
     }
 
     private var dictationCombinationActivationControl: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            Text("Activation")
+            Text("Recording mode")
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
             Spacer(minLength: MuesliTheme.spacing16)
-            Picker("Activation", selection: Binding(
-                get: { appState.config.dictationCombinationActivation },
-                set: { controller.updateDictationCombinationActivation($0) }
-            )) {
-                Text("Hold to talk").tag(HotkeyMonitor.CombinationActivation.pushToTalk)
-                Text("Toggle").tag(HotkeyMonitor.CombinationActivation.toggle)
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
+            MuesliSettingControl(
+                controller: controller,
+                id: "dictation_activation",
+                onShortcutCapture: prepareRecordingModeShortcut
+            )
             .frame(width: 200)
+            .help("Choose Press to toggle to record a modifier + key shortcut when needed.")
         }
         .disabled(!isPushToTalkEnabled || recordingTarget != nil)
         .opacity(isPushToTalkEnabled ? 1 : 0.55)
@@ -111,6 +107,11 @@ struct ShortcutsView: View {
 
     private var isPushToTalkEnabled: Bool {
         appState.config.enablePushToTalk
+    }
+
+    private func prepareRecordingModeShortcut(_ target: ShortcutAssignment, _ value: String) {
+        guard target == .dictation, value == HotkeyMonitor.CombinationActivation.toggle.rawValue else { return }
+        startRecording(.dictation, activateToggle: true)
     }
 
     private var pushToTalkPermissionMessage: String {
@@ -125,42 +126,45 @@ struct ShortcutsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Push to Talk")
+                    Text("Dictation")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
                     Text(isDictationCombinationToggle
-                        ? "Hold to start recording, hold again to transcribe"
+                        ? "Press once to record, press again to transcribe"
                         : "Hold to record, release to transcribe")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                HStack(spacing: MuesliTheme.spacing8) {
-                    Text(isPushToTalkEnabled ? "On" : "Off")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                    MuesliSettingControl(controller: controller, id: "push_to_talk")
+                MuesliSettingControl(controller: controller, id: "push_to_talk")
                     .toggleStyle(.switch)
                     .tint(MuesliTheme.accent)
                     .labelsHidden()
-                }
             }
 
             Divider()
                 .background(MuesliTheme.surfaceBorder)
 
-            pushToTalkControls
+            dictationCombinationActivationControl
 
-            if appState.config.dictationHotkey.isCombination {
-                dictationCombinationActivationControl
-            }
+            pushToTalkControls
 
             if !isPushToTalkEnabled {
                 pushToTalkDisabledMessage
             }
 
-            if recordingTarget == .dictation, recorder.rejectedChord {
+            if recordingTarget == .dictation, recorder.requiresCombination {
+                Text(recorder.rejectedChord
+                    ? "Toggle needs a modifier + another key. Try a different combination, or cancel."
+                    : "Press a modifier + another key to enable Toggle. Esc to cancel; your current setup stays unchanged.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            } else if recordingTarget == .dictation, recorder.rejectedChord {
                 shortcutMessage(ShortcutHotkeyPolicy.dictationShortcutMessage)
+            } else if recordingTarget == .dictation {
+                Text("Press a modifier for Hold to talk, or a modifier + key for Toggle. Esc to cancel.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
             } else if let dictationShortcutMessage {
                 shortcutMessage(dictationShortcutMessage)
             }
@@ -205,7 +209,7 @@ struct ShortcutsView: View {
 
             if appState.config.enableComputerUseHotkey,
                ShortcutHotkeyPolicy.hotkeysConflict(appState.config.computerUseHotkey, appState.config.dictationHotkey) {
-                shortcutMessage(ShortcutHotkeyPolicy.conflictMessage)
+                shortcutMessage(ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: appState.config.dictationHotkey))
             } else if let computerUseShortcutMessage {
                 shortcutMessage(computerUseShortcutMessage)
             }
@@ -349,17 +353,15 @@ struct ShortcutsView: View {
 
     private var pushToTalkControls: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            Text("Shortcut")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
             hotkeyBadge(appState.config.dictationHotkey)
             compactChangeButton(for: .dictation)
             Spacer(minLength: MuesliTheme.spacing16)
-            thresholdInput(
-                value: appState.config.hotkeyTriggerThresholdMS,
-                label: "Hold duration"
-            ) { value in
-                controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+            if !isDictationCombinationToggle {
+                thresholdInput(
+                    value: appState.config.hotkeyTriggerThresholdMS
+                ) { value in
+                    controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+                }
             }
         }
         .disabled(!isPushToTalkEnabled)
@@ -372,7 +374,7 @@ struct ShortcutsView: View {
 
     private func thresholdInput(
         value: Int,
-        label: String = "Hold",
+        label: String = "Activation delay",
         onChange: @escaping (Int) -> Void
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
@@ -406,7 +408,7 @@ struct ShortcutsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
-        .help("Hold threshold: \(HotkeyTriggerTiming.minThresholdMilliseconds)-\(HotkeyTriggerTiming.maxThresholdMilliseconds) ms")
+        .help("How long to hold the shortcut before it activates (\(HotkeyTriggerTiming.minThresholdMilliseconds)–\(HotkeyTriggerTiming.maxThresholdMilliseconds) ms).")
     }
 
     private var pushToTalkDisabledMessage: some View {
@@ -509,7 +511,7 @@ struct ShortcutsView: View {
         case .quil:
             return "Press one key or a two-key shortcut..."
         case .dictation:
-            return "Press a modifier or a shortcut..."
+            return recorder.requiresCombination ? "Cancel" : "Press shortcut…"
         case .computerUse:
             return "Press a modifier key..."
         }
@@ -571,24 +573,29 @@ struct ShortcutsView: View {
         )
     }
 
-    private func startRecording(_ target: ShortcutTarget) {
+    private func startRecording(_ target: ShortcutTarget, activateToggle: Bool = false) {
         stopRecording()
         clearShortcutMessage(for: target)
         let failure = recorder.start(
             target,
+            requiresCombination: activateToggle,
             acquire: { controller.beginShortcutCapture() },
             release: { controller.endShortcutCapture() },
-            commit: { commitShortcut($0, for: target) }
+            commit: { commitShortcut($0, for: target, activateToggle: activateToggle) }
         )
         if let failure {
             setShortcutMessage(failure, for: target)
         }
     }
 
-    private func commitShortcut(_ config: HotkeyConfig, for target: ShortcutTarget) {
+    private func commitShortcut(_ config: HotkeyConfig, for target: ShortcutTarget, activateToggle: Bool = false) {
         Task { @MainActor in
             do {
-                try await controller.applySetting(target.settingID, value: ShortcutAssignment.value(for: config))
+                if activateToggle {
+                    try await controller.applySetting("dictation_activation", value: "toggle", dictationToggleShortcut: config)
+                } else {
+                    try await controller.applySetting(target.settingID, value: ShortcutAssignment.value(for: config))
+                }
                 setShortcutMessage(ShortcutHotkeyPolicy.commonGlobalShortcutWarning(for: config), for: target)
             } catch {
                 setShortcutMessage(error.localizedDescription, for: target)

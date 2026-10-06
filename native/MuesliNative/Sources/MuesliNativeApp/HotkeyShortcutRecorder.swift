@@ -5,14 +5,16 @@ import Observation
 /// every recorded key is released so resumed global monitors never see its tail.
 struct HotkeyShortcutCaptureState {
     let target: ShortcutAssignment
+    let requiresCombination: Bool
     private(set) var completed: HotkeyConfig?
     private(set) var rejectedChord = false
     private var bareModifierKeyCode: UInt16?
     private var pendingCombination: HotkeyConfig?
     private var combinationKeyIsDown = false
 
-    init(target: ShortcutAssignment) {
+    init(target: ShortcutAssignment, requiresCombination: Bool = false) {
         self.target = target
+        self.requiresCombination = requiresCombination
     }
 
     private static let heldModifierFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift, .function]
@@ -23,7 +25,7 @@ struct HotkeyShortcutCaptureState {
         let modifiers = HotkeyConfig.supportedCombinationModifiers(from: flags)
         guard !modifiers.isEmpty else { return }
         let candidate = HotkeyConfig.combination(modifiers: modifiers, keyCode: keyCode)
-        guard Self.accepts(candidate, for: target) else {
+        guard ShortcutHotkeyPolicy.allowsCombination(candidate, action: target) else {
             rejectedChord = true
             return
         }
@@ -50,7 +52,11 @@ struct HotkeyShortcutCaptureState {
         } else if bareModifierKeyCode == keyCode {
             bareModifierKeyCode = nil
             if otherModifiers.isEmpty {
-                completed = HotkeyConfig(keyCode: keyCode, label: label)
+                if requiresCombination {
+                    rejectedChord = true
+                } else {
+                    completed = HotkeyConfig(keyCode: keyCode, label: label)
+                }
             }
         } else {
             bareModifierKeyCode = nil
@@ -61,19 +67,6 @@ struct HotkeyShortcutCaptureState {
         guard let pendingCombination, !combinationKeyIsDown,
               HotkeyConfig.supportedCombinationModifiers(from: flags).isEmpty else { return }
         completed = pendingCombination
-    }
-
-    static func accepts(_ hotkey: HotkeyConfig, for target: ShortcutAssignment) -> Bool {
-        switch target {
-        case .dictation:
-            return hotkey.isValidDictationShortcut
-        case .quil:
-            return ShortcutHotkeyPolicy.isValidQuilShortcut(hotkey)
-        case .meetingRecording:
-            return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
-        case .computerUse:
-            return false
-        }
     }
 
     private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags {
@@ -102,6 +95,7 @@ final class HotkeyShortcutRecorder {
 
     private(set) var target: ShortcutAssignment?
     private(set) var rejectedChord = false
+    private(set) var requiresCombination = false
     /// The window that was key when capture started; only its resignation ends capture.
     private(set) weak var window: NSWindow?
     private var state: HotkeyShortcutCaptureState?
@@ -130,6 +124,7 @@ final class HotkeyShortcutRecorder {
     /// Returns a message when capture could not start.
     func start(
         _ target: ShortcutAssignment,
+        requiresCombination: Bool = false,
         acquire: () -> Bool,
         release: @escaping () -> Void,
         commit: @escaping (HotkeyConfig) -> Void
@@ -138,8 +133,9 @@ final class HotkeyShortcutRecorder {
         guard acquire() else { return Self.busyMessage }
         self.release = release
         self.target = target
+        self.requiresCombination = requiresCombination
         window = keyWindow()
-        state = HotkeyShortcutCaptureState(target: target)
+        state = HotkeyShortcutCaptureState(target: target, requiresCombination: requiresCombination)
         monitor = addMonitor { [weak self] event in
             guard let self else { return event }
             return self.handle(event, commit: commit) ? nil : event
@@ -170,6 +166,7 @@ final class HotkeyShortcutRecorder {
         window = nil
         state = nil
         rejectedChord = false
+        requiresCombination = false
         let finish = release
         release = nil
         finish?()

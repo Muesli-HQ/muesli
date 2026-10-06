@@ -1813,6 +1813,14 @@ struct AppConfig: Codable {
     var enableDoubleTapDictation: Bool = true
     /// Only applies when the dictation shortcut is a key combination.
     var dictationCombinationActivation: HotkeyMonitor.CombinationActivation = .pushToTalk
+    var isDictationCombinationToggle: Bool {
+        dictationHotkey.isCombination && dictationHotkey.isValidDictationShortcut
+            && dictationCombinationActivation == .toggle
+    }
+
+    var dictationStartPrompt: String {
+        "\(isDictationCombinationToggle ? "Press" : "Hold") \(dictationHotkey.label) to dictate"
+    }
     var pasteShortcut: PasteShortcut = .automatic
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var quilHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -2163,6 +2171,9 @@ struct AppConfig: Codable {
             HotkeyMonitor.CombinationActivation.self,
             forKey: .dictationCombinationActivation
         )) ?? defaults.dictationCombinationActivation
+        if !dictationHotkey.isCombination {
+            dictationCombinationActivation = .pushToTalk
+        }
         pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS

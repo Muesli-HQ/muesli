@@ -296,11 +296,18 @@ struct IndicatorFrameSizeTests {
             hotkeyLabel: "Control Option Shift R",
             screenWidth: 1200
         )
+        let toggle = FloatingIndicatorController.idleHoverPillSize(
+            hotkeyLabel: "Control Option Shift R",
+            screenWidth: 1200,
+            isToggle: true
+        )
 
         #expect(standard.width >= 220)
         #expect(combination.width > standard.width)
         #expect(combination.width <= 1168)
         #expect(standard.height == 36)
+        #expect(toggle.width >= combination.width)
+        #expect(toggle.height == standard.height)
     }
 
     @Test("expanded idle drag saves the equivalent collapsed center")

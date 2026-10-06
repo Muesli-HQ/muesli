@@ -29,8 +29,41 @@ enum ShortcutHotkeyUpdateResult: Equatable {
 }
 
 struct ShortcutHotkeyPolicy {
-    static let conflictMessage = "These shortcuts need different keys."
+    /// Shared validation for physical recording and settings-tool values.
+    /// Moved from the signed shortcut-recorder foundation.
+    static func allowsCombination(_ hotkey: HotkeyConfig, action: ShortcutAssignment) -> Bool {
+        switch action {
+        case .dictation:
+            return hotkey.isValidDictationShortcut
+        case .quil:
+            return isValidQuilShortcut(hotkey)
+        case .meetingRecording:
+            return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
+        case .computerUse:
+            return false
+        }
+    }
+
+    static func dictationActivationUnavailableReason(
+        state: DictationState,
+        hasHotkeySession: Bool,
+        isCapturingShortcut: Bool
+    ) -> String? {
+        guard state == .idle, !hasHotkeySession, !isCapturingShortcut else {
+            return "Finish dictation or shortcut recording before changing activation."
+        }
+        return nil
+    }
+
+    static func conflictMessage(with action: String, hotkey: HotkeyConfig) -> String {
+        "This shortcut overlaps with \(action) (\(hotkey.displayLabel)). Choose a different shortcut."
+    }
+
+    private static func conflict(with action: String, hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        .conflict(message: conflictMessage(with: action, hotkey: hotkey))
+    }
     static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
+    static let commandSpaceWarning = "Command-Space may already open Spotlight or switch input sources. Choose another shortcut, or change the conflicting shortcut in System Settings > Keyboard > Keyboard Shortcuts."
     static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
     static let pasteConflictMessage = "Muesli uses this shortcut to paste. Choose a different shortcut."
     static let dictationShortcutMessage = "Use a modifier key, or add Control, Option, or Shift. Command alone works only with digits, Space, arrows, and function keys."
@@ -53,25 +86,47 @@ struct ShortcutHotkeyPolicy {
         isMeetingRecordingEnabled: Bool
     ) -> ShortcutHotkeyUpdateResult {
         guard isValidQuilShortcut(hotkey) else { return .conflict(message: quilKeyCountMessage) }
-        guard !hotkeysConflict(hotkey, dictationHotkey),
-              !isComputerUseEnabled || !hotkeysConflict(hotkey, computerUseHotkey),
-              !isMeetingRecordingEnabled || !hotkeysConflict(hotkey, meetingRecordingHotkey) else {
-            return .conflict(message: conflictMessage)
+        if hotkeysConflict(hotkey, dictationHotkey) {
+            return conflict(with: "Dictation", hotkey: dictationHotkey)
+        }
+        if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
+        }
+        if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
 
     static func hotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {
-        if a.isCombination != b.isCombination { return false }
+        if a.isCombination != b.isCombination {
+            let bare = a.isCombination ? b : a
+            let chord = a.isCombination ? a : b
+            guard let modifier = modifierFlag(for: bare.keyCode),
+                  let modifiers = chord.resolvedCombinationModifiers else { return false }
+            // Chords are side-independent, so either physical Control key, for
+            // example, overlaps a chord containing Control.
+            return modifiers.contains(modifier)
+        }
         if a.isCombination {
-            return normalizedCombinationModifiers(a) == normalizedCombinationModifiers(b)
-                && a.combinationKeyCode == b.combinationKeyCode
+            guard a.combinationKeyCode == b.combinationKeyCode,
+                  let lhs = a.resolvedCombinationModifiers,
+                  let rhs = b.resolvedCombinationModifiers else { return false }
+            // Ctrl-D and Ctrl-Shift-D can trigger in sequence as modifiers are
+            // added; sharing only a modifier with a different base key is safe.
+            return lhs.isSubset(of: rhs) || rhs.isSubset(of: lhs)
         }
         return a.keyCode == b.keyCode
     }
 
-    private static func normalizedCombinationModifiers(_ hotkey: HotkeyConfig) -> UInt? {
-        hotkey.resolvedCombinationModifiers.map { UInt($0.rawValue) }
+    private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {
+        switch keyCode {
+        case 54, 55: return .command
+        case 56, 60: return .shift
+        case 58, 61: return .option
+        case 59, 62: return .control
+        default: return nil
+        }
     }
 
     static func validateDictationHotkey(
@@ -85,10 +140,10 @@ struct ShortcutHotkeyPolicy {
             return .conflict(message: dictationShortcutMessage)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
-            return .conflict(message: conflictMessage)
+            return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
-            return .conflict(message: conflictMessage)
+            return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
@@ -100,11 +155,11 @@ struct ShortcutHotkeyPolicy {
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
-        if isComputerUseEnabled && hotkeysConflict(hotkey, dictationHotkey) {
-            return .conflict(message: conflictMessage)
+        if hotkeysConflict(hotkey, dictationHotkey) {
+            return conflict(with: "Dictation", hotkey: dictationHotkey)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
-            return .conflict(message: conflictMessage)
+            return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
         return .updated
     }
@@ -116,10 +171,10 @@ struct ShortcutHotkeyPolicy {
         isComputerUseEnabled: Bool
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
-            return .conflict(message: conflictMessage)
+            return conflict(with: "Dictation", hotkey: dictationHotkey)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
-            return .conflict(message: conflictMessage)
+            return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
@@ -128,6 +183,8 @@ struct ShortcutHotkeyPolicy {
         guard hotkey.isCombination,
               let modifiers = hotkey.resolvedCombinationModifiers,
               let keyCode = hotkey.combinationKeyCode else { return nil }
+
+        if modifiers == .command, keyCode == 49 { return commandSpaceWarning }
 
         let commonAppShortcuts: Set<HotkeySignature> = [
             HotkeySignature(modifiers: [.command], keyCode: 12), // Cmd+Q
@@ -145,23 +202,13 @@ struct ShortcutHotkeyPolicy {
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> (hotkey: HotkeyConfig, result: ShortcutHotkeyUpdateResult) {
-        var resolved = currentHotkey
-        var notice: String?
-
-        if hotkeysConflict(resolved, dictationHotkey) {
-            resolved = HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
-            notice = "Computer Use Command moved to \(resolved.label) to avoid matching Push to Talk."
-        }
-        if isMeetingRecordingEnabled && hotkeysConflict(resolved, meetingRecordingHotkey) {
-            let fallback = HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
-            if hotkeysConflict(fallback, dictationHotkey)
-                || hotkeysConflict(fallback, meetingRecordingHotkey) {
-                return (currentHotkey, .conflict(message: conflictMessage))
-            }
-            resolved = fallback
-            notice = "Computer Use Command moved to \(resolved.label) to avoid matching Meeting Recording."
-        }
-        return (resolved, .updated(notice: notice))
+        (currentHotkey, validateComputerUseHotkey(
+            currentHotkey,
+            dictationHotkey: dictationHotkey,
+            isComputerUseEnabled: true,
+            meetingRecordingHotkey: meetingRecordingHotkey,
+            isMeetingRecordingEnabled: isMeetingRecordingEnabled
+        ))
     }
 
     private struct HotkeySignature: Hashable {
