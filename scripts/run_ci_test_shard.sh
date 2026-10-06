@@ -20,6 +20,8 @@ case "${shard}" in
       ConfigStoreTests
       DictationStoreTests
       ComputerUseSettingsTests
+      ComputerUseLocalPlannerTests
+      ComputerUseLocalPlannerBenchmarkTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests
@@ -141,6 +143,10 @@ case "${shard}" in
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
+      CustomLLMAPIKeyResolutionTests
+      CustomLLMHeaderPropagationTests
+      CustomLLMRequestHeadersTests
+      SettingsModelFieldTests
       MeetingSummaryClientTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
@@ -154,6 +160,7 @@ case "${shard}" in
       RouteAwareMeetingMicRecorderTests
       CalendarEventQueryTests
       CalendarMonitorLifecycleTests
+      CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )

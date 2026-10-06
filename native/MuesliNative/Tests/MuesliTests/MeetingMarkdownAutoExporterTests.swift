@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 import Testing
 import MuesliCore
 @testable import MuesliNativeApp
@@ -70,6 +71,7 @@ struct MeetingMarkdownAutoExporterTests {
         #expect(contents.contains("# Weekly Standup"))
         #expect(contents.contains("## Key Points"))
         #expect(contents.contains("Ship export feature"))
+        #expect(contents.hasSuffix(MeetingExportBranding.markdownFooter))
     }
 
     @Test("filename includes date prefix and -notes suffix")
@@ -192,6 +194,9 @@ struct MeetingMarkdownAutoExporterTests {
         let url = try #require(urls.first)
         #expect(url.lastPathComponent == "2026-04-14-weekly-standup-notes.pdf")
         #expect(try Data(contentsOf: url).starts(with: Data("%PDF".utf8)))
+        let document = try #require(PDFDocument(url: url))
+        #expect(document.string?.contains("Exported with Muesli") == true)
+        #expect(document.string?.contains("base64") == false)
     }
 
     @Test("Markdown and PDF format writes both files")
@@ -211,6 +216,11 @@ struct MeetingMarkdownAutoExporterTests {
         #expect(extensions == ["md", "pdf"])
         for url in urls {
             #expect(FileManager.default.fileExists(atPath: url.path))
+            if url.pathExtension == "md" {
+                #expect(try String(contentsOf: url, encoding: .utf8).hasSuffix(MeetingExportBranding.markdownFooter))
+            } else {
+                #expect(PDFDocument(url: url)?.string?.contains("Exported with Muesli") == true)
+            }
         }
     }
 

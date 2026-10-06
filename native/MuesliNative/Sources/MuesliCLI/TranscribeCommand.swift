@@ -1101,6 +1101,7 @@ struct CLISummaryConfig: Decodable {
     var lmStudioModel = ""
     var customLLMURL = ""
     var customLLMAPIKey = ""
+    var customLLMHeaders: [CustomLLMRequestHeader] = []
     var customLLMModel = ""
     var customLLMFormat = "openai"
     var claudeCodeModel = ""
@@ -1121,6 +1122,7 @@ struct CLISummaryConfig: Decodable {
         case lmStudioModel = "lmstudio_model"
         case customLLMURL = "custom_llm_url"
         case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMHeaders = "custom_llm_headers"
         case customLLMModel = "custom_llm_model"
         case customLLMFormat = "custom_llm_format"
         case claudeCodeModel = "claude_code_model"
@@ -1145,6 +1147,7 @@ struct CLISummaryConfig: Decodable {
         lmStudioModel = try container.decodeIfPresent(String.self, forKey: .lmStudioModel) ?? lmStudioModel
         customLLMURL = try container.decodeIfPresent(String.self, forKey: .customLLMURL) ?? customLLMURL
         customLLMAPIKey = try container.decodeIfPresent(String.self, forKey: .customLLMAPIKey) ?? customLLMAPIKey
+        customLLMHeaders = try container.decodeIfPresent([CustomLLMRequestHeader].self, forKey: .customLLMHeaders) ?? customLLMHeaders
         customLLMModel = try container.decodeIfPresent(String.self, forKey: .customLLMModel) ?? customLLMModel
         customLLMFormat = try container.decodeIfPresent(String.self, forKey: .customLLMFormat) ?? customLLMFormat
         claudeCodeModel = try container.decodeIfPresent(String.self, forKey: .claudeCodeModel) ?? claudeCodeModel
@@ -1286,14 +1289,32 @@ enum CLISummaryClient {
             guard !config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw CLISummaryError.unavailable("Custom LLM summary settings are missing a selected model.")
             }
+            let extraHeaders: [String: String]
+            do {
+                extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+            } catch {
+                throw CLISummaryError.unavailable(error.localizedDescription)
+            }
+            let apiKey = (ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+                ?? config.customLLMAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if config.customLLMFormat == "anthropic" {
-                guard !config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
-                }
                 guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "https://api.anthropic.com" : config.customLLMURL, endpointSuffix: "v1/messages") else {
                     throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
                 }
-                return try await anthropicSummary(url: url, apiKey: config.customLLMAPIKey, model: config.customLLMModel, transcript: transcript, title: title)
+                guard !apiKey.isEmpty else {
+                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
+                }
+                return try await anthropicSummary(
+                    url: url,
+                    apiKey: apiKey,
+                    model: config.customLLMModel,
+                    transcript: transcript,
+                    title: title,
+                    extraHeaders: extraHeaders
+                )
             }
             guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "http://localhost:8080" : config.customLLMURL, endpointSuffix: "v1/chat/completions") else {
                 throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
@@ -1301,10 +1322,11 @@ enum CLISummaryClient {
             return try await chatCompletionsSummary(
                 backend: "Custom LLM",
                 url: url,
-                apiKey: config.customLLMAPIKey,
+                apiKey: apiKey,
                 model: config.customLLMModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                extraHeaders: extraHeaders
             )
         default:
             throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
@@ -1354,7 +1376,15 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func chatCompletionsSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
+    private static func chatCompletionsSummary(
+        backend: String,
+        url: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        title: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> String {
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -1363,7 +1393,13 @@ enum CLISummaryClient {
             ],
             "max_tokens": defaultSummaryMaxOutputTokens,
         ]
-        let data = try await postJSON(url: url, apiKey: apiKey, body: body, backend: backend)
+        let data = try await postJSON(
+            url: url,
+            apiKey: apiKey,
+            body: body,
+            backend: backend,
+            extraHeaders: extraHeaders
+        )
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = extractChatCompletionsText(from: json),
               !text.isEmpty else {
@@ -1392,7 +1428,16 @@ enum CLISummaryClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func anthropicSummary(url: URL, apiKey: String, model: String, transcript: String, title: String, backend: String = "Custom LLM", workspaceID: String = "") async throws -> String {
+    private static func anthropicSummary(
+        url: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        title: String,
+        backend: String = "Custom LLM",
+        workspaceID: String = "",
+        extraHeaders: [String: String] = [:]
+    ) async throws -> String {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": backend == "Anthropic" ? AnthropicAPISettings.hostedSummaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
@@ -1401,13 +1446,16 @@ enum CLISummaryClient {
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
         ]
-        let request = try AnthropicAPIRequest.make(
+        var request = try AnthropicAPIRequest.make(
             url: url,
             apiKey: apiKey,
             workspaceID: workspaceID,
             body: body,
             timeout: 300
         )
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         let data = try await send(request: request, backend: backend)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]] else {
@@ -1420,13 +1468,22 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func postJSON(url: URL, apiKey: String, body: [String: Any], backend: String) async throws -> Data {
+    private static func postJSON(
+        url: URL,
+        apiKey: String,
+        body: [String: Any],
+        backend: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 300
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(request: request, backend: backend)
@@ -1435,6 +1492,11 @@ enum CLISummaryClient {
     private static func send(request: URLRequest, backend: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if backend == "Custom LLM" {
+                throw CLISummaryError.backendFailed(
+                    "Custom LLM summary failed with HTTP \(http.statusCode)."
+                )
+            }
             let message = extractErrorMessage(from: data)
                 ?? String(data: data, encoding: .utf8)
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)

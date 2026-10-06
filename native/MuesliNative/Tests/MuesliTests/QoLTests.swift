@@ -595,6 +595,266 @@ struct FloatingMeetingTranscriptTests {
 @Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
     @MainActor
+    @Test("closing and reopening an expanded idle pill clears its hover state")
+    func idleHoverCloseReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = .classic
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let compact = try #require(indicator.currentFrame)
+        pointer = NSPoint(x: compact.midX, y: compact.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(try #require(indicator.currentFrame).width > compact.width)
+        // A visibility toggle can destroy the panel without a mouse-exit event.
+        indicator.pointerInteractionBegan()
+        indicator.close()
+        pointer = NSPoint(x: -100_000, y: -100_000)
+        indicator.ensureVisible(config: config)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(indicator.currentFrame?.size == compact.size)
+        // Closing during a press must not leave the new panel unable to hover.
+        let reopened = try #require(indicator.currentFrame)
+        pointer = NSPoint(x: reopened.midX, y: reopened.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(try #require(indicator.currentFrame).width > compact.width)
+    }
+
+    @MainActor
+    @Test("idle hover reconciles resize and preserves subsequent exit delivery", arguments: [false, true])
+    func idleHoverTrackingSurvivesResize(leavesDuringExpansion: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = .classic
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let compact = try #require(indicator.currentFrame)
+        pointer = NSPoint(x: compact.midX, y: compact.midY)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let tracking = try #require(pill.trackingAreas.first)
+        indicator.setHovered(true)
+        if leavesDuringExpansion {
+            try await Task.sleep(for: .milliseconds(50))
+        } else {
+            try await Task.sleep(for: .milliseconds(350))
+            #expect(pill.trackingAreas.first === tracking)
+            // A resize-related exit sees the pointer still inside; it must
+            // neither collapse nor destroy the tracking area's inside state.
+            try deliverExit(to: pill)
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(try #require(indicator.currentFrame).width > compact.width)
+        }
+        pointer = NSPoint(x: -100_000, y: -100_000)
+        // Resizing keeps the tracking area alive, so the normal exit remains
+        // deliverable both during expansion and after a spurious inside check.
+        #expect(pill.trackingAreas.first === tracking)
+        try deliverExit(to: pill)
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(indicator.currentFrame?.size == compact.size)
+    }
+
+    @MainActor
+    @Test("idle hover stays expanded during drag and resumes checking after release inside")
+    func idleHoverDragRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let compact = try #require(indicator.currentFrame)
+        let inside = NSPoint(x: compact.midX, y: compact.midY)
+        pointer = inside
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(350))
+        let expanded = try #require(indicator.currentFrame)
+        indicator.pointerInteractionBegan()
+        pointer = NSPoint(x: -100_000, y: -100_000)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(indicator.currentFrame == expanded)
+        pointer = inside
+        indicator.pointerInteractionEnded()
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(indicator.currentFrame == expanded)
+        pointer = NSPoint(x: -100_000, y: -100_000)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        try deliverExit(to: pill)
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(indicator.currentFrame?.size == compact.size)
+    }
+
+    @MainActor
+    @Test("idle hover checks do not retire other pill presentations", arguments: ["loading", "notice", "recording"])
+    func idleHoverPresentationChange(presentation: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let compact = try #require(indicator.currentFrame)
+        pointer = NSPoint(x: compact.midX, y: compact.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(50))
+        // Interrupt expansion while its completion callback is still pending.
+        switch presentation {
+        case "loading": indicator.showLoading("Transcribing audio…")
+        case "notice": indicator.showWarning("Microphone unavailable", duration: 1.5)
+        default: indicator.setState(.recording, config: config)
+        }
+        pointer = NSPoint(x: -100_000, y: -100_000)
+        try await Task.sleep(for: .milliseconds(300))
+        let presented = try #require(indicator.currentFrame)
+        #expect(presented.size != compact.size)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(indicator.currentFrame == presented)
+    }
+
+    @MainActor
+    @Test("transparent shortcut canvas does not keep the idle hint hovered")
+    func idleHoverShortcutCanvas() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = .shortcutPill
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let window = try #require(pill.window)
+        let resting = indicator.pointerInteractiveRect(in: pill.bounds)
+        let restingScreen = window.convertToScreen(pill.convert(resting, to: nil))
+        pointer = NSPoint(x: restingScreen.midX, y: restingScreen.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(350))
+        let expanded = indicator.pointerInteractiveRect(in: pill.bounds)
+        #expect(expanded.width > resting.width)
+        #expect(pill.trackingAreas.first?.options.contains(.assumeInside) == true)
+        let corner = NSPoint(x: pill.bounds.minX + 1, y: pill.bounds.maxY - 1)
+        #expect(!expanded.contains(corner))
+        let cornerInWindow = pill.convert(corner, to: nil)
+        pointer = window.convertToScreen(NSRect(origin: cornerInWindow, size: .zero)).origin
+        // Still inside the panel, but outside the visible interactive hint.
+        #expect(window.frame.contains(pointer))
+        try deliverExit(to: pill)
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(indicator.pointerInteractiveRect(in: pill.bounds) == resting)
+    }
+
+    @MainActor
+    @Test("geometry completion reconciles a stationary pointer without an exit event")
+    func idleHoverGeometryCompletion() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let compact = try #require(indicator.currentFrame)
+        pointer = NSPoint(x: compact.midX, y: compact.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(try #require(indicator.currentFrame).width > compact.width)
+        // Move the indicator under the stationary cursor without an exit event.
+        config.indicatorAnchor = .topTrailing
+        store.save(config)
+        indicator.ensureVisible(config: config)
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(indicator.currentFrame?.size == compact.size)
+        #expect(indicator.currentFrame?.contains(pointer) == false)
+    }
+
+    @MainActor
+    @Test("stationary idle hover performs no recurring pointer checks", arguments: [IndicatorHoverStyle.classic, .shortcutPill])
+    func idleHoverDoesNotPoll(style: IndicatorHoverStyle) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = style
+        store.save(config)
+        var pointer = NSPoint(x: -100_000, y: -100_000)
+        var reads = 0
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: {
+            reads += 1
+            return pointer
+        })
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        indicator.setState(.idle, config: config)
+        try await Task.sleep(for: .milliseconds(300))
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let window = try #require(pill.window)
+        let rect = window.convertToScreen(pill.convert(indicator.pointerInteractiveRect(in: pill.bounds), to: nil))
+        pointer = NSPoint(x: rect.midX, y: rect.midY)
+        indicator.setHovered(true)
+        try await Task.sleep(for: .milliseconds(500))
+        let settledReads = reads
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(reads == settledReads)
+        try deliverExit(to: pill) // A spurious exit while still inside checks once.
+        try await Task.sleep(for: .milliseconds(300))
+        let afterExitReads = reads
+        #expect(afterExitReads > settledReads)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(reads == afterExitReads)
+    }
+
+    @MainActor
     @Test("decorative views use the pill responder while explicit buttons retain their actions")
     func decorativeHitTargets() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
@@ -828,6 +1088,15 @@ struct FloatingIndicatorPointerInteractionTests {
         indicator.handleClick()
         #expect(stopCount == 0)
         indicator.close()
+    }
+
+    @MainActor
+    private func deliverExit(to pill: HoverIndicatorView) throws {
+        let event = try #require(NSEvent.enterExitEvent(
+            with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: pill.window?.windowNumber ?? 0, context: nil,
+            eventNumber: 1, trackingNumber: 0, userData: nil))
+        pill.mouseExited(with: event)
     }
 
     @MainActor

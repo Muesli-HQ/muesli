@@ -5,6 +5,82 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("Custom LLM transport failures explain HTTPS and trusted certificates")
+    func customLLMTransportGuidance() throws {
+        let error = MeetingSummaryError.requestFailed(
+            backend: "Custom LLM",
+            underlying: URLError(.appTransportSecurityRequiresSecureConnection)
+        )
+        let message = try #require(error.errorDescription)
+        #expect(message.contains("requires HTTPS"))
+        #expect(message.contains("Caddy"))
+        #expect(message.contains("Settings"))
+        #expect(!message.contains("retired"))
+
+        for code in [URLError.Code.serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid] {
+            let guidance = try #require(CustomLLMConnectionGuidance.message(for: URLError(code)))
+            #expect(guidance.contains("certificate"))
+            #expect(guidance.contains("trusted by your Mac"))
+        }
+        #expect(CustomLLMConnectionGuidance.message(for: URLError(.secureConnectionFailed))?.contains("TLS") == true)
+        #expect(CustomLLMConnectionGuidance.message(for: URLError(.timedOut)) == nil)
+        #expect(CustomLLMConnectionGuidance.message(for: CancellationError()) == nil)
+        let unrelated = MeetingSummaryError.requestFailed(backend: "OpenAI", underlying: URLError(.timedOut))
+        #expect(unrelated.errorDescription?.contains("Caddy") == false)
+    }
+
+    @Test("Transport policy and certificate failures do not retry without configuration changes")
+    func customLLMTransportFailuresDoNotRetry() {
+        for code in [URLError.Code.appTransportSecurityRequiresSecureConnection,
+                     .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid] {
+            let error = MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: URLError(code))
+            #expect(!MeetingSummaryRetryPolicy.shouldRetry(error))
+            #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(configuredCount: 3, after: error) == 0)
+        }
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: URLError(.timedOut))
+        ))
+    }
+
+    @Test("Custom summary request preserves transport guidance and stops retrying")
+    func customSummaryTransportFailure() async throws {
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 3,
+                sleep: { _ in Issue.record("Transport policy failures must not retry") }
+            ) { _ in
+                try await MeetingSummaryClient.summarizeWithAnthropicMessages(
+                    backend: "Custom LLM",
+                    requestURL: URL(string: "http://summary.example.test/v1/messages")!,
+                    apiKey: "test-key",
+                    model: "test-model",
+                    transcript: "Test transcript",
+                    meetingTitle: "Test",
+                    existingNotes: nil,
+                    manualNotes: nil,
+                    participantNames: [],
+                    config: AppConfig(),
+                    template: MeetingTemplates.auto.snapshot,
+                    visualContext: nil,
+                    previousMeetingNotes: nil,
+                    timeout: 300,
+                    send: { _ in
+                        attempts += 1
+                        throw URLError(.appTransportSecurityRequiresSecureConnection)
+                    }
+                )
+            }
+            Issue.record("Expected a transport policy failure")
+        } catch {
+            #expect(error.localizedDescription.contains("requires HTTPS"))
+            #expect(error.localizedDescription.contains("Caddy"))
+        }
+        #expect(attempts == 1)
+    }
+
     @Test("Anthropic blank environment values preserve saved credentials")
     func anthropicEnvironmentFallback() {
         #expect(AnthropicAPISettings.resolvedValue(environmentValue: nil, savedValue: " saved ") == "saved")

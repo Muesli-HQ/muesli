@@ -133,7 +133,39 @@ extension MuesliController {
             }
         }
         toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
-        presets("cua_model", "Computer use planner model", SummaryModelPreset.computerUsePlannerModels, \.computerUsePlannerModel)
+        let localPlanners = ComputerUseLocalPlanner.models.filter(\.available)
+        // Backend is derived from the selected model, so existing configurations
+        // and direct voice model selections remain consistent without migration.
+        add("cua_backend", "Computer use planner backend",
+            [Choice(id: "chatgpt", label: "ChatGPT"), Choice(id: "local", label: "On-device")],
+            read: { ComputerUseLocalPlanner.isLocal(ComputerUsePlannerClient.plannerModel(for: $0)) ? "local" : "chatgpt" },
+            unavailable: { value in
+                value == "local" && !ComputerUseLocalPlanner.models.contains(where: \.available)
+                    ? "Download Gemma in Models to use an on-device planner." : nil
+            }) { value in
+                let current = ComputerUsePlannerClient.plannerModel(for: self.config)
+                guard (value == "local") != ComputerUseLocalPlanner.isLocal(current) else { return }
+                if value == "local" {
+                    guard let model = ComputerUseLocalPlanner.models.first(where: \.available) else {
+                        throw MuesliSettings.Failure.rejected("Download Gemma in Models to use an on-device planner.")
+                    }
+                    self.updateConfig { $0.computerUsePlannerModel = model.id }
+                } else {
+                    self.updateConfig { $0.computerUsePlannerModel = "" }
+                }
+            }
+        add("cua_model", "Computer use planner model",
+            SummaryModelPreset.computerUsePlannerModels.map { Choice(id: $0.id, label: $0.label) }
+                + localPlanners.map { Choice(id: $0.id, label: $0.label) },
+            read: { ComputerUsePlannerClient.plannerModel(for: $0) }, unavailable: { value in
+                if ComputerUseLocalPlanner.isLocal(value),
+                   !ComputerUseLocalPlanner.models.contains(where: { $0.id == value && $0.available }) {
+                    return "Download this on-device planner in Models first."
+                }
+                return nil
+            }) { value in
+                self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
+            }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
                requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
@@ -331,7 +363,7 @@ extension MuesliController {
             case .gemma4(let model): self.selectGemma4PostProcessor(model)
             }
         }
-        add("quill_source", "Quill model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
+        add("quill_source", "Quill writing model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
             read: { QuilModelSourceOption.resolved(for: .resolved($0.quilBackend)).id },
             followUpSelections: [QuilModelSourceOption.localModels.id: "quill_local_model"], unavailable: { value in
                 value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
@@ -348,7 +380,7 @@ extension MuesliController {
             }
             if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }
         }
-        add("quill_local_model", "Local Quill model", localQuill.map { .init(id: $0.quilModelID, label: $0.quilLabel) },
+        add("quill_local_model", "Local Quill writing model", localQuill.map { .init(id: $0.quilModelID, label: $0.quilLabel) },
             read: { $0.quilModel }) { value in
             guard let model = localQuill.first(where: { $0.quilModelID == value }) else { return }
             self.updateConfig { $0.quilBackend = model.quilBackend.backend; $0.quilModel = model.quilModelID }

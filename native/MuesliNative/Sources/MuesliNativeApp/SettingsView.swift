@@ -161,7 +161,8 @@ struct SettingsView: View {
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
-    @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var calendarPermission = CalendarPermissionState()
+    @State private var calendarSourcesRefresh = CalendarSourceRefreshState()
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
     @State private var isShowingIPhoneBridgeQRCode = false
@@ -446,6 +447,7 @@ struct SettingsView: View {
             }
             .onChange(of: selectedPane) { _, pane in
                 appState.selectedSettingsPane = pane
+                calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
@@ -462,9 +464,9 @@ struct SettingsView: View {
                     if appState.selectedMeetingSummaryBackend == .claudeCode {
                         Task { await refreshClaudeCodeAuthStatus() }
                     }
-                    Task {
-                        await controller.calendarAccessDidChange()
-                    }
+                }
+                if selectedPane == .general || selectedPane == .meetings {
+                    refreshCalendarSources(reconcileAccess: true)
                 }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
@@ -1283,12 +1285,12 @@ struct SettingsView: View {
                     settingsControl("quill_sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Model source", controlWidth: meetingControlWidth) {
+                settingsRow("Writing model source", description: "Shared by Quill and Computer Use writing tasks.", controlWidth: meetingControlWidth) {
                     settingsControl("quill_source")
                 }
                 if selectedQuilBackend.isOnDevice {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Quill model", controlWidth: meetingControlWidth) {
+                    settingsRow("Writing model", controlWidth: meetingControlWidth) {
                         if quilLocalModels.isEmpty {
                             compactActionButton("View local models", systemImage: "arrow.right") {
                                 controller.showModels(category: .quill)
@@ -1371,7 +1373,7 @@ struct SettingsView: View {
         }
         if backend != .hosted(.customLLM) {
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Quill model", controlWidth: meetingControlWidth) {
+            settingsRow("Writing model", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.quilModel,
                     placeholder: TranscriptCleanupClient.defaultModel(for: backend)
@@ -1584,11 +1586,12 @@ struct SettingsView: View {
         settingsSection("Meeting Summaries") {
             settingsRow(
                 "Summary backend",
-                description: "Remote summaries may send transcripts, notes, screen context, and participant names.",
+                description: "Remote backends may receive meeting data.",
                 controlWidth: meetingControlWidth
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
+                        .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
                     if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
@@ -1778,6 +1781,9 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
+        settingsDescription(CustomLLMConnectionGuidance.endpointHelp)
+            .lineLimit(1)
+            .help("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
@@ -1790,6 +1796,68 @@ struct SettingsView: View {
             .frame(height: 22)
         }
         Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("API Key Command", controlWidth: meetingControlWidth) {
+            PastableTextField(
+                text: appState.config.customLLMAPIKeyCommand,
+                placeholder: "e.g. /opt/homebrew/bin/vault print token",
+                commitsOnEndEditing: true,
+                onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
+            )
+            .frame(height: 22)
+            .help("Runs shell code via /bin/sh with your user permissions before each request. Use an absolute executable path. Non-empty output replaces the saved API key; failures fall back to it.")
+        }
+        settingsDescription("Optional shell command for an API key; falls back to the saved key.")
+            .lineLimit(1)
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow(
+            "Headers",
+            description: "Optional authentication or routing headers.",
+            controlWidth: meetingControlWidth
+        ) {
+            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                ForEach(appState.config.customLLMHeaders) { header in
+                    HStack(spacing: 6) {
+                        PastableTextField(
+                            text: header.name,
+                            placeholder: "Header name",
+                            onChange: { updateCustomLLMHeader(id: header.id, name: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        PastableTextField(
+                            text: header.value,
+                            placeholder: "Value",
+                            onChange: { updateCustomLLMHeader(id: header.id, value: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        Button {
+                            removeCustomLLMHeader(id: header.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .frame(width: 20, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove header")
+                    }
+                }
+                compactActionButton("Add Header", systemImage: "plus") {
+                    controller.updateConfig {
+                        $0.customLLMHeaders.append(CustomLLMRequestHeader())
+                    }
+                }
+                .disabled(appState.config.customLLMHeaders.count >= CustomLLMRequestHeaders.maximumCount)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(width: meetingControlWidth, alignment: .trailing)
+            .padding(.vertical, 5)
+        }
+        .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
+        if let message = customLLMHeadersValidationMessage {
+            settingsDescription(message)
+                .foregroundStyle(MuesliTheme.recording)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
             settingsModelTextField(
                 currentModel: model,
@@ -1797,6 +1865,29 @@ struct SettingsView: View {
                     ? "claude-3-5-sonnet-20241022"
                     : "custom-model-id"
             ) { val in onModelChange(val) }
+        }
+    }
+
+    private var customLLMHeadersValidationMessage: String? {
+        do {
+            _ = try CustomLLMRequestHeaders.validated(appState.config.customLLMHeaders)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func updateCustomLLMHeader(id: String, name: String? = nil, value: String? = nil) {
+        controller.updateConfig { config in
+            guard let index = config.customLLMHeaders.firstIndex(where: { $0.id == id }) else { return }
+            if let name { config.customLLMHeaders[index].name = name }
+            if let value { config.customLLMHeaders[index].value = value }
+        }
+    }
+
+    private func removeCustomLLMHeader(id: String) {
+        controller.updateConfig {
+            $0.customLLMHeaders.removeAll { $0.id == id }
         }
     }
 
@@ -1856,15 +1947,34 @@ struct SettingsView: View {
                     settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Account", controlWidth: meetingControlWidth) {
-                    chatGPTAccountControl()
+                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
+                let isLocalPlanner = ComputerUseLocalPlanner.isLocal(plannerModel)
+                settingsRow("Planner backend", controlWidth: meetingControlWidth) {
+                    settingsControl("cua_backend")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Planner model", controlWidth: meetingControlWidth) {
-                    settingsControl("cua_model")
+                if !isLocalPlanner {
+                    settingsRow("Account", controlWidth: meetingControlWidth) {
+                        chatGPTAccountControl(selectMeetingSummaryBackend: false)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
                 }
-                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
-                if !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                settingsRow("Planner model", controlWidth: meetingControlWidth) {
+                    MuesliSettingControl(controller: controller, id: "cua_model",
+                        allowedChoiceIDs: isLocalPlanner
+                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
+                }
+                if isLocalPlanner {
+                    Text("Planning runs on this Mac. No ChatGPT sign-in is needed.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                } else if !ComputerUseLocalPlanner.models.contains(where: \.available) {
+                    Text("Download Gemma in Models to enable the On-device backend.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Thinking", controlWidth: meetingControlWidth) {
                         settingsControl("cua_thinking")
@@ -2007,26 +2117,37 @@ struct SettingsView: View {
             }
 
             settingsSection("Calendars") {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Use calendars already connected to your Mac.")
-                            .font(MuesliTheme.body())
-                        Text("Add or remove accounts in macOS System Settings.")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textSecondary)
+                settingsRow("Calendar access", controlWidth: meetingControlWidth) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        if calendarPermission.granted {
+                            Text("Granted")
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.success)
+                        } else {
+                            Button(calendarPermission.requesting ? "Requesting…" : (calendarPermission.canRequest ? "Allow Access" : "Open Settings"), action: requestCalendarPermission)
+                                .buttonStyle(.borderedProminent)
+                                .disabled(calendarPermission.requesting)
+                        }
                     }
-                    Spacer()
-                    Button("Manage accounts…", action: CalendarIntegration.openAccounts)
-                        .buttonStyle(.borderedProminent)
+                }
+                if !calendarPermission.granted {
+                    settingsDescription(calendarPermission.canRequest
+                        ? "Show meetings from calendars on your Mac."
+                        : "Allow full Calendar access in System Settings.")
+                }
+                if let errorMessage = calendarPermission.errorMessage {
+                    Text(errorMessage)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
                     settingsControl("upcoming_meetings")
                 }
-                settingsDescription("Controls how many calendar days appear in Coming Up, the menu bar, and scheduled meeting checks.")
+                .help("How many calendar days appear in Coming Up, the menu bar, and meeting reminders.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
-                    .padding(.bottom, MuesliTheme.spacing8)
             }
 
             settingsSection("Advanced") {
@@ -2698,6 +2819,20 @@ struct SettingsView: View {
                     isBusy: isCheckingSystemAudioPermission
                 )
             }
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Calendars",
+                granted: calendarPermission.granted,
+                action: requestCalendarPermission,
+                pane: "Privacy_Calendars",
+                isBusy: calendarPermission.requesting,
+                actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
+            )
+            if let errorMessage = calendarPermission.errorMessage {
+                Text(errorMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
+            }
         }
     }
 
@@ -2707,7 +2842,8 @@ struct SettingsView: View {
         granted: Bool,
         action: @escaping () -> Void,
         pane: String,
-        isBusy: Bool = false
+        isBusy: Bool = false,
+        actionTitle: String = "Grant"
     ) -> some View {
         HStack {
             HStack(spacing: 8) {
@@ -2724,7 +2860,7 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button(isBusy ? "Checking…" : "Grant") {
+                Button(isBusy ? "Checking…" : actionTitle) {
                     action()
                 }
                 .disabled(isBusy)
@@ -2752,6 +2888,20 @@ struct SettingsView: View {
     private func openPrivacyPane(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func requestCalendarPermission() {
+        calendarPermission.refresh()
+        guard calendarPermission.canRequest else {
+            CalendarIntegration.openPrivacy()
+            return
+        }
+        Task { @MainActor in
+            await calendarPermission.requestAccess()
+            if calendarPermission.granted {
+                refreshCalendarSources(reconcileAccess: true)
+            }
         }
     }
 
@@ -2838,6 +2988,7 @@ struct SettingsView: View {
     }
 
     private func refreshPermissionStatuses(for reason: SettingsPermissionRefreshReason) {
+        calendarPermission.refresh()
         if reason.refreshesLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
@@ -3104,32 +3255,31 @@ struct SettingsView: View {
     private var calendarSourcesControl: some View {
         let sourceGroups = calendarSourceGroups
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-            if sourceGroups.isEmpty {
-                CalendarAccessControl(refreshOnActivation: false) {
-                    await controller.calendarAccessDidChange()
-                }
-                Text("No calendars found. Add an account in macOS Internet Accounts and turn on Calendars, or open Calendar to manage local calendars and subscriptions.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(sourceGroups) { group in
-                    calendarSourceGroupView(group)
+            if calendarPermission.granted {
+                if sourceGroups.isEmpty {
+                    Text(calendarSourcesRefresh.isLoading ? "Loading calendars…" : "No calendars on this Mac.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                } else {
+                    Text("Choose calendars to show meetings from.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    ForEach(sourceGroups) { group in
+                        calendarSourceGroupView(group)
+                    }
                 }
             }
-            Divider().background(MuesliTheme.surfaceBorder)
-            HStack(alignment: .top) {
-                Text("Uncheck a calendar to hide its meetings and notifications in Muesli.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
+            HStack {
+                Button("Manage accounts…", action: CalendarIntegration.openAccounts)
+                    .buttonStyle(.link)
+                    .help("Add or remove accounts in macOS Internet Accounts. Changes also affect other apps on this Mac.")
                 Spacer()
                 Button("Open Calendar…", action: CalendarIntegration.openCalendar)
                     .buttonStyle(.link)
+                    .help("Manage local calendars and subscriptions in Apple Calendar.")
             }
-            Text("Manage accounts opens Internet Accounts. Changes there also affect other apps on this Mac.")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
         }
+        .padding(.top, MuesliTheme.spacing8)
     }
 
     @ViewBuilder
@@ -3219,10 +3369,19 @@ struct SettingsView: View {
     }
 
     private func refreshMeetingCalendarSourcesIfNeeded() {
-        guard !hasRefreshedMeetingCalendarSources else { return }
-        hasRefreshedMeetingCalendarSources = true
-        Task {
-            await controller.refreshAvailableEventKitCalendars()
+        guard calendarSourcesRefresh.needsInitialRefresh else { return }
+        refreshCalendarSources()
+    }
+
+    private func refreshCalendarSources(reconcileAccess: Bool = false) {
+        calendarSourcesRefresh.begin()
+        Task { @MainActor in
+            defer { calendarSourcesRefresh.finish(completed: !Task.isCancelled) }
+            if reconcileAccess {
+                await controller.calendarAccessDidChange()
+            } else {
+                await controller.refreshAvailableEventKitCalendars()
+            }
         }
     }
 
@@ -3430,15 +3589,12 @@ struct SettingsView: View {
         onBeginEditing: (() -> Void)? = nil,
         onChange: @escaping (String) -> Void
     ) -> some View {
-        PastableTextField(
+        SettingsModelTextField(
             text: currentModel,
             placeholder: placeholder,
             onBeginEditing: onBeginEditing,
-            onChange: { value in
-                onChange(value.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+            onChange: onChange
         )
-        .frame(height: 22)
     }
 
     @ViewBuilder
@@ -3712,22 +3868,48 @@ struct PastableSecureField: NSViewRepresentable {
     }
 }
 
+/// Model IDs stay local to the field editor until Return or focus loss.
+struct SettingsModelTextField: View {
+    let text: String
+    let placeholder: String
+    var onBeginEditing: (() -> Void)? = nil
+    let onChange: (String) -> Void
+
+    var body: some View {
+        PastableTextField(
+            text: text,
+            placeholder: placeholder,
+            onBeginEditing: onBeginEditing,
+            commitsOnEndEditing: true,
+            showsFullValueOnHover: true,
+            onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
+        .frame(height: 22)
+    }
+}
+
 /// Plain text field with the same accessory-app edit shortcuts as secure fields.
 struct PastableTextField: NSViewRepresentable {
     let text: String
     let placeholder: String
     let onBeginEditing: (() -> Void)?
+    let commitsOnEndEditing: Bool
+    let showsFullValueOnHover: Bool
     let onChange: (String) -> Void
 
     init(
         text: String,
         placeholder: String,
         onBeginEditing: (() -> Void)? = nil,
+        commitsOnEndEditing: Bool = false,
+        showsFullValueOnHover: Bool = false,
         onChange: @escaping (String) -> Void
     ) {
         self.text = text
         self.placeholder = placeholder
         self.onBeginEditing = onBeginEditing
+        self.commitsOnEndEditing = commitsOnEndEditing
+        self.showsFullValueOnHover = showsFullValueOnHover
         self.onChange = onChange
     }
 
@@ -3740,37 +3922,120 @@ struct PastableTextField: NSViewRepresentable {
         field.bezelStyle = .roundedBezel
         field.delegate = context.coordinator
         field.stringValue = text
+        if commitsOnEndEditing {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.lineBreakMode = .byTruncatingMiddle
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
+        }
         return field
     }
 
     func updateNSView(_ nsView: EditableNSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
         context.coordinator.onBeginEditing = onBeginEditing
         context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBeginEditing: onBeginEditing, onChange: onChange)
+        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: showsFullValueOnHover,
+                    onBeginEditing: onBeginEditing, onChange: onChange)
+    }
+
+    static func dismantleNSView(_ nsView: EditableNSTextField, coordinator: Coordinator) {
+        // AppKit does not guarantee an end-edit notification during removal.
+        // Save outside SwiftUI's teardown transaction to avoid publishing into it.
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
         var onBeginEditing: (() -> Void)?
         var onChange: (String) -> Void
+        private let commitsOnEndEditing: Bool
+        private let showsFullValueOnHover: Bool
+        private var configuredText: String
+        private var editingStartText: String?
+        private var draftText: String?
+        private var isEditing = false
+        private weak var editingField: NSTextField?
 
-        init(onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+        init(text: String, commitsOnEndEditing: Bool, showsFullValueOnHover: Bool,
+             onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+            self.configuredText = text
+            self.commitsOnEndEditing = commitsOnEndEditing
+            self.showsFullValueOnHover = showsFullValueOnHover
             self.onBeginEditing = onBeginEditing
             self.onChange = onChange
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+            editingStartText = configuredText
+            if let field = obj.object as? NSTextField {
+                draftText = field.stringValue
+                editingField = field
+                if commitsOnEndEditing, let window = field.window {
+                    NotificationCenter.default.addObserver(
+                        self, selector: #selector(windowWillClose(_:)),
+                        name: NSWindow.willCloseNotification, object: window
+                    )
+                }
+            }
             onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
+            if commitsOnEndEditing {
+                draftText = field.stringValue
+                if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+                return
+            }
             onChange(field.stringValue)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            finishEditing(field)
+        }
+
+        @objc private func windowWillClose(_ notification: Notification) {
+            guard let field = editingField else { return }
+            finishEditing(field)
+        }
+
+        func finishEditing(_ field: NSTextField, deferCommit: Bool = false) {
+            guard isEditing else { return }
+            isEditing = false
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            editingField = nil
+            let value = draftText ?? field.stringValue
+            let changed = value != editingStartText
+            editingStartText = nil
+            draftText = nil
+            guard commitsOnEndEditing else { return }
+            if changed {
+                configuredText = value
+                let commit = onChange
+                if deferCommit {
+                    DispatchQueue.main.async { commit(value) }
+                } else {
+                    commit(value)
+                }
+            } else {
+                // An external update may have arrived during an unchanged edit.
+                field.stringValue = configuredText
+            }
+            if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+        }
+
+        func synchronize(_ field: NSTextField, text: String) {
+            configuredText = text
+            // SwiftUI can refresh from unrelated state while the user types.
+            // Replacing stringValue here resets the live field editor/caret.
+            guard !isEditing, field.currentEditor() == nil else { return }
+            if field.stringValue != text { field.stringValue = text }
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
         }
     }
 }

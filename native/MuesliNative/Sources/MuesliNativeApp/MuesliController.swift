@@ -9692,13 +9692,9 @@ public final class MuesliController: NSObject {
                         wavURL: wavURL, selectedText: snapshot.text, appContext: promptContext, model: model
                     )
                 } else {
-                    replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
-                        selectedText: snapshot.text,
-                        instruction: instruction,
-                        appContext: promptContext,
-                        backend: backend,
-                        model: model,
-                        config: configSnapshot
+                    replacement = try await WritingService.generate(
+                        selectedText: snapshot.text, instruction: instruction, appContext: promptContext,
+                        config: configSnapshot, coordinator: self.transcriptionCoordinator
                     )
                 }
                 try Task.checkCancellation()
@@ -10288,7 +10284,7 @@ public final class MuesliController: NSObject {
         activeComputerUseTrace = runTrace
         runTrace.record(ComputerUseTraceEvent(kind: "routing", title: "Understanding command",
                                             body: "Choosing Muesli settings or desktop tools.", status: "running"))
-        let runtime = ComputerUsePlannerRuntime(config: config, onStatus: { [weak self] status in
+        let runtime = ComputerUsePlannerRuntime(config: config, writingCoordinator: transcriptionCoordinator, onStatus: { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
         })
