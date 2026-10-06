@@ -1,5 +1,6 @@
 import AppKit
 import EventKit
+import Observation
 import SwiftUI
 
 /// Calendar accounts remain owned by macOS; Muesli only selects which calendars to use.
@@ -32,57 +33,95 @@ enum CalendarIntegration {
     }
 }
 
+/// Shared by onboarding, Meetings, and the General permissions row. Refresh only
+/// at lifecycle boundaries or after a user request; reading status never prompts.
+@MainActor
+@Observable
+final class CalendarPermissionState {
+    private(set) var status: EKAuthorizationStatus
+    private(set) var requesting = false
+    private(set) var errorMessage: String?
+    private let readStatus: () -> EKAuthorizationStatus
+    private let requestFullAccess: () async throws -> Bool
+
+    init(
+        readStatus: @escaping () -> EKAuthorizationStatus = {
+            EKEventStore.authorizationStatus(for: .event)
+        },
+        requestFullAccess: @escaping () async throws -> Bool = {
+            try await EKEventStore().requestFullAccessToEvents()
+        }
+    ) {
+        self.readStatus = readStatus
+        self.requestFullAccess = requestFullAccess
+        status = readStatus()
+    }
+
+    var granted: Bool { status == .fullAccess || status == .authorized }
+    var canRequest: Bool { status == .notDetermined }
+
+    func refresh() {
+        status = readStatus()
+        if granted { errorMessage = nil }
+    }
+
+    func requestAccess() async {
+        refresh()
+        guard canRequest, !requesting else { return }
+        requesting = true
+        errorMessage = nil
+        defer {
+            refresh()
+            requesting = false
+        }
+        do {
+            _ = try await requestFullAccess()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 struct CalendarAccessControl: View {
     // Settings owns activation refreshes for the whole pane, including existing calendars.
     // Onboarding uses this control's handler because it has no equivalent parent refresh.
     var refreshOnActivation = true
     var onGranted: () async -> Void
-    @State private var status = EKEventStore.authorizationStatus(for: .event)
-    @State private var requesting = false
-    @State private var errorMessage: String?
-
-    private var granted: Bool { status == .fullAccess || status == .authorized }
+    @State private var permission = CalendarPermissionState()
 
     var body: some View {
         VStack(spacing: 8) {
-            if granted {
+            if permission.granted {
                 Label("Calendar access allowed", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button(requesting ? "Requesting access…" : (status == .notDetermined ? "Allow Calendar Access" : "Open Calendar Privacy Settings…")) {
-                    guard status == .notDetermined else {
+                Button(permission.requesting ? "Requesting access…" : (permission.canRequest ? "Allow Calendar Access" : "Open Calendar Privacy Settings…")) {
+                    permission.refresh()
+                    guard permission.canRequest else {
                         CalendarIntegration.openPrivacy()
                         return
                     }
-                    requesting = true
-                    errorMessage = nil
                     Task { @MainActor in
-                        do {
-                            let store = EKEventStore()
-                            _ = try await store.requestFullAccessToEvents()
-                            status = EKEventStore.authorizationStatus(for: .event)
-                            if granted { await onGranted() }
-                        } catch {
-                            errorMessage = error.localizedDescription
-                        }
-                        requesting = false
+                        await permission.requestAccess()
+                        if permission.granted { await onGranted() }
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(requesting)
-                if status != .notDetermined {
+                .disabled(permission.requesting)
+                if !permission.canRequest {
                     Text("Allow Muesli full Calendar access in Privacy & Security to show your meetings.")
                         .font(.caption)
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
-            if let errorMessage {
+            if let errorMessage = permission.errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(MuesliTheme.recording)
             }
         }
+        .onAppear { permission.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            status = EKEventStore.authorizationStatus(for: .event)
-            if granted && refreshOnActivation && !requesting { Task { await onGranted() } }
+            permission.refresh()
+            if permission.granted && refreshOnActivation && !permission.requesting { Task { await onGranted() } }
         }
     }
 }

@@ -161,6 +161,7 @@ struct SettingsView: View {
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
+    @State private var calendarPermission = CalendarPermissionState()
     @State private var hasRefreshedMeetingCalendarSources = false
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
@@ -446,6 +447,7 @@ struct SettingsView: View {
             }
             .onChange(of: selectedPane) { _, pane in
                 appState.selectedSettingsPane = pane
+                calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
@@ -462,9 +464,9 @@ struct SettingsView: View {
                     if appState.selectedMeetingSummaryBackend == .claudeCode {
                         Task { await refreshClaudeCodeAuthStatus() }
                     }
-                    Task {
-                        await controller.calendarAccessDidChange()
-                    }
+                }
+                if selectedPane == .general || selectedPane == .meetings {
+                    Task { await controller.calendarAccessDidChange() }
                 }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
@@ -2806,6 +2808,20 @@ struct SettingsView: View {
                     isBusy: isCheckingSystemAudioPermission
                 )
             }
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Calendars",
+                granted: calendarPermission.granted,
+                action: requestCalendarPermission,
+                pane: "Privacy_Calendars",
+                isBusy: calendarPermission.requesting,
+                actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
+            )
+            if let errorMessage = calendarPermission.errorMessage {
+                Text(errorMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
+            }
         }
     }
 
@@ -2815,7 +2831,8 @@ struct SettingsView: View {
         granted: Bool,
         action: @escaping () -> Void,
         pane: String,
-        isBusy: Bool = false
+        isBusy: Bool = false,
+        actionTitle: String = "Grant"
     ) -> some View {
         HStack {
             HStack(spacing: 8) {
@@ -2832,7 +2849,7 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button(isBusy ? "Checking…" : "Grant") {
+                Button(isBusy ? "Checking…" : actionTitle) {
                     action()
                 }
                 .disabled(isBusy)
@@ -2860,6 +2877,18 @@ struct SettingsView: View {
     private func openPrivacyPane(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func requestCalendarPermission() {
+        calendarPermission.refresh()
+        guard calendarPermission.canRequest else {
+            CalendarIntegration.openPrivacy()
+            return
+        }
+        Task { @MainActor in
+            await calendarPermission.requestAccess()
+            await controller.calendarAccessDidChange()
         }
     }
 
@@ -2946,6 +2975,7 @@ struct SettingsView: View {
     }
 
     private func refreshPermissionStatuses(for reason: SettingsPermissionRefreshReason) {
+        calendarPermission.refresh()
         if reason.refreshesLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
