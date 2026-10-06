@@ -337,6 +337,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
+        try MeetingChatSQL.migrate(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
@@ -2518,6 +2519,9 @@ public final class DictationStore {
     public func clearMeetings() throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        defer { _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil) }
+        try MeetingChatSQL.clear(db: db)
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
@@ -2541,6 +2545,7 @@ public final class DictationStore {
             """,
             db: db
         )
+        try exec("COMMIT", db: db)
     }
 
     public func updateMeeting(id: Int64, title: String, formattedNotes: String) throws {
@@ -5141,6 +5146,12 @@ public final class DictationStore {
             followUpToRecordName: followUpToRecordName,
             visualContext: optionalStringColumn(statement, index: 26)
         )
+    }
+
+    func withChatDatabase<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try operation(db)
     }
 
     private func openDatabase() throws -> OpaquePointer? {
