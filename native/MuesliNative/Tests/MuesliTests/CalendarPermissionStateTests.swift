@@ -5,6 +5,51 @@ import Testing
 @Suite("Calendar permission recovery")
 @MainActor
 struct CalendarPermissionStateTests {
+    @Test("An empty calendar snapshot stays loading until its first read completes")
+    func initialCalendarRead() {
+        var refresh = CalendarSourceRefreshState()
+        #expect(refresh.isLoading)
+        #expect(refresh.needsInitialRefresh)
+        refresh.begin()
+        #expect(refresh.isLoading)
+        #expect(!refresh.needsInitialRefresh)
+        refresh.finish(completed: true)
+        #expect(!refresh.isLoading)
+        #expect(!refresh.needsInitialRefresh)
+    }
+
+    @Test("A refresh after granting access hides the old empty snapshot until completion")
+    func refreshAfterGrant() {
+        var refresh = CalendarSourceRefreshState()
+        refresh.begin()
+        refresh.finish(completed: true)
+        refresh.begin()
+        #expect(refresh.hasLoaded)
+        #expect(refresh.isLoading)
+        refresh.finish(completed: true)
+        #expect(!refresh.isLoading)
+    }
+
+    @Test("Overlapping reads stay loading until every Settings refresh completes")
+    func overlappingCalendarReads() {
+        var refresh = CalendarSourceRefreshState()
+        refresh.begin()
+        refresh.begin()
+        refresh.finish(completed: true)
+        #expect(refresh.isLoading)
+        refresh.finish(completed: true)
+        #expect(!refresh.isLoading)
+    }
+
+    @Test("A cancelled first read can retry without treating its snapshot as an empty result")
+    func cancelledCalendarRead() {
+        var refresh = CalendarSourceRefreshState()
+        refresh.begin()
+        refresh.finish(completed: false)
+        #expect(refresh.isLoading)
+        #expect(refresh.needsInitialRefresh)
+    }
+
     @MainActor
     private final class Harness {
         var status: EKAuthorizationStatus = .notDetermined

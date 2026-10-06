@@ -82,6 +82,24 @@ final class CalendarPermissionState {
     }
 }
 
+/// Distinguishes an empty result from a read that has not completed yet.
+/// Track overlapping Settings refreshes so one completion cannot hide another.
+struct CalendarSourceRefreshState {
+    private(set) var pendingCount = 0
+    private(set) var hasLoaded = false
+
+    var isLoading: Bool { !hasLoaded || pendingCount > 0 }
+    var needsInitialRefresh: Bool { !hasLoaded && pendingCount == 0 }
+
+    mutating func begin() { pendingCount += 1 }
+
+    mutating func finish(completed: Bool) {
+        precondition(pendingCount > 0)
+        pendingCount -= 1
+        if completed { hasLoaded = true }
+    }
+}
+
 struct CalendarAccessControl: View {
     // Settings owns activation refreshes for the whole pane, including existing calendars.
     // Onboarding uses this control's handler because it has no equivalent parent refresh.

@@ -162,7 +162,7 @@ struct SettingsView: View {
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
     @State private var calendarPermission = CalendarPermissionState()
-    @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var calendarSourcesRefresh = CalendarSourceRefreshState()
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
     @State private var isShowingIPhoneBridgeQRCode = false
@@ -466,7 +466,7 @@ struct SettingsView: View {
                     }
                 }
                 if selectedPane == .general || selectedPane == .meetings {
-                    Task { await controller.calendarAccessDidChange() }
+                    refreshCalendarSources(reconcileAccess: true)
                 }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
@@ -2899,7 +2899,9 @@ struct SettingsView: View {
         }
         Task { @MainActor in
             await calendarPermission.requestAccess()
-            await controller.calendarAccessDidChange()
+            if calendarPermission.granted {
+                refreshCalendarSources(reconcileAccess: true)
+            }
         }
     }
 
@@ -3255,7 +3257,7 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if calendarPermission.granted {
                 if sourceGroups.isEmpty {
-                    Text("No calendars on this Mac.")
+                    Text(calendarSourcesRefresh.isLoading ? "Loading calendars…" : "No calendars on this Mac.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                 } else {
@@ -3367,10 +3369,19 @@ struct SettingsView: View {
     }
 
     private func refreshMeetingCalendarSourcesIfNeeded() {
-        guard !hasRefreshedMeetingCalendarSources else { return }
-        hasRefreshedMeetingCalendarSources = true
-        Task {
-            await controller.refreshAvailableEventKitCalendars()
+        guard calendarSourcesRefresh.needsInitialRefresh else { return }
+        refreshCalendarSources()
+    }
+
+    private func refreshCalendarSources(reconcileAccess: Bool = false) {
+        calendarSourcesRefresh.begin()
+        Task { @MainActor in
+            defer { calendarSourcesRefresh.finish(completed: !Task.isCancelled) }
+            if reconcileAccess {
+                await controller.calendarAccessDidChange()
+            } else {
+                await controller.refreshAvailableEventKitCalendars()
+            }
         }
     }
 
