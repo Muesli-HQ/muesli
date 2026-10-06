@@ -1,6 +1,8 @@
 import Foundation
 import Testing
 @testable import MuesliCore
+import SQLite3
+
 
 @Suite("Meeting chat retrieval")
 struct MeetingChatRetrievalTests {
@@ -92,5 +94,28 @@ struct MeetingChatRetrievalTests {
         _ = try insert(store, text: "launch next day", date: end)
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "launch", scope: .init(startDate: start, endDateExclusive: end))
         #expect(evidence.passages.map(\.meetingID) == [selected])
+    }
+
+    @Test func keepsRelevanceAheadOfRecency() throws {
+        let store = try database()
+        let target = try insert(store, text: "sunflower pricing contract", date: Date(timeIntervalSince1970: 1_000))
+        _ = try insert(store, text: "pricing check-in", date: Date())
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "sunflower pricing", scope: .init())
+        #expect(evidence.passages.first?.meetingID == target)
+    }
+
+    @Test func completeSmallRecapAndHistoryWipeEraseFTS() throws {
+        let store = try database()
+        _ = try insert(store, text: "first launch decision")
+        _ = try insert(store, text: "second launch decision")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        let evidence = try retrieval.retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(!evidence.coverage.isPartialRecap)
+        #expect(evidence.coverage.evidenceMeetingCount == 2)
+        try store.clearMeetings()
+        let indexed = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(indexed == 0)
     }
 }

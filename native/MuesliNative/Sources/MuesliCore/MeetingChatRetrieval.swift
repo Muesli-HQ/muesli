@@ -53,10 +53,12 @@ public struct MeetingChatRetrieval: Sendable {
                     candidates = try readPassages("SELECT body FROM meeting_chat_passages WHERE \(condition) ORDER BY meeting_id DESC,id", bindings, db: db)
                 }
                 candidates = candidates.filter { eligible[$0.meetingID] == $0.revision }
+                let relevanceOrder = Dictionary(uniqueKeysWithValues: candidates.enumerated().map { ($0.element.id, $0.offset) })
                 // Prefer original evidence and distribute broad recaps across meetings before adding detail.
                 candidates.sort { lhs, rhs in
                     if lhs.kind == .generatedNotes && rhs.kind != .generatedNotes { return false }
                     if rhs.kind == .generatedNotes && lhs.kind != .generatedNotes { return true }
+                    if !broadRecap { return relevanceOrder[lhs.id, default: 0] < relevanceOrder[rhs.id, default: 0] }
                     return lhs.startDate == rhs.startDate ? lhs.id < rhs.id : lhs.startDate > rhs.startDate
                 }
                 if broadRecap {
