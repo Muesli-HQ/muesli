@@ -1002,6 +1002,8 @@
   <p class="pattern-note">Default is adaptive blue: #6BA3F7 in dark mode, #2563EB in light mode. Its stored legacy value, 1e1e2e, is a sentinel, never a dark swatch. Custom colors use their literal hex. A white checkmark plus ring indicates selection; accessibility announces the name and selected state.</p>
 
   <h3>Supporting Actions</h3>
+  <div class="component-preview demo-row"><div><strong>Insights sharing</strong><span class="metadata">A visible action beside the time-range controls</span></div><span class="push-right" style="display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:white;padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600"><svg width="16" height="18" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M5 6H2V17H14V6H11M8 12V1M4 5L8 1L12 5" stroke-linecap="round" stroke-linejoin="round"/></svg>Share</span></div>
+  <p class="pattern-note">Insights uses a large native bordered-prominent Share button, tinted with the chosen accent. Always show both the icon and the Share label. At narrow widths, move actions below the range picker instead of compressing the label. Disable sharing until a snapshot loads; activating it opens the existing anonymous-image preview.</p>
   <div class="component-preview">
     <div class="demo-row"><div><strong>Sync with iPhone or iPad</strong><span class="metadata">Turn on iCloud sync to get started.</span></div><span class="quiet-button push-right">Set up sync</span></div>
     <div class="divider" style="margin:20px 0"></div>

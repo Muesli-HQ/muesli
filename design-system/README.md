@@ -19,6 +19,7 @@ The native implementation owns behavior and token values. Browser specimens illu
 | Adaptive colors, typography, spacing, reading width | `MuesliTheme.swift` |
 | Sidebar width, compact layout, global tint | `DashboardRootView.swift`, `SidebarView.swift` |
 | Outlined compact statistics | `StatsHeaderView.swift` |
+| Prominent, labeled Insights Share action and adaptive range controls | `InsightsView.swift` |
 | History rows and expandable previews | `DictationRowView.swift`, `TimelineView.swift`, `MeetingListItemView.swift` |
 | Notes and transcript reading columns | `MeetingNotesView.swift`, `MeetingDetailView.swift` |
 | Accent swatches, account and maintenance actions | `MuesliSettingsOptions.swift`, `SettingsView.swift` |
