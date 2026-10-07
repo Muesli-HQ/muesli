@@ -52,6 +52,11 @@ enum MeetingChatSQL {
     }
 
     static func migrate(db: OpaquePointer?) throws {
+        // An outer SQLite UPSERT conflict policy can override a trigger's OR IGNORE.
+        // Guard insertion with NOT EXISTS instead, including upgrades from earlier trigger definitions.
+        for name in ["meeting_chat_index_source_inserted", "meeting_chat_index_source_edited", "meeting_chat_participant_inserted", "meeting_chat_participant_edited", "meeting_chat_participant_removed"] {
+            try execute("DROP TRIGGER IF EXISTS \(name)", db: db)
+        }
         let statements = [
             "CREATE TABLE IF NOT EXISTS meeting_chat_sessions (id TEXT PRIMARY KEY, body TEXT NOT NULL, updated_at REAL NOT NULL)",
             "CREATE TABLE IF NOT EXISTS meeting_chat_turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES meeting_chat_sessions(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(session_id, ordinal))",
@@ -64,12 +69,14 @@ enum MeetingChatSQL {
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_index_scope ON meeting_chat_index_state(folder_id,start_time)",
             """
             CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_inserted AFTER INSERT ON meetings
-            WHEN NEW.deleted_at IS NULL BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources VALUES(NEW.id); END
+            WHEN NEW.deleted_at IS NULL BEGIN INSERT INTO meeting_chat_dirty_sources SELECT NEW.id
+              WHERE NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=NEW.id); END
             """,
             """
             CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_edited
             AFTER UPDATE OF title,start_time,folder_id,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
-            WHEN NEW.deleted_at IS NULL BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources VALUES(NEW.id); END
+            WHEN NEW.deleted_at IS NULL BEGIN INSERT INTO meeting_chat_dirty_sources SELECT NEW.id
+              WHERE NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=NEW.id); END
             """,
             """
             CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_deleted AFTER UPDATE OF deleted_at ON meetings
@@ -101,8 +108,9 @@ enum MeetingChatSQL {
         for (name, event, owner) in [("inserted", "INSERT", "NEW"), ("edited", "UPDATE", "NEW"), ("removed", "DELETE", "OLD")] {
             try execute("""
                 CREATE TRIGGER IF NOT EXISTS meeting_chat_participant_\(name) AFTER \(event) ON meeting_participants
-                BEGIN INSERT OR IGNORE INTO meeting_chat_dirty_sources
-                  SELECT id FROM meetings WHERE id=\(owner).meeting_id AND deleted_at IS NULL; END
+                BEGIN INSERT INTO meeting_chat_dirty_sources
+                  SELECT id FROM meetings WHERE id=\(owner).meeting_id AND deleted_at IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=\(owner).meeting_id); END
                 """, db: db)
         }
         try execute("""

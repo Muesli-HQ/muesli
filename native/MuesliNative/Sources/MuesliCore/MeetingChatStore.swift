@@ -52,6 +52,7 @@ public struct MeetingChatStore: Sendable {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard let turn = try turn(turnID, db: db), turn.state.isPending else { throw MeetingChatError.missingSession }
             guard try sourcesMatch(dependencies, db: db) else { throw MeetingChatError.sourceChanged }
+            try MeetingChatSQL.execute("DELETE FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db)
             for dependency in dependencies {
                 try MeetingChatSQL.execute("INSERT OR REPLACE INTO meeting_chat_dependencies VALUES(?,?,?)", [.text(turnID.uuidString), .integer(dependency.meetingID), .text(dependency.revision)], db: db)
             }
@@ -61,6 +62,9 @@ public struct MeetingChatStore: Sendable {
         try connection { db in try MeetingChatSQL.rows("SELECT meeting_id,revision FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db) {
             MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
         } }
+    }
+    public func dependenciesAreCurrent(_ dependencies: [MeetingChatDependency]) throws -> Bool {
+        try connection { db in try sourcesMatch(dependencies, db: db) }
     }
     public func finishTurn(turnID: UUID, answer: String, citations: [MeetingChatCitation], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage? = nil, isDraft: Bool = false) throws -> Bool {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
@@ -88,6 +92,15 @@ public struct MeetingChatStore: Sendable {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard var turn = try turn(turnID, db: db), turn.state == .completed else { return }
             turn.editableDraft = text; try saveTurn(turn, db: db)
+        } }
+    }
+    public func restartTurn(id: UUID, provider: String, model: String) throws -> MeetingChatTurn? {
+        try connection { db in try MeetingChatSQL.transaction(db: db) {
+            guard var turn = try turn(id, db: db), turn.state != .sourceDeleted else { return nil }
+            turn.state = .finding; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
+            turn.error = nil; turn.provider = provider; turn.model = model; turn.coverage = nil
+            try MeetingChatSQL.execute("DELETE FROM meeting_chat_dependencies WHERE turn_id=?", [.text(id.uuidString)], db: db)
+            try saveTurn(turn, db: db); return turn
         } }
     }
     public func deleteSession(id: UUID) throws {
