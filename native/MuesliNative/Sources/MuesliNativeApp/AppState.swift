@@ -161,6 +161,7 @@ final class AppState {
     var directMeetingCountsByFolder: [Int64: Int] = [:]
     var selectedMeetingID: Int64?
     var selectedMeetingRecord: MeetingRecord?
+    var meetingContactCreationRequest: MeetingContactCreationRequest?
     var folders: [MeetingFolder] = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
     var meetingsNavigationState: MeetingsNavigationState = .browser
