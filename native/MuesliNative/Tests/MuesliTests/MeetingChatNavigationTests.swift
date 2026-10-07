@@ -3,7 +3,8 @@ import Testing
 @testable import MuesliCore
 @testable import MuesliNativeApp
 
-@MainActor @Suite("Meeting chat navigation")
+@MainActor
+@Suite("Meeting chat navigation")
 struct MeetingChatNavigationTests {
     private func controllerFixture() throws -> (MuesliController, DictationStore, MeetingChatCitation) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("chat-navigation-\(UUID())")

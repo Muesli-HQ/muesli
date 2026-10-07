@@ -12,6 +12,10 @@ struct MeetingChatView: View {
     @State private var renamingChat: UUID?
     @State private var newTitle = ""
     @State private var scrollAnchor: UUID?
+    @State private var editingDraft: MeetingChatTurn?
+    @State private var participantPrompt = false
+    @State private var participantName = ""
+    @State private var preparedIsDraft = false
     @FocusState private var composerFocused: Bool
     private var requestConfig: AppConfig { coordinator.fastAnswers ? MeetingTextGenerationClient.fastConfiguration(appState.config) : appState.config }
     private var scopeLabel: String {
@@ -65,6 +69,7 @@ struct MeetingChatView: View {
         }
         .background(MuesliTheme.backgroundBase)
         .sheet(isPresented: $showScope) { MeetingChatScopePicker(scope: coordinator.scope, folders: appState.folders, meetings: coordinator.sourceChoices, onChange: coordinator.setScope) }
+        .sheet(item: $editingDraft) { turn in MeetingChatDraftView(turn: turn) { coordinator.saveDraft(turnID: turn.id, text: $0) } }
         .popover(item: $citation) { source in
             MeetingChatCitationView(citation: source, coordinator: coordinator) {
                 guard let sessionID = coordinator.selectedSessionID else { return }
@@ -80,10 +85,19 @@ struct MeetingChatView: View {
             Button("Save") { if let id = renamingChat, !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { coordinator.renameChat(id: id, title: newTitle) }; renamingChat = nil }
             Button("Cancel", role: .cancel) { renamingChat = nil }
         }
+        .alert("Whose next steps?", isPresented: $participantPrompt) {
+            TextField("Participant name", text: $participantName)
+            Button("Prepare question") { prepare(.myNextSteps, name: participantName) }.disabled(participantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { }
+        }
+        .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
         .task { coordinator.reload(); await coordinator.refreshChoices() }
     }
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack { ForEach(MeetingChatQuickAction.allCases) { action in Button(action.label) { prepare(action, name: nil) }.disabled(coordinator.isBusy) } }
+            }
             HStack {
                 Toggle("Fast answers", isOn: $coordinator.fastAnswers).toggleStyle(.checkbox)
                 Text("\(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend).label) · \(MeetingTextGenerationClient.model(requestConfig))").font(.caption).foregroundStyle(.secondary)
@@ -104,7 +118,8 @@ struct MeetingChatView: View {
         guard controller.canUseSummaryProvider(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend)) else {
             coordinator.errorMessage = "Connect your meeting AI provider in AI Settings. Your question is saved here."; return
         }
-        coordinator.send(question: coordinator.composerDraft, config: appState.config)
+        coordinator.send(question: coordinator.composerDraft, config: appState.config, isDraft: preparedIsDraft)
+        preparedIsDraft = false
         scrollAnchor = coordinator.turns.last?.id
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
@@ -124,6 +139,18 @@ struct MeetingChatView: View {
                 HStack { ForEach(Array(turn.citations.enumerated()), id: \.element.id) { index, source in
                     Button("[\(index + 1)] \(source.title)") { citation = source }.lineLimit(1)
                 } }
+                if let session = coordinator.sessions.first(where: { $0.id == turn.sessionID }) {
+                    HStack {
+                        Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(MeetingChatExporter.plainText(turn: turn, session: session, useEditedDraft: false), forType: .string) }
+                        Button("Edit draft") { editingDraft = turn }
+                        Button("Export") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: false) }
+                        if turn.editableDraft != nil {
+                            Button("Copy draft") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(MeetingChatExporter.plainText(turn: turn, session: session, useEditedDraft: true), forType: .string) }
+                            Button("Export draft") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: true) }
+                        }
+                    }.font(.caption)
+                    if turn.editableDraft != nil { Text("Edited draft saved").font(.caption).foregroundStyle(.secondary) }
+                }
             } else if turn.state == .sourceDeleted { Text("Answer removed because a source meeting was deleted").foregroundStyle(.secondary) }
             else if turn.state.isPending { Text("\(turn.state == .finding ? "Finding meeting context" : "Writing answer")…").foregroundStyle(.secondary) }
             else {
@@ -131,6 +158,12 @@ struct MeetingChatView: View {
                 Button("Retry") { coordinator.retry(turnID: turn.id, config: appState.config) }.disabled(coordinator.isBusy)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func prepare(_ action: MeetingChatQuickAction, name: String?) {
+        let prompt = action.prepare(scope: coordinator.scope, now: Date(), calendar: .current, userDisplayName: name)
+        if prompt.needsParticipantName { participantName = ""; participantPrompt = true; return }
+        if prompt.scope != coordinator.scope { coordinator.setScope(prompt.scope) }
+        coordinator.composerDraft = prompt.text; preparedIsDraft = prompt.isDraft; composerFocused = true
     }
     static func attributedAnswer(_ raw: String, citations: [MeetingChatCitation]) -> AttributedString {
         var markdown = MeetingChatClient.displayText(raw)

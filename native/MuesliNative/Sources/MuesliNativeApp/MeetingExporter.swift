@@ -181,7 +181,7 @@ struct MeetingExporter {
 
     // MARK: - Save panel
 
-    private static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
+    static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
         NSApp.activate()
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { response in
@@ -406,7 +406,7 @@ struct MeetingExporter {
 
 // MARK: - Save panel format picker accessory
 
-private class ExportFormatAccessory: NSObject {
+class ExportFormatAccessory: NSObject {
     let view: NSView
     private let popup: NSPopUpButton
     private weak var panel: NSSavePanel?
