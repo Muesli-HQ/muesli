@@ -5,18 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>muesli design language system</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
   :root {
-    --bg-deep: #111214;
+    --bg-deep: #0B0C0E;
     --bg-base: #161719;
-    --bg-raised: #1C1D20;
+    --bg-raised: #202226;
     --bg-hover: #232528;
     --surface-primary: #262830;
     --surface-selected: #2E3340;
     --text-primary: rgba(255,255,255,0.92);
-    --text-secondary: rgba(255,255,255,0.62);
-    --text-tertiary: rgba(255,255,255,0.40);
+    --text-secondary: rgba(255,255,255,0.74);
+    --text-tertiary: rgba(255,255,255,0.56);
     --accent: #6BA3F7;
     --recording: #EF4444;
     --transcribing: #F59E0B;
@@ -27,7 +25,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg-deep);
     color: var(--text-primary);
     line-height: 1.6;
@@ -364,9 +362,59 @@
     background: var(--border);
     margin: 40px 0;
   }
+
+  :root { --accent-subtle: rgba(107,163,247,0.15); --reading-size: 15px; --reading-width: 720px; --page-inset: 32px; }
+  :root[data-theme="light"] {
+    --bg-deep:#F5F5F7; --bg-base:#FFFFFF; --bg-raised:#F0F0F2; --bg-hover:#E8E8EC;
+    --surface-primary:#E5E5EA; --surface-selected:#D6DFFE;
+    --text-primary:rgba(0,0,0,0.88); --text-secondary:rgba(0,0,0,0.66); --text-tertiary:rgba(0,0,0,0.55);
+    --accent:#2563EB; --accent-subtle:rgba(37,99,235,0.15); --border:rgba(0,0,0,0.08);
+  }
+  .reference-toolbar { position:sticky; top:0; z-index:2; display:flex; justify-content:space-between; gap:16px; padding:12px 24px; background:var(--bg-base); border-bottom:1px solid var(--border); font-size:13px; }
+  a { color:var(--accent); }
+  button { font:inherit; cursor:pointer; }
+  .reference-toolbar button, .quiet-button { color:var(--accent); background:var(--accent-subtle); border:0; padding:6px 12px; border-radius:6px; }
+  button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  .pattern-note { font-size:13px; color:var(--text-secondary); margin:12px 0; }
+  .reading-sample { font-size:var(--reading-size); line-height:1.6; max-width:var(--reading-width); }
+  .history-row { padding:16px; border-bottom:1px solid var(--border); border-radius:6px; }
+  .history-row:hover { background:var(--bg-hover); }
+  .history-row.selected { background:var(--accent-subtle); }
+  .history-row p { font-size:14px; color:var(--text-secondary); }
+  .metadata { display:block; font-size:12px; color:var(--text-secondary); }
+  .stats-demo { display:flex; gap:16px; min-width:650px; }
+  .stat-demo { flex:1; display:flex; align-items:center; gap:12px; padding:12px; background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; }
+  .stat-demo:hover { background:var(--bg-hover); border-color:var(--accent); }
+  .stat-demo .stat-icon { width:20px; font-size:16px; color:var(--accent); }
+  .stat-demo strong { display:block; font-size:20px; font-weight:600; line-height:1.3; font-variant-numeric:tabular-nums; }
+  .stat-demo small { display:block; font-size:12px; color:var(--text-secondary); }
+  .preview-scroll { overflow-x:auto; }
+  .accent-examples { display:flex; flex-wrap:wrap; gap:18px; }
+  .accent-example { text-align:center; font-size:12px; color:var(--text-secondary); }
+  .accent-example i { display:grid; place-items:center; font-style:normal; width:22px; height:22px; margin:0 auto 6px; border-radius:50%; color:white; }
+  .accent-example i.selected { border:2px solid rgba(255,255,255,0.9); box-shadow:0 0 0 1px var(--border); font-size:10px; font-weight:700; }
+  .notification-dismiss { display:grid; place-items:center; width:22px; height:22px; padding:0; border:1px solid rgba(255,255,255,0.55); border-radius:50%; background:rgba(0,0,0,0.7); color:rgba(255,255,255,0.86); }
+  .notch-schematic { display:flex; width:max-content; align-items:center; color:white; font-size:10px; line-height:1; }
+  .notch-demo { display:flex; height:32px; background:black; border-radius:0 0 12px 12px; overflow:hidden; }
+  .notch-left { width:110px; display:flex; align-items:center; justify-content:center; gap:5px; }
+  .notch-camera { width:192px; }
+  .notch-right { width:78px; display:flex; align-items:center; gap:4px; padding:0 6px; }
+  .notch-wave { width:16px; height:14px; background:repeating-linear-gradient(90deg,var(--accent) 0 1px,transparent 1px 3px); }
+  .notch-stop { display:grid; place-items:center; width:20px; height:22px; }
+  .notch-cancel { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:#242424; }
+  .clearance-demo { display:grid; place-items:center; width:32px; height:32px; border:1px dashed var(--transcribing); color:var(--transcribing); font-size:9px; }
+  .demo-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .demo-row .push-right { margin-left:auto; }
+  details p { margin-top:12px; font-size:15px; }
+  details summary { color:var(--accent); font-size:12px; cursor:pointer; }
+  @media(max-width:600px) { section { padding:36px 20px; } .cover { padding:40px 20px; } .radii-row { flex-wrap:wrap; } }
 </style>
 </head>
 <body>
+<nav class="reference-toolbar" aria-label="Reference preview">
+  <a href="#ui-polish">UI patterns · PR #584</a>
+  <button id="theme-toggle" type="button" aria-pressed="false">Preview light mode</button>
+</nav>
 
 <!-- COVER -->
 <div class="cover">
@@ -395,7 +443,7 @@
   </div>
   <h1>muesli</h1>
   <div class="subtitle">design language system</div>
-  <div class="meta">v0.4.0 &middot; march 2026 &middot; macOS native app</div>
+  <div class="meta">PR #584 &middot; updated October 8, 2026 &middot; macOS native app</div>
 </div>
 
 <!-- 1. COLORS -->
@@ -405,9 +453,9 @@
 
   <h3>Backgrounds (Layered)</h3>
   <div class="swatches">
-    <div class="swatch"><div class="color-block" style="background:#111214"></div><div class="info"><div class="name">backgroundDeep</div><div class="hex">#111214 / #F5F5F7</div></div></div>
+    <div class="swatch"><div class="color-block" style="background:#0B0C0E"></div><div class="info"><div class="name">backgroundDeep</div><div class="hex">#0B0C0E / #F5F5F7</div></div></div>
     <div class="swatch"><div class="color-block" style="background:#161719"></div><div class="info"><div class="name">backgroundBase</div><div class="hex">#161719 / #FFFFFF</div></div></div>
-    <div class="swatch"><div class="color-block" style="background:#1C1D20"></div><div class="info"><div class="name">backgroundRaised</div><div class="hex">#1C1D20 / #F0F0F2</div></div></div>
+    <div class="swatch"><div class="color-block" style="background:#202226"></div><div class="info"><div class="name">backgroundRaised</div><div class="hex">#202226 / #F0F0F2</div></div></div>
     <div class="swatch"><div class="color-block" style="background:#232528"></div><div class="info"><div class="name">backgroundHover</div><div class="hex">#232528 / #E8E8EC</div></div></div>
   </div>
 
@@ -422,8 +470,8 @@
   <table>
     <tr><th>Token</th><th>Dark Mode</th><th>Light Mode</th><th>Usage</th></tr>
     <tr><td><code>textPrimary</code></td><td>White 92%</td><td>Black 88%</td><td>Headings, body text</td></tr>
-    <tr><td><code>textSecondary</code></td><td>White 62%</td><td>Black 55%</td><td>Labels, metadata</td></tr>
-    <tr><td><code>textTertiary</code></td><td>White 40%</td><td>Black 33%</td><td>Hints, disabled, timestamps</td></tr>
+    <tr><td><code>textSecondary</code></td><td>White 74%</td><td>Black 66%</td><td>Labels, metadata</td></tr>
+    <tr><td><code>textTertiary</code></td><td>White 56%</td><td>Black 55%</td><td>Hints, disabled, timestamps</td></tr>
   </table>
 
   <h3>Accent & Semantic</h3>
@@ -439,21 +487,23 @@
 <!-- 2. TYPOGRAPHY -->
 <section class="page-break">
   <h2><span class="num">02</span> Typography</h2>
-  <p class="section-desc">Inter is the primary typeface (bundled). SF Pro as system fallback. Monospaced for data, Rounded for special emphasis.</p>
+  <p class="section-desc">The native interface uses system SF Pro through SwiftUI system fonts. Use monospaced digits for numeric statistics and a 15pt reading style for dictations, meeting notes, and transcripts. Browser examples use the local system font; no remote font dependency.</p>
 
   <h3>Type Scale</h3>
-  <div class="type-sample"><div class="meta-row"><span class="size-label">title1 &middot; 28pt Bold</span></div><div style="font-size:28px;font-weight:700">Meeting Summary</div></div>
-  <div class="type-sample"><div class="meta-row"><span class="size-label">title2 &middot; 22pt Semi</span></div><div style="font-size:22px;font-weight:600">Dictations</div></div>
+  <div class="type-sample"><div class="meta-row"><span class="size-label">title1 &middot; 26pt Bold</span></div><div style="font-size:26px;font-weight:700">Meeting Summary</div></div>
+  <div class="type-sample"><div class="meta-row"><span class="size-label">title2 &middot; 20pt Semi</span></div><div style="font-size:20px;font-weight:600">Dictations</div></div>
   <div class="type-sample"><div class="meta-row"><span class="size-label">title3 &middot; 18pt Semi</span></div><div style="font-size:18px;font-weight:600">No meetings yet</div></div>
   <div class="type-sample"><div class="meta-row"><span class="size-label">headline &middot; 15pt Semi</span></div><div style="font-size:15px;font-weight:600">Sprint Planning Call</div></div>
   <div class="type-sample"><div class="meta-row"><span class="size-label">body &middot; 14pt Regular</span></div><div style="font-size:14px;font-weight:400">The team discussed deployment timelines and reviewed outstanding bugs.</div></div>
   <div class="type-sample"><div class="meta-row"><span class="size-label">callout &middot; 13pt Regular</span></div><div style="font-size:13px;font-weight:400;color:var(--text-secondary)">Hold Left Cmd to dictate</div></div>
   <div class="type-sample"><div class="meta-row"><span class="size-label">caption &middot; 12pt Regular</span></div><div style="font-size:12px;font-weight:400;color:var(--text-tertiary)">2026-03-16 09:41 &bull; 1m 14s</div></div>
 
+  <div class="type-sample"><div class="meta-row"><span class="size-label">reading &middot; 15pt Regular</span></div><div class="reading-sample">Clear notes should be comfortable to read. Use a 720pt maximum reading column and 5pt additional line spacing for meeting content; dictation previews use 3pt.</div></div>
+
   <h3>Special Variants</h3>
   <table>
     <tr><th>Variant</th><th>Usage</th><th>Example</th></tr>
-    <tr><td>Monospaced 13pt</td><td>Timestamps, raw transcript editor</td><td><code style="font-family:monospace">2026-03-16 09:41</code></td></tr>
+    <tr><td>Monospaced 13pt</td><td>Timestamps; transcript editing uses the reading style</td><td><code style="font-family:monospace">2026-03-16 09:41</code></td></tr>
     <tr><td>Rounded 24pt Semibold</td><td>Hotkey display in onboarding</td><td>Left Cmd</td></tr>
     <tr><td>Monospaced 12pt Semibold</td><td>Version display</td><td><code style="font-family:monospace">v0.4.0</code></td></tr>
   </table>
@@ -499,7 +549,7 @@
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail collapses to a 68pt icon strip via the header toggle.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
   <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Icons are outline-only at 14pt medium; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
   <h3>Floating Indicator Controls</h3>
@@ -567,7 +617,7 @@
     <tr><td>Recording background</td><td>Solid accent color at 72% opacity (hides frost)</td></tr>
     <tr><td>Corner radius</td><td>Half of pill height (fully rounded)</td></tr>
     <tr><td>Window level</td><td><code>.floating</code></td></tr>
-    <tr><td>Accent color</td><td>User-configurable via Settings &mdash; applies to recording state background</td></tr>
+    <tr><td>Accent color</td><td>User-configurable via Settings &mdash; shared with dashboard controls and indicator previews; semantic success/error colors stay distinct</td></tr>
     <tr><td>Draggable</td><td>Click+drag to reposition. Anchor point persisted to config as <code>indicatorAnchor</code></td></tr>
   </table>
 
@@ -691,25 +741,18 @@
   </table>
   <p style="font-size:12px;color:var(--text-tertiary);margin-top:8px">Disabled state: no border, <code>not-allowed</code> cursor, tooltip explains why. Used for actions unavailable on the current system (e.g. a model requiring a newer macOS) — see Models tab, issue #479.</p>
 
-  <h3>Cards</h3>
-  <div class="component-preview" style="display:flex;gap:16px;flex-wrap:wrap">
-    <div class="card-demo">
-      <div style="font-size:15px;font-weight:600">Sprint Planning</div>
-      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">2026-03-16 09:41 &bull; 1m 14s</div>
-      <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px">Discussion about deployment timelines and...</div>
-    </div>
-    <div class="card-demo card-selected">
-      <div style="font-size:15px;font-weight:600">Customer Call</div>
-      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">2026-03-15 14:30 &bull; 25m</div>
-      <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px">Reviewed product roadmap with the client...</div>
-    </div>
+  <h3>History Rows</h3>
+  <div class="component-preview">
+    <div class="history-row"><strong>Sprint planning</strong><span class="metadata">Today · 25 min</span><p>Review deployment timelines and the next release.</p></div>
+    <div class="history-row selected"><strong>Customer call</strong><span class="metadata">Yesterday · 18 min</span><p>Capture decisions and follow-up work.</p></div>
   </div>
   <table>
-    <tr><th>State</th><th>Background</th><th>Border</th><th>Radius</th></tr>
-    <tr><td>Default</td><td><code>backgroundRaised</code></td><td><code>surfaceBorder</code> 1pt</td><td>14pt (large)</td></tr>
-    <tr><td>Selected</td><td><code>surfaceSelected</code></td><td><code>accent</code> 35% 1pt</td><td>14pt (large)</td></tr>
-    <tr><td>Hover</td><td><code>backgroundHover</code></td><td><code>surfaceBorder</code> 1pt</td><td>14pt (large)</td></tr>
+    <tr><th>State</th><th>Background</th><th>Separation</th><th>Radius</th></tr>
+    <tr><td>Default</td><td>Transparent</td><td>1pt inset bottom divider</td><td>6pt</td></tr>
+    <tr><td>Selected meeting</td><td>Accent at 15%</td><td>1pt inset bottom divider</td><td>6pt</td></tr>
+    <tr><td>Hover</td><td>backgroundHover</td><td>1pt inset bottom divider</td><td>6pt</td></tr>
   </table>
+  <p class="pattern-note">Meeting rows use 16pt padding; timeline/dictation rows use 20pt horizontal and 16pt vertical padding. Long dictations show a three-line preview with Show more / Show less. Copy always includes the complete text. Card outlines remain on statistics and grouped settings, where they establish a useful boundary.</p>
 
   <h3>Model Card — Incompatible State</h3>
   <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Models tab: a model gated to a newer macOS than the current system is marked <strong>Incompatible</strong> — the title, status badge, description text, Download/Set&nbsp;Active button, and any language picker all read as disabled (<code>textTertiary</code>), with an inline reason instead of a doomed download attempt (issue #479). No progress bar is ever shown for this state. The Incompatible badge takes priority even when the model happens to be downloaded or active already (e.g. downloaded on a newer macOS, then this system was downgraded).</p>
@@ -849,14 +892,14 @@
 <!-- 8. APP STRUCTURE -->
 <section class="page-break">
   <h2><span class="num">08</span> App Structure</h2>
-  <p class="section-desc">Three-column layout with global sidebar navigation.</p>
+  <p class="section-desc">A stable global sidebar with page-specific content. Meeting details retain their compact layout below 600pt when a meeting is open.</p>
 
   <h3>Window Dimensions</h3>
   <table>
     <tr><th>Property</th><th>Value</th></tr>
     <tr><td>Default size</td><td>1120 &times; 790</td></tr>
-    <tr><td>Minimum size</td><td>900 &times; 600</td></tr>
-    <tr><td>Sidebar width</td><td>240&ndash;300pt</td></tr>
+    <tr><td>Minimum size</td><td>520 &times; 600pt</td></tr>
+    <tr><td>Sidebar width</td><td>240pt expanded / 68pt collapsed</td></tr>
     <tr><td>Meeting list pane</td><td>280&ndash;380pt</td></tr>
     <tr><td>Detail pane</td><td>Flexible (fills remaining)</td></tr>
   </table>
@@ -923,12 +966,89 @@
   </table>
 </section>
 
+<!-- 9. CURRENT UI PATTERNS -->
+<section id="ui-polish" class="page-break">
+  <h2><span class="num">09</span> Dashboard &amp; Notch Patterns</h2>
+  <p class="section-desc">Current PR #584 reference. Values follow the native components; web examples illustrate geometry and hierarchy rather than reproducing AppKit rendering.</p>
+
+  <h3>Compact, Outlined Statistics</h3>
+  <div class="component-preview preview-scroll">
+    <div class="stats-demo">
+      <div class="stat-demo"><span class="stat-icon" style="color:#F5A623" aria-hidden="true"><svg width="16" height="18" viewBox="0 0 16 20"><path fill="currentColor" d="M8 0C11 5 16 7 15 13C14 21 1 22 1 13C1 10 3 8 5 6C4 10 6 11 7 9C9 6 8 3 8 0Z"/></svg></span><div><strong>2</strong><small>day streak</small></div></div>
+      <div class="stat-demo"><span class="stat-icon" aria-hidden="true">A</span><div><strong>15.6k</strong><small>words dictated</small></div></div>
+      <div class="stat-demo"><span class="stat-icon" style="color:var(--success)" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke="currentColor" fill="none" stroke-width="1.5"/><path d="M10 10L6 5M4 10H5M10 3V4M15 10H16" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/></svg></span><div><strong>134</strong><small>avg WPM</small></div></div>
+      <div class="stat-demo"><span class="stat-icon" aria-hidden="true"><svg width="20" height="18" viewBox="0 0 24 20"><circle cx="8" cy="5" r="3" fill="currentColor"/><circle cx="18" cy="5" r="3" fill="currentColor"/><path d="M1 18C1 8 15 8 15 18ZM15 12C21 9 24 14 24 18H17Z" fill="currentColor"/></svg></span><div><strong>37</strong><small>meetings</small></div></div>
+    </div>
+  </div>
+  <p class="pattern-note">16pt card gaps, 12pt inner padding, 10pt corners, 1pt surface borders. Icons use SF Symbols in the app. Values use 20pt semibold monospaced digits; captions use 12pt secondary text. The cards open their corresponding Insights section. The native four-column layout still needs a narrow-window adaptation; horizontal scrolling here only preserves the desktop specimen.</p>
+
+  <h3>Reading &amp; Alignment</h3>
+  <div class="component-preview reading-sample">
+    <p>Useful content has the strongest contrast. Meeting notes and transcripts use 15pt text in a centered 720pt maximum column, with the text itself left-aligned.</p>
+    <details><summary>Show more — example interaction</summary><p>Long dictation previews expand in place. Copy and history actions continue to work on the full record, regardless of the preview state.</p></details>
+  </div>
+  <p class="pattern-note">Page edges use 32pt insets. Source filters stay left-aligned with the list and Apps filter; labels stay centered inside their segments. Recording-indicator choice titles, captions, and the notch explanatory text are centered under the previews.</p>
+
+  <h3>Default Accent &amp; Selection</h3>
+  <div class="component-preview accent-examples">
+    <div class="accent-example"><i style="background:#2563eb"></i>Blue</div>
+    <div class="accent-example"><i style="background:#ef4444"></i>Red</div>
+    <div class="accent-example"><i style="background:#f59e0b"></i>Amber</div>
+    <div class="accent-example"><i style="background:#10b981"></i>Green</div>
+    <div class="accent-example"><i style="background:#8b5cf6"></i>Purple</div>
+    <div class="accent-example"><i style="background:#ec4899"></i>Pink</div>
+    <div class="accent-example"><i class="selected" style="background:var(--accent)" aria-label="Selected">✓</i>Default</div>
+  </div>
+  <p class="pattern-note">Default is adaptive blue: #6BA3F7 in dark mode, #2563EB in light mode. Its stored legacy value, 1e1e2e, is a sentinel, never a dark swatch. Custom colors use their literal hex. A white checkmark plus ring indicates selection; accessibility announces the name and selected state.</p>
+
+  <h3>Supporting Actions</h3>
+  <div class="component-preview">
+    <div class="demo-row"><div><strong>Sync with iPhone or iPad</strong><span class="metadata">Turn on iCloud sync to get started.</span></div><span class="quiet-button push-right">Set up sync</span></div>
+    <div class="divider" style="margin:20px 0"></div>
+    <div class="demo-row"><span style="color:var(--success)">✓ Signed in</span><span class="metadata push-right">Sign Out</span></div>
+  </div>
+  <p class="pattern-note">Sync uses subtle accent fill without an enclosing card. Account status and Sign Out are separate. Destructive maintenance actions keep red labels and confirmation, but use compact controls with quiet borders. These specimens are non-interactive; they do not perform account or data actions.</p>
+
+  <h3>Centered Notification Dismiss</h3>
+  <div class="component-preview demo-row"><span>Correction and meeting notifications</span><span class="notification-dismiss" role="img" aria-label="Dismiss button specimen"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
+  <p class="pattern-note">Production uses an image-only SF Symbol xmark at 10pt medium in a 22pt circular NSButton. Do not use a text multiplication sign: its baseline shifts the mark down. The accessibility label and tooltip are Dismiss. Native 1×/2× rendering was verified; this SVG is only a browser specimen.</p>
+
+  <h3>Single-Line Notch — First Clearance Pass</h3>
+  <div class="component-preview preview-scroll">
+    <div class="notch-schematic" role="img" aria-label="110-point title wing, camera gap, 78-point control wing, then 32 points freed at the right edge">
+      <div class="notch-demo"><div class="notch-left">▥ <strong>Listening</strong></div><div class="notch-camera"></div><div class="notch-right"><span class="notch-wave"></span><span class="notch-stop">■</span><span class="notch-cancel">×</span></div></div><div class="clearance-demo">32pt</div>
+    </div>
+  </div>
+  <table>
+    <tr><th>Region</th><th>Behavior</th></tr>
+    <tr><td>Camera gap</td><td>Uses detected hardware geometry; never shifted to center the asymmetric panel. The example uses 192pt.</td></tr>
+    <tr><td>Left / right wings</td><td>Normally 110pt / 78pt. Height remains the display's top inset. Stop and Cancel retain 20pt and 22pt widths.</td></tr>
+    <tr><td>Waveform</td><td>Shrinks to remaining width before controls; right padding is 6pt per side, gaps 4pt. Instruction disclosure moves left.</td></tr>
+    <tr><td>Clearance</td><td>32pt less coverage at the usual right edge. This is a fixed first pass, not live detection of the system mic indicator. Other display and menu-bar layouts need validation.</td></tr>
+  </table>
+
+  <h3>Provider Logos &amp; Sharing</h3>
+  <p class="pattern-note">Provider marks occupy a consistent 32×32pt slot. Apple and the existing OpenAI vector use a 23pt primary-color mark; other provider assets use a 24pt image on a white 32pt badge with 8pt corners. Preserve original brand colors. Social sharing moves from the sidebar to About, retaining the existing word-milestone eligibility.</p>
+
+  <h3>Insights Session Vocabulary</h3>
+  <p class="pattern-note">App/model rankings count one saved, non-deleted dictation record as one session within the selected date range, including synced dictations. Duration and streaming chunks do not multiply the count. Meetings, Quill, and computer-use records are excluded from these rankings. Rank by session count, then word count.</p>
+  <p class="pattern-note">Known counting inconsistency: the overview's Dictation sessions total uses the broader history cache, which still includes saved Quill/computer-use records. This reference documents current behavior; this PR does not change the aggregation policy.</p>
+</section>
+
 <!-- FOOTER -->
 <section style="text-align:center;padding:60px 40px;color:var(--text-tertiary);font-size:12px">
   <div class="divider"></div>
-  <p>muesli design language system &middot; v0.8.3 &middot; August 2026</p>
+  <p>muesli design language system &middot; PR #584 &middot; October 8, 2026</p>
   <p style="margin-top:4px">Source of truth: <code>MuesliTheme.swift</code> &middot; <code>FloatingIndicatorController.swift</code> &middot; <code>SidebarView.swift</code></p>
 </section>
 
+<script>
+  document.getElementById('theme-toggle').addEventListener('click', function () {
+    const light = document.documentElement.dataset.theme !== 'light';
+    document.documentElement.dataset.theme = light ? 'light' : 'dark';
+    this.setAttribute('aria-pressed', String(light));
+    this.textContent = light ? 'Preview dark mode' : 'Preview light mode';
+  });
+</script>
 </body>
 </html>
