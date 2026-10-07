@@ -54,7 +54,9 @@ struct InsightsView: View {
                         }
                     }
                 }
-                .padding(28)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.top, MuesliTheme.pageTop)
+                .padding(.bottom, MuesliTheme.spacing32)
                 .frame(maxWidth: 1240, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
@@ -131,6 +133,7 @@ struct InsightsView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Time range")
+            .tint(MuesliTheme.accent)
             .frame(width: 340)
 
             Button {
@@ -203,8 +206,8 @@ struct InsightsView: View {
                 )
             }
         )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(panelBorder)
-        .shadow(color: Color.black.opacity(0.12), radius: 24, y: 10)
     }
 
     private func activityPanel(_ data: InsightsSnapshot) -> some View {

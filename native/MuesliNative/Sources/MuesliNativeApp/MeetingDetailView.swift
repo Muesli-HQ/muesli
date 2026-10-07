@@ -304,8 +304,8 @@ struct MeetingDetailView: View {
             }
         }
         .frame(maxWidth: 980, alignment: .leading)
-        .padding(.horizontal, 40)
-        .padding(.vertical, 24)
+        .padding(.horizontal, MuesliTheme.pageInset)
+        .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("meeting.header.standard")
@@ -666,7 +666,7 @@ struct MeetingDetailView: View {
                         debounceSaveNotes(meetingID: meeting.id)
                     }
             }
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -675,7 +675,7 @@ struct MeetingDetailView: View {
                 contentToolbar(for: meeting)
 
                 TextEditor(text: $editableTranscript)
-                    .font(.system(size: 14))
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .scrollContentBackground(.hidden)
                     .padding(MuesliTheme.spacing24)
@@ -685,7 +685,7 @@ struct MeetingDetailView: View {
                         debounceSaveTranscript(meetingID: meeting.id)
                     }
             }
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -707,7 +707,7 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: 1080, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -2234,7 +2234,7 @@ private struct MeetingTranscriptView: View {
                     Text("No transcript available")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(maxWidth: 860, alignment: .leading)
+                        .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
@@ -2242,7 +2242,7 @@ private struct MeetingTranscriptView: View {
                     }
                 }
             }
-            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing24)
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -2270,9 +2270,9 @@ struct TranscriptChatBubble: View {
                         .textSelection(.enabled)
                 }
                 Text(message.text)
-                    .font(.system(size: 14))
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textPrimary)
-                    .lineSpacing(2)
+                    .lineSpacing(5)
                     .textSelection(.enabled)
             }
             .padding(.horizontal, MuesliTheme.spacing12)

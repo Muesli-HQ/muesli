@@ -207,10 +207,10 @@ struct IPhoneBridgeCard: View {
                     )
                 }
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MuesliTheme.accent)
                 .padding(.horizontal, 12)
                 .frame(height: 28)
-                .background(MuesliTheme.accent)
+                .background(MuesliTheme.accentSubtle)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
             .buttonStyle(.plain)
@@ -224,19 +224,14 @@ struct IPhoneBridgeCard: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 28, height: 28)
-                    .background(MuesliTheme.surfacePrimary)
+
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
             .buttonStyle(.plain)
             .help("Hide iOS companion prompt")
         }
-        .padding(MuesliTheme.spacing12)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .padding(.horizontal, MuesliTheme.spacing12)
+        .padding(.vertical, MuesliTheme.spacing8)
         .onAppear {
             guard !promptSeen else { return }
             promptSeen = true

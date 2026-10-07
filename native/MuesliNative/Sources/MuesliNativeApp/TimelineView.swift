@@ -42,7 +42,7 @@ struct TimelineView: View {
                 appState: appState,
                 controller: controller
             )
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.top, MuesliTheme.pageTop)
 
             StatsHeaderView(
@@ -55,12 +55,12 @@ struct TimelineView: View {
 
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
-                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     .padding(.bottom, MuesliTheme.spacing12)
             }
 
             filterBar
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
             if appState.timelineRows.isEmpty {
@@ -169,18 +169,14 @@ struct TimelineView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .padding(.leading, MuesliTheme.spacing4)
 
-                        VStack(spacing: 1) {
+                        VStack(spacing: 0) {
                             ForEach(group.entries) { entry in
                                 timelineRow(entry)
                                     .id(entry.id)
                             }
                         }
                         .scrollTargetLayout()
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
+
                     }
                 }
 
@@ -190,7 +186,7 @@ struct TimelineView: View {
                         .onAppear { controller.loadMoreTimelineEntries() }
                 }
             }
-            .padding(.horizontal, MuesliTheme.spacing24)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.bottom, MuesliTheme.spacing24)
         }
         .scrollPosition(id: Binding(
@@ -289,7 +285,12 @@ private struct TimelineMeetingRow: View {
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing16)
-        .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+        }
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }

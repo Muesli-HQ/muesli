@@ -55,8 +55,8 @@ struct StatsHeaderView: View {
                 )
             }
         }
-        .padding(.horizontal, MuesliTheme.spacing24)
-        .padding(.vertical, MuesliTheme.spacing20)
+        .padding(.horizontal, MuesliTheme.pageInset)
+        .padding(.vertical, MuesliTheme.spacing16)
     }
 
     private func formatWordCount(_ count: Int) -> String {
@@ -79,27 +79,33 @@ private struct StatCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: MuesliTheme.spacing8) {
+            HStack(spacing: MuesliTheme.spacing12) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(iconColor)
-                Text(value)
-                    .font(MuesliTheme.title2())
-                    .monospacedDigit()
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .contentTransition(.numericText())
-                Text(label)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(value)
+                        .font(MuesliTheme.title2())
+                        .monospacedDigit()
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .contentTransition(.numericText())
+                    Text(label)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity)
-            .padding(MuesliTheme.spacing16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, MuesliTheme.spacing12)
             .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                     .strokeBorder(isHovered ? MuesliTheme.accent.opacity(0.38) : MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(InsightsStatButtonStyle(reduceMotion: reduceMotion))
         .onHover { hovering in

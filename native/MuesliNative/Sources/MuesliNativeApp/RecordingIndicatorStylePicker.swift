@@ -42,7 +42,7 @@ struct RecordingIndicatorStylePicker: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
             ForEach(RecordingIndicatorStyle.allCases, id: \.self) { style in
                 Button { onSelect(style) } label: {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(spacing: 12) {
                         RecordingIndicatorPreview(style: style, accent: accent)
                             .frame(height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -52,8 +52,10 @@ struct RecordingIndicatorStylePicker: View {
                                 .foregroundStyle(selection == style ? accent : Color.secondary)
                             Text(style.title).font(.headline)
                         }
+                        .frame(maxWidth: .infinity)
                         Text(style.description).font(.caption).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .top)
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.025))

@@ -59,7 +59,7 @@ struct DictationsView: View {
                 appState: appState,
                 controller: controller
             )
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.top, MuesliTheme.pageTop)
 
             StatsHeaderView(
@@ -71,7 +71,7 @@ struct DictationsView: View {
 
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
-                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     .padding(.bottom, MuesliTheme.spacing12)
             }
 
@@ -80,12 +80,12 @@ struct DictationsView: View {
                     Spacer()
                     voiceNoteButton
                 }
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
             }
 
             dictationFilterBar
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
             if appState.dictationRows.isEmpty {
@@ -114,7 +114,7 @@ struct DictationsView: View {
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
 
-                                VStack(spacing: 1) {
+                                VStack(spacing: 0) {
                                     ForEach(group.records) { record in
                                         DictationRowView(
                                             record: record,
@@ -145,11 +145,7 @@ struct DictationsView: View {
                                         }
                                     }
                                 }
-                                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                                )
+
                             }
                         }
 
@@ -162,7 +158,7 @@ struct DictationsView: View {
                                 }
                         }
                     }
-                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     .padding(.bottom, MuesliTheme.spacing24)
                 }
             }
