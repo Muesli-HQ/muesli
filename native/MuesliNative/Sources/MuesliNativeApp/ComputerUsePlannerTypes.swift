@@ -12,6 +12,7 @@ enum ComputerUseToolName: String, Codable, Equatable, CaseIterable {
     case clickPoint = "click_point"
     case performSecondaryAction = "perform_secondary_action"
     case setValue = "set_value"
+    case editText = "edit_text"
     case typeText = "type_text"
     case pasteText = "paste_text"
     case pressKey = "press_key"
@@ -267,6 +268,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
     let modifiers: [ComputerUseKeyModifier]?
     let text: String?
     let value: String?
+    let instruction: String?
+    let scope: String?
     let direction: ComputerUseScrollDirection?
     let pages: Double?
     let url: String?
@@ -298,6 +301,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         case modifiers
         case text
         case value
+        case instruction
+        case scope
         case direction
         case pages
         case url
@@ -330,6 +335,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         modifiers: [ComputerUseKeyModifier]? = nil,
         text: String? = nil,
         value: String? = nil,
+        instruction: String? = nil,
+        scope: String? = nil,
         direction: ComputerUseScrollDirection? = nil,
         pages: Double? = nil,
         url: String? = nil,
@@ -360,6 +367,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         self.modifiers = modifiers
         self.text = text
         self.value = value
+        self.instruction = instruction
+        self.scope = scope
         self.direction = direction
         self.pages = pages
         self.url = url
@@ -416,6 +425,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             modifiers: modifiers,
             text: text,
             value: value,
+            instruction: instruction,
+            scope: scope,
             direction: direction,
             pages: pages,
             url: url,
@@ -474,6 +485,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
                 return "perform_secondary_action element_index must be greater than 0"
             }
             return elementIndex == nil && trimmed(elementID).isEmpty ? "perform_secondary_action requires element_index or element_id" : nil
+        case .editText:
+            guard !trimmed(instruction).isEmpty else { return "edit_text requires instruction" }
+            guard ["field", "selection"].contains(scope ?? "") else { return "edit_text requires scope: field or selection" }
+            if let elementIndex, elementIndex <= 0 { return "edit_text element_index must be greater than 0" }
+            return elementIndex == nil && trimmed(elementID).isEmpty ? "edit_text requires an observed element target" : nil
         case .setValue:
             if trimmed(value).isEmpty {
                 return "set_value requires value"
@@ -550,7 +566,7 @@ struct ComputerUseToolInvocation: Codable, Equatable {
 
     var isMutating: Bool {
         switch tool {
-        case .launchApp, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .openNewBrowserTab, .navigateURL, .navigateActiveBrowserTab:
+        case .editText, .launchApp, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .openNewBrowserTab, .navigateURL, .navigateActiveBrowserTab:
             return true
         case .listApps, .listWindows, .getAppState, .getWindowState, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
@@ -589,6 +605,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         case .performSecondaryAction:
             let target = elementIndex.map(elementIndexLabel) ?? trimmed(elementID)
             return "perform \(trimmed(actionName)) on \(target)"
+        case .editText:
+            return "edit text in \(elementIndex.map(elementIndexLabel) ?? trimmed(elementID))"
         case .setValue:
             let target = elementIndex.map(elementIndexLabel) ?? trimmed(elementID)
             return "set \(target) to \(truncateForSummary(trimmed(value)))"

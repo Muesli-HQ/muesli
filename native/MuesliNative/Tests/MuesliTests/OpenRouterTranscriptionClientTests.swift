@@ -86,7 +86,9 @@ struct OpenRouterTranscriptionClientTests {
         let session = OpenRouterHostedDictationSession(configuration: configuration, client: client)
         configuration = OpenRouterDictationConfiguration(apiKey: "new-key", model: "new/model")
 
-        _ = try await session.finish(recordedWAVURL: wavURL)
+        let result = try await session.finish(recordedWAVURL: wavURL)
+        #expect(result.model == "old/model")
+        #expect(result.backend == "openrouter-stt")
         let recordedRequest = await recorder.request
         let request = try #require(recordedRequest)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer old-key")

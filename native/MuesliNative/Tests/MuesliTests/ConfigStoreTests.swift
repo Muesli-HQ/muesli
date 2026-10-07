@@ -14,7 +14,6 @@ struct ConfigStoreTests {
         let config = store.load()
         #expect(HotkeyConfig.label(for: config.dictationHotkey.keyCode) != nil)
         #expect(!config.sttBackend.isEmpty)
-        #expect(!config.enableWordsBeforeCodeSwitch)
     }
 
     @Test("save and load round-trip")
@@ -32,7 +31,6 @@ struct ConfigStoreTests {
         config.whisperLanguage = WhisperKitLanguage.german.rawValue
         config.appleSpeechLanguage = "en-US"
         config.meetingSummaryBackend = "openrouter"
-        config.enableWordsBeforeCodeSwitch = true
         store.save(config)
 
         let loaded = store.load()
@@ -48,7 +46,6 @@ struct ConfigStoreTests {
         #expect(loaded.whisperLanguage == WhisperKitLanguage.german.rawValue)
         #expect(loaded.appleSpeechLanguage == "en-US")
         #expect(loaded.meetingSummaryBackend == "openrouter")
-        #expect(loaded.enableWordsBeforeCodeSwitch)
     }
 
     @Test("config path honors the isolated support directory")

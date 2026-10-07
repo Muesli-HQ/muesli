@@ -240,6 +240,9 @@ public final class DictationStore {
             "ALTER TABLE dictations ADD COLUMN cloud_system_fields BLOB",
             "ALTER TABLE dictations ADD COLUMN last_synced_at REAL",
             "ALTER TABLE dictations ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE dictations ADD COLUMN transcription_backend TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_model TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_model_name TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_name TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_bundle_id TEXT",
             "ALTER TABLE meetings ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
@@ -433,7 +436,8 @@ public final class DictationStore {
         targetAppBundleID: String? = nil,
         startedAt: Date,
         endedAt: Date,
-        bodhanMeasurement: BodhanWBCSMeasurement? = nil
+        bodhanMeasurement: BodhanWBCSMeasurement? = nil,
+        transcriptionModel: DictationModelIdentity? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -446,6 +450,7 @@ public final class DictationStore {
             targetAppBundleID: targetAppBundleID,
             startedAt: startedAt,
             endedAt: endedAt,
+            transcriptionModel: transcriptionModel,
             db: db
         )
         if let bodhanMeasurement {
@@ -562,14 +567,16 @@ public final class DictationStore {
         targetAppBundleID: String?,
         startedAt: Date,
         endedAt: Date,
+        transcriptionModel: DictationModelIdentity? = nil,
         db: OpaquePointer?
     ) throws -> Int64 {
 
         let sql = """
         INSERT INTO dictations
         (timestamp, duration_seconds, raw_text, app_context, word_count, source,
-         target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty,
+         transcription_backend, transcription_model, transcription_model_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -591,6 +598,10 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 9, (started as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 10, (ended as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 11, Date().timeIntervalSince1970)
+
+        bindOptionalText(transcriptionModel?.backend, at: 12, statement: statement)
+        bindOptionalText(transcriptionModel?.model, at: 13, statement: statement)
+        bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -1804,6 +1815,16 @@ public final class DictationStore {
     ) throws -> Double? {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        return try wordsBeforeCodeSwitch(fromDate: fromDate, toDate: toDate,
+            origin: origin, targetApplication: targetApplication, db: db)
+    }
+
+    private func wordsBeforeCodeSwitch(
+        fromDate: String?, toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil,
+        db: OpaquePointer?
+    ) throws -> Double? {
         let filter = historyFilterConditions(
             alias: "d",
             dateColumn: "timestamp",
@@ -2001,8 +2022,8 @@ public final class DictationStore {
             var activity: [InsightsDailyActivity] = []
             var cursor = min(firstDay, today)
             while cursor <= today {
-                let value = cachedDays[cursor, default: (0, 0)]
-                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
+                let value = cachedDays[cursor, default: (0, 0, 0)]
+                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings, meetingWords: value.meetingWords))
                 guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
                 cursor = next
             }
@@ -2024,7 +2045,11 @@ public final class DictationStore {
                 longestStreakDays: streaks.longest,
                 activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
                 dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
-                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
+                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true),
+                modelUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: true),
+                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false),
+                wordsBeforeCodeSwitch: try wordsBeforeCodeSwitch(
+                    fromDate: startDate.map { formatISODate($0) }, db: db)
             )
             try exec("COMMIT", db: db)
             return snapshot
@@ -2399,9 +2424,9 @@ public final class DictationStore {
                OR day >= (SELECT value FROM selected_day)
         ),
         timed AS (
-            SELECT word_count + meeting_words AS words, duration_seconds
+            SELECT word_count AS words, duration_seconds
             FROM insights_record_cache
-            WHERE duration_seconds > 0
+            WHERE kind = 'dictation' AND duration_seconds > 0
               AND ((SELECT value FROM selected_day) IS NULL
                    OR activity_day >= (SELECT value FROM selected_day))
         )
@@ -2435,16 +2460,50 @@ public final class DictationStore {
         )
     }
 
-    private func cachedDailyActivity(db: OpaquePointer?, sinceDay: String?, calendar: Calendar) throws -> [Date: (words: Int, meetings: Int)] {
-        var s: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT day,dictation_words+meeting_words,meetings FROM insights_daily_cache WHERE (? IS NULL OR day>=?) ORDER BY day", -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
+    private func cachedDailyActivity(db: OpaquePointer?, sinceDay: String?, calendar: Calendar) throws -> [Date: (words: Int, meetings: Int, meetingWords: Int)] {
+        var s: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT day,dictation_words+meeting_words,meetings,meeting_words FROM insights_daily_cache WHERE (? IS NULL OR day>=?) ORDER BY day", -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
         bindOptionalText(sinceDay, at: 1, statement: s); bindOptionalText(sinceDay, at: 2, statement: s)
-        var result: [Date: (Int, Int)] = [:]
+        var result: [Date: (Int, Int, Int)] = [:]
         while sqlite3_step(s) == SQLITE_ROW {
             let parts = stringColumn(s, index: 0).split(separator: "-").compactMap { Int($0) }
             if parts.count == 3, let date = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) {
-                result[calendar.startOfDay(for: date)] = (Int(sqlite3_column_int64(s, 1)), Int(sqlite3_column_int64(s, 2)))
+                result[calendar.startOfDay(for: date)] = (Int(sqlite3_column_int64(s, 1)), Int(sqlite3_column_int64(s, 2)), Int(sqlite3_column_int64(s, 3)))
             }
         }
+        return result
+    }
+
+    /// Reads attribution in the same SQLite snapshot as the cached totals. Old and
+    /// remotely synced records remain explicitly unattributed; never infer a model.
+    private func insightsUsage(db: OpaquePointer?, sinceDay: String?, byModel: Bool) throws -> [InsightsUsage] {
+        let key = byModel
+            ? "CASE WHEN NULLIF(TRIM(d.transcription_model), '') IS NULL THEN 'unknown' ELSE COALESCE(d.transcription_backend, '') || ':' || d.transcription_model END"
+            : "CASE WHEN NULLIF(TRIM(d.target_app_bundle_id), '') IS NOT NULL THEN 'bundle:' || TRIM(d.target_app_bundle_id) WHEN NULLIF(TRIM(d.target_app_name), '') IS NOT NULL THEN 'name:' || LOWER(TRIM(d.target_app_name)) ELSE 'unknown' END"
+        let name = byModel
+            ? "COALESCE(NULLIF(TRIM(d.transcription_model_name), ''), NULLIF(TRIM(d.transcription_model), ''), 'Not recorded')"
+            : "COALESCE(NULLIF(TRIM(d.target_app_name), ''), NULLIF(TRIM(d.target_app_bundle_id), ''), 'No destination recorded')"
+        let sql = """
+        SELECT \(key) AS usage_id, MAX(\(name)), COUNT(*), SUM(c.word_count)
+        FROM insights_record_cache c JOIN dictations d ON d.id = c.record_id
+        WHERE c.kind = 'dictation' AND c.dictation_sessions > 0 AND d.deleted_at IS NULL
+          AND LOWER(TRIM(COALESCE(d.source, ''))) NOT IN ('quil', 'cua')
+          AND (? IS NULL OR c.activity_day >= ?)
+        GROUP BY usage_id ORDER BY COUNT(*) DESC, SUM(c.word_count) DESC, usage_id ASC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(sinceDay, at: 1, statement: statement)
+        bindOptionalText(sinceDay, at: 2, statement: statement)
+        var result: [InsightsUsage] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            result.append(InsightsUsage(id: stringColumn(statement, index: 0),
+                name: stringColumn(statement, index: 1),
+                sessions: Int(sqlite3_column_int64(statement, 2)), words: Int(sqlite3_column_int64(statement, 3))))
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw lastError(db) }
         return result
     }
 

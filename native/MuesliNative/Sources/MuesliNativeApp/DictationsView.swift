@@ -66,12 +66,6 @@ struct DictationsView: View {
                 dictationStats: appState.filteredDictationStats,
                 meetingStats: appState.meetingStats,
                 showsMeetingStat: false,
-                showsWordsBeforeCodeSwitch: appState.config.enableWordsBeforeCodeSwitch,
-                wbcsFromDate: appState.dictationFromDate,
-                wbcsToDate: appState.dictationToDate,
-                wbcsOrigin: appState.dictationOriginFilter,
-                wbcsTargetApplication: appState.dictationApplicationFilter,
-                wbcsRevision: appState.iCloudLastSyncedAt,
                 onSelect: { controller.openInsights(section: $0) }
             )
 
@@ -184,7 +178,7 @@ struct DictationsView: View {
         let useCase = appState.config.resolvedOnboardingUseCase
         if appState.config.enablePushToTalk
             && (useCase.includesDictation || !useCase.includesVoiceNotes) {
-            return "Hold \(appState.config.dictationHotkey.label) to start dictating"
+            return appState.config.dictationStartPrompt
         }
         if useCase.includesVoiceNotes {
             return "Click Record Voice Note to capture your first note"

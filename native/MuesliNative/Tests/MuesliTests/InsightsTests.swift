@@ -208,38 +208,79 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
-    @Test("WBCS refreshes after sync even when word and session counts are unchanged")
-    @MainActor
-    func wordsBeforeCodeSwitchRevision() {
-        var header = StatsHeaderView(
-            dictationStats: DictationStats(totalWords: 10, totalSessions: 1,
-                averageWordsPerSession: 10, averageWPM: 60, currentStreakDays: 1, longestStreakDays: 1),
-            meetingStats: MeetingStats(totalWords: 0, totalMeetings: 0, averageWPM: 0),
-            showsWordsBeforeCodeSwitch: true,
-            onSelect: { _ in }
-        )
-        let original = header.wbcsQueryID
-        header.wbcsRevision = Date(timeIntervalSince1970: 100)
-        #expect(header.wbcsQueryID != original)
-        let synced = header.wbcsQueryID
-        header.wbcsFromDate = "2026-09-01"
-        #expect(header.wbcsQueryID != synced)
+    @Test("Model and app usage survive reopening, group by identity, and follow range and deletion")
+    func attributionBreakdowns() throws {
+        let store = try makeStore()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
+        let model = DictationModelIdentity(backend: "bodhan", model: "flex-int8", name: "Bodhan Flex INT8")
+        let first = try store.insertDictation(text: "one two", durationSeconds: 2,
+            targetAppName: "Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now, endedAt: now, transcriptionModel: model)
+        try store.insertDictation(text: "three", durationSeconds: 1,
+            targetAppName: "Renamed Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now, endedAt: now, transcriptionModel: model)
+        try store.insertDictation(text: "legacy", durationSeconds: 1, startedAt: now, endedAt: now)
+        let old = calendar.date(byAdding: .day, value: -100, to: now)!
+        try store.insertDictation(text: "older", durationSeconds: 1,
+            targetAppName: "Old App", startedAt: old, endedAt: old, transcriptionModel: model)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let snapshot = try reopened.insightsSnapshot(range: .ninetyDays, now: now, calendar: calendar)
+        #expect(snapshot.modelUsage.first?.id == "bodhan:flex-int8")
+        #expect(snapshot.modelUsage.first?.sessions == 2)
+        #expect(snapshot.modelUsage.first?.words == 3)
+        #expect(snapshot.modelUsage.last?.id == "unknown")
+        #expect(snapshot.modelUsage.last?.sessions == 1)
+        #expect(snapshot.appUsage.first?.id == "bundle:com.apple.Notes")
+        #expect(snapshot.appUsage.first?.sessions == 2)
+        #expect(snapshot.appUsage.count == 2)
+        #expect(try reopened.insightsSnapshot(range: .allTime, now: now, calendar: calendar).modelUsage.first?.sessions == 3)
+        try reopened.deleteDictation(id: first)
+        let deleted = try reopened.insightsSnapshot(range: .ninetyDays, now: now, calendar: calendar)
+        #expect(deleted.modelUsage.first(where: { $0.id == "bodhan:flex-int8" })?.words == 1)
+        #expect(deleted.appUsage.first(where: { $0.id == "bundle:com.apple.Notes" })?.sessions == 1)
     }
 
-    @Test("WBCS view cancellation reaches the detached worker")
-    func wordsBeforeCodeSwitchCancellation() async {
-        let worker = Task.detached { () -> Double? in
-            do {
-                try await Task.sleep(for: .seconds(2))
-                return 42
-            } catch {
-                return nil
-            }
+    @Test("Attribution excludes Quill and computer commands")
+    func attributionExcludesOtherModes() throws {
+        let store = try makeStore()
+        let now = Date()
+        for source in ["quil", "cua"] {
+            try store.insertDictation(text: "some command", durationSeconds: 1, source: source,
+                targetAppName: "Notes", startedAt: now, endedAt: now,
+                transcriptionModel: .init(backend: "test", model: "test", name: "Test"))
         }
-        let parent = Task { await StatsHeaderView.awaitWBCSWorker(worker) }
-        parent.cancel()
-        #expect(await parent.value == nil)
-        #expect(worker.isCancelled)
+        let snapshot = try store.insightsSnapshot(range: .allTime, now: now)
+        #expect(snapshot.modelUsage.isEmpty)
+        #expect(snapshot.appUsage.isEmpty)
+    }
+
+    @Test("Heatmap centers the current month across every range and calendar week convention")
+    func currentMonthFocus() {
+        for firstWeekday in [1, 2] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            calendar.firstWeekday = firstWeekday
+            let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
+            for range in InsightsRange.allCases {
+                var day = range.startDate(now: now, calendar: calendar)
+                    ?? calendar.date(byAdding: .year, value: -3, to: now)!
+                var activity: [InsightsDailyActivity] = []
+                while day <= now {
+                    activity.append(.init(date: day, words: 0, meetings: 0))
+                    day = calendar.date(byAdding: .day, value: 1, to: day)!
+                }
+                let weeks = ActivityHeatmapCalendarLayout.weeks(from: activity, calendar: calendar)
+                let index = ActivityHeatmapCalendarLayout.currentMonthIndex(weeks: weeks, now: now, calendar: calendar)
+                #expect(index != nil)
+                if let index {
+                    #expect(weeks[index].contains { calendar.isDate($0.date, equalTo: now, toGranularity: .month) })
+                }
+            }
+            #expect(ActivityHeatmapCalendarLayout.currentMonthIndex(weeks: [], now: now, calendar: calendar) == nil)
+        }
     }
 
     @Test("empty history returns a complete zero-filled range")
@@ -268,7 +309,7 @@ struct InsightsTests {
         try store.insertDictation(text: "old archive", durationSeconds: 60, startedAt: old.addingTimeInterval(-60), endedAt: old)
         try store.insertMeeting(
             title: "Finished", calendarEventID: nil, startTime: recent,
-            endTime: recent.addingTimeInterval(60), rawTranscript: "product rhythm rhythm",
+            endTime: recent.addingTimeInterval(120), rawTranscript: "product rhythm rhythm",
             formattedNotes: "", micAudioPath: nil, systemAudioPath: nil
         )
         let live = try store.createLiveMeeting(title: "Still live", calendarEventID: nil, startTime: recent)
@@ -279,6 +320,9 @@ struct InsightsTests {
         #expect(snapshot.selected.dictationWords == 3)
         #expect(snapshot.selected.meetings == 1)
         #expect(snapshot.selected.meetingWords == 3)
+        #expect(snapshot.selected.averageWPM == 3)
+        #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.dictationWords } == 3)
+        #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.meetingWords } == 3)
         #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.meetings } == 1)
         #expect(snapshot.dictationWords.first?.word == "signal")
         #expect(snapshot.meetingWords.first?.word == "rhythm")
