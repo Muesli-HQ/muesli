@@ -14,7 +14,6 @@ struct InsightsView: View {
     @State private var loadGeneration = 0
     @State private var isSharing = false
     @State private var showsCuriosities = false
-    @State private var showsBodhanDetail = false
     @State private var initialScrollGate = InsightsInitialScrollGate()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -195,7 +194,7 @@ struct InsightsView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .fill(MuesliTheme.backgroundRaised)
                 LinearGradient(
-                    colors: [MuesliTheme.accent.opacity(0.13), Color.cyan.opacity(0.025), .clear],
+                    colors: [MuesliTheme.accent.opacity(0.13), MuesliTheme.accent.opacity(0.025), .clear],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -208,7 +207,7 @@ struct InsightsView: View {
     private func activityPanel(_ data: InsightsSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
-                panelTitle("DAILY ACTIVITY", subtitle: "Dictation and meeting activity by day")
+                panelTitle("DAILY ACTIVITY", subtitle: metric == .words ? "Words dictated each day" : "Meetings recorded each day")
                 Spacer()
                 Picker("Activity metric", selection: $metric) {
                     ForEach(InsightsMetric.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -216,7 +215,8 @@ struct InsightsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .accessibilityLabel("Activity metric")
-                .frame(width: 340)
+                .tint(MuesliTheme.accent)
+                .frame(width: 210)
             }
             ActivityHeatmap(activity: data.dailyActivity, metric: metric, now: data.generatedAt)
                 .id(data.range)
@@ -238,21 +238,29 @@ struct InsightsView: View {
     }
 
     private func attributionPanel(_ data: InsightsSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let models = data.modelUsage.filter { $0.id != "unknown" }
+        let unrecordedSessions = data.modelUsage.first { $0.id == "unknown" }?.sessions ?? 0
+        return VStack(alignment: .leading, spacing: 20) {
             panelTitle("YOUR DICTATION HABITS", subtitle: "Sessions in the selected time period")
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 28) {
-                    usageRanking("Models", rows: data.modelUsage).frame(minWidth: 260)
-                    usageRanking("Apps", rows: data.appUsage).frame(minWidth: 260)
-                }
-                VStack(alignment: .leading, spacing: 24) {
-                    usageRanking("Models", rows: data.modelUsage)
-                    usageRanking("Apps", rows: data.appUsage)
+            if models.isEmpty {
+                usageRanking("Apps", rows: data.appUsage)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 28) {
+                        usageRanking("Models", rows: models).frame(minWidth: 260)
+                        usageRanking("Apps", rows: data.appUsage).frame(minWidth: 260)
+                    }
+                    VStack(alignment: .leading, spacing: 24) {
+                        usageRanking("Models", rows: models)
+                        usageRanking("Apps", rows: data.appUsage)
+                    }
                 }
             }
-            Text("Model history starts with new dictations on this Mac. Older and synced records may have no model recorded. Voice notes may have no destination app.")
-                .font(.system(size: 11))
-                .foregroundStyle(InsightsPalette.tertiaryText)
+            if unrecordedSessions > 0 {
+                Text("Model not recorded for \(unrecordedSessions.formatted()) earlier or synced sessions. New dictations on this Mac will appear here by model.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(InsightsPalette.tertiaryText)
+            }
         }
         .insightsPanel()
     }
@@ -294,20 +302,30 @@ struct InsightsView: View {
 
     private func curiosities(_ data: InsightsSnapshot) -> some View {
         DisclosureGroup("Curiosities", isExpanded: $showsCuriosities) {
-            DisclosureGroup("Bodhan language detours", isExpanded: $showsBodhanDetail) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(data.wordsBeforeCodeSwitch.map { $0.formatted(.number.precision(.fractionLength(0...1))) } ?? "—")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    if let value = data.wordsBeforeCodeSwitch {
+                        Text(value.formatted(.number.precision(.fractionLength(0...1))))
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundStyle(MuesliTheme.accent)
+                    }
                     Text("English words before a language switch")
                         .font(.headline)
-                    Text("Median completed English stretch in the selected period. Just for fun: new Bodhan Flex dictations in Mixed mode on this Mac only. Estimated from the original transcript; Romanized switches may be missed. A dash means no eligible switch was recorded.")
-                        .font(.caption)
-                        .foregroundStyle(InsightsPalette.secondaryText)
-                }.padding(.vertical, 10)
-            }.padding(.top, 12)
+                }
+                if data.wordsBeforeCodeSwitch == nil {
+                    Text("No eligible language switches recorded yet.")
+                        .font(.callout)
+                }
+                Text("Just for fun: the median English stretch in Bodhan Flex Mixed dictations during this period. Estimated on this Mac from the original transcript; Romanized switches may be missed.")
+                    .font(.caption)
+                    .foregroundStyle(InsightsPalette.secondaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 12)
         }
         .font(.caption)
         .foregroundStyle(InsightsPalette.secondaryText)
+        .tint(MuesliTheme.accent)
         .insightsPanel()
     }
 
@@ -331,14 +349,14 @@ struct InsightsView: View {
                             .fill(MuesliTheme.accent)
                             .frame(width: max(4, geometry.size.width * dictationShare))
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.cyan.opacity(0.75))
+                            .fill(MuesliTheme.accent.opacity(0.45))
                     }
                 }
                 .frame(height: 12)
                 HStack {
-                    usageLegend("Dictation", data.selected.dictationWords, MuesliTheme.accent)
+                    usageLegend("Dictated words", data.selected.dictationWords, MuesliTheme.accent)
                     Spacer()
-                    usageLegend("Meetings", data.selected.meetingWords, .cyan)
+                    usageLegend("Meeting words", data.selected.meetingWords, MuesliTheme.accent.opacity(0.45))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -362,31 +380,42 @@ struct InsightsView: View {
     }
 
     private func streakPanel(_ data: InsightsSnapshot) -> some View {
-        HStack(spacing: 28) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(data.currentStreakDays)")
-                    .font(.system(size: 70, weight: .bold, design: .rounded))
-                    .tracking(-3)
-                    .monospacedDigit()
-                Text("CURRENT STREAK")
-                    .font(.system(size: 11, weight: .bold)).tracking(1.8)
-                    .foregroundStyle(MuesliTheme.accent)
+        VStack(alignment: .leading, spacing: 18) {
+            panelTitle("STREAKS", subtitle: "Your consecutive dictation days")
+            HStack(spacing: 0) {
+                streakDatum(data.currentStreakDays, label: "Current streak")
+                divider
+                streakDatum(data.longestStreakDays, label: "Longest streak")
+                divider
+                streakDatum(data.activeDaysInRange, label: "Active in this period")
             }
-            VStack(alignment: .leading, spacing: 14) {
-                panelTitle("STREAKS", subtitle: "Your consecutive dictation days")
-                Text(streakMessage(data))
-                    .font(.system(size: 17, weight: .medium))
+            if data.currentStreakDays == 0 {
+                Text("Dictate today to start a new streak.")
+                    .font(.caption)
                     .foregroundStyle(InsightsPalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 18) {
-                    Label("Best: \(data.longestStreakDays) days", systemImage: "flag.checkered")
-                    Label("\(data.activeDaysInRange) active days", systemImage: "calendar.badge.checkmark")
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(InsightsPalette.tertiaryText)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .insightsPanel()
+    }
+
+    private func streakDatum(_ count: Int, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(count.formatted())
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(MuesliTheme.accent)
+                Text(count == 1 ? "day" : "days")
+                    .font(.caption)
+                    .foregroundStyle(InsightsPalette.secondaryText)
+            }
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(InsightsPalette.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
     }
 
     private func wordClouds(_ data: InsightsSnapshot) -> some View {
@@ -453,7 +482,7 @@ struct InsightsView: View {
         ZStack {
             MuesliTheme.backgroundBase
             LinearGradient(
-                colors: [MuesliTheme.accent.opacity(0.045), .clear, Color.cyan.opacity(0.025)],
+                colors: [MuesliTheme.accent.opacity(0.045), .clear, MuesliTheme.accent.opacity(0.025)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -499,12 +528,6 @@ struct InsightsView: View {
             Spacer()
             Text(value).foregroundStyle(MuesliTheme.textPrimary).monospacedDigit()
         }.font(.system(size: 12, weight: .medium))
-    }
-
-    private func streakMessage(_ data: InsightsSnapshot) -> String {
-        guard data.currentStreakDays > 0 else { return "Dictate today to start a new streak." }
-        if data.currentStreakDays == data.longestStreakDays { return "This is your longest streak so far." }
-        return "Your longest streak is \(dayCount(data.longestStreakDays))."
     }
 
     private func format(_ value: Int) -> String { value.formatted(.number.notation(.compactName)) }
@@ -577,11 +600,10 @@ struct InsightsInitialScrollGate {
 }
 
 private enum InsightsMetric: CaseIterable {
-    case words, transcribed, meetings
+    case words, meetings
     var label: String {
         switch self {
         case .words: return "Dictated"
-        case .transcribed: return "Transcribed"
         case .meetings: return "Meetings"
         }
     }
@@ -601,8 +623,8 @@ private enum InsightsPalette {
         switch level {
         case 1: return MuesliTheme.accent.opacity(0.24)
         case 2: return MuesliTheme.accent.opacity(0.48)
-        case 3: return Color.cyan.opacity(0.67)
-        case 4...: return Color.cyan.opacity(0.95)
+        case 3: return MuesliTheme.accent.opacity(0.72)
+        case 4...: return MuesliTheme.accent
         default: return MuesliTheme.surfacePrimary.opacity(0.62)
         }
     }
@@ -652,19 +674,19 @@ private struct ActivityHeatmap: View {
     private let weekdayLabels = ["", "Mon", "", "Wed", "", "Fri", ""]
 
     var body: some View {
-        ScrollViewReader { proxy in
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .trailing, spacing: gap) {
-                    Color.clear.frame(width: 24, height: monthLabelHeight)
-                    ForEach(Array(weekdayLabels.enumerated()), id: \.offset) { _, label in
-                        Text(label)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(InsightsPalette.tertiaryText)
-                            .frame(width: 24, height: cell, alignment: .trailing)
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .trailing, spacing: gap) {
+                        Color.clear.frame(width: 24, height: monthLabelHeight)
+                        ForEach(Array(weekdayLabels.enumerated()), id: \.offset) { _, label in
+                            Text(label)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(InsightsPalette.tertiaryText)
+                                .frame(width: 24, height: cell, alignment: .trailing)
+                        }
                     }
-                }
 
-                GeometryReader { geometry in
                     ScrollView(.horizontal, showsIndicators: true) {
                         HStack(alignment: .top, spacing: gap) {
                             ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
@@ -699,14 +721,15 @@ private struct ActivityHeatmap: View {
                             }
                         }
                         .padding(.vertical, 3)
-                        .padding(.horizontal, max(0, geometry.size.width / 2 - cell / 2))
                     }
                     .onAppear { scrollToCurrentMonth(proxy) }
                     .onChange(of: geometry.size.width) { _, _ in scrollToCurrentMonth(proxy) }
                     .onChange(of: activity) { _, _ in scrollToCurrentMonth(proxy) }
                 }
+                .frame(width: min(geometry.size.width, 32 + CGFloat(weeks.count) * (cell + gap) - gap))
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Daily \(metric.label.lowercased()) activity")
             }
-            .accessibilityLabel("Daily \(metric.label.lowercased()) activity")
         }
     }
 
@@ -729,7 +752,6 @@ private struct ActivityHeatmap: View {
     private func value(_ day: InsightsDailyActivity) -> Int {
         switch metric {
         case .words: return day.dictationWords
-        case .transcribed: return day.meetingWords
         case .meetings: return day.meetings
         }
     }
@@ -766,8 +788,6 @@ private struct ActivityHeatmapCell: View {
 
     private var countText: String {
         switch metric {
-        case .transcribed:
-            return "\(count.formatted()) words transcribed"
         case .words:
             return count == 1 ? "1 word dictated" : "\(count.formatted()) words dictated"
         case .meetings:
