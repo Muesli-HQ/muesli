@@ -243,16 +243,16 @@ struct InsightsView: View {
         return VStack(alignment: .leading, spacing: 20) {
             panelTitle("YOUR DICTATION HABITS", subtitle: "Sessions in the selected time period")
             if models.isEmpty {
-                usageRanking("Apps", rows: data.appUsage)
+                usageRanking("Apps", rows: data.appUsage, showsAppIcons: true)
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 28) {
                         usageRanking("Models", rows: models).frame(minWidth: 260)
-                        usageRanking("Apps", rows: data.appUsage).frame(minWidth: 260)
+                        usageRanking("Apps", rows: data.appUsage, showsAppIcons: true).frame(minWidth: 260)
                     }
                     VStack(alignment: .leading, spacing: 24) {
                         usageRanking("Models", rows: models)
-                        usageRanking("Apps", rows: data.appUsage)
+                        usageRanking("Apps", rows: data.appUsage, showsAppIcons: true)
                     }
                 }
             }
@@ -265,7 +265,7 @@ struct InsightsView: View {
         .insightsPanel()
     }
 
-    private func usageRanking(_ title: String, rows: [InsightsUsage]) -> some View {
+    private func usageRanking(_ title: String, rows: [InsightsUsage], showsAppIcons: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
             if rows.isEmpty {
@@ -275,7 +275,7 @@ struct InsightsView: View {
             ForEach(rows.prefix(5)) { row in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text(row.name).lineLimit(1).help(row.name)
+                        usageIdentity(row, showsAppIcon: showsAppIcons)
                         Spacer()
                         Text("\(row.sessions.formatted()) sessions · \(row.words.formatted()) words")
                             .font(.caption).foregroundStyle(InsightsPalette.secondaryText)
@@ -288,7 +288,7 @@ struct InsightsView: View {
                 DisclosureGroup("All \(rows.count) \(title.lowercased())") {
                     ForEach(rows.dropFirst(5)) { row in
                         HStack {
-                            Text(row.name)
+                            usageIdentity(row, showsAppIcon: showsAppIcons)
                             Spacer()
                             Text("\(row.sessions.formatted()) sessions · \(row.words.formatted()) words")
                                 .foregroundStyle(InsightsPalette.secondaryText)
@@ -298,6 +298,40 @@ struct InsightsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func usageIdentity(_ row: InsightsUsage, showsAppIcon: Bool) -> some View {
+        HStack(spacing: 8) {
+            if showsAppIcon {
+                TargetApplicationIconView(appName: row.name,
+                    bundleIdentifier: row.id.hasPrefix("bundle:") ? String(row.id.dropFirst(7)) : nil,
+                    size: 22)
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.name).lineLimit(1).help(row.name)
+                if !showsAppIcon, let route = modelRoute(row) {
+                    Text(route)
+                        .font(.caption2)
+                        .foregroundStyle(InsightsPalette.tertiaryText)
+                        .lineLimit(1)
+                        .help(row.endpoint ?? route)
+                }
+            }
+        }
+    }
+
+    private func modelRoute(_ row: InsightsUsage) -> String? {
+        switch row.backend {
+        case "openai-realtime":
+            return "OpenAI · " + (row.endpoint.flatMap { URL(string: $0)?.host } ?? "Endpoint not recorded")
+        case "openrouter-stt":
+            return "OpenRouter · " + (row.endpoint.flatMap { URL(string: $0)?.host } ?? "Endpoint not recorded")
+        case .some(let backend):
+            if let endpoint = row.endpoint { return URL(string: endpoint)?.host ?? endpoint }
+            return "On-device · \(backend)"
+        case .none: return nil
+        }
     }
 
     private func curiosities(_ data: InsightsSnapshot) -> some View {

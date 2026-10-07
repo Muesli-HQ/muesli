@@ -11796,7 +11796,7 @@ public final class MuesliController: NSObject {
                         let result = try await hostedSession.finish(recordedWAVURL: wavURL)
                         rawText = result.text
                         completionModel = DictationModelIdentity(backend: result.backend,
-                            model: result.model ?? "", name: result.model ?? "Not recorded")
+                            model: result.model ?? "", name: result.model ?? "Not recorded", endpoint: result.endpoint)
                         completionBackend = result.backend
                         bodhanMeasurement = nil
                     } catch {

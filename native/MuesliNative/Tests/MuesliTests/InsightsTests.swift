@@ -243,6 +243,34 @@ struct InsightsTests {
         #expect(deleted.appUsage.first(where: { $0.id == "bundle:com.apple.Notes" })?.sessions == 1)
     }
 
+    @Test("Model usage retains the actual endpoint and keeps different routes separate")
+    func modelEndpointAttribution() throws {
+        let store = try makeStore()
+        let now = Date()
+        let endpoints = ["https://speech.example.com/v1/transcriptions", "https://speech.example.com/v2/transcriptions"]
+        for endpoint in endpoints {
+            try store.insertDictation(text: "hello world", durationSeconds: 2,
+                startedAt: now, endedAt: now,
+                transcriptionModel: .init(backend: "hosted", model: "  model-a  ", name: "Model A", endpoint: endpoint))
+        }
+        // A local fallback is attributed to the local model, not the failed hosted route.
+        try store.insertDictation(text: "local result", durationSeconds: 2,
+            startedAt: now, endedAt: now,
+            transcriptionModel: .init(backend: "whisper", model: "small", name: "Whisper Small"))
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let snapshot = try reopened.insightsSnapshot(range: .allTime, now: now)
+        let hosted = snapshot.modelUsage.filter { $0.backend == "hosted" }
+        #expect(hosted.count == 2)
+        #expect(Set(hosted.compactMap(\.endpoint)) == Set(endpoints))
+        #expect(hosted.allSatisfy { $0.sessions == 1 && $0.words == 2 })
+        #expect(hosted.allSatisfy { $0.id.hasPrefix("hosted:model-a:") })
+        let local = try #require(snapshot.modelUsage.first { $0.backend == "whisper" })
+        #expect(local.id == "whisper:small")
+        #expect(local.endpoint == nil)
+        #expect(snapshot.appUsage.allSatisfy { $0.backend == nil && $0.endpoint == nil })
+    }
+
     @Test("Attribution excludes Quill and computer commands")
     func attributionExcludesOtherModes() throws {
         let store = try makeStore()

@@ -619,11 +619,14 @@ public struct DictationModelIdentity: Sendable, Equatable {
     public let backend: String
     public let model: String
     public let name: String
+    /// The hosted speech endpoint used for this result; nil for on-device models.
+    public let endpoint: String?
 
-    public init(backend: String, model: String, name: String) {
+    public init(backend: String, model: String, name: String, endpoint: String? = nil) {
         self.backend = backend
-        self.model = model
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         self.name = name
+        self.endpoint = endpoint
     }
 }
 
@@ -632,6 +635,18 @@ public struct InsightsUsage: Codable, Sendable, Equatable, Identifiable {
     public let name: String
     public let sessions: Int
     public let words: Int
+    public let backend: String?
+    public let endpoint: String?
+
+    public init(id: String, name: String, sessions: Int, words: Int,
+                backend: String? = nil, endpoint: String? = nil) {
+        self.id = id
+        self.name = name
+        self.sessions = sessions
+        self.words = words
+        self.backend = backend
+        self.endpoint = endpoint
+    }
 }
 
 public struct InsightsWordFrequency: Codable, Sendable, Equatable, Identifiable {

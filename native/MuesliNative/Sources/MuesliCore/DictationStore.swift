@@ -243,6 +243,7 @@ public final class DictationStore {
             "ALTER TABLE dictations ADD COLUMN transcription_backend TEXT",
             "ALTER TABLE dictations ADD COLUMN transcription_model TEXT",
             "ALTER TABLE dictations ADD COLUMN transcription_model_name TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_endpoint TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_name TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_bundle_id TEXT",
             "ALTER TABLE meetings ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
@@ -575,8 +576,8 @@ public final class DictationStore {
         INSERT INTO dictations
         (timestamp, duration_seconds, raw_text, app_context, word_count, source,
          target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty,
-         transcription_backend, transcription_model, transcription_model_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+         transcription_backend, transcription_model, transcription_model_name, transcription_endpoint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -602,6 +603,7 @@ public final class DictationStore {
         bindOptionalText(transcriptionModel?.backend, at: 12, statement: statement)
         bindOptionalText(transcriptionModel?.model, at: 13, statement: statement)
         bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
+        bindOptionalText(transcriptionModel?.endpoint, at: 15, statement: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -2477,13 +2479,14 @@ public final class DictationStore {
     /// remotely synced records remain explicitly unattributed; never infer a model.
     private func insightsUsage(db: OpaquePointer?, sinceDay: String?, byModel: Bool) throws -> [InsightsUsage] {
         let key = byModel
-            ? "CASE WHEN NULLIF(TRIM(d.transcription_model), '') IS NULL THEN 'unknown' ELSE COALESCE(d.transcription_backend, '') || ':' || d.transcription_model END"
+            ? "CASE WHEN NULLIF(TRIM(d.transcription_model), '') IS NULL THEN 'unknown' ELSE COALESCE(d.transcription_backend, '') || ':' || d.transcription_model || CASE WHEN NULLIF(d.transcription_endpoint, '') IS NULL THEN '' ELSE ':' || d.transcription_endpoint END END"
             : "CASE WHEN NULLIF(TRIM(d.target_app_bundle_id), '') IS NOT NULL THEN 'bundle:' || TRIM(d.target_app_bundle_id) WHEN NULLIF(TRIM(d.target_app_name), '') IS NOT NULL THEN 'name:' || LOWER(TRIM(d.target_app_name)) ELSE 'unknown' END"
         let name = byModel
             ? "COALESCE(NULLIF(TRIM(d.transcription_model_name), ''), NULLIF(TRIM(d.transcription_model), ''), 'Not recorded')"
             : "COALESCE(NULLIF(TRIM(d.target_app_name), ''), NULLIF(TRIM(d.target_app_bundle_id), ''), 'No destination recorded')"
         let sql = """
-        SELECT \(key) AS usage_id, MAX(\(name)), COUNT(*), SUM(c.word_count)
+        SELECT \(key) AS usage_id, MAX(\(name)), COUNT(*), SUM(c.word_count),
+               \(byModel ? "MAX(d.transcription_backend), MAX(d.transcription_endpoint)" : "NULL, NULL")
         FROM insights_record_cache c JOIN dictations d ON d.id = c.record_id
         WHERE c.kind = 'dictation' AND c.dictation_sessions > 0 AND d.deleted_at IS NULL
           AND LOWER(TRIM(COALESCE(d.source, ''))) NOT IN ('quil', 'cua')
@@ -2500,7 +2503,8 @@ public final class DictationStore {
         while step == SQLITE_ROW {
             result.append(InsightsUsage(id: stringColumn(statement, index: 0),
                 name: stringColumn(statement, index: 1),
-                sessions: Int(sqlite3_column_int64(statement, 2)), words: Int(sqlite3_column_int64(statement, 3))))
+                sessions: Int(sqlite3_column_int64(statement, 2)), words: Int(sqlite3_column_int64(statement, 3)),
+                backend: optionalStringColumn(statement, index: 4), endpoint: optionalStringColumn(statement, index: 5)))
             step = sqlite3_step(statement)
         }
         guard step == SQLITE_DONE else { throw lastError(db) }

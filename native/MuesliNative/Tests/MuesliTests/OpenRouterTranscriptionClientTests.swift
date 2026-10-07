@@ -89,6 +89,7 @@ struct OpenRouterTranscriptionClientTests {
         let result = try await session.finish(recordedWAVURL: wavURL)
         #expect(result.model == "old/model")
         #expect(result.backend == "openrouter-stt")
+        #expect(result.endpoint == OpenRouterTranscriptionClient.endpoint.absoluteString)
         let recordedRequest = await recorder.request
         let request = try #require(recordedRequest)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer old-key")
