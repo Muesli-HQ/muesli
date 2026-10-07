@@ -118,3 +118,10 @@ public enum MeetingChatError: Error, LocalizedError {
         }
     }
 }
+
+public struct MeetingChatSourceChoice: Identifiable, Sendable {
+    public let id: Int64
+    public let title: String
+    public let startDate: Date
+    public let folderID: Int64?
+}

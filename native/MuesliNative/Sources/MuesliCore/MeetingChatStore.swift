@@ -125,6 +125,11 @@ public struct MeetingChatStore: Sendable {
             return snapshots
         }
     }
+    public func sourceChoices() throws -> [MeetingChatSourceChoice] {
+        try connection { db in try MeetingChatSQL.rows("SELECT s.meeting_id,m.title,s.start_time,s.folder_id FROM meeting_chat_index_state s JOIN meetings m ON m.id=s.meeting_id WHERE m.deleted_at IS NULL ORDER BY s.start_time DESC", db: db) {
+            MeetingChatSourceChoice(id: sqlite3_column_int64($0, 0), title: MeetingChatSQL.text($0, 1), startDate: Date(timeIntervalSince1970: sqlite3_column_double($0, 2)), folderID: sqlite3_column_type($0, 3) == SQLITE_NULL ? nil : sqlite3_column_int64($0, 3))
+        } }
+    }
     private func sourcesMatch(_ dependencies: [MeetingChatDependency], db: OpaquePointer?) throws -> Bool {
         for dependency in dependencies {
             let source = try MeetingChatSQL.snapshots(scope: .init(selection: .meetings([dependency.meetingID])), db: db).first

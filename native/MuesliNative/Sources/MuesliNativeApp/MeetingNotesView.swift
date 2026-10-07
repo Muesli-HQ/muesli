@@ -3,13 +3,17 @@ import MuesliCore
 
 struct MeetingNotesView: View {
     let markdown: String
+    var highlightedExcerpt: String? = nil
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                 let lines = markdown.components(separatedBy: .newlines)
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     markdownLine(line)
+                        .background(index == highlightedLine ? MuesliTheme.surfaceSelected : Color.clear)
+                        .id(index)
                 }
             }
             .frame(maxWidth: 880, alignment: .leading)
@@ -19,6 +23,13 @@ struct MeetingNotesView: View {
             .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        .onChange(of: highlightedExcerpt) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        }
+    }
+    private var highlightedLine: Int? {
+        guard let excerpt = highlightedExcerpt, let range = markdown.range(of: excerpt) else { return nil }
+        return markdown[..<range.lowerBound].filter { $0 == "\n" }.count
     }
 
     @ViewBuilder

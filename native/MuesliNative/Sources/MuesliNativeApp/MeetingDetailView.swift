@@ -138,7 +138,8 @@ struct MeetingDetailView: View {
         _editableManualNotes = State(initialValue: meeting?.manualNotes ?? "")
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
-        _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        let sourceTarget = appState.meetingChatDocumentTarget
+        _documentMode = State(initialValue: sourceTarget?.citation.meetingID == meeting?.id ? (sourceTarget!.showsTranscript ? .transcript : .notes) : meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
     }
 
     var body: some View {
@@ -148,6 +149,20 @@ struct MeetingDetailView: View {
                     header(meeting)
 
                     retranscriptionStatus(for: meeting)
+
+                    if meeting.status != .recording && meeting.status != .processing {
+                        HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
+                            .padding(.horizontal, 40).padding(.bottom, 8)
+                    }
+                    if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                            Text(target.citation.excerpt).textSelection(.enabled)
+                            if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
+                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(16).background(MuesliTheme.surfaceSelected)
+                    }
 
                     Divider()
                         .background(MuesliTheme.surfaceBorder)
@@ -683,12 +698,13 @@ struct MeetingDetailView: View {
                 contentToolbar(for: meeting)
 
                 ZStack(alignment: .topLeading) {
-                    MeetingNotesView(markdown: Self.notesContent(for: meeting))
+                    MeetingNotesView(markdown: appState.meetingChatDocumentTarget?.citation.kind == .manualNotes ? meeting.manualNotes : Self.notesContent(for: meeting),
+                        highlightedExcerpt: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? nil : $0.citation.excerpt })
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, highlightedExcerpt: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? $0.citation.excerpt : nil })
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -712,6 +728,10 @@ struct MeetingDetailView: View {
         .tint(MuesliTheme.accent)
         .frame(width: 220)
         .disabled(isEditingNotes || isEditingTranscript)
+    }
+
+    private func citationText(_ meeting: MeetingRecord, kind: MeetingChatSourceKind) -> String {
+        switch kind { case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
     }
 
     private var recordingModePicker: some View {
@@ -2172,14 +2192,17 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    var highlightedExcerpt: String? = nil
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(transcript: String, highlightedExcerpt: String? = nil) {
         self.transcript = transcript
+        self.highlightedExcerpt = highlightedExcerpt
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                 if messages.isEmpty {
@@ -2191,6 +2214,8 @@ private struct MeetingTranscriptView: View {
                 } else {
                     ForEach(messages) { message in
                         TranscriptChatBubble(message: message)
+                            .background(message.id == highlightedMessageID ? MuesliTheme.surfaceSelected : Color.clear)
+                            .id(message.id)
                     }
                 }
             }
@@ -2199,9 +2224,16 @@ private struct MeetingTranscriptView: View {
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
+        .onChange(of: highlightedExcerpt) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
         .onChange(of: transcript) { _, newTranscript in
             messages = TranscriptChatMessage.messages(from: newTranscript)
         }
+        }
+    }
+    private var highlightedMessageID: Int? {
+        guard let excerpt = highlightedExcerpt, let range = transcript.range(of: excerpt) else { return nil }
+        return transcript[..<range.lowerBound].split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
     }
 }
 

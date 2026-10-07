@@ -7,6 +7,8 @@ private actor MeetingChatWorker {
     let retrieval: MeetingChatRetrieval
     init(databaseURL: URL) { store = .init(databaseURL: databaseURL); retrieval = .init(databaseURL: databaseURL) }
     func warmIndex() throws { try retrieval.prepareIndex() }
+    func choices() throws -> [MeetingChatSourceChoice] { try warmIndex(); return try store.sourceChoices() }
+    func source(_ id: Int64) throws -> MeetingChatSourceSnapshot? { try store.sourceSnapshots(scope: .init(selection: .meetings([id]))).first }
     func evidence(for turn: MeetingChatTurn) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
         let session = try store.sessions().first { $0.id == turn.sessionID }
         let history = try store.turns(sessionID: turn.sessionID).filter {
@@ -50,6 +52,7 @@ final class MeetingChatCoordinator {
     var composerDraft = ""
     var errorMessage: String?
     var fastAnswers = true
+    private(set) var sourceChoices: [MeetingChatSourceChoice] = []
     var scope: MeetingChatScope { sessions.first { $0.id == selectedSessionID }?.scope ?? .init() }
     var isBusy: Bool { activeRequestID != nil }
 
@@ -57,7 +60,7 @@ final class MeetingChatCoordinator {
         store = .init(databaseURL: databaseURL); worker = .init(databaseURL: databaseURL); self.generator = generator
         do { try store.interruptPendingTurns(); reload() } catch { errorMessage = error.localizedDescription }
         let worker = worker
-        Task { do { try await worker.warmIndex() } catch { /* A query retries index preparation and reports errors. */ } }
+        Task { do { sourceChoices = try await worker.choices() } catch { errorMessage = "Could not prepare meeting search. Retry by asking a question." } }
     }
     func reload() {
         do {
@@ -146,5 +149,7 @@ final class MeetingChatCoordinator {
     func saveDraft(turnID: UUID, text: String) {
         do { try store.saveDraft(turnID: turnID, text: text); reload() } catch { errorMessage = error.localizedDescription }
     }
+    func refreshChoices() async { do { sourceChoices = try await worker.choices() } catch { errorMessage = error.localizedDescription } }
+    func source(_ id: Int64) async -> MeetingChatSourceSnapshot? { try? await worker.source(id) }
     func waitForIdle() async { while let task = tasks.values.first { await task.value } }
 }
