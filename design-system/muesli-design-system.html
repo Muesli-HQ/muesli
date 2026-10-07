@@ -383,9 +383,11 @@
   .history-row p { font-size:14px; color:var(--text-secondary); }
   .metadata { display:block; font-size:12px; color:var(--text-secondary); }
   .stats-demo { display:flex; gap:16px; min-width:650px; }
-  .stat-demo { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; gap:12px; padding:12px; background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; }
+  .stat-demo { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:8px; padding:16px; background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; }
   .stat-demo:hover { background:var(--bg-hover); border-color:var(--accent); }
-  .stat-demo .stat-icon { width:20px; font-size:16px; color:var(--accent); }
+  .stat-demo .stat-icon { display:grid; place-items:center; height:24px; font-size:20px; color:var(--accent); }
+  .stat-demo .stat-icon svg { width:20px; height:20px; }
+  .stat-demo > div { display:contents; }
   .stat-demo strong { display:block; font-size:20px; font-weight:600; line-height:1.3; font-variant-numeric:tabular-nums; }
   .stat-demo small { display:block; font-size:12px; color:var(--text-secondary); }
   .preview-scroll { overflow-x:auto; }
@@ -971,7 +973,7 @@
   <h2><span class="num">09</span> Dashboard &amp; Notch Patterns</h2>
   <p class="section-desc">Current PR #584 reference. Values follow the native components; web examples illustrate geometry and hierarchy rather than reproducing AppKit rendering.</p>
 
-  <h3>Compact, Outlined Statistics</h3>
+  <h3>Stacked, Outlined Statistics</h3>
   <div class="component-preview preview-scroll">
     <div class="stats-demo">
       <div class="stat-demo"><span class="stat-icon" style="color:#F5A623" aria-hidden="true"><svg width="16" height="18" viewBox="0 0 16 20"><path fill="currentColor" d="M8 0C11 5 16 7 15 13C14 21 1 22 1 13C1 10 3 8 5 6C4 10 6 11 7 9C9 6 8 3 8 0Z"/></svg></span><div><strong>2</strong><small>day streak</small></div></div>
@@ -980,7 +982,7 @@
       <div class="stat-demo"><span class="stat-icon" aria-hidden="true"><svg width="20" height="18" viewBox="0 0 24 20"><circle cx="8" cy="5" r="3" fill="currentColor"/><circle cx="18" cy="5" r="3" fill="currentColor"/><path d="M1 18C1 8 15 8 15 18ZM15 12C21 9 24 14 24 18H17Z" fill="currentColor"/></svg></span><div><strong>37</strong><small>meetings</small></div></div>
     </div>
   </div>
-  <p class="pattern-note">Center the icon-and-text group within each card, with the value and caption centered together. 16pt card gaps, 12pt inner padding, 10pt corners, 1pt surface borders. Icons use SF Symbols in the app. Values use 20pt semibold monospaced digits; captions use 12pt secondary text. The cards open their corresponding Insights section. The native four-column layout still needs a narrow-window adaptation; horizontal scrolling here only preserves the desktop specimen.</p>
+  <p class="pattern-note">Stack the icon, value, and caption vertically, all centered within each card. Use 8pt between items, 16pt card gaps, 16pt inner padding, 10pt corners, and 1pt surface borders. Icons use 20pt SF Symbols in the app. Values use 20pt semibold monospaced digits; captions use 12pt secondary text. The cards open their corresponding Insights section. The native four-column layout still needs a narrow-window adaptation; horizontal scrolling here only preserves the desktop specimen.</p>
 
   <h3>Reading &amp; Alignment</h3>
   <div class="component-preview reading-sample">

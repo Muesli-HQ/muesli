@@ -79,26 +79,22 @@ private struct StatCard: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: MuesliTheme.spacing12) {
+            VStack(spacing: MuesliTheme.spacing8) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: 20))
                     .foregroundStyle(iconColor)
-                    .frame(width: 20)
-                VStack(spacing: 2) {
-                    Text(value)
-                        .font(MuesliTheme.title2())
-                        .monospacedDigit()
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .contentTransition(.numericText())
-                    Text(label)
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                }
-                .multilineTextAlignment(.center)
+                Text(value)
+                    .font(MuesliTheme.title2())
+                    .monospacedDigit()
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .contentTransition(.numericText())
+                Text(label)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
             }
+            .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, MuesliTheme.spacing12)
+            .padding(MuesliTheme.spacing16)
             .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
             .overlay(
