@@ -84,7 +84,7 @@ private struct StatCard: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(iconColor)
                     .frame(width: 20)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(spacing: 2) {
                     Text(value)
                         .font(MuesliTheme.title2())
                         .monospacedDigit()
@@ -94,9 +94,9 @@ private struct StatCard: View {
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
-                Spacer(minLength: 0)
+                .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, MuesliTheme.spacing12)
             .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)

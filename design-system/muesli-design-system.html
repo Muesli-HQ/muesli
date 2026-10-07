@@ -383,7 +383,7 @@
   .history-row p { font-size:14px; color:var(--text-secondary); }
   .metadata { display:block; font-size:12px; color:var(--text-secondary); }
   .stats-demo { display:flex; gap:16px; min-width:650px; }
-  .stat-demo { flex:1; display:flex; align-items:center; gap:12px; padding:12px; background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; }
+  .stat-demo { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; gap:12px; padding:12px; background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; }
   .stat-demo:hover { background:var(--bg-hover); border-color:var(--accent); }
   .stat-demo .stat-icon { width:20px; font-size:16px; color:var(--accent); }
   .stat-demo strong { display:block; font-size:20px; font-weight:600; line-height:1.3; font-variant-numeric:tabular-nums; }
@@ -980,7 +980,7 @@
       <div class="stat-demo"><span class="stat-icon" aria-hidden="true"><svg width="20" height="18" viewBox="0 0 24 20"><circle cx="8" cy="5" r="3" fill="currentColor"/><circle cx="18" cy="5" r="3" fill="currentColor"/><path d="M1 18C1 8 15 8 15 18ZM15 12C21 9 24 14 24 18H17Z" fill="currentColor"/></svg></span><div><strong>37</strong><small>meetings</small></div></div>
     </div>
   </div>
-  <p class="pattern-note">16pt card gaps, 12pt inner padding, 10pt corners, 1pt surface borders. Icons use SF Symbols in the app. Values use 20pt semibold monospaced digits; captions use 12pt secondary text. The cards open their corresponding Insights section. The native four-column layout still needs a narrow-window adaptation; horizontal scrolling here only preserves the desktop specimen.</p>
+  <p class="pattern-note">Center the icon-and-text group within each card, with the value and caption centered together. 16pt card gaps, 12pt inner padding, 10pt corners, 1pt surface borders. Icons use SF Symbols in the app. Values use 20pt semibold monospaced digits; captions use 12pt secondary text. The cards open their corresponding Insights section. The native four-column layout still needs a narrow-window adaptation; horizontal scrolling here only preserves the desktop specimen.</p>
 
   <h3>Reading &amp; Alignment</h3>
   <div class="component-preview reading-sample">
