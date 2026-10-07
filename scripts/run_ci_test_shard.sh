@@ -110,6 +110,10 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      ChatwootCallDetectionOriginTests
+      ChatwootCallDetectionAdapterTests
+      ChatwootCallDetectionConcurrencyTests
+      ChatwootCallDetectionCollectorTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
