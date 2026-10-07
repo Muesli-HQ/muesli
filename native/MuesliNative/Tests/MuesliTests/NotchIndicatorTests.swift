@@ -342,7 +342,7 @@ struct NotchIndicatorTests {
         #expect(NotchIndicatorGeometry.resolve(screen: screen, topInset: 32, left: nil, right: nil) == nil)
     }
 
-    @Test("Camera is reserved and the panel never extends below the menu bar", arguments: [CGPoint.zero, CGPoint(x: -1800, y: 300)])
+    @Test("Camera stays aligned while the right edge leaves menu-bar clearance", arguments: [CGPoint.zero, CGPoint(x: -1800, y: 300)])
     func geometry(origin: CGPoint) throws {
         let screen = CGRect(origin: origin, size: CGSize(width: 1512, height: 982))
         let left = CGRect(x: screen.minX, y: screen.maxY - 32, width: 660, height: 32)
@@ -353,7 +353,11 @@ struct NotchIndicatorTests {
         #expect(geometry.frame().height == 32)
         #expect(geometry.frame().minY == geometry.cutout.minY)
         #expect(screen.contains(geometry.frame()))
-        #expect(geometry.frame().midX == geometry.cutout.midX)
+        // Preserve the physical camera gap even though the silhouette is asymmetric.
+        #expect(geometry.frame().minX + geometry.wingWidth == left.maxX)
+        #expect(geometry.frame().maxX - geometry.rightWingWidth == right.minX)
+        let previousRightEdge = geometry.cutout.maxX + 110
+        #expect(previousRightEdge - geometry.frame().maxX >= 32)
     }
 
     @Test("Overlapping auxiliary areas cannot create a notch")
