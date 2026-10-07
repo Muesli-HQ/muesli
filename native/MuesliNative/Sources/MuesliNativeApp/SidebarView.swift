@@ -52,7 +52,7 @@ struct SidebarView: View {
     @State private var showDeleteConfirmation = false
     @State private var draggingFolderID: Int64?
     @State private var dragOrderedFolders: [MeetingFolder]?
-    @State private var collapsedFolderIDs: Set<Int64> = []
+    @State private var collapsedFolderIDs: Set<Int64> = SidebarFolderCollapseStore().load()
     @FocusState private var isSearchFieldFocused: Bool
 
     private var searchTextBinding: Binding<String> {
@@ -250,6 +250,9 @@ struct SidebarView: View {
         }
         .frame(maxHeight: .infinity)
         .background(MuesliTheme.backgroundDeep)
+        .onChange(of: collapsedFolderIDs) { _, ids in
+            SidebarFolderCollapseStore().save(ids, existingFolderIDs: appState.folders.map(\.id))
+        }
         .onChange(of: appState.selectedTab) { _, tab in
             if tab == .meetings {
                 meetingsExpanded = true
@@ -846,6 +849,37 @@ struct SidebarView: View {
             renamingFolderID = id
             renamingFolderName = "New Folder"
             controller.showMeetingsHome(folderID: id)
+        }
+    }
+}
+
+/// Remembers which Meetings folders are collapsed in the sidebar, so the tree
+/// opens the way the user left it instead of fully expanded on every launch.
+/// Folder IDs are local database rows, so this is per-Mac state and lives in
+/// UserDefaults rather than in the synced config.
+struct SidebarFolderCollapseStore {
+    static let defaultsKey = "sidebar.collapsedMeetingFolderIDs"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> Set<Int64> {
+        let stored = defaults.array(forKey: Self.defaultsKey) as? [NSNumber] ?? []
+        return Set(stored.map(\.int64Value))
+    }
+
+    /// Saves `ids`, dropping folders that no longer exist so deleted folders
+    /// do not accumulate. An empty `existingFolderIDs` means the folder list is
+    /// not loaded yet, so nothing is pruned.
+    func save(_ ids: Set<Int64>, existingFolderIDs: [Int64] = []) {
+        let kept = existingFolderIDs.isEmpty ? ids : ids.intersection(existingFolderIDs)
+        if kept.isEmpty {
+            defaults.removeObject(forKey: Self.defaultsKey)
+        } else {
+            defaults.set(kept.sorted().map { NSNumber(value: $0) }, forKey: Self.defaultsKey)
         }
     }
 }
