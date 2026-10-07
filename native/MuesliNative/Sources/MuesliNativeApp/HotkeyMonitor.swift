@@ -64,9 +64,9 @@ struct HotkeyCaptureSuspension {
 
 final class HotkeyMonitor {
     private var captureSuspension = HotkeyCaptureSuspension()
-    enum CombinationActivation {
+    enum CombinationActivation: String, Codable {
         case toggle
-        case pushToTalk
+        case pushToTalk = "push_to_talk"
     }
 
     var onArm: (() -> Void)?
@@ -79,6 +79,8 @@ final class HotkeyMonitor {
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var combinationActivation: CombinationActivation = .toggle
+    /// Meeting shortcuts retain their hold guard; dictation opts into press-to-toggle.
+    var combinationToggleRequiresHold = true
     var registersCombinationGlobally = false
 
     // Combination mode (e.g. Cmd+Shift+R)
@@ -93,6 +95,13 @@ final class HotkeyMonitor {
     private var localMonitor: Any?
     private var registeredHotKey: EventHotKeyRef?
     private var registeredHotKeyHandler: EventHandlerRef?
+    // Every monitor installs a handler on the same application target, so each
+    // registration needs its own ID for handlers to ignore other monitors' chords.
+    private static var lastRegisteredHotKeyID: UInt32 = 0
+    private let registeredHotKeyID: EventHotKeyID
+    // Tracks the physical chord, independent of the session: after Escape cancels
+    // a held chord, it stays down and must not start another session until released.
+    private var registeredHotKeyIsDown = false
     private var prepareWorkItem: DispatchWorkItem?
     private var startWorkItem: DispatchWorkItem?
     private var armCancelWorkItem: DispatchWorkItem?
@@ -131,6 +140,8 @@ final class HotkeyMonitor {
         self.doubleTapWindow = doubleTapWindow
         self.scheduleAfter = scheduleAfter
         self.now = now
+        Self.lastRegisteredHotKeyID &+= 1
+        registeredHotKeyID = EventHotKeyID(signature: 0x4D55_4553, id: Self.lastRegisteredHotKeyID) // "MUES"
     }
 
     func configureTriggerThreshold(milliseconds: Int) {
@@ -208,6 +219,7 @@ final class HotkeyMonitor {
             RemoveEventHandler(registeredHotKeyHandler)
             self.registeredHotKeyHandler = nil
         }
+        registeredHotKeyIsDown = false
     }
 
     func configure(keyCode: UInt16) {
@@ -382,7 +394,7 @@ final class HotkeyMonitor {
                 onCancel?()
                 return true
             }
-            if combinationKeyDown {
+            if combinationKeyDown && !combinationTriggered {
                 cancelCurrentSession()
                 onCancel?()
                 return true
@@ -420,12 +432,23 @@ final class HotkeyMonitor {
 
         if combinationActivation == .pushToTalk {
             beginCombinationPushToTalk()
-            return true
+        } else {
+            armCombinationToggle()
         }
+        return true
+    }
 
+    private func armCombinationToggle() {
+        guard !combinationKeyDown else { return }
         combinationKeyDown = true
         combinationTriggered = false
         combinationWorkItem?.cancel()
+        if !combinationToggleRequiresHold {
+            combinationWorkItem = nil
+            combinationTriggered = true
+            fireCombinationToggle()
+            return
+        }
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.combinationKeyDown, !self.combinationTriggered else { return }
             self.combinationTriggered = true
@@ -435,7 +458,6 @@ final class HotkeyMonitor {
         combinationWorkItem = item
         scheduleAfter(startDelay, item)
         fputs("[hotkey] combination armed\n", stderr)
-        return true
     }
 
     private func beginCombinationPushToTalk() {
@@ -467,8 +489,7 @@ final class HotkeyMonitor {
     }
 
     private func fireCombinationToggle() {
-        combinationKeyDown = false
-
+        // Keep the physical press latched until release, including immediate toggles.
         if toggleActive {
             fputs("[hotkey] combination → toggle stop\n", stderr)
             toggleActive = false
@@ -508,11 +529,10 @@ final class HotkeyMonitor {
             &registeredHotKeyHandler
         )
         guard status == noErr else { return false }
-        let hotKeyID = EventHotKeyID(signature: 0x5155494C, id: 1) // "QUIL"
         guard RegisterEventHotKey(
             UInt32(keyCode),
             carbonModifiers(modifiers),
-            hotKeyID,
+            registeredHotKeyID,
             GetApplicationEventTarget(),
             0,
             &registeredHotKey
@@ -524,25 +544,46 @@ final class HotkeyMonitor {
         return true
     }
 
-    /// Carbon owns the registered combination, but it does not deliver Escape.
-    /// Keep narrow monitors so an active global Quill session remains cancellable.
+    /// Carbon owns the registered combination, but it delivers neither Escape nor
+    /// modifier changes. Keep narrow monitors so a registered session remains
+    /// cancellable and a held chord ends when one of its modifiers is released.
     private func startRegisteredCombinationEscapeMonitors() {
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard event.type == .flagsChanged || event.keyCode == 53 else { return }
             _ = self?.handle(event)
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, let self else { return event }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .flagsChanged {
+                _ = self.handle(event)
+                return event
+            }
+            guard event.keyCode == 53 else { return event }
             return self.handle(event) ? nil : event
         }
+    }
+
+    fileprivate func ownsRegisteredHotKey(_ id: EventHotKeyID) -> Bool {
+        id.signature == registeredHotKeyID.signature && id.id == registeredHotKeyID.id
     }
 
     fileprivate func handleRegisteredHotKey(kind: UInt32) {
         switch kind {
         case UInt32(kEventHotKeyPressed):
-            beginCombinationPushToTalk()
+            guard !registeredHotKeyIsDown else { return }
+            registeredHotKeyIsDown = true
+            if combinationActivation == .pushToTalk {
+                beginCombinationPushToTalk()
+            } else {
+                armCombinationToggle()
+            }
         case UInt32(kEventHotKeyReleased):
-            finishCombinationPushToTalk(cancelled: false)
+            registeredHotKeyIsDown = false
+            if combinationActivation == .pushToTalk {
+                finishCombinationPushToTalk(cancelled: false)
+            } else {
+                cancelCombinationPending(notify: false)
+            }
         default:
             break
         }
@@ -781,7 +822,8 @@ final class HotkeyMonitor {
     }
 
     private func timerDelays() -> (prepare: TimeInterval, start: TimeInterval) {
-        guard doubleTapEnabled else {
+        // Only bare modifiers detect double-taps, so chords keep their configured threshold.
+        guard doubleTapEnabled, !isCombinationMode else {
             return (prepareDelay, startDelay)
         }
         let guardedStartDelay = max(startDelay, HotkeyTriggerTiming.doubleTapTapGuardDelay)
@@ -834,6 +876,16 @@ final class HotkeyMonitor {
     func handleRegisteredHotKeyPressForTests() {
         handleRegisteredHotKey(kind: UInt32(kEventHotKeyPressed))
     }
+
+    func handleRegisteredHotKeyReleaseForTests() {
+        handleRegisteredHotKey(kind: UInt32(kEventHotKeyReleased))
+    }
+
+    var registeredHotKeyIDForTests: EventHotKeyID { registeredHotKeyID }
+
+    func ownsRegisteredHotKeyForTests(_ id: EventHotKeyID) -> Bool {
+        ownsRegisteredHotKey(id)
+    }
 }
 
 private func muesliRegisteredHotKeyHandler(
@@ -843,6 +895,20 @@ private func muesliRegisteredHotKeyHandler(
 ) -> OSStatus {
     guard let event, let userData else { return OSStatus(eventNotHandledErr) }
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userData).takeUnretainedValue()
+    var hotKeyID = EventHotKeyID()
+    let status = GetEventParameter(
+        event,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        &hotKeyID
+    )
+    // Pass other monitors' chords down the handler chain.
+    guard status == noErr, monitor.ownsRegisteredHotKey(hotKeyID) else {
+        return OSStatus(eventNotHandledErr)
+    }
     monitor.handleRegisteredHotKey(kind: GetEventKind(event))
     return noErr
 }

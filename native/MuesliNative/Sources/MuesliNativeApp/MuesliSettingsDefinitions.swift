@@ -5,6 +5,43 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    /// The menu and voice executor share the same persisted mode and controller
+    /// validation. Only the manual menu may prepare a missing chord by capture.
+    private func recordingModeDefinition(capturedShortcut: HotkeyConfig?) -> MuesliSetting {
+        typealias Mode = HotkeyMonitor.CombinationActivation
+        let modes: [Mode] = [.pushToTalk, .toggle]
+        var definition = MuesliSetting(
+            id: "dictation_activation", label: "Dictation recording mode",
+            choices: modes.map { mode in
+                MuesliSetting.Choice(id: mode.rawValue,
+                    label: mode == .toggle ? "Press to toggle" : "Hold to talk")
+            },
+            read: { config in config.dictationCombinationActivation.rawValue },
+            unavailable: { selection in
+                if let busy = self.dictationActivationUnavailableReason { return busy }
+                switch Mode(rawValue: selection) {
+                case .toggle:
+                    let candidate = capturedShortcut ?? self.config.dictationHotkey
+                    return candidate.isCombination ? nil : "Choose a modifier + key before enabling Press to toggle."
+                case .pushToTalk: return nil
+                case nil: return "Unknown dictation recording mode."
+                }
+            },
+            apply: { selection in
+                guard let mode = Mode(rawValue: selection) else {
+                    throw MuesliSettings.Failure.rejected("Unknown dictation recording mode.")
+                }
+                try self.updateDictationCombinationActivation(mode, shortcut: capturedShortcut)
+            })
+        definition.shortcutCapturePreparation = { selection in
+            if Mode(rawValue: selection) == .toggle && self.dictationActivationUnavailableReason == nil {
+                return self.config.dictationHotkey.isCombination ? nil : .dictation
+            }
+            return nil
+        }
+        return definition
+    }
+
     /// Voice applies to selected transcription models; manual model cards can
     /// also configure a shared preference before switching to another model.
     private func voiceBodhanModels() -> [BodhanModel] {
@@ -17,7 +54,7 @@ extension MuesliController {
         return models.compactMap { backend, model in backend == "bodhan" ? BodhanModel(rawValue: model) : nil }
     }
 
-    func settingsDefinitions() -> [MuesliSetting] {
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -110,6 +147,18 @@ extension MuesliController {
         func shortcutPermission(_ enabled: Bool) -> String? {
             self.settingsShortcutPermission(enabled: enabled, pushToTalk: false)
         }
+        var pasteChoices = [Choice(id: "automatic", label: PasteShortcut.automatic.displayLabel)]
+        if case .custom = config.pasteShortcut {
+            pasteChoices.append(Choice(id: "custom", label: config.pasteShortcut.displayLabel))
+        }
+        add("paste_shortcut", "Paste shortcut", pasteChoices, read: {
+            if case .custom = $0.pasteShortcut { return "custom" }
+            return "automatic"
+        }) { value in
+            // Custom recording is a freeform interaction; this menu only selects
+            // Automatic or revalidates the currently saved custom chord.
+            try checkShortcut(self.updatePasteShortcut(value == "automatic" ? .automatic : self.config.pasteShortcut))
+        }
         for target in ShortcutAssignment.allCases {
             settings.append(MuesliSetting(id: target.settingID, label: target.label,
                 choices: ShortcutAssignment.singleKeys.map {
@@ -125,6 +174,7 @@ extension MuesliController {
                     }
                 }, shortcutAssignment: target))
         }
+        settings.append(recordingModeDefinition(capturedShortcut: dictationToggleShortcut))
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
         toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestPushToTalkSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in

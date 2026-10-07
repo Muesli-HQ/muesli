@@ -6,6 +6,7 @@ struct MuesliSettingControl: View {
     let controller: MuesliController
     let id: String
     var allowedChoiceIDs: Set<String>? = nil
+    var onShortcutCapture: ((ShortcutAssignment, String) -> Void)? = nil
     @Environment(\.muesliSettingDefinitions) private var definitions
     @State private var errorMessage: String?
     @State private var isApplying = false
@@ -54,11 +55,19 @@ struct MuesliSettingControl: View {
                     let placeholder = selected.isEmpty ? "Choose an option…" : selected
                     let labels = (hasCurrent ? [] : [placeholder]) + state.choices.map(\.label)
                     FixedWidthPopUp(selection: hasCurrent ? selected : placeholder, options: labels,
-                        disabledOptions: Set(state.choices.filter { state.unavailable[$0.id] != nil }.map(\.label))
+                        disabledOptions: Set(state.choices.filter {
+                            state.unavailable[$0.id] != nil
+                                && !(onShortcutCapture != nil && setting.shortcutCapturePreparation($0.id) != nil)
+                        }.map(\.label))
                             .union(hasCurrent ? [] : [placeholder]), onSelectIndex: { index in
                             let choiceIndex = index - (hasCurrent ? 0 : 1)
                             guard state.choices.indices.contains(choiceIndex) else { return }
-                            apply(state.choices[choiceIndex].id)
+                            let value = state.choices[choiceIndex].id
+                            if let target = setting.shortcutCapturePreparation(value), let onShortcutCapture {
+                                onShortcutCapture(target, value)
+                            } else {
+                                apply(value)
+                            }
                         })
                         .frame(height: 24)
                         .accessibilityLabel(state.label)

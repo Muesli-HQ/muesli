@@ -108,6 +108,7 @@ case "${shard}" in
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
+      HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
       Nemotron35ModelStoreTests
@@ -160,6 +161,7 @@ case "${shard}" in
       RouteAwareMeetingMicRecorderTests
       CalendarEventQueryTests
       CalendarMonitorLifecycleTests
+      CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )

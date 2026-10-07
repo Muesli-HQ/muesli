@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import MuesliCore
 import SwiftUI
 import Testing
 @testable import MuesliNativeApp
@@ -72,6 +73,91 @@ struct PasteShortcutTests {
         #expect(PasteKeyChord(keyCode: 55, modifiers: .maskCommand) == nil)
         #expect(PasteKeyChord(keyCode: 128, modifiers: .maskCommand) == nil)
         #expect(PasteKeyChord(keyCode: 9, modifiers: [.maskCommand, .maskAlphaShift]) == nil)
+    }
+
+    @Test("Automatic paste rejects existing overlapping chords and preserves the saved custom choice",
+          arguments: ShortcutAssignment.allCases)
+    func automaticPasteConflicts(target: ShortcutAssignment) async throws {
+        let keyPath: WritableKeyPath<AppConfig, HotkeyConfig>
+        switch target {
+        case .dictation: keyPath = \.dictationHotkey
+        case .quil: keyPath = \.quilHotkey
+        case .computerUse: keyPath = \.computerUseHotkey
+        case .meetingRecording: keyPath = \.meetingRecordingHotkey
+        }
+        _ = NSApplication.shared
+        let automatic = try #require(PasteKeyboardLayout.resolve(.automatic))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.enableComputerUseHotkey = false
+        initial.enableQuilMode = false
+        initial.enableMeetingRecordingHotkey = false
+        initial.pasteShortcut = .custom(try #require(PasteKeyChord(keyCode: 90, modifiers: .maskControl)))
+        let overlapping = HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: automatic.keyCode)
+        initial[keyPath: keyPath] = overlapping
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+
+        // This is the same shared entry point used by the Automatic menu item.
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("paste_shortcut", value: "automatic")
+        }
+        #expect(controller.config.pasteShortcut == initial.pasteShortcut)
+        #expect(configStore.load().pasteShortcut == initial.pasteShortcut)
+        #expect(configStore.load()[keyPath: target.keyPath] == overlapping)
+
+        // Custom recording uses the same validation, including exact duplicates.
+        #expect(!controller.updatePasteShortcut(.custom(automatic)).didUpdate)
+        let exact = try #require(PasteKeyChord(keyCode: automatic.keyCode, modifiers: [.maskCommand, .maskShift]))
+        #expect(!controller.updatePasteShortcut(.custom(exact)).didUpdate)
+        #expect(configStore.load().pasteShortcut == initial.pasteShortcut)
+
+        controller.updateConfig { $0[keyPath: keyPath] = AppConfig()[keyPath: keyPath] }
+        try await controller.applySetting("paste_shortcut", value: "automatic")
+        #expect(controller.config.pasteShortcut == .automatic)
+        #expect(configStore.load().pasteShortcut == .automatic)
+        // Assignment order cannot bypass the overlap rule for Dictation either.
+        #expect(!controller.updateDictationHotkey(overlapping).didUpdate)
+    }
+
+    @Test("unresolvable Automatic paste fails closed without overwriting the custom shortcut")
+    func unresolvedAutomaticPreservesChoice() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.pasteShortcut = .custom(try #require(PasteKeyChord(keyCode: 9, modifiers: .maskControl)))
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let result = controller.updatePasteShortcut(.automatic, resolve: { _ in nil })
+        #expect(!result.didUpdate)
+        #expect(result.message?.contains("keyboard layout") == true)
+        #expect(controller.config.pasteShortcut == initial.pasteShortcut)
+        #expect(configStore.load().pasteShortcut == initial.pasteShortcut)
+    }
+
+    @Test("Command-Space stays assignable but reports its possible system shortcut conflict")
+    func commandSpaceWarning() {
+        let shortcut = HotkeyConfig.combination(modifiers: .command, keyCode: 49)
+        #expect(shortcut.isValidDictationShortcut)
+        let result = ShortcutHotkeyPolicy.validateDictationHotkey(shortcut,
+            computerUseHotkey: .computerUseDefault, isComputerUseEnabled: false)
+        #expect(result.didUpdate)
+        #expect(result.message == ShortcutHotkeyPolicy.commandSpaceWarning)
+        #expect(ShortcutHotkeyPolicy.commonGlobalShortcutWarning(for: .combination(modifiers: [.control, .option], keyCode: 49)) == nil)
+        #expect(ShortcutHotkeyPolicy.commonGlobalShortcutWarning(for: .default) == nil)
     }
 
     @Test("config defaults and malformed/future values fail safely to automatic")
