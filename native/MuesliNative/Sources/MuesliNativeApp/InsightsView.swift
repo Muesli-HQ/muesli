@@ -54,7 +54,9 @@ struct InsightsView: View {
                         }
                     }
                 }
-                .padding(28)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.top, MuesliTheme.pageTop)
+                .padding(.bottom, MuesliTheme.spacing32)
                 .frame(maxWidth: 1240, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
@@ -119,41 +121,65 @@ struct InsightsView: View {
     }
 
     private var rangeControls: some View {
-        HStack(spacing: 12) {
-            Picker("Time range", selection: Binding(
-                get: { range },
-                set: { newValue in range = newValue; loadGeneration += 1 }
-            )) {
-                ForEach(InsightsRange.allCases, id: \.self) { value in
-                    Text(value.label).tag(value)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                rangePicker.frame(width: 340)
+                refreshButton
+                shareButton
+            }
+            VStack(alignment: .trailing, spacing: 12) {
+                rangePicker
+                HStack(spacing: 12) {
+                    refreshButton
+                    shareButton
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Time range")
-            .frame(width: 340)
-
-            Button {
-                loadGeneration += 1
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(InsightsPalette.secondaryText)
-            .help("Refresh local insights")
-            .accessibilityLabel("Refresh local insights")
-
-            Button {
-                isSharing = true
-            } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            .buttonStyle(.bordered)
-            .disabled(snapshot == nil)
-            .help("Share an anonymous activity image")
-            .accessibilityLabel("Share your activity")
         }
+    }
+
+    private var rangePicker: some View {
+        Picker("Time range", selection: Binding(
+            get: { range },
+            set: { newValue in range = newValue; loadGeneration += 1 }
+        )) {
+            ForEach(InsightsRange.allCases, id: \.self) { value in
+                Text(value.label).tag(value)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("Time range")
+        .tint(MuesliTheme.accent)
+    }
+
+    private var refreshButton: some View {
+        Button {
+            loadGeneration += 1
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(InsightsPalette.secondaryText)
+        .help("Refresh local insights")
+        .accessibilityLabel("Refresh local insights")
+    }
+
+    private var shareButton: some View {
+        Button {
+            isSharing = true
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(MuesliTheme.accent)
+        .controlSize(.large)
+        .font(.system(size: 13, weight: .semibold))
+        .fixedSize()
+        .disabled(snapshot == nil)
+        .help("Share an anonymous activity image")
+        .accessibilityLabel("Share your activity")
     }
 
     private func hero(_ data: InsightsSnapshot) -> some View {
@@ -203,8 +229,8 @@ struct InsightsView: View {
                 )
             }
         )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(panelBorder)
-        .shadow(color: Color.black.opacity(0.12), radius: 24, y: 10)
     }
 
     private func activityPanel(_ data: InsightsSnapshot) -> some View {

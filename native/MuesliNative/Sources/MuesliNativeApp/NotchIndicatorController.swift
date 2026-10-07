@@ -84,6 +84,11 @@ struct NotchIndicatorGeometry: Equatable {
     let cutout: CGRect
     let wingWidth: CGFloat
 
+    // First-pass menu-bar clearance: shorten the original 110-point right wing
+    // by 32 points without moving the camera gap. This does not detect the system
+    // privacy item's frame; verify clearance on the user's display/layout.
+    var rightWingWidth: CGFloat { cutout.width > 0 ? min(wingWidth, 78) : wingWidth }
+
     static func resolve(screen: CGRect, topInset: CGFloat, left: CGRect?, right: CGRect?) -> Self? {
         guard topInset.isFinite, topInset > 0, topInset < screen.height / 4,
               let left, let right,
@@ -103,7 +108,7 @@ struct NotchIndicatorGeometry: Equatable {
     func frame() -> CGRect {
         let height = cutout.height
         return CGRect(x: cutout.minX - wingWidth, y: cutout.maxY - height,
-                      width: cutout.width + 2 * wingWidth, height: height)
+                      width: wingWidth + cutout.width + rightWingWidth, height: height)
     }
 
     func instructionFrame(in screen: CGRect, requiresReview: Bool = false) -> CGRect {
@@ -463,6 +468,12 @@ private struct NotchIndicatorView: View {
         UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
     }
 
+    private var waveformWidth: CGFloat {
+        let controlWidth: CGFloat = active ? (meeting ? 40 : (recording && handsFree ? 42 : 22)) : 0
+        let gaps: CGFloat = active ? ((meeting || (recording && handsFree)) ? 8 : 4) : 0
+        return max(0, min(58, geometry.rightWingWidth - 12 - controlWidth - gaps))
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 4) {
@@ -487,6 +498,12 @@ private struct NotchIndicatorView: View {
                 }
                 .accessibilityLabel("\(title). Open Muesli home")
                 .help("Open Muesli home")
+                if hasInstruction {
+                    Button(action: onToggleInstruction) {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .frame(width: 20, height: 22)
+                    }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
+                }
             }
             .padding(.horizontal, 7)
             .frame(width: geometry.wingWidth)
@@ -495,17 +512,11 @@ private struct NotchIndicatorView: View {
             Color.black.frame(width: geometry.cutout.width).allowsHitTesting(false)
                 .accessibilityHidden(true)
 
-            HStack(spacing: meeting ? 4 : 7) {
-                if hasInstruction {
-                    Button(action: onToggleInstruction) {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .frame(width: 20, height: 22)
-                    }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
-                }
+            HStack(spacing: 4) {
                 Group {
                     if recording && !paused {
                         NotchWaveform(power: power, scrolling: handsFree, reduceMotion: reduceMotion, accent: accent)
-                            .frame(width: (meeting || handsFree) ? min(42, geometry.wingWidth - 64) : 58,
+                            .frame(width: waveformWidth,
                                    height: min(20, geometry.cutout.height - 8))
                     } else if paused {
                         Image(systemName: "pause.fill")
@@ -557,8 +568,8 @@ private struct NotchIndicatorView: View {
                     .help(outcome != nil ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(width: geometry.wingWidth)
+            .padding(.horizontal, 6)
+            .frame(width: geometry.rightWingWidth)
         }
         .buttonStyle(.plain)
         .foregroundStyle(outcome == .needsInput || outcome == .success ? .black : .white)

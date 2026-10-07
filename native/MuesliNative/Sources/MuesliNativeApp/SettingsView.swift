@@ -737,10 +737,10 @@ struct SettingsView: View {
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
-                    actionButton("Clear dictation history", role: .destructive) {
+                    compactActionButton("Clear dictation history", role: .destructive) {
                         pendingDataDestruction = .dictations
                     }
-                    actionButton("Clear meeting history", role: .destructive) {
+                    compactActionButton("Clear meeting history", role: .destructive) {
                         pendingDataDestruction = .meetings
                     }
                     .disabled(controller.isMeetingRecording())
@@ -2181,7 +2181,11 @@ struct SettingsView: View {
                 .padding(.bottom, 12)
                 if appState.config.recordingIndicatorStyle == .notch {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                     settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 } else {
                     settingsRow("Keep visible when idle") {
                         settingsControl("show_floating_indicator")
@@ -2256,7 +2260,7 @@ struct SettingsView: View {
                     controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
-                        .fill(Color(hex: preset.hex))
+                        .fill(preset.hex == "1e1e2e" ? MuesliTheme.defaultAccent : Color(hex: preset.hex))
                         .frame(width: 22, height: 22)
                         .overlay(
                             Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
@@ -2264,9 +2268,18 @@ struct SettingsView: View {
                         .overlay(
                             Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
                         )
+                        .overlay {
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .help(preset.name)
+                .help(preset.hex == "1e1e2e" ? "Default (adaptive blue)" : preset.name)
+                .accessibilityLabel(preset.name)
+                .accessibilityValue(isSelected ? "Selected" : "Not selected")
             }
         }
     }
@@ -2390,25 +2403,18 @@ struct SettingsView: View {
     @ViewBuilder
     private func chatGPTAccountControl(selectMeetingSummaryBackend: Bool = true) -> some View {
         if appState.isChatGPTAuthenticated {
-            Button {
-                controller.signOutChatGPT()
-            } label: {
-                HStack(spacing: 5) {
-                    OpenAILogoShape()
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                    Text("Signed in · Sign Out")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            HStack(spacing: 10) {
+                Label("Signed in", systemImage: "checkmark.circle.fill")
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.success)
+                Spacer(minLength: 8)
+                Button("Sign Out") { controller.signOutChatGPT() }
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .buttonStyle(.plain)
+                    .help("Sign out of ChatGPT")
             }
-            .buttonStyle(.plain)
+            .frame(minHeight: 28)
         } else if isSigningInChatGPT {
             HStack(spacing: 6) {
                 ProgressView()
@@ -3140,11 +3146,11 @@ struct SettingsView: View {
             .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+            .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isDestructive ? MuesliTheme.recording.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -3700,12 +3706,12 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+                .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 .overlay(
                     RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                         .strokeBorder(
-                            isDestructive ? MuesliTheme.recording.opacity(0.2) : MuesliTheme.surfaceBorder,
+                            MuesliTheme.surfaceBorder,
                             lineWidth: 1
                         )
                 )

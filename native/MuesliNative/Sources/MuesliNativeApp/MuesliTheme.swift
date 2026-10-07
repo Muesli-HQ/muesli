@@ -14,7 +14,7 @@ enum MuesliTheme {
         light: backgroundDeepLightHex
     )
     static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
-    static let backgroundRaised = Color.adaptive(dark: 0x1C1D20, light: 0xF0F0F2)
+    static let backgroundRaised = Color.adaptive(dark: 0x202226, light: 0xF0F0F2)
     static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
 
     // MARK: - Surfaces (interactive elements)
@@ -33,12 +33,12 @@ enum MuesliTheme {
         light: .black, lightAlpha: 0.88
     )
     static let textSecondary = Color.adaptiveAlpha(
-        dark: .white, darkAlpha: 0.62,
-        light: .black, lightAlpha: 0.55
+        dark: .white, darkAlpha: 0.74,
+        light: .black, lightAlpha: 0.66
     )
     static let textTertiary = Color.adaptiveAlpha(
-        dark: .white, darkAlpha: 0.40,
-        light: .black, lightAlpha: 0.33
+        dark: .white, darkAlpha: 0.56,
+        light: .black, lightAlpha: 0.55
     )
 
     // MARK: - Accent
@@ -68,6 +68,11 @@ enum MuesliTheme {
     static func title2() -> Font { .system(size: 20, weight: .semibold) }
     static func title3() -> Font { .system(size: 18, weight: .semibold) }
     static func headline() -> Font { .system(size: 15, weight: .semibold) }
+    /// Comfortable long-form text, separate from compact control labels.
+    static func reading() -> Font { .system(size: 15, weight: .regular) }
+    static let readingWidth: CGFloat = 720
+    static let pageInset: CGFloat = 32
+
     static func body() -> Font { .system(size: 14, weight: .regular) }
     static func callout() -> Font { .system(size: 13, weight: .regular) }
     static func caption() -> Font { .system(size: 12, weight: .regular) }
