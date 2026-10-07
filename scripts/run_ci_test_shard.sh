@@ -116,6 +116,10 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      TelegramCallDetectionRecognitionTests
+      TelegramCallDetectionAdapterTests
+      TelegramCallDetectionCollectorTests
+      TelegramCallDetectionDeadlineTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
