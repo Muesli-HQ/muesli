@@ -673,7 +673,6 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let meetingWords: [InsightsWordFrequency]
     public let modelUsage: [InsightsUsage]
     public let appUsage: [InsightsUsage]
-    public let wordsBeforeCodeSwitch: Double?
 
     public init(
         range: InsightsRange,
@@ -687,8 +686,7 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         dictationWords: [InsightsWordFrequency],
         meetingWords: [InsightsWordFrequency],
         modelUsage: [InsightsUsage] = [],
-        appUsage: [InsightsUsage] = [],
-        wordsBeforeCodeSwitch: Double? = nil
+        appUsage: [InsightsUsage] = []
     ) {
         self.range = range
         self.generatedAt = generatedAt
@@ -701,7 +699,6 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         self.dictationWords = dictationWords
         self.modelUsage = modelUsage
         self.appUsage = appUsage
-        self.wordsBeforeCodeSwitch = wordsBeforeCodeSwitch
         self.meetingWords = meetingWords
     }
 }

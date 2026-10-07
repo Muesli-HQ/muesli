@@ -1815,6 +1815,7 @@ public final class DictationStore {
         origin: RecordOriginFilter = .all,
         targetApplication: DictationTargetApplication? = nil
     ) throws -> Double? {
+        try Task.checkCancellation()
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         return try wordsBeforeCodeSwitch(fromDate: fromDate, toDate: toDate,
@@ -1853,7 +1854,7 @@ public final class DictationStore {
         var lengths: [Int] = []
         var step = sqlite3_step(statement)
         while step == SQLITE_ROW {
-            if Task<Never, Never>.isCancelled { return nil }
+            try Task.checkCancellation()
             if let data = optionalDataColumn(statement, index: 0),
                let recordLengths = try? decoder.decode([Int].self, from: data),
                recordLengths.allSatisfy({ $0 > 0 }) {
@@ -1862,7 +1863,17 @@ public final class DictationStore {
             step = sqlite3_step(statement)
         }
         guard step == SQLITE_DONE else { throw lastError(db) }
+        try Task.checkCancellation()
         return WordsBeforeCodeSwitch.median(of: lengths)
+    }
+
+    /// Loads the optional curiosity separately from the main Insights snapshot.
+    public func insightsWordsBeforeCodeSwitch(
+        range: InsightsRange,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> Double? {
+        try wordsBeforeCodeSwitch(fromDate: range.startDate(now: now, calendar: calendar).map { formatISODate($0) })
     }
 
     /// The per-window language chosen by Bodhan, plus optional Flex Mixed WBCS runs.
@@ -2049,9 +2060,7 @@ public final class DictationStore {
                 dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
                 meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true),
                 modelUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: true),
-                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false),
-                wordsBeforeCodeSwitch: try wordsBeforeCodeSwitch(
-                    fromDate: startDate.map { formatISODate($0) }, db: db)
+                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false)
             )
             try exec("COMMIT", db: db)
             return snapshot

@@ -4,6 +4,7 @@ import MuesliCore
 struct InsightsView: View {
     let initialSection: InsightsSection
     let loadSnapshot: (InsightsRange) async throws -> InsightsSnapshot
+    let loadCuriosity: (InsightsRange, Date) async throws -> Double?
     let onBack: () -> Void
     let backLabel: String
 
@@ -20,11 +21,13 @@ struct InsightsView: View {
     init(
         initialSection: InsightsSection,
         loadSnapshot: @escaping (InsightsRange) async throws -> InsightsSnapshot,
+        loadCuriosity: @escaping (InsightsRange, Date) async throws -> Double?,
         onBack: @escaping () -> Void,
         backLabel: String
     ) {
         self.initialSection = initialSection
         self.loadSnapshot = loadSnapshot
+        self.loadCuriosity = loadCuriosity
         self.onBack = onBack
         self.backLabel = backLabel
         _metric = State(initialValue: initialSection == .meetings ? .meetings : .words)
@@ -335,32 +338,11 @@ struct InsightsView: View {
     }
 
     private func curiosities(_ data: InsightsSnapshot) -> some View {
-        DisclosureGroup("Curiosities", isExpanded: $showsCuriosities) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    if let value = data.wordsBeforeCodeSwitch {
-                        Text(value.formatted(.number.precision(.fractionLength(0...1))))
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundStyle(MuesliTheme.accent)
-                    }
-                    Text("English words before a language switch")
-                        .font(.headline)
-                }
-                if data.wordsBeforeCodeSwitch == nil {
-                    Text("No eligible language switches recorded yet.")
-                        .font(.callout)
-                }
-                Text("Just for fun: the median English stretch in Bodhan Flex Mixed dictations during this period. Estimated on this Mac from the original transcript; Romanized switches may be missed.")
-                    .font(.caption)
-                    .foregroundStyle(InsightsPalette.secondaryText)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 12)
+        InsightsCuriositiesView(isExpanded: $showsCuriosities) {
+            try await loadCuriosity(data.range, data.generatedAt)
         }
-        .font(.caption)
-        .foregroundStyle(InsightsPalette.secondaryText)
-        .tint(MuesliTheme.accent)
-        .insightsPanel()
+        // Refreshes and range changes create a fresh cache; disclosure changes do not.
+        .id(loadGeneration)
     }
 
     private func usagePanel(_ data: InsightsSnapshot) -> some View {
@@ -982,4 +964,81 @@ private extension View {
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
             .shadow(color: Color.black.opacity(0.07), radius: 14, y: 7)
     }
+}
+
+/// Caches even an empty result for this snapshot, and rejects cancelled completions.
+@MainActor
+final class InsightsCuriosityModel: ObservableObject {
+    @Published private(set) var value: Double?
+    @Published private(set) var isLoaded = false
+    @Published private(set) var errorMessage: String?
+
+    func load(isExpanded: Bool, using loader: () async throws -> Double?) async {
+        guard isExpanded, !isLoaded else { return }
+        do {
+            try Task.checkCancellation()
+            errorMessage = nil
+            let result = try await loader()
+            try Task.checkCancellation()
+            value = result
+            isLoaded = true
+        } catch is CancellationError {
+            // Closing or replacing the snapshot cancels the query without caching a result.
+        } catch {
+            guard !Task.isCancelled else { return }
+            errorMessage = "Couldn't load this curiosity. Try again."
+        }
+    }
+}
+
+private struct InsightsCuriositiesView: View {
+    @Binding var isExpanded: Bool
+    let load: () async throws -> Double?
+    @StateObject private var model = InsightsCuriosityModel()
+    @State private var retryGeneration = 0
+
+    private struct Request: Equatable {
+        let isExpanded: Bool
+        let retryGeneration: Int
+    }
+
+    var body: some View {
+        DisclosureGroup("Curiosities", isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    if let value = model.value {
+                        Text(value.formatted(.number.precision(.fractionLength(0...1))))
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundStyle(MuesliTheme.accent)
+                    }
+                    Text("English words before a language switch")
+                        .font(.headline)
+                }
+                if let error = model.errorMessage {
+                    Text(error)
+                        .font(.callout)
+                    Button("Try Again") { retryGeneration += 1 }
+                } else if !model.isLoaded {
+                    ProgressView("Loading curiosity…")
+                        .controlSize(.small)
+                } else if model.value == nil {
+                    Text("No eligible language switches recorded yet.")
+                        .font(.callout)
+                }
+                Text("Just for fun: the median English stretch in Bodhan Flex Mixed dictations during this period. Estimated on this Mac from the original transcript; Romanized switches may be missed.")
+                    .font(.caption)
+                    .foregroundStyle(InsightsPalette.secondaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 12)
+        }
+        .font(.caption)
+        .foregroundStyle(InsightsPalette.secondaryText)
+        .tint(MuesliTheme.accent)
+        .insightsPanel()
+        .task(id: Request(isExpanded: isExpanded, retryGeneration: retryGeneration)) {
+            await model.load(isExpanded: isExpanded, using: load)
+        }
+    }
+
 }

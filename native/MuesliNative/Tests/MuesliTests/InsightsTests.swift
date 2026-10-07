@@ -45,6 +45,93 @@ struct InsightsTests {
         #expect(try store.wordsBeforeCodeSwitch() == nil)
     }
 
+    @Test("Insights snapshots never query optional language-switch history")
+    func snapshotDoesNotReadCuriosityHistory() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 10,
+            languageCode: "hi", wasAutoDetected: true)
+        try store.insertDictation(
+            text: "we went घर", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        try store.insertDictation(
+            text: "long ago we went घर", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-200 * 86400 - 10),
+            endedAt: now.addingTimeInterval(-200 * 86400),
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [6])
+        )
+        #expect(try store.insightsWordsBeforeCodeSwitch(range: .ninetyDays, now: now) == 2)
+        #expect(try store.insightsWordsBeforeCodeSwitch(range: .allTime, now: now) == 4)
+        let expected = try store.insightsSnapshot(range: .ninetyDays, now: now)
+        // Making the optional table unavailable catches any accidental access,
+        // including a query that discards its calculated value.
+        try executeWBCTestSQL(store, "DROP TABLE bodhan_wbcs_measurements")
+        #expect(try store.insightsSnapshot(range: .ninetyDays, now: now) == expected)
+        #expect(throws: (any Error).self) {
+            try store.insightsWordsBeforeCodeSwitch(range: .ninetyDays, now: now)
+        }
+    }
+
+    @Test("Curiosity loads only on expansion and caches values including no measurements")
+    @MainActor
+    func curiosityLoadsOnDemand() async {
+        for result in [nil, 3.0] as [Double?] {
+            let model = InsightsCuriosityModel()
+            var calls = 0
+            let loader: () async throws -> Double? = { calls += 1; return result }
+            await model.load(isExpanded: false, using: loader)
+            #expect(calls == 0)
+            #expect(!model.isLoaded)
+            await model.load(isExpanded: true, using: loader)
+            await model.load(isExpanded: false, using: loader)
+            await model.load(isExpanded: true, using: loader)
+            #expect(calls == 1)
+            #expect(model.isLoaded)
+            #expect(model.value == result)
+            // A new snapshot gets its own model and must load fresh data.
+            let refreshed = InsightsCuriosityModel()
+            await refreshed.load(isExpanded: true, using: loader)
+            #expect(calls == 2)
+        }
+    }
+
+    @Test("Cancelled curiosity completions are not cached, and errors can be retried")
+    @MainActor
+    func curiosityCancellationAndRetry() async {
+        let model = InsightsCuriosityModel()
+        let worker = Task {
+            await model.load(isExpanded: true) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return 99
+            }
+        }
+        await worker.value
+        #expect(!model.isLoaded)
+        #expect(model.value == nil)
+        #expect(model.errorMessage == nil)
+        await model.load(isExpanded: true) { throw CocoaError(.fileReadUnknown) }
+        #expect(!model.isLoaded)
+        #expect(model.errorMessage != nil)
+        await model.load(isExpanded: true) { 2 }
+        #expect(model.value == 2)
+        #expect(model.isLoaded)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("Cancelled language-switch queries throw instead of returning an empty measurement")
+    func curiosityStoreCancellation() async throws {
+        let store = try makeStore()
+        let worker = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            #expect(throws: CancellationError.self) {
+                try store.wordsBeforeCodeSwitch()
+            }
+        }
+        await worker.value
+    }
+
     @Test("Bodhan mixed transcript counts switches inside a single audio window")
     func bodhanMixedSwitchesWithinWindow() {
         #expect(WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: "I went घर फिर we came वापस") == [2, 2])

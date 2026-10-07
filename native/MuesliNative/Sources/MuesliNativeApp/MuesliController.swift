@@ -1356,6 +1356,20 @@ public final class MuesliController: NSObject {
         }.value
     }
 
+    func insightsWordsBeforeCodeSwitch(range: InsightsRange, now: Date) async throws -> Double? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try DictationStore(databaseURL: databaseURL)
+                .insightsWordsBeforeCodeSwitch(range: range, now: now)
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
     func truncate(_ text: String, limit: Int) -> String {
         let compact = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard compact.count > limit else { return compact }

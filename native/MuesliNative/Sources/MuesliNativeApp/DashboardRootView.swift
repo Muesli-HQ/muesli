@@ -247,6 +247,9 @@ struct DashboardRootView: View {
                 InsightsView(
                     initialSection: appState.insightsInitialSection,
                     loadSnapshot: { range in try await controller.insightsSnapshot(range: range) },
+                    loadCuriosity: { range, now in
+                        try await controller.insightsWordsBeforeCodeSwitch(range: range, now: now)
+                    },
                     onBack: { controller.closeInsights() },
                     backLabel: appState.insightsBackLabel
                 )
