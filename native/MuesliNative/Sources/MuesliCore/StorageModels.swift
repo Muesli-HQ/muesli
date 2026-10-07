@@ -603,11 +603,49 @@ public struct InsightsDailyActivity: Codable, Sendable, Equatable, Identifiable 
     public let date: Date
     public let words: Int
     public let meetings: Int
+    public let meetingWords: Int
+    public var dictationWords: Int { words - meetingWords }
 
-    public init(date: Date, words: Int, meetings: Int) {
+    public init(date: Date, words: Int, meetings: Int, meetingWords: Int = 0) {
         self.date = date
         self.words = words
         self.meetings = meetings
+        self.meetingWords = meetingWords
+    }
+}
+
+/// Local attribution captured with the successful transcription, before cleanup.
+public struct DictationModelIdentity: Sendable, Equatable {
+    public let backend: String
+    public let model: String
+    public let name: String
+    /// The hosted speech endpoint used for this result; nil for on-device models.
+    public let endpoint: String?
+
+    public init(backend: String, model: String, name: String, endpoint: String? = nil) {
+        self.backend = backend
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.name = name
+        self.endpoint = endpoint
+    }
+}
+
+public struct InsightsUsage: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let sessions: Int
+    public let words: Int
+    public let backend: String?
+    public let endpoint: String?
+
+    public init(id: String, name: String, sessions: Int, words: Int,
+                backend: String? = nil, endpoint: String? = nil) {
+        self.id = id
+        self.name = name
+        self.sessions = sessions
+        self.words = words
+        self.backend = backend
+        self.endpoint = endpoint
     }
 }
 
@@ -633,6 +671,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let activeDaysInRange: Int
     public let dictationWords: [InsightsWordFrequency]
     public let meetingWords: [InsightsWordFrequency]
+    public let modelUsage: [InsightsUsage]
+    public let appUsage: [InsightsUsage]
 
     public init(
         range: InsightsRange,
@@ -644,7 +684,9 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         longestStreakDays: Int,
         activeDaysInRange: Int,
         dictationWords: [InsightsWordFrequency],
-        meetingWords: [InsightsWordFrequency]
+        meetingWords: [InsightsWordFrequency],
+        modelUsage: [InsightsUsage] = [],
+        appUsage: [InsightsUsage] = []
     ) {
         self.range = range
         self.generatedAt = generatedAt
@@ -655,6 +697,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         self.longestStreakDays = longestStreakDays
         self.activeDaysInRange = activeDaysInRange
         self.dictationWords = dictationWords
+        self.modelUsage = modelUsage
+        self.appUsage = appUsage
         self.meetingWords = meetingWords
     }
 }

@@ -1356,6 +1356,20 @@ public final class MuesliController: NSObject {
         }.value
     }
 
+    func insightsWordsBeforeCodeSwitch(range: InsightsRange, now: Date) async throws -> Double? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try DictationStore(databaseURL: databaseURL)
+                .insightsWordsBeforeCodeSwitch(range: range, now: now)
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
     func truncate(_ text: String, limit: Int) -> String {
         let compact = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard compact.count > limit else { return compact }
@@ -11642,7 +11656,9 @@ public final class MuesliController: NSObject {
                 targetAppName: targetApp?.appName,
                 targetAppBundleID: targetApp?.bundleID,
                 startedAt: startedAt,
-                endedAt: Date()
+                endedAt: Date(),
+                transcriptionModel: DictationModelIdentity(backend: BackendOption.nemotron35Multilingual.backend,
+                    model: BackendOption.nemotron35Multilingual.model, name: BackendOption.nemotron35Multilingual.label)
             )
             scheduleICloudSyncAfterLocalChange()
         }
@@ -11680,7 +11696,9 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         outputMode: DictationOutputMode,
         targetApp: DictationCorrectionTargetApp?,
-        backend: String
+        backend: String,
+        bodhanMeasurement: BodhanWBCSMeasurement?,
+        transcriptionModel: DictationModelIdentity
     ) {
         _ = try? dictationStore.insertDictation(
             text: text,
@@ -11689,7 +11707,9 @@ public final class MuesliController: NSObject {
             targetAppName: targetApp?.appName,
             targetAppBundleID: targetApp?.bundleID,
             startedAt: startedAt,
-            endedAt: Date()
+            endedAt: Date(),
+            bodhanMeasurement: bodhanMeasurement,
+            transcriptionModel: transcriptionModel
         )
         scheduleICloudSyncAfterLocalChange()
         statusBarController?.refresh()
@@ -11781,13 +11801,18 @@ public final class MuesliController: NSObject {
             do {
                 let rawText: String
                 let completionBackend: String
+                let completionModel: DictationModelIdentity
+                let bodhanMeasurement: BodhanWBCSMeasurement?
                 if let hostedSession {
                     do {
                         // Hosted transcription models already produce normalized
                         // prose, so hosted success intentionally bypasses cleanup.
                         let result = try await hostedSession.finish(recordedWAVURL: wavURL)
                         rawText = result.text
+                        completionModel = DictationModelIdentity(backend: result.backend,
+                            model: result.model ?? "", name: result.model ?? "Not recorded", endpoint: result.endpoint)
                         completionBackend = result.backend
+                        bodhanMeasurement = nil
                     } catch {
                         guard HostedDictationFallbackPolicy.shouldFallback(
                             after: error,
@@ -11820,7 +11845,10 @@ public final class MuesliController: NSObject {
                             appContext: promptContext
                         )
                         rawText = result.text
+                        completionModel = DictationModelIdentity(backend: fallbackBackend.backend,
+                            model: fallbackBackend.model, name: fallbackBackend.label)
                         completionBackend = fallbackBackend.backend
+                        bodhanMeasurement = result.bodhanMeasurement
                     }
                 } else {
                     let ppOption = self.runtimePostProcessorOption()
@@ -11840,7 +11868,10 @@ public final class MuesliController: NSObject {
                         appContext: promptContext
                     )
                     rawText = result.text
+                    completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,
+                        model: transcriptionBackend.model, name: transcriptionBackend.label)
                     completionBackend = transcriptionBackend.backend
+                    bodhanMeasurement = result.bodhanMeasurement
                 }
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
@@ -11921,7 +11952,9 @@ public final class MuesliController: NSObject {
                                     startedAt: startedAt,
                                     outputMode: outputMode,
                                     targetApp: completionTargetApp,
-                                    backend: completionBackend
+                                    backend: completionBackend,
+                                    bodhanMeasurement: bodhanMeasurement,
+                                    transcriptionModel: completionModel
                                 )
                                 self.finishDictationLatencyTrace(
                                     "bookkeeping_completed",
@@ -11946,7 +11979,9 @@ public final class MuesliController: NSObject {
                             startedAt: startedAt,
                             outputMode: outputMode,
                             targetApp: nil,
-                            backend: completionBackend
+                            backend: completionBackend,
+                            bodhanMeasurement: bodhanMeasurement,
+                            transcriptionModel: completionModel
                         )
                         self.finishDictationLatencyTrace(
                             "bookkeeping_completed",
