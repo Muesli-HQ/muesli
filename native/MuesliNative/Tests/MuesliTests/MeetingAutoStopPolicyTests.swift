@@ -68,18 +68,30 @@ struct MeetingAutoStopPolicyTests {
         #expect(MeetingAutoStopSource(candidate: candidate()).hasObservedCandidate)
     }
 
-    @Test("only source-backed origins enable auto-stop", arguments: [
+    @Test("source-backed origins warn without stopping recording", arguments: [
         MeetingRecordingStartOrigin.manual, .detectedPrompt, .calendarAutoRecord,
         .scheduledMeetingPrompt, .joinAndRecord
     ])
     func startOrigin(origin: MeetingRecordingStartOrigin) {
         let explicit = MeetingAutoStopSource(candidate: candidate())
         let recent = MeetingAutoStopSource(candidate: candidate(id: "recent", url: nil))
-        let enabled = origin != .manual
-        #expect(origin.enablesMeetingAutoStop == enabled)
-        #expect(origin.signalLossResponse == (enabled ? .autoStopAfterWarning : .none))
-        #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (enabled ? explicit : nil))
-        #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (enabled ? recent : nil))
+        let tracksSource = origin != .manual
+        let expectedSignalLoss: MeetingSignalLossResponse = tracksSource ? .warnOnly : .none
+        #expect(origin.tracksMeetingSource == tracksSource)
+        #expect(origin.signalLossResponse == expectedSignalLoss)
+        #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (tracksSource ? explicit : nil))
+        #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (tracksSource ? recent : nil))
+    }
+
+    @Test("recent transcript activity defers a signal-loss warning")
+    func transcriptActivity() {
+        var state = MeetingSignalLossPromptState()
+        #expect(!state.hasRecentTranscriptActivity(now: now, quietPeriod: 45))
+        state.noteTranscriptActivity(now: now)
+        #expect(state.hasRecentTranscriptActivity(now: now.addingTimeInterval(44), quietPeriod: 45))
+        #expect(!state.hasRecentTranscriptActivity(now: now.addingTimeInterval(45), quietPeriod: 45))
+        state.resetForRecording()
+        #expect(!state.hasRecentTranscriptActivity(now: now, quietPeriod: 45))
     }
 
     @Test("source recovery reopens prompts unless the user dismissed them", arguments: [false, true])

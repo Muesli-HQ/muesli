@@ -642,7 +642,7 @@ final class MeetingSession {
         fputs("[meeting] recording discarded\n", stderr)
     }
 
-    func stop() async throws -> MeetingSessionResult {
+    func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
@@ -701,6 +701,10 @@ final class MeetingSession {
             }
         }
 
+        // Persist retained audio before final ASR or summary work can fail.
+        // Retention is best-effort and must not bypass ASR or session teardown.
+        await onRecordingReady?(retainedRecordingURL, retainedRecordingWriterError)
+
         var micTailFinalized = false
         var systemTailFinalized = false
         if usesStreamingFinalTranscript {
@@ -746,6 +750,7 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1055,6 +1060,7 @@ final class MeetingSession {
                         backend: backend,
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1171,7 +1177,6 @@ final class MeetingSession {
             let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
             self.onMicHealthChanged?(healthSnapshot)
             self.micRecoveryCoordinator.process(healthSnapshot)
-            self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
@@ -1225,6 +1230,10 @@ final class MeetingSession {
         let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
             Int16(max(-1.0, min(1.0, sample)) * 32767)
         }
+        // Retain the same mic stream as transcription, including delayed AEC
+        // output and pause/stop flushes. Mixing raw mic here would duplicate
+        // speaker playback already present in the system track.
+        retainedRecordingWriter?.appendMic(cleanedInt16)
         rawMicChunkRecorder?.append(cleanedInt16)
         chunkTimingTracker.append(sampleCount: cleanedInt16.count)
         diagnostics?.appendCleanedMicSamples(cleanedInt16)
@@ -1266,6 +1275,7 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 bodhanLanguage: config.resolvedBodhanLanguage,
+                bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1377,6 +1387,7 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         bodhanLanguage: config.resolvedBodhanLanguage,
+                        bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1412,6 +1423,7 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 bodhanLanguage: config.resolvedBodhanLanguage,
+                bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage

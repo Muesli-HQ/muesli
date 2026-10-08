@@ -1,0 +1,137 @@
+name: CI build cache experiment
+
+# Deliberately opt-in and separate from ci.yml. No production gate is replaced.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - .github/workflows/ci-build-cache-experiment.yml
+      - scripts/ci_cache_experiment.py
+      - scripts/test_ci_cache_experiment.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cache-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  cold:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.head_ref == 'codex/ci-build-cache-experiment' &&
+       contains(github.event.pull_request.labels.*.name, 'ci-cache-benchmark') &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-26
+    timeout-minutes: 40
+    outputs:
+      cache_key: ${{ steps.prepare.outputs.cache_key }}
+      fingerprint: ${{ steps.prepare.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test benchmark harness
+        run: python3 scripts/test_ci_cache_experiment.py
+      - name: Identify toolchain and cache
+        id: prepare
+        run: python3 scripts/ci_cache_experiment.py prepare cold
+      - name: Begin measured pipeline
+        run: python3 scripts/ci_cache_experiment.py begin pipeline
+      - name: Cold optimized release build (no restore)
+        run: python3 scripts/ci_cache_experiment.py build cold
+      - name: Snapshot content-verified input timestamps
+        run: |
+          python3 scripts/ci_cache_experiment.py begin snapshot
+          python3 scripts/ci_cache_experiment.py snapshot
+          python3 scripts/ci_cache_experiment.py end snapshot
+      - name: Begin cache save timing
+        run: python3 scripts/ci_cache_experiment.py begin cache-save
+      - name: Save isolated experimental cache
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.prepare.outputs.scratch }}
+          key: ${{ steps.prepare.outputs.cache_key }}
+      - name: Finish measured pipeline
+        run: |
+          python3 scripts/ci_cache_experiment.py end cache-save
+          python3 scripts/ci_cache_experiment.py end pipeline
+      - name: Report complete overhead measurements
+        if: always()
+        run: python3 scripts/ci_cache_experiment.py report
+      - name: Upload cold measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-experiment-cold
+          path: ci-cache-results/
+          retention-days: 7
+
+  warm:
+    needs: cold
+    runs-on: macos-26
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [raw, raw-edited]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Identify toolchain and cache
+        id: prepare
+        run: python3 scripts/ci_cache_experiment.py prepare "${SCENARIO}"
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+      - name: Require identical toolchain and workspace
+        env:
+          EXPECTED: ${{ needs.cold.outputs.fingerprint }}
+          ACTUAL: ${{ steps.prepare.outputs.fingerprint }}
+        run: test "$EXPECTED" = "$ACTUAL"
+      - name: Begin pipeline and cache restore timing
+        run: |
+          python3 scripts/ci_cache_experiment.py begin pipeline
+          python3 scripts/ci_cache_experiment.py begin cache-restore
+      - name: Restore exact experimental cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.prepare.outputs.scratch }}
+          key: ${{ needs.cold.outputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Finish cache restore timing
+        run: python3 scripts/ci_cache_experiment.py end cache-restore
+      - name: Restore timestamps only for identical inputs
+        if: matrix.scenario == 'unchanged' || matrix.scenario == 'edited'
+        run: |
+          python3 scripts/ci_cache_experiment.py begin input-validation
+          python3 scripts/ci_cache_experiment.py restore-inputs
+          python3 scripts/ci_cache_experiment.py end input-validation
+      - name: Make an isolated app source change
+        if: matrix.scenario == 'edited' || matrix.scenario == 'raw-edited'
+        run: |
+          python3 scripts/ci_cache_experiment.py begin probe-edit
+          python3 scripts/ci_cache_experiment.py edit
+          python3 scripts/ci_cache_experiment.py end probe-edit
+      - name: Warm optimized release build
+        run: python3 scripts/ci_cache_experiment.py build "${SCENARIO}"
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+      - name: Finish measured pipeline
+        run: python3 scripts/ci_cache_experiment.py end pipeline
+      - name: Report complete overhead measurements
+        if: always()
+        run: python3 scripts/ci_cache_experiment.py report
+      - name: Upload warm measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-experiment-${{ matrix.scenario }}
+          path: ci-cache-results/
+          retention-days: 7

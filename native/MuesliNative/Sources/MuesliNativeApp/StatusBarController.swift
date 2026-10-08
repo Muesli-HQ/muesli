@@ -216,7 +216,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         let meetingBackendItem = NSMenuItem(title: "Meetings Backend", action: nil, keyEquivalent: "")
         let meetingBackendMenu = NSMenu()
-        for option in MeetingSummaryBackendOption.all {
+        for option in MeetingSummaryBackendOption.selectable(
+            config: controller.config,
+            selected: controller.selectedMeetingSummaryBackend
+        ) {
             let prefix = controller.selectedMeetingSummaryBackend == option ? "✓ " : ""
             let item = NSMenuItem(
                 title: "\(prefix)\(option.label)",

@@ -33,8 +33,8 @@ private actor BodhanLifecycleGate {
 private final class StubBodhanRuntime: BodhanRuntime {
     let warmupGate: BodhanLifecycleGate?
     init(warmupGate: BodhanLifecycleGate? = nil) { self.warmupGate = warmupGate }
-    func warmup(mixedScript: Bool) async throws { await warmupGate?.suspend() }
-    func transcribe(samples: [Float], language: String?, mixedScript: Bool) throws -> BodhanCoreML.Result {
+    func warmup(outputMode: BodhanOutputMode) async throws { await warmupGate?.suspend() }
+    func transcribe(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> BodhanCoreML.Result {
         throw NSError(domain: "BodhanLifecycleTests", code: 1)
     }
 }

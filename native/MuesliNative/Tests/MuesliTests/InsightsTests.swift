@@ -15,6 +15,389 @@ struct InsightsTests {
         return store
     }
 
+    @Test("WBCS takes the median across all saved Bodhan English stretches")
+    func wordsBeforeCodeSwitchMedian() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 10,
+            languageCode: "hi", wasAutoDetected: true)
+        try store.insertDictation(
+            text: "I went घर then we came वापस", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2, 4])
+        )
+        try store.insertDictation(
+            text: "we should go घर", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-20), endedAt: now.addingTimeInterval(-10),
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [3])
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == 3)
+    }
+
+    @Test("WBCS ignores dictations without saved Bodhan measurements")
+    func wordsBeforeCodeSwitchRequiresBodhanMeasurement() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "I think नमस्ते", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
+    @Test("Insights snapshots never query optional language-switch history")
+    func snapshotDoesNotReadCuriosityHistory() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 10,
+            languageCode: "hi", wasAutoDetected: true)
+        try store.insertDictation(
+            text: "we went घर", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        try store.insertDictation(
+            text: "long ago we went घर", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-200 * 86400 - 10),
+            endedAt: now.addingTimeInterval(-200 * 86400),
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [6])
+        )
+        #expect(try store.insightsWordsBeforeCodeSwitch(range: .ninetyDays, now: now) == 2)
+        #expect(try store.insightsWordsBeforeCodeSwitch(range: .allTime, now: now) == 4)
+        let expected = try store.insightsSnapshot(range: .ninetyDays, now: now)
+        // Making the optional table unavailable catches any accidental access,
+        // including a query that discards its calculated value.
+        try executeWBCTestSQL(store, "DROP TABLE bodhan_wbcs_measurements")
+        #expect(try store.insightsSnapshot(range: .ninetyDays, now: now) == expected)
+        #expect(throws: (any Error).self) {
+            try store.insightsWordsBeforeCodeSwitch(range: .ninetyDays, now: now)
+        }
+    }
+
+    @Test("Curiosity loads only on expansion and caches values including no measurements")
+    @MainActor
+    func curiosityLoadsOnDemand() async {
+        for result in [nil, 3.0] as [Double?] {
+            let model = InsightsCuriosityModel()
+            var calls = 0
+            let loader: () async throws -> Double? = { calls += 1; return result }
+            await model.load(isExpanded: false, using: loader)
+            #expect(calls == 0)
+            #expect(!model.isLoaded)
+            await model.load(isExpanded: true, using: loader)
+            await model.load(isExpanded: false, using: loader)
+            await model.load(isExpanded: true, using: loader)
+            #expect(calls == 1)
+            #expect(model.isLoaded)
+            #expect(model.value == result)
+            // A new snapshot gets its own model and must load fresh data.
+            let refreshed = InsightsCuriosityModel()
+            await refreshed.load(isExpanded: true, using: loader)
+            #expect(calls == 2)
+        }
+    }
+
+    @Test("Cancelled curiosity completions are not cached, and errors can be retried")
+    @MainActor
+    func curiosityCancellationAndRetry() async {
+        let model = InsightsCuriosityModel()
+        let worker = Task {
+            await model.load(isExpanded: true) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return 99
+            }
+        }
+        await worker.value
+        #expect(!model.isLoaded)
+        #expect(model.value == nil)
+        #expect(model.errorMessage == nil)
+        await model.load(isExpanded: true) { throw CocoaError(.fileReadUnknown) }
+        #expect(!model.isLoaded)
+        #expect(model.errorMessage != nil)
+        await model.load(isExpanded: true) { 2 }
+        #expect(model.value == 2)
+        #expect(model.isLoaded)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("Cancelled language-switch queries throw instead of returning an empty measurement")
+    func curiosityStoreCancellation() async throws {
+        let store = try makeStore()
+        let worker = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            #expect(throws: CancellationError.self) {
+                try store.wordsBeforeCodeSwitch()
+            }
+        }
+        await worker.value
+    }
+
+    @Test("Bodhan mixed transcript counts switches inside a single audio window")
+    func bodhanMixedSwitchesWithinWindow() {
+        #expect(WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: "I went घर फिर we came वापस") == [2, 2])
+        #expect(WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: "I think yeh bahut accha hai") == [2])
+        #expect(WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: "I kept speaking English") == [])
+    }
+
+    @Test("Bodhan measurements survive reopening and retain detected window languages")
+    func bodhanMeasurementsPersist() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 8,
+            languageCode: "hi", wasAutoDetected: true)
+        let id = try store.insertDictation(
+            text: "I went घर फिर", durationSeconds: 8,
+            startedAt: now.addingTimeInterval(-8), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        #expect(try reopened.wordsBeforeCodeSwitch() == 2)
+        #expect(try reopened.bodhanWBCSMeasurement(dictationID: id)?.languageSamples == [sample])
+    }
+
+    @Test("WBCS excludes ineligible Bodhan output, unfinished runs, and Quill")
+    func wordsBeforeCodeSwitchExclusions() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 10,
+            languageCode: "hi", wasAutoDetected: false)
+        let coreID = try store.insertDictation(
+            text: "I think नमस्ते", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-10), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: nil)
+        )
+        try store.insertDictation(
+            text: "I kept speaking English", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-20), endedAt: now.addingTimeInterval(-10),
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [])
+        )
+        try store.insertQuilDictation(
+            outputText: "I think नमस्ते", originalText: "original", instruction: "summarize",
+            backend: "test", model: "test", durationSeconds: 10,
+            startedAt: now.addingTimeInterval(-30), endedAt: now.addingTimeInterval(-20)
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+        #expect(try store.bodhanWBCSMeasurement(dictationID: coreID)?.runLengths == nil)
+        #expect(try store.bodhanWBCSMeasurement(dictationID: coreID)?.languageSamples == [sample])
+    }
+
+    @Test("WBCS applies history filters to stored Bodhan runs")
+    func wordsBeforeCodeSwitchFilters() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 10,
+            languageCode: "hi", wasAutoDetected: true)
+        let id = try store.insertDictation(
+            text: "I घर", durationSeconds: 10,
+            targetAppName: "Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now.addingTimeInterval(-10), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [1])
+        )
+        try store.insertDictation(
+            text: "I think we घर", durationSeconds: 10, source: "ios",
+            startedAt: now.addingTimeInterval(-110), endedAt: now.addingTimeInterval(-100),
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [3])
+        )
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        #expect(try store.wordsBeforeCodeSwitch(origin: .fromIPhone) == 3)
+        #expect(try store.wordsBeforeCodeSwitch(targetApplication:
+            DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")) == 1)
+        let boundary = ISO8601DateFormatter().string(from: now.addingTimeInterval(-50))
+        #expect(try store.wordsBeforeCodeSwitch(fromDate: boundary) == 1)
+        #expect(try store.wordsBeforeCodeSwitch(toDate: boundary) == 3)
+        try store.deleteDictation(id: id)
+        #expect(try store.wordsBeforeCodeSwitch() == 3)
+    }
+
+    @Test("WBCS reads saved runs beyond the former history limit")
+    func wordsBeforeCodeSwitchPersistentHistory() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        WITH RECURSIVE records(id) AS (
+            SELECT 1 UNION ALL SELECT id + 1 FROM records WHERE id < 2050
+        )
+        INSERT INTO dictations(timestamp, raw_text, word_count, source)
+        SELECT '2026-09-26T00:00:00Z', 'I घर', 2, 'dictation' FROM records
+        """)
+        try executeWBCTestSQL(store, """
+        INSERT INTO bodhan_wbcs_measurements(dictation_id, version, language_samples, run_lengths)
+        SELECT id, 1, x'5B5D', x'5B315D' FROM dictations
+        """)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        #expect(try reopened.wordsBeforeCodeSwitch() == 1)
+        #expect(try wbcsMeasurementCount(store) == 2050)
+    }
+
+    @Test("Transcript edits preserve the spoken measurement; deletion removes it")
+    func wordsBeforeCodeSwitchPersistsAcrossTextEdits() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
+            languageCode: "hi", wasAutoDetected: true)
+        let id = try store.insertDictation(
+            text: "I think घर", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        // An installation of the earlier PR revision can have this trigger.
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER bodhan_wbcs_invalidate_update AFTER UPDATE OF raw_text ON dictations
+        BEGIN DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = NEW.id; END
+        """)
+        try store.migrateIfNeeded()
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        try executeWBCTestSQL(store, "UPDATE dictations SET raw_text = 'I घर again' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        #expect(try store.bodhanWBCSMeasurement(dictationID: id)?.languageSamples == [sample])
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'quil' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+        try executeWBCTestSQL(store, "UPDATE dictations SET source = 'dictation' WHERE id = \(id)")
+        #expect(try store.wordsBeforeCodeSwitch() == 2)
+        try store.deleteDictation(id: id)
+        #expect(try wbcsMeasurementCount(store) == 0)
+    }
+
+    @Test("A failed optional measurement write leaves the dictation in history")
+    func measurementFailureKeepsDictation() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER reject_bodhan_measurement BEFORE INSERT ON bodhan_wbcs_measurements
+        BEGIN SELECT RAISE(ABORT, 'injected measurement failure'); END
+        """)
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
+            languageCode: "hi", wasAutoDetected: true)
+        let id = try store.insertDictation(
+            text: "I went घर", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        #expect(try store.dictation(id: id)?.rawText == "I went घर")
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
+    @Test("Clearing history before a measurement write leaves no language samples")
+    func clearedDictationRejectsLateMeasurement() throws {
+        let store = try makeStore()
+        try executeWBCTestSQL(store, """
+        CREATE TRIGGER clear_new_dictation AFTER INSERT ON dictations
+        BEGIN UPDATE dictations SET deleted_at = 123 WHERE id = NEW.id; END
+        """)
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        let sample = BodhanLanguageSample(startSeconds: 0, endSeconds: 2,
+            languageCode: "hi", wasAutoDetected: true)
+        _ = try store.insertDictation(
+            text: "I went घर", durationSeconds: 2,
+            startedAt: now.addingTimeInterval(-2), endedAt: now,
+            bodhanMeasurement: BodhanWBCSMeasurement(languageSamples: [sample], runLengths: [2])
+        )
+        #expect(try wbcsMeasurementCount(store) == 0)
+        #expect(try store.wordsBeforeCodeSwitch() == nil)
+    }
+
+    @Test("Model and app usage survive reopening, group by identity, and follow range and deletion")
+    func attributionBreakdowns() throws {
+        let store = try makeStore()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
+        let model = DictationModelIdentity(backend: "bodhan", model: "flex-int8", name: "Bodhan Flex INT8")
+        let first = try store.insertDictation(text: "one two", durationSeconds: 2,
+            targetAppName: "Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now, endedAt: now, transcriptionModel: model)
+        try store.insertDictation(text: "three", durationSeconds: 1,
+            targetAppName: "Renamed Notes", targetAppBundleID: "com.apple.Notes",
+            startedAt: now, endedAt: now, transcriptionModel: model)
+        try store.insertDictation(text: "legacy", durationSeconds: 1, startedAt: now, endedAt: now)
+        let old = calendar.date(byAdding: .day, value: -100, to: now)!
+        try store.insertDictation(text: "older", durationSeconds: 1,
+            targetAppName: "Old App", startedAt: old, endedAt: old, transcriptionModel: model)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let snapshot = try reopened.insightsSnapshot(range: .ninetyDays, now: now, calendar: calendar)
+        #expect(snapshot.modelUsage.first?.id == "bodhan:flex-int8")
+        #expect(snapshot.modelUsage.first?.sessions == 2)
+        #expect(snapshot.modelUsage.first?.words == 3)
+        #expect(snapshot.modelUsage.last?.id == "unknown")
+        #expect(snapshot.modelUsage.last?.sessions == 1)
+        #expect(snapshot.appUsage.first?.id == "bundle:com.apple.Notes")
+        #expect(snapshot.appUsage.first?.sessions == 2)
+        #expect(snapshot.appUsage.count == 2)
+        #expect(try reopened.insightsSnapshot(range: .allTime, now: now, calendar: calendar).modelUsage.first?.sessions == 3)
+        try reopened.deleteDictation(id: first)
+        let deleted = try reopened.insightsSnapshot(range: .ninetyDays, now: now, calendar: calendar)
+        #expect(deleted.modelUsage.first(where: { $0.id == "bodhan:flex-int8" })?.words == 1)
+        #expect(deleted.appUsage.first(where: { $0.id == "bundle:com.apple.Notes" })?.sessions == 1)
+    }
+
+    @Test("Model usage retains the actual endpoint and keeps different routes separate")
+    func modelEndpointAttribution() throws {
+        let store = try makeStore()
+        let now = Date()
+        let endpoints = ["https://speech.example.com/v1/transcriptions", "https://speech.example.com/v2/transcriptions"]
+        for endpoint in endpoints {
+            try store.insertDictation(text: "hello world", durationSeconds: 2,
+                startedAt: now, endedAt: now,
+                transcriptionModel: .init(backend: "hosted", model: "  model-a  ", name: "Model A", endpoint: endpoint))
+        }
+        // A local fallback is attributed to the local model, not the failed hosted route.
+        try store.insertDictation(text: "local result", durationSeconds: 2,
+            startedAt: now, endedAt: now,
+            transcriptionModel: .init(backend: "whisper", model: "small", name: "Whisper Small"))
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let snapshot = try reopened.insightsSnapshot(range: .allTime, now: now)
+        let hosted = snapshot.modelUsage.filter { $0.backend == "hosted" }
+        #expect(hosted.count == 2)
+        #expect(Set(hosted.compactMap(\.endpoint)) == Set(endpoints))
+        #expect(hosted.allSatisfy { $0.sessions == 1 && $0.words == 2 })
+        #expect(hosted.allSatisfy { $0.id.hasPrefix("hosted:model-a:") })
+        let local = try #require(snapshot.modelUsage.first { $0.backend == "whisper" })
+        #expect(local.id == "whisper:small")
+        #expect(local.endpoint == nil)
+        #expect(snapshot.appUsage.allSatisfy { $0.backend == nil && $0.endpoint == nil })
+    }
+
+    @Test("Attribution excludes Quill and computer commands")
+    func attributionExcludesOtherModes() throws {
+        let store = try makeStore()
+        let now = Date()
+        for source in ["quil", "cua"] {
+            try store.insertDictation(text: "some command", durationSeconds: 1, source: source,
+                targetAppName: "Notes", startedAt: now, endedAt: now,
+                transcriptionModel: .init(backend: "test", model: "test", name: "Test"))
+        }
+        let snapshot = try store.insightsSnapshot(range: .allTime, now: now)
+        #expect(snapshot.modelUsage.isEmpty)
+        #expect(snapshot.appUsage.isEmpty)
+    }
+
+    @Test("Heatmap centers the current month across every range and calendar week convention")
+    func currentMonthFocus() {
+        for firstWeekday in [1, 2] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            calendar.firstWeekday = firstWeekday
+            let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
+            for range in InsightsRange.allCases {
+                var day = range.startDate(now: now, calendar: calendar)
+                    ?? calendar.date(byAdding: .year, value: -3, to: now)!
+                var activity: [InsightsDailyActivity] = []
+                while day <= now {
+                    activity.append(.init(date: day, words: 0, meetings: 0))
+                    day = calendar.date(byAdding: .day, value: 1, to: day)!
+                }
+                let weeks = ActivityHeatmapCalendarLayout.weeks(from: activity, calendar: calendar)
+                let index = ActivityHeatmapCalendarLayout.currentMonthIndex(weeks: weeks, now: now, calendar: calendar)
+                #expect(index != nil)
+                if let index {
+                    #expect(weeks[index].contains { calendar.isDate($0.date, equalTo: now, toGranularity: .month) })
+                }
+            }
+            #expect(ActivityHeatmapCalendarLayout.currentMonthIndex(weeks: [], now: now, calendar: calendar) == nil)
+        }
+    }
+
     @Test("empty history returns a complete zero-filled range")
     func emptyHistory() throws {
         let store = try makeStore()
@@ -41,7 +424,7 @@ struct InsightsTests {
         try store.insertDictation(text: "old archive", durationSeconds: 60, startedAt: old.addingTimeInterval(-60), endedAt: old)
         try store.insertMeeting(
             title: "Finished", calendarEventID: nil, startTime: recent,
-            endTime: recent.addingTimeInterval(60), rawTranscript: "product rhythm rhythm",
+            endTime: recent.addingTimeInterval(120), rawTranscript: "product rhythm rhythm",
             formattedNotes: "", micAudioPath: nil, systemAudioPath: nil
         )
         let live = try store.createLiveMeeting(title: "Still live", calendarEventID: nil, startTime: recent)
@@ -52,6 +435,9 @@ struct InsightsTests {
         #expect(snapshot.selected.dictationWords == 3)
         #expect(snapshot.selected.meetings == 1)
         #expect(snapshot.selected.meetingWords == 3)
+        #expect(snapshot.selected.averageWPM == 3)
+        #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.dictationWords } == 3)
+        #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.meetingWords } == 3)
         #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.meetings } == 1)
         #expect(snapshot.dictationWords.first?.word == "signal")
         #expect(snapshot.meetingWords.first?.word == "rhythm")
@@ -550,5 +936,34 @@ struct InsightsTests {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw NSError(domain: "InsightsTests", code: 3) }
         return (Int(sqlite3_column_int(statement, 0)), Int(sqlite3_column_int(statement, 1)))
+    }
+
+    private func executeWBCTestSQL(_ store: DictationStore, _ sql: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 10)
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 11,
+                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
+    }
+
+    private func wbcsMeasurementCount(_ store: DictationStore) throws -> Int {
+        var db: OpaquePointer?
+        guard sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 12)
+        }
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM bodhan_wbcs_measurements", -1, &statement, nil) == SQLITE_OK else {
+            throw NSError(domain: "InsightsTests", code: 13)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw NSError(domain: "InsightsTests", code: 14)
+        }
+        return Int(sqlite3_column_int(statement, 0))
     }
 }

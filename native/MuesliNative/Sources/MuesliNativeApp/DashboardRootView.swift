@@ -90,15 +90,12 @@ struct DashboardRootView: View {
 
             DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
                 sidebarView
-                .frame(
-                    minWidth: sidebarPresentation.isCollapsed ? 68 : 240,
-                    idealWidth: sidebarPresentation.isCollapsed ? 68 : 260,
-                    maxWidth: sidebarPresentation.isCollapsed ? 68 : 300
-                )
+                .frame(width: sidebarPresentation.isCollapsed ? 68 : 240)
             } detail: {
                 detailContent
             }
         }
+        .tint(MuesliTheme.accent)
         .frame(
             minWidth: DashboardWindowLayout.minimumContentWidth,
             minHeight: DashboardWindowLayout.minimumContentHeight
@@ -247,6 +244,9 @@ struct DashboardRootView: View {
                 InsightsView(
                     initialSection: appState.insightsInitialSection,
                     loadSnapshot: { range in try await controller.insightsSnapshot(range: range) },
+                    loadCuriosity: { range, now in
+                        try await controller.insightsWordsBeforeCodeSwitch(range: range, now: now)
+                    },
                     onBack: { controller.closeInsights() },
                     backLabel: appState.insightsBackLabel
                 )
@@ -263,6 +263,7 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
+                    onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }
                 )

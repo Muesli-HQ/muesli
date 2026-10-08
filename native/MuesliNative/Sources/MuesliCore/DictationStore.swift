@@ -27,6 +27,7 @@ public struct MeetingThreadNavigation: Equatable, Sendable {
 public final class DictationStore {
     private static let targetApplicationBackfillMigration = "dictation_target_application_from_app_context_v1"
     private static let quillStatisticsBackfillMigration = "quill_statistics_spoken_instruction_v1"
+    private static let wbcsMeasurementVersion: Int32 = 1
     public static let defaultTombstoneRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
     private static let iso8601Formatter = ISO8601DateFormatter()
@@ -239,6 +240,10 @@ public final class DictationStore {
             "ALTER TABLE dictations ADD COLUMN cloud_system_fields BLOB",
             "ALTER TABLE dictations ADD COLUMN last_synced_at REAL",
             "ALTER TABLE dictations ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE dictations ADD COLUMN transcription_backend TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_model TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_model_name TEXT",
+            "ALTER TABLE dictations ADD COLUMN transcription_endpoint TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_name TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_bundle_id TEXT",
             "ALTER TABLE meetings ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
@@ -337,6 +342,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
+        try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
@@ -392,6 +398,35 @@ public final class DictationStore {
         """, db: db)
     }
 
+    private func migrateWordsBeforeCodeSwitchCache(db: OpaquePointer?) throws {
+        // Only new Bodhan dictations have the window labels needed for this
+        // measurement. It describes original speech, so later text edits do
+        // not invalidate it. The former transcript cache is not backfilled.
+        try exec("""
+        DROP TRIGGER IF EXISTS wbcs_cache_invalidate_update;
+        DROP TRIGGER IF EXISTS wbcs_cache_invalidate_delete;
+        DROP TRIGGER IF EXISTS bodhan_wbcs_invalidate_update;
+        DROP TABLE IF EXISTS wbcs_record_cache;
+        CREATE TABLE IF NOT EXISTS bodhan_wbcs_measurements (
+            dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            language_samples BLOB NOT NULL,
+            run_lengths BLOB
+        );
+        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_soft_delete
+        AFTER UPDATE OF deleted_at ON dictations
+        WHEN NEW.deleted_at IS NOT NULL
+        BEGIN
+            DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS bodhan_wbcs_invalidate_delete
+        AFTER DELETE ON dictations
+        BEGIN
+            DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = OLD.id;
+        END;
+        """, db: db)
+    }
+
     @discardableResult
     public func insertDictation(
         text: String,
@@ -401,11 +436,13 @@ public final class DictationStore {
         targetAppName: String? = nil,
         targetAppBundleID: String? = nil,
         startedAt: Date,
-        endedAt: Date
+        endedAt: Date,
+        bodhanMeasurement: BodhanWBCSMeasurement? = nil,
+        transcriptionModel: DictationModelIdentity? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        return try insertDictation(
+        let id = try insertDictation(
             text: text,
             durationSeconds: durationSeconds,
             appContext: appContext,
@@ -414,8 +451,43 @@ public final class DictationStore {
             targetAppBundleID: targetAppBundleID,
             startedAt: startedAt,
             endedAt: endedAt,
+            transcriptionModel: transcriptionModel,
             db: db
         )
+        if let bodhanMeasurement {
+            do {
+                try insertBodhanWBCSMeasurement(bodhanMeasurement, dictationID: id, db: db)
+            } catch {
+                // WBCS is optional; a measurement failure must not discard
+                // a completed dictation from history.
+                fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
+            }
+        }
+        return id
+    }
+
+    private func insertBodhanWBCSMeasurement(
+        _ measurement: BodhanWBCSMeasurement,
+        dictationID: Int64,
+        db: OpaquePointer?
+    ) throws {
+        let sql = """
+        INSERT INTO bodhan_wbcs_measurements(dictation_id, version, language_samples, run_lengths)
+        SELECT id, ?, ?, ? FROM dictations WHERE id = ? AND deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        let encoder = JSONEncoder()
+        sqlite3_bind_int(statement, 1, Self.wbcsMeasurementVersion)
+        bindOptionalBlob(try encoder.encode(measurement.languageSamples), at: 2, statement: statement)
+        if let runLengths = measurement.runLengths {
+            bindOptionalBlob(try encoder.encode(runLengths), at: 3, statement: statement)
+        } else {
+            sqlite3_bind_null(statement, 3)
+        }
+        sqlite3_bind_int64(statement, 4, dictationID)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     @discardableResult
@@ -496,14 +568,16 @@ public final class DictationStore {
         targetAppBundleID: String?,
         startedAt: Date,
         endedAt: Date,
+        transcriptionModel: DictationModelIdentity? = nil,
         db: OpaquePointer?
     ) throws -> Int64 {
 
         let sql = """
         INSERT INTO dictations
         (timestamp, duration_seconds, raw_text, app_context, word_count, source,
-         target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty,
+         transcription_backend, transcription_model, transcription_model_name, transcription_endpoint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -525,6 +599,11 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 9, (started as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 10, (ended as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 11, Date().timeIntervalSince1970)
+
+        bindOptionalText(transcriptionModel?.backend, at: 12, statement: statement)
+        bindOptionalText(transcriptionModel?.model, at: 13, statement: statement)
+        bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
+        bindOptionalText(transcriptionModel?.endpoint, at: 15, statement: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -1728,6 +1807,98 @@ public final class DictationStore {
         return optionalStringColumn(statement, index: 0)
     }
 
+    /// Median of saved English runs from Bodhan Flex Mixed dictations only.
+    /// Existing dictations without a Bodhan measurement do not contribute.
+    public func wordsBeforeCodeSwitch(
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil
+    ) throws -> Double? {
+        try Task.checkCancellation()
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try wordsBeforeCodeSwitch(fromDate: fromDate, toDate: toDate,
+            origin: origin, targetApplication: targetApplication, db: db)
+    }
+
+    private func wordsBeforeCodeSwitch(
+        fromDate: String?, toDate: String? = nil,
+        origin: RecordOriginFilter = .all,
+        targetApplication: DictationTargetApplication? = nil,
+        db: OpaquePointer?
+    ) throws -> Double? {
+        let filter = historyFilterConditions(
+            alias: "d",
+            dateColumn: "timestamp",
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication
+        )
+        let conditions = filter.conditions + ["LOWER(TRIM(COALESCE(d.source, ''))) <> 'quil'"]
+        let sql = """
+        SELECT m.run_lengths
+        FROM dictations d
+        JOIN bodhan_wbcs_measurements m
+          ON m.dictation_id = d.id AND m.version = \(Self.wbcsMeasurementVersion)
+        WHERE \(conditions.joined(separator: " AND ")) AND m.run_lengths IS NOT NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in filter.boundValues.enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
+        }
+        let decoder = JSONDecoder()
+        var lengths: [Int] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            try Task.checkCancellation()
+            if let data = optionalDataColumn(statement, index: 0),
+               let recordLengths = try? decoder.decode([Int].self, from: data),
+               recordLengths.allSatisfy({ $0 > 0 }) {
+                lengths += recordLengths
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw lastError(db) }
+        try Task.checkCancellation()
+        return WordsBeforeCodeSwitch.median(of: lengths)
+    }
+
+    /// Loads the optional curiosity separately from the main Insights snapshot.
+    public func insightsWordsBeforeCodeSwitch(
+        range: InsightsRange,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> Double? {
+        try wordsBeforeCodeSwitch(fromDate: range.startDate(now: now, calendar: calendar).map { formatISODate($0) })
+    }
+
+    /// The per-window language chosen by Bodhan, plus optional Flex Mixed WBCS runs.
+    public func bodhanWBCSMeasurement(dictationID: Int64) throws -> BodhanWBCSMeasurement? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT m.language_samples, m.run_lengths
+        FROM bodhan_wbcs_measurements m
+        JOIN dictations d ON d.id = m.dictation_id
+        WHERE m.dictation_id = ? AND m.version = \(Self.wbcsMeasurementVersion)
+          AND d.deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, dictationID)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let sampleData = optionalDataColumn(statement, index: 0),
+              let samples = try? JSONDecoder().decode([BodhanLanguageSample].self, from: sampleData)
+        else { return nil }
+        let runs = optionalDataColumn(statement, index: 1).flatMap { try? JSONDecoder().decode([Int].self, from: $0) }
+        return BodhanWBCSMeasurement(languageSamples: samples, runLengths: runs)
+    }
+
     public func dictationStats(
         fromDate: String? = nil,
         toDate: String? = nil,
@@ -1864,8 +2035,8 @@ public final class DictationStore {
             var activity: [InsightsDailyActivity] = []
             var cursor = min(firstDay, today)
             while cursor <= today {
-                let value = cachedDays[cursor, default: (0, 0)]
-                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
+                let value = cachedDays[cursor, default: (0, 0, 0)]
+                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings, meetingWords: value.meetingWords))
                 guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
                 cursor = next
             }
@@ -1887,7 +2058,9 @@ public final class DictationStore {
                 longestStreakDays: streaks.longest,
                 activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
                 dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
-                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
+                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true),
+                modelUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: true),
+                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false)
             )
             try exec("COMMIT", db: db)
             return snapshot
@@ -2262,9 +2435,9 @@ public final class DictationStore {
                OR day >= (SELECT value FROM selected_day)
         ),
         timed AS (
-            SELECT word_count + meeting_words AS words, duration_seconds
+            SELECT word_count AS words, duration_seconds
             FROM insights_record_cache
-            WHERE duration_seconds > 0
+            WHERE kind = 'dictation' AND duration_seconds > 0
               AND ((SELECT value FROM selected_day) IS NULL
                    OR activity_day >= (SELECT value FROM selected_day))
         )
@@ -2298,16 +2471,52 @@ public final class DictationStore {
         )
     }
 
-    private func cachedDailyActivity(db: OpaquePointer?, sinceDay: String?, calendar: Calendar) throws -> [Date: (words: Int, meetings: Int)] {
-        var s: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT day,dictation_words+meeting_words,meetings FROM insights_daily_cache WHERE (? IS NULL OR day>=?) ORDER BY day", -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
+    private func cachedDailyActivity(db: OpaquePointer?, sinceDay: String?, calendar: Calendar) throws -> [Date: (words: Int, meetings: Int, meetingWords: Int)] {
+        var s: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT day,dictation_words+meeting_words,meetings,meeting_words FROM insights_daily_cache WHERE (? IS NULL OR day>=?) ORDER BY day", -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
         bindOptionalText(sinceDay, at: 1, statement: s); bindOptionalText(sinceDay, at: 2, statement: s)
-        var result: [Date: (Int, Int)] = [:]
+        var result: [Date: (Int, Int, Int)] = [:]
         while sqlite3_step(s) == SQLITE_ROW {
             let parts = stringColumn(s, index: 0).split(separator: "-").compactMap { Int($0) }
             if parts.count == 3, let date = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) {
-                result[calendar.startOfDay(for: date)] = (Int(sqlite3_column_int64(s, 1)), Int(sqlite3_column_int64(s, 2)))
+                result[calendar.startOfDay(for: date)] = (Int(sqlite3_column_int64(s, 1)), Int(sqlite3_column_int64(s, 2)), Int(sqlite3_column_int64(s, 3)))
             }
         }
+        return result
+    }
+
+    /// Reads attribution in the same SQLite snapshot as the cached totals. Old and
+    /// remotely synced records remain explicitly unattributed; never infer a model.
+    private func insightsUsage(db: OpaquePointer?, sinceDay: String?, byModel: Bool) throws -> [InsightsUsage] {
+        let key = byModel
+            ? "CASE WHEN NULLIF(TRIM(d.transcription_model), '') IS NULL THEN 'unknown' ELSE COALESCE(d.transcription_backend, '') || ':' || d.transcription_model || CASE WHEN NULLIF(d.transcription_endpoint, '') IS NULL THEN '' ELSE ':' || d.transcription_endpoint END END"
+            : "CASE WHEN NULLIF(TRIM(d.target_app_bundle_id), '') IS NOT NULL THEN 'bundle:' || TRIM(d.target_app_bundle_id) WHEN NULLIF(TRIM(d.target_app_name), '') IS NOT NULL THEN 'name:' || LOWER(TRIM(d.target_app_name)) ELSE 'unknown' END"
+        let name = byModel
+            ? "COALESCE(NULLIF(TRIM(d.transcription_model_name), ''), NULLIF(TRIM(d.transcription_model), ''), 'Not recorded')"
+            : "COALESCE(NULLIF(TRIM(d.target_app_name), ''), NULLIF(TRIM(d.target_app_bundle_id), ''), 'No destination recorded')"
+        let sql = """
+        SELECT \(key) AS usage_id, MAX(\(name)), COUNT(*), SUM(c.word_count),
+               \(byModel ? "MAX(d.transcription_backend), MAX(d.transcription_endpoint)" : "NULL, NULL")
+        FROM insights_record_cache c JOIN dictations d ON d.id = c.record_id
+        WHERE c.kind = 'dictation' AND c.dictation_sessions > 0 AND d.deleted_at IS NULL
+          AND LOWER(TRIM(COALESCE(d.source, ''))) NOT IN ('quil', 'cua')
+          AND (? IS NULL OR c.activity_day >= ?)
+        GROUP BY usage_id ORDER BY COUNT(*) DESC, SUM(c.word_count) DESC, usage_id ASC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(sinceDay, at: 1, statement: statement)
+        bindOptionalText(sinceDay, at: 2, statement: statement)
+        var result: [InsightsUsage] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            result.append(InsightsUsage(id: stringColumn(statement, index: 0),
+                name: stringColumn(statement, index: 1),
+                sessions: Int(sqlite3_column_int64(statement, 2)), words: Int(sqlite3_column_int64(statement, 3)),
+                backend: optionalStringColumn(statement, index: 4), endpoint: optionalStringColumn(statement, index: 5)))
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw lastError(db) }
         return result
     }
 

@@ -287,7 +287,7 @@ struct MeetingsView: View {
                 if presentation.meetings.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: MuesliTheme.spacing12) {
+                    LazyVStack(spacing: 0) {
                         ForEach(presentation.meetings) { meeting in
                             MeetingListItemView(
                                 record: meeting,
@@ -310,7 +310,7 @@ struct MeetingsView: View {
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -833,6 +833,9 @@ struct MeetingsView: View {
     }
 
     private func activeMeetingStatusText(for meeting: MeetingRecord) -> String {
+        if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
+            return job.message
+        }
         guard meeting.status == .recording else { return "Finalizing notes" }
         return appState.isMeetingRecordingPaused ? "Recording paused" : "Recording now"
     }

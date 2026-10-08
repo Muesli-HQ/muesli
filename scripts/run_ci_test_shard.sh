@@ -18,7 +18,11 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      InsightsTests
       DictationStoreTests
+      ComputerUseSettingsTests
+      ComputerUseLocalPlannerTests
+      ComputerUseLocalPlannerBenchmarkTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests
@@ -42,7 +46,10 @@ case "${shard}" in
       OnboardingFlowTests
       OnboardingProgressTests
       FloatingIndicatorVisibilityTests
+      FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
+      NotchIndicatorTests
+      RecordingIndicatorStyleTests
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
@@ -88,6 +95,7 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       QuilTransformationTests
@@ -103,6 +111,7 @@ case "${shard}" in
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
+      HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
       Nemotron35ModelStoreTests
@@ -132,12 +141,18 @@ case "${shard}" in
       MeetingParticipantStoreTests
       MeetingProcessingStageTests
       MeetingRecordingWriterTests
+      MeetingRecordingTranscriberTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
+      CustomLLMAPIKeyResolutionTests
+      CustomLLMHeaderPropagationTests
+      CustomLLMRequestHeadersTests
+      SettingsModelFieldTests
       MeetingSummaryClientTests
+      ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
@@ -149,6 +164,7 @@ case "${shard}" in
       RouteAwareMeetingMicRecorderTests
       CalendarEventQueryTests
       CalendarMonitorLifecycleTests
+      CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )

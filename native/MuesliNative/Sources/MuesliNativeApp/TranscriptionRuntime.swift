@@ -11,6 +11,13 @@ struct SpeechSegment: Sendable {
 struct SpeechTranscriptionResult: Sendable {
     let text: String
     let segments: [SpeechSegment]
+    let bodhanMeasurement: BodhanWBCSMeasurement?
+
+    init(text: String, segments: [SpeechSegment], bodhanMeasurement: BodhanWBCSMeasurement? = nil) {
+        self.text = text
+        self.segments = segments
+        self.bodhanMeasurement = bodhanMeasurement
+    }
 }
 
 actor AppleSpeechUseLifecycle {
@@ -354,7 +361,8 @@ actor TranscriptionCoordinator {
         appContext: String?,
         backend: TranscriptCleanupBackendOption,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        localOnly: Bool = false
     ) async throws -> String {
         let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInstruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
@@ -374,7 +382,7 @@ actor TranscriptionCoordinator {
             userPrompt: userPrompt,
             backend: backend,
             resolvedModel: resolvedModel,
-            config: config
+            config: config, localOnly: localOnly
         )
         do {
             return try QuilTransformationOutput.validated(raw)
@@ -384,7 +392,7 @@ actor TranscriptionCoordinator {
                 userPrompt: correctivePrompt,
                 backend: backend,
                 resolvedModel: resolvedModel,
-                config: config
+                config: config, localOnly: localOnly
             )
             return try QuilTransformationOutput.validated(correctedRaw)
         }
@@ -394,7 +402,8 @@ actor TranscriptionCoordinator {
         userPrompt: String,
         backend: TranscriptCleanupBackendOption,
         resolvedModel: String,
-        config: AppConfig
+        config: AppConfig,
+        localOnly: Bool
     ) async throws -> String {
         switch backend {
         case .local:
@@ -423,7 +432,8 @@ actor TranscriptionCoordinator {
                 systemPrompt: QuilTransformationPrompt.system,
                 userPrompt: userPrompt,
                 model: gemmaModel,
-                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens,
+                localOnly: localOnly
             )
         default:
             return try await TranscriptCleanupClient.generate(
@@ -495,7 +505,7 @@ actor TranscriptionCoordinator {
     @available(macOS 15, *)
     private var gemma4LiteRTTranscriber: Gemma4LiteRTTranscriber {
         if _gemma4LiteRTTranscriber == nil {
-            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber()
+            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber.shared
         }
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }
@@ -704,6 +714,11 @@ actor TranscriptionCoordinator {
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
+        await preloadMeetingVAD()
+        await preloadDiarizer(trigger: trigger)
+    }
+
+    func preloadMeetingVAD() async {
         if vadManager == nil {
             do {
                 vadManager = try await vadLoader()
@@ -712,8 +727,6 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
             }
         }
-
-        await preloadDiarizer(trigger: trigger)
     }
 
     func preloadDiarizer(
@@ -946,6 +959,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -973,11 +987,16 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
+        // WBCS describes the original Bodhan transcription of spoken words.
+        // Cleanup and custom-word replacement can change displayed text, so
+        // preserve the ASR measurement separately from that final text.
+        let bodhanMeasurement = result.bodhanMeasurement
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
@@ -997,7 +1016,11 @@ actor TranscriptionCoordinator {
         if !final.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
         }
-        return final
+        return SpeechTranscriptionResult(
+            text: final.text,
+            segments: final.segments,
+            bodhanMeasurement: bodhanMeasurement
+        )
     }
 
     func transcribeMeeting(
@@ -1005,6 +1028,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1016,6 +1040,7 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -1023,11 +1048,41 @@ actor TranscriptionCoordinator {
         ))
     }
 
+    /// Imports and retained recordings share bounded replay; live capture keeps
+    /// its own chunking, repair and noise-cancellation path.
+    func transcribeRecordedAudio(
+        at url: URL,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
+        progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
+    ) async throws -> SpeechTranscriptionResult {
+        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
+            try await self.transcribeMeetingChunk(
+                at: chunk,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage,
+                bodhanOutputMode: bodhanOutputMode,
+                whisperLanguage: whisperLanguage,
+                qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage,
+                appleSpeechLanguage: appleSpeechLanguage
+            )
+        }, progress: progress)
+    }
+
     func transcribeMeetingChunk(
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1052,11 +1107,33 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             bodhanLanguage: bodhanLanguage,
+            bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
+    }
+
+    /// Recorded-file replay only. Live meeting finalization remains unchanged.
+    func diarizeRecordedAudio(
+        at url: URL,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) async throws -> [TimedSpeakerSegment] {
+        try Task.checkCancellation()
+        guard let diarizerManager, diarizerManager.isAvailable else { throw DiarizerError.notInitialized }
+        let session = RecordedAudioDiarizationSession(manager: diarizerManager)
+        let reader = try RecordingAudioWindowReader(
+            url: url, seconds: RecordedAudioDiarizationSession.windowSeconds, overlapSeconds: 0
+        )
+        defer { reader.close() }
+        var segments: [TimedSpeakerSegment] = []
+        while let window = try reader.next() {
+            segments.append(contentsOf: try session.process(window))
+            await progress(window.fraction)
+        }
+        try Task.checkCancellation()
+        return segments
     }
 
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
@@ -1387,6 +1464,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
         bodhanLanguage: BodhanLanguage,
+        bodhanOutputMode: BodhanOutputMode,
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
         parakeetLanguage: ParakeetLanguage,
@@ -1407,7 +1485,7 @@ actor TranscriptionCoordinator {
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "bodhan":
-            return try await transcribeWithBodhan(url: url, modelID: backend.model, language: bodhanLanguage)
+            return try await transcribeWithBodhan(url: url, modelID: backend.model, language: bodhanLanguage, outputMode: bodhanOutputMode)
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
@@ -1552,16 +1630,23 @@ actor TranscriptionCoordinator {
     private func transcribeWithBodhan(
         url: URL,
         modelID: String,
-        language: BodhanLanguage
+        language: BodhanLanguage,
+        outputMode: BodhanOutputMode
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             BodhanLogging.logVerbose("transcribing with Bodhan (\(language.rawValue)): \(url.lastPathComponent)")
-            let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language)
+            let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language, outputMode: outputMode)
             BodhanLogging.logVerbose("Bodhan result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let canMeasureSwitches = outputMode.supportsWordsBeforeCodeSwitch(modelID: modelID)
+            let measurement = BodhanWBCSMeasurement(
+                languageSamples: result.languageSamples,
+                runLengths: canMeasureSwitches ? WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text) : nil
+            )
             return SpeechTranscriptionResult(
                 text: text,
-                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)],
+                bodhanMeasurement: measurement
             )
         } else {
             throw NSError(domain: "Muesli", code: 1, userInfo: [

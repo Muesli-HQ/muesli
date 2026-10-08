@@ -411,12 +411,14 @@ struct BackendOptionTests {
         ) == nil)
     }
 
-    @Test("streaming dictation models are excluded from meeting transcription")
-    func streamingDictationModelsAreExcludedFromMeetingTranscription() {
-        #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
+    @Test("meeting transcription offers supported families without experimental or oversized models")
+    func meetingModelEligibility() {
+        #expect(BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
         #expect(BackendOption.parakeetMultilingual.supportsMeetingTranscription)
         #expect(BackendOption.whisperLargeTurbo.supportsMeetingTranscription)
-        #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
+        #expect(!BackendOption.cohereTranscribe.supportsMeetingTranscription)
+        #expect(BackendOption.experimental.allSatisfy { !$0.supportsMeetingTranscription })
+        #expect(BackendOption.bodhanFamily.allSatisfy { $0.supportsMeetingTranscription })
     }
 
     @Test("only multilingual Whisper models expose language selection")
@@ -705,12 +707,11 @@ struct SummaryModelPresetTests {
     @Test("OpenAI presets have valid model IDs")
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
-        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-sol" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(!SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.openAIModels.contains { $0.id.hasPrefix("gpt-5.") })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
             #expect(!preset.id.isEmpty)
@@ -721,13 +722,11 @@ struct SummaryModelPresetTests {
     @Test("ChatGPT presets include supported fast options")
     func chatGPTModels() {
         #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
-        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-sol" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
-        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id.hasPrefix("gpt-5.") })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.2" })
@@ -738,22 +737,31 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("ChatGPT transcript cleanup uses GPT-5.6 Terra by default")
+    @Test("ChatGPT transcript cleanup uses GPT-6 Luna by default")
     func chatGPTTranscriptCleanupModels() {
         let presets = SummaryModelPreset.chatGPTTranscriptCleanupModels
-        #expect(presets.first?.id == "gpt-5.6-terra")
+        #expect(presets.first?.id == "gpt-6-luna")
         #expect(presets.first?.label.contains("default") == true)
         #expect(Set(presets.map(\.id)) == Set([
-            "gpt-5.4-mini",
+            "gpt-6.1-sol",
             "gpt-6-astra",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
+            "gpt-6-sol",
+            "gpt-6-luna",
         ]))
 
         let backend = TranscriptCleanupBackendOption.hosted(.chatGPT)
-        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-5.6-terra")
-        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-5.6-terra")
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-6-luna")
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-6-luna")
+    }
+
+    @Test("Anthropic presets use current Claude API IDs")
+    func anthropicModels() {
+        #expect(SummaryModelPreset.anthropicModels.first?.id == "claude-sonnet-5-5")
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-opus-5-5" })
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-fable-5-1" })
+        #expect(SummaryModelPreset.anthropicModels.contains { $0.id == "claude-haiku-4-5-20251001" })
+        let backend = TranscriptCleanupBackendOption.hosted(.anthropic)
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "claude-sonnet-5-5")
     }
 
     @Test("OpenRouter presets default to the provider-managed free router")
@@ -771,14 +779,13 @@ struct SummaryModelPresetTests {
         #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "openrouter/free")
     }
 
-    @Test("Computer use planner presets use GPT-5.6 Sol by default")
+    @Test("Computer use planner presets use GPT-6.1 Sol by default")
     func computerUsePlannerModels() {
-        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
+        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-6.1-sol")
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-astra" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
-        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-sol" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-6-luna" })
+        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id.hasPrefix("gpt-5.") })
         for preset in SummaryModelPreset.computerUsePlannerModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
@@ -788,6 +795,9 @@ struct SummaryModelPresetTests {
     @Test("reasoning models expose only their supported efforts")
     func reasoningEffort() {
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-astra") == "high")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6.1-sol") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-sol") == "medium")
+        #expect(ReasoningEffortPolicy.apiValue(for: "gpt-6-luna") == "medium")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-sol") == "high")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-terra") == "high")
         #expect(ReasoningEffortPolicy.apiValue(for: "gpt-5.6-luna") == "high")
@@ -925,8 +935,10 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 6)
+        #expect(MeetingSummaryBackendOption.all.count == 8)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
+        #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
+        #expect(MeetingSummaryBackendOption.all.contains(.claudeCode))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
@@ -937,6 +949,8 @@ struct MeetingSummaryBackendTests {
     @Test("backend strings are lowercase")
     func backendStrings() {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
+        #expect(MeetingSummaryBackendOption.anthropic.backend == "anthropic")
+        #expect(MeetingSummaryBackendOption.claudeCode.backend == "claude_code")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
         #expect(MeetingSummaryBackendOption.lmStudio.backend == "lmstudio")
@@ -946,12 +960,33 @@ struct MeetingSummaryBackendTests {
     @Test("configured values resolve with ChatGPT fallback")
     func resolvedValues() {
         #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
+        #expect(MeetingSummaryBackendOption.resolved("anthropic") == .anthropic)
+        #expect(MeetingSummaryBackendOption.resolved("claude_code") == .claudeCode)
         #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
         #expect(MeetingSummaryBackendOption.resolved("lmstudio") == .lmStudio)
         #expect(MeetingSummaryBackendOption.resolved("custom_llm") == .customLLM)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
+    }
+
+    @Test("Claude Code is offered only when its executable is available")
+    func claudeCodeVisibility() throws {
+        var config = AppConfig()
+        config.claudeCodeExecutablePath = "/missing/muesli-test-claude"
+        #expect(MeetingSummaryBackendOption.selectable(config: config).contains(.anthropic))
+        #expect(!MeetingSummaryBackendOption.selectable(config: config).contains(.claudeCode))
+        #expect(MeetingSummaryBackendOption.selectable(config: config, selected: .claudeCode).contains(.claudeCode))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-claude-visibility-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        config.claudeCodeExecutablePath = executable.path
+        #expect(MeetingSummaryBackendOption.selectable(config: config).contains(.claudeCode))
     }
 
     @Test("Custom LLM format labels")
@@ -977,6 +1012,8 @@ struct AppConfigTests {
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
+        #expect(config.claudeCodeModel.isEmpty)
+        #expect(config.claudeCodeExecutablePath.isEmpty)
         #expect(config.meetingSummaryReasoningEffort == nil)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
         #expect(config.meetingRecordingSavePolicy == .never)
@@ -995,6 +1032,8 @@ struct AppConfigTests {
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)
         #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMAPIKeyCommand.isEmpty)
+        #expect(config.customLLMHeaders.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
         #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
@@ -1046,6 +1085,27 @@ struct AppConfigTests {
         #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+    }
+
+    @Test("Anthropic cleanup uses its dedicated key and model")
+    func anthropicCleanupReadiness() {
+        let backend = TranscriptCleanupBackendOption.hosted(.anthropic)
+        var config = AppConfig()
+        if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil {
+            #expect(!TranscriptCleanupClient.hasRequiredSettings(
+                for: backend,
+                config: config,
+                isChatGPTAuthenticated: false
+            ))
+        }
+        config.anthropicAPIKey = "test-key"
+        config.postProcessorAnthropicModel = "claude-opus-5-5"
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: config) == "claude-opus-5-5")
     }
 
     @Test("LM Studio cleanup readiness requires model and valid URL")
@@ -1125,6 +1185,16 @@ struct AppConfigTests {
             config: config,
             isChatGPTAuthenticated: false
         ))
+
+        config.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "Authorization", value: "forbidden"),
+        ]
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+        config.customLLMHeaders = []
 
         config.customLLMFormat = CustomLLMFormat.anthropic.rawValue
         config.customLLMAPIKey = ""
@@ -1222,13 +1292,24 @@ struct AppConfigTests {
         config.lmStudioModel = "local-model"
         config.customLLMURL = "https://example.com"
         config.customLLMAPIKey = "custom-key"
+        config.customLLMAPIKeyCommand = "/usr/local/bin/credential-helper"
+        config.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "source", value: "muesli"),
+            CustomLLMRequestHeader(name: "org-id", value: "2"),
+        ]
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.anthropicAPIKey = "anthropic-key"
+        config.anthropicWorkspaceID = "wrkspc_test"
+        config.anthropicModel = "claude-opus-5-5"
+        config.claudeCodeModel = "opus"
+        config.claudeCodeExecutablePath = "/custom/claude"
         config.meetingSummaryReasoningEffort = .xhigh
         config.meetingSummaryRetryCount = 5
         config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
         config.postProcessorChatGPTModel = "gpt-5.4-mini"
         config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.postProcessorAnthropicModel = "claude-fable-5-1"
         config.transcriptCleanupReasoningEffort = .low
         config.postProcessorOpenRouterModel = "openrouter/test-model"
         config.postProcessorOllamaModel = "qwen3.5"
@@ -1308,13 +1389,22 @@ struct AppConfigTests {
         #expect(decoded.lmStudioModel == "local-model")
         #expect(decoded.customLLMURL == "https://example.com")
         #expect(decoded.customLLMAPIKey == "custom-key")
+        #expect(decoded.customLLMAPIKeyCommand == "/usr/local/bin/credential-helper")
+        #expect(decoded.customLLMHeaders.map(\.name) == ["source", "org-id"])
+        #expect(decoded.customLLMHeaders.map(\.value) == ["muesli", "2"])
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.anthropicAPIKey == "anthropic-key")
+        #expect(decoded.anthropicWorkspaceID == "wrkspc_test")
+        #expect(decoded.anthropicModel == "claude-opus-5-5")
+        #expect(decoded.claudeCodeModel == "opus")
+        #expect(decoded.claudeCodeExecutablePath == "/custom/claude")
         #expect(decoded.meetingSummaryReasoningEffort == .xhigh)
         #expect(decoded.meetingSummaryRetryCount == 5)
         #expect(decoded.postProcessorBackend == "openrouter")
         #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
         #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorAnthropicModel == "claude-fable-5-1")
         #expect(decoded.transcriptCleanupReasoningEffort == .low)
         #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
         #expect(decoded.postProcessorOllamaModel == "qwen3.5")
@@ -1508,6 +1598,8 @@ struct AppConfigTests {
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)
         #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMAPIKeyCommand.isEmpty)
+        #expect(config.customLLMHeaders.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
         #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)
@@ -2281,6 +2373,129 @@ struct HotkeyMonitorTests {
         }
     }
 
+    @Test("external cancellation invalidates armed, prepared and active holds", arguments: [0.0, 0.20, 0.30])
+    @MainActor
+    func externalCancellationResetsHold(elapsed: Double) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: elapsed)
+        monitor.cancelCurrentSession()
+        monitor.cancelCurrentSession() // Idempotent, with no duplicate callbacks.
+        let cancelledEvents = events
+        scheduler.advance(by: 1)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        scheduler.advance(by: 1)
+        #expect(events == cancelledEvents)
+
+        // A new press remains usable and cannot inherit double-tap history.
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.30)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(Array(events.dropFirst(cancelledEvents.count)) == ["prepare", "start", "stop"])
+    }
+
+    @Test("external cancellation resets pending and active combinations", arguments: [false, true], [0.0, 0.20, 0.30])
+    @MainActor
+    func externalCancellationResetsCombination(toggle: Bool, elapsed: Double) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        monitor.combinationActivation = toggle ? .toggle : .pushToTalk
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+        monitor.onToggleStart = { events.append("toggleStart") }
+        monitor.onToggleStop = { events.append("toggleStop") }
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: elapsed)
+        monitor.cancelCurrentSession()
+        let cancelledEvents = events
+        scheduler.advance(by: 1)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == cancelledEvents)
+        #expect(!monitor.isToggleRecording)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.30)
+        #expect(events.count > cancelledEvents.count)
+        monitor.cancelCurrentSession()
+    }
+
+    @Test("cancelling preparation prevents start even inside the start callback")
+    @MainActor
+    func preparationCanCancelReentrantly() {
+        let scheduler = ManualHotkeyScheduler()
+        // Make start execute before the separate prepare item, exercising its
+        // synchronous onPrepare call rather than relying on timer cancellation.
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.5, startDelay: 0.25)
+        monitor.doubleTapEnabled = false
+        var starts = 0
+        monitor.onPrepare = { monitor.cancelCurrentSession() }
+        monitor.onStart = { starts += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 1)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(starts == 0)
+    }
+
+    @Test("cancellation clears short-tap history and deferred cancellation")
+    @MainActor
+    func cancellationClearsDoubleTapHistory() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var toggles = 0
+        var cancels = 0
+        monitor.onToggleStart = { toggles += 1 }
+        monitor.onCancel = { cancels += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.cancelCurrentSession()
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggles == 0)
+        monitor.cancelCurrentSession()
+        scheduler.advance(by: 1)
+        #expect(cancels == 0)
+    }
+
+    @Test("external cancellation resets active double-tap without stop callback")
+    @MainActor
+    func externalCancellationResetsDoubleTap() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        var stops = 0
+        monitor.onToggleStop = { stops += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+        monitor.cancelCurrentSession()
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        scheduler.advance(by: 1)
+        #expect(!monitor.isToggleRecording)
+        #expect(stops == 0)
+    }
+
+    @Test("cancellation inside arming schedules no further work")
+    @MainActor
+    func armingCanCancelReentrantly() {
+        var scheduled = 0
+        let monitor = HotkeyMonitor(scheduleAfter: { _, _ in scheduled += 1 })
+        monitor.onArm = { monitor.cancelCurrentSession() }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(scheduled == 0)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(scheduled == 0)
+    }
+
     @Test("escape still cancels active hold dictation immediately")
     func escapeCancelsActiveHoldDictation() async throws {
         let monitor = HotkeyMonitor(
@@ -2728,6 +2943,269 @@ struct HotkeyMonitorTests {
 
         #expect(events == ["prepare", "start", "stop"])
     }
+
+    @Test("registered chord ignores repeated presses and stays idle after Escape until released")
+    @MainActor
+    func registeredChordIgnoresRepeatsAndEscapeUntilRelease() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["prepare", "start"])
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.control, .option])
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        #expect(events == ["prepare", "start", "cancel"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "cancel"])
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "cancel", "prepare", "start", "stop"])
+    }
+
+    @Test("dictation toggle starts on press, ignores repeats, and stops on the next press")
+    @MainActor
+    func immediateDictationToggleLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(startDelay: 0.5)
+        monitor.configure(.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start"])
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 1)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start", "stop"])
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(events == ["start", "stop", "start", "cancel"])
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("rejected immediate toggle does not cancel other work or retry until release")
+    @MainActor
+    func rejectedImmediateToggleWaitsForRelease() {
+        let monitor = HotkeyMonitor()
+        monitor.configure(.combination(modifiers: .control, keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var starts = 0
+        var cancels = 0
+        monitor.onToggleStart = {
+            starts += 1
+            monitor.cancelToggleMode()
+        }
+        monitor.onCancel = { cancels += 1 }
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: .control)
+        #expect(starts == 1)
+        #expect(cancels == 0)
+        #expect(!monitor.isToggleRecording)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(starts == 2)
+        #expect(cancels == 0)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+    }
+
+    @Test("immediate toggle requires the exact chord and a new key press")
+    @MainActor
+    func immediateToggleExactChord() {
+        let monitor = HotkeyMonitor()
+        monitor.configure(.combination(modifiers: .control, keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("stop") }
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: [])
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: [.control, .shift])
+        #expect(events.isEmpty)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        #expect(events == ["start"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 49, flags: .control)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 49, flags: .control)
+        #expect(events == ["start", "stop"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 49, flags: .control)
+    }
+
+    @Test("immediate combination policy does not turn modifier taps into toggle")
+    @MainActor
+    func immediatePolicyPreservesModifierHold() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.1, startDelay: 0.25)
+        monitor.configure(.default)
+        monitor.combinationToggleRequiresHold = false
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("toggle") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: .option)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: [])
+        scheduler.advance(by: 1)
+        #expect(events.isEmpty)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: .option)
+        scheduler.advance(by: 0.3)
+        monitor.handleFlagsChanged(keyCode: HotkeyConfig.default.keyCode, flags: [])
+        #expect(events == ["start", "stop"])
+    }
+
+    @Test("registered toggle chord starts and stops only after the hold threshold")
+    @MainActor
+    func registeredToggleChordLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 49))
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("toggle-start") }
+        monitor.onToggleStop = { events.append("toggle-stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        // A brief press neither starts nor reports a cancellation.
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.02)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        scheduler.advance(by: 0.10)
+        #expect(events.isEmpty)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["toggle-start", "toggle-stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(events == ["toggle-start", "toggle-stop", "toggle-start", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("registered chord ends when one of its modifiers is released")
+    @MainActor
+    func registeredChordEndsOnModifierRelease() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "stop"])
+
+        // A toggle start in progress is abandoned the same way.
+        monitor.combinationActivation = .toggle
+        monitor.onToggleStart = { events.append("toggle-start") }
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        scheduler.advance(by: 0.06)
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(events == ["prepare", "start", "stop"])
+    }
+
+    @Test("registered hold-to-talk chord keeps thresholds below the double-tap guard")
+    @MainActor
+    func registeredChordIgnoresDoubleTapGuard() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = true
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.06)
+
+        #expect(HotkeyTriggerTiming.doubleTapTapGuardDelay > 0.06)
+        #expect(events == ["prepare", "start"])
+    }
+
+    @Test("registered hotkey handlers only claim their own chord")
+    @MainActor
+    func registeredHotkeyHandlersOnlyClaimTheirOwnChord() {
+        let dictation = HotkeyMonitor()
+        let quill = HotkeyMonitor()
+
+        #expect(dictation.ownsRegisteredHotKeyForTests(dictation.registeredHotKeyIDForTests))
+        #expect(!dictation.ownsRegisteredHotKeyForTests(quill.registeredHotKeyIDForTests))
+        #expect(!quill.ownsRegisteredHotKeyForTests(dictation.registeredHotKeyIDForTests))
+    }
+
+    @Test("held combination ends on modifier release and ignores key repeat")
+    @MainActor
+    func heldCombinationEndsOnModifierReleaseAndIgnoresRepeat() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 2))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 2, flags: [.command, .shift, .capsLock])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 2, flags: [.command, .shift], isRepeat: true)
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 2, flags: .command)
+
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
 }
 
 @Suite("MeetingResummarizationPolicy")
@@ -2885,6 +3363,45 @@ struct WordCountTests {
 
 @Suite("HotkeyConfig")
 struct HotkeyConfigTests {
+    @Test("shortcut overlaps are symmetric and include modifier prefixes")
+    func shortcutPrefixOverlaps() {
+        let modifiers: [(UInt16, UInt16, NSEvent.ModifierFlags)] = [
+            (55, 54, .command), (59, 62, .control), (58, 61, .option), (56, 60, .shift)
+        ]
+        for (left, right, flag) in modifiers {
+            let chord = HotkeyConfig.combination(modifiers: [flag, .control], keyCode: 2)
+            for key in [left, right] {
+                let bare = HotkeyConfig(keyCode: key, label: "modifier")
+                #expect(ShortcutHotkeyPolicy.hotkeysConflict(bare, chord))
+                #expect(ShortcutHotkeyPolicy.hotkeysConflict(chord, bare))
+            }
+            #expect(!ShortcutHotkeyPolicy.hotkeysConflict(
+                HotkeyConfig(keyCode: left, label: "left"), HotkeyConfig(keyCode: right, label: "right")))
+        }
+        let controlD = HotkeyConfig.combination(modifiers: .control, keyCode: 2)
+        let controlShiftD = HotkeyConfig.combination(modifiers: [.control, .shift], keyCode: 2)
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(controlD, controlShiftD))
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(controlShiftD, controlD))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .combination(modifiers: .control, keyCode: 3)))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .combination(modifiers: .option, keyCode: 2)))
+        #expect(!ShortcutHotkeyPolicy.hotkeysConflict(controlD, .quilDefault))
+    }
+
+    @Test("activation changes require idle dictation and no held shortcut or shortcut capture")
+    func activationChangesRequireIdle() {
+        for state in [DictationState.idle, .preparing, .recording, .transcribing] {
+            for hasHotkeySession in [false, true] {
+                for isCapturingShortcut in [false, true] {
+                    let reason = ShortcutHotkeyPolicy.dictationActivationUnavailableReason(
+                        state: state, hasHotkeySession: hasHotkeySession,
+                        isCapturingShortcut: isCapturingShortcut
+                    )
+                    #expect((reason == nil) == (state == .idle && !hasHotkeySession && !isCapturingShortcut))
+                }
+            }
+        }
+    }
+
 
     @Test("default is Right Option")
     func defaultConfig() {
@@ -2912,7 +3429,7 @@ struct HotkeyConfigTests {
             .computerUseDefault,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: true
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Computer Use Command", hotkey: .computerUseDefault)))
 
         #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
             .computerUseDefault,
@@ -2924,25 +3441,25 @@ struct HotkeyConfigTests {
             .default,
             dictationHotkey: .default,
             isComputerUseEnabled: true
-        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
 
         #expect(ShortcutHotkeyPolicy.validateComputerUseHotkey(
             .default,
             dictationHotkey: .default,
             isComputerUseEnabled: false
-        ) == .updated)
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
     }
 
-    @Test("hotkey policy moves computer use key when enabling with a stale conflict")
-    func hotkeyPolicyMovesComputerUseKeyWhenEnablingWithStaleConflict() {
+    @Test("hotkey policy preserves computer use key when rejecting a stale conflict")
+    func hotkeyPolicyPreservesComputerUseKeyWhenEnablingWithStaleConflict() {
         let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
             currentHotkey: .default,
             dictationHotkey: .default
         )
 
-        #expect(resolution.hotkey == .computerUseDefault)
-        #expect(resolution.result.didUpdate)
-        #expect(resolution.result.message == "Computer Use Command moved to Right Cmd to avoid matching Push to Talk.")
+        #expect(resolution.hotkey == .default)
+        #expect(!resolution.result.didUpdate)
+        #expect(resolution.result.message == ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default))
     }
 
     @Test("hotkey policy rejects computer use enable when fallback conflicts with meeting recording")
@@ -2955,7 +3472,7 @@ struct HotkeyConfigTests {
         )
 
         #expect(resolution.hotkey == .default)
-        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .default)))
     }
 
     @Test("hotkey policy rejects computer use enable when current shortcut conflicts with meeting recording")
@@ -2968,7 +3485,7 @@ struct HotkeyConfigTests {
         )
 
         #expect(resolution.hotkey == .computerUseDefault)
-        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Meeting Recording", hotkey: .computerUseDefault)))
     }
 
     @Test("combination conflicts ignore unsupported modifier flags")
@@ -3000,7 +3517,7 @@ struct HotkeyConfigTests {
         let uncommon = HotkeyConfig.combination(modifiers: [.command, .option, .control], keyCode: 46)
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             uncommon,
-            dictationHotkey: .default,
+            dictationHotkey: .quilDefault,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: false
         )
@@ -3034,6 +3551,122 @@ struct HotkeyConfigTests {
     func unknownKeyCode() {
         #expect(HotkeyConfig.label(for: 0) == nil)
         #expect(HotkeyConfig.label(for: 100) == nil)
+    }
+
+    @Test("combination labels cover digits, Space, punctuation, arrows, and function keys")
+    func combinationLabelsCoverNonLetterKeys() {
+        #expect(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49).label == "⌃⌥Space")
+        #expect(HotkeyConfig.combination(modifiers: .command, keyCode: 18).label == "⌘1")
+        #expect(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 44).label == "⌘⇧/")
+        #expect(HotkeyConfig.combination(modifiers: .control, keyCode: 126).label == "⌃↑")
+        #expect(HotkeyConfig.combination(modifiers: [.option, .function, .numericPad], keyCode: 96).label == "⌥F5")
+        #expect(HotkeyConfig.keyLabel(for: 53) == nil)
+        #expect(HotkeyConfig.keyLabel(for: 36) == nil)
+        #expect(HotkeyConfig.keyLabel(for: 55) == nil)
+    }
+
+    @Test("dictation accepts bare modifiers and chords, never Shift-only or unsupported keys")
+    func dictationShortcutValidity() {
+        #expect(HotkeyConfig.default.isValidDictationShortcut)
+        #expect(HotkeyConfig(keyCode: 63, label: "Fn").isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49).isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.command, .control, .option, .shift], keyCode: 2).isValidDictationShortcut)
+        #expect(HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 123).isValidDictationShortcut)
+
+        #expect(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 9).isValidDictationShortcut)
+
+        #expect(!HotkeyConfig.combination(modifiers: .shift, keyCode: 2).isValidDictationShortcut)
+        // Automatic paste is Command plus whichever key types "v" in the current layout.
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 47).isValidDictationShortcut)
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 2).isValidDictationShortcut)
+        for keyCode: UInt16 in [18, 49, 123, 122, 90] {
+            #expect(HotkeyConfig.combination(modifiers: .command, keyCode: keyCode).isValidDictationShortcut)
+        }
+        #expect(!HotkeyConfig.combination(modifiers: [.capsLock, .function], keyCode: 2).isValidDictationShortcut)
+        #expect(!HotkeyConfig.combination(modifiers: .command, keyCode: 36).isValidDictationShortcut)
+        #expect(!HotkeyConfig(keyCode: 0, label: "A").isValidDictationShortcut)
+        #expect(!HotkeyConfig(keyCode: UInt16.max, label: "⌘D", combinationModifiers: nil, combinationKeyCode: 2)
+            .isValidDictationShortcut)
+    }
+
+    @Test("dictation policy rejects invalid chords, conflicts, and warns about common app shortcuts")
+    func dictationPolicyForCombinations() {
+        let chord = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            chord,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: true
+        ) == .updated)
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            HotkeyConfig.combination(modifiers: .shift, keyCode: 2),
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.dictationShortcutMessage))
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: true
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Meeting Recording", hotkey: .meetingRecordingDefault)))
+        #expect(ShortcutHotkeyPolicy.validateDictationHotkey(
+            .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .updated(notice: ShortcutHotkeyPolicy.commonGlobalShortcutWarning))
+        #expect(ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            .meetingRecordingDefault,
+            dictationHotkey: .meetingRecordingDefault,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .meetingRecordingDefault)))
+        #expect(ShortcutHotkeyPolicy.validateQuilHotkey(
+            HotkeyConfig.combination(modifiers: .control, keyCode: 12),
+            dictationHotkey: HotkeyConfig.combination(modifiers: [.control, .capsLock], keyCode: 12),
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: false
+        ) == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: .combination(modifiers: .control, keyCode: 12))))
+    }
+
+    @Test("combination dictation shortcuts round-trip and invalid saved shortcuts fall back")
+    func dictationShortcutConfigRoundTrip() throws {
+        var config = AppConfig()
+        #expect(config.dictationCombinationActivation == .pushToTalk)
+        config.dictationHotkey = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        config.dictationCombinationActivation = .toggle
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.dictationHotkey == config.dictationHotkey)
+        #expect(decoded.dictationCombinationActivation == .toggle)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["dictation_combination_activation"] as? String == "toggle")
+
+        let unknownActivation = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"dictation_combination_activation": "double_tap"}"#.utf8)
+        )
+        #expect(unknownActivation.dictationCombinationActivation == .pushToTalk)
+
+        let orphanedToggle = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"dictation_combination_activation": "toggle"}"#.utf8)
+        )
+        #expect(orphanedToggle.dictationCombinationActivation == .pushToTalk)
+        #expect(!orphanedToggle.isDictationCombinationToggle)
+        #expect(orphanedToggle.dictationStartPrompt == "Hold \(HotkeyConfig.default.label) to dictate")
+        #expect(decoded.isDictationCombinationToggle)
+        #expect(decoded.dictationStartPrompt == "Press \(decoded.dictationHotkey.label) to dictate")
+
+        for invalid in [
+            #"{"keyCode": 65535, "label": "⇧A", "combinationModifiers": 131072, "combinationKeyCode": 0}"#,
+            #"{"keyCode": 65535, "label": "⌘↩", "combinationModifiers": 1048576, "combinationKeyCode": 36}"#,
+            #"{"keyCode": 65535, "label": "⌘?", "combinationModifiers": 1048576}"#,
+        ] {
+            let json = #"{"dictation_hotkey": "# + invalid + "}"
+            let fallback = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(fallback.dictationHotkey == .default)
+        }
     }
 }
 
