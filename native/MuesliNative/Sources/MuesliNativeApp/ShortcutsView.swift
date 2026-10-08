@@ -358,9 +358,9 @@ struct ShortcutsView: View {
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
             hotkeyBadge(hotkey(for: target))
+            // Keep assignment available while disabled so a saved conflict can
+            // be repaired before enabling the feature.
             compactChangeButton(for: target)
-                .disabled(!isEnabled)
-                .opacity(isEnabled ? 1 : 0.55)
             Spacer(minLength: MuesliTheme.spacing16)
             if isEnabled {
                 thresholdInput(
@@ -376,7 +376,7 @@ struct ShortcutsView: View {
             hotkeyBadge(appState.config.dictationHotkey)
             compactChangeButton(for: .dictation)
             Spacer(minLength: MuesliTheme.spacing16)
-            if !isDictationCombinationToggle {
+            if isPushToTalkEnabled, !isDictationCombinationToggle {
                 thresholdInput(
                     value: appState.config.hotkeyTriggerThresholdMS
                 ) { value in
@@ -384,8 +384,6 @@ struct ShortcutsView: View {
                 }
             }
         }
-        .disabled(!isPushToTalkEnabled)
-        .opacity(isPushToTalkEnabled ? 1 : 0.55)
     }
 
     private func hotkey(for target: ShortcutTarget) -> HotkeyConfig {

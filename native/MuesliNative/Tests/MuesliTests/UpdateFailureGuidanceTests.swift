@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Sparkle
 import Testing
 @testable import MuesliNativeApp
@@ -80,11 +81,8 @@ struct UpdateActionRoutingTests {
         let source = try muesliControllerSource()
         let statusBarSource = try statusBarControllerSource()
 
-        #expect(source.contains("""
-            @objc func checkForUpdates() {
-                presentStandardUpdateCheck()
-            }
-        """))
+        #expect(source.contains("SparkleUpdatePresentation.afterMenuTracking { [weak self] in"))
+        #expect(source.contains("self?.presentStandardUpdateCheck()"))
         #expect(statusBarSource.contains("#selector(MuesliController.checkForUpdates)"))
         #expect(statusBarSource.contains("item.target = controller"))
         #expect(statusBarSource.contains("item.isEnabled = controller.updaterController != nil"))
@@ -98,9 +96,9 @@ struct UpdateActionRoutingTests {
         let source = try muesliControllerSource()
 
         #expect(source.contains("updaterController.checkForUpdates(nil)"))
-        #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
+        #expect(source.contains("focusUpdaterWindowsAfterUpdateAction()"))
         #expect(try index(of: "updaterController.checkForUpdates(nil)", in: source) <
-            index(of: "focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)", in: source))
+            index(of: "focusUpdaterWindowsAfterUpdateAction()", in: source))
         #expect(source.contains("activateApplicationForSparkle()"))
         #expect(!source.contains("canCheckForUpdates"))
         #expect(!source.contains("func installAvailableUpdate()"))
@@ -139,24 +137,35 @@ struct UpdateActionRoutingTests {
         #expect(!source.contains("Open About to finish installing the update"))
     }
 
-    @Test("updater focus only targets windows created by the update action")
-    func updaterFocusTargetsNewUpdaterWindowsOnly() throws {
-        let source = try muesliControllerSource()
+    @Test("manual update checks wait until menu tracking ends")
+    @MainActor
+    func manualCheckWaitsForDefaultRunLoop() {
+        var calls = 0
+        SparkleUpdatePresentation.afterMenuTracking { calls += 1 }
+        #expect(calls == 0)
+        RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.02))
+        #expect(calls == 0)
+        let deadline = Date().addingTimeInterval(1)
+        while calls == 0, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: deadline)
+        }
+        #expect(calls == 1)
+    }
 
-        #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
-        #expect(source.contains("return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)"))
-        #expect(source.contains("isLikelyUpdaterWindow(window)"))
-        #expect(source.contains("className.localizedCaseInsensitiveContains(\"SPU\")"))
-        #expect(source.contains("title.localizedCaseInsensitiveContains(\"update\")"))
-        #expect(source.contains("title.localizedCaseInsensitiveContains(\"new version\")"))
-        #expect(source.contains("title.localizedCaseInsensitiveContains(\"available\")"))
-        #expect(source.contains("return false"))
-        #expect(!source.contains("window.collectionBehavior ="))
-        #expect(!source.contains("return window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty"))
-        #expect(!source.contains(".moveToActiveSpace"))
-        #expect(!source.contains(".fullScreenAuxiliary"))
-        #expect(!source.contains(".canJoinAllSpaces"))
-        #expect(!source.contains("orderFrontRegardless()"))
+    @Test("updater ownership uses the framework rather than window titles or class-name fragments")
+    @MainActor
+    func updaterWindowOwnership() {
+        #expect(SparkleUpdatePresentation.belongsToSparkle(SPUStandardUpdaterController.self))
+        #expect(!SparkleUpdatePresentation.belongsToSparkle(NSWindowController.self))
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let controller = NSWindowController(window: window)
+        defer { controller.close() }
+        for title in ["Update", "New version available", "Software Updater"] {
+            window.title = title
+            window.orderFront(nil)
+            #expect(!SparkleUpdatePresentation.isUpdaterWindow(window))
+        }
     }
 
     @Test("Sparkle delegate cannot leave the About UI checking forever")
