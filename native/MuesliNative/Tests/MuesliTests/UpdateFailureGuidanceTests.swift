@@ -155,6 +155,7 @@ struct UpdateActionRoutingTests {
     @Test("updater ownership uses the framework rather than window titles or class-name fragments")
     @MainActor
     func updaterWindowOwnership() {
+        #expect(Bundle(for: SPUStandardUpdaterController.self) != Bundle.main)
         #expect(SparkleUpdatePresentation.belongsToSparkle(SPUStandardUpdaterController.self))
         #expect(!SparkleUpdatePresentation.belongsToSparkle(NSWindowController.self))
         let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
@@ -166,6 +167,63 @@ struct UpdateActionRoutingTests {
             window.orderFront(nil)
             #expect(!SparkleUpdatePresentation.isUpdaterWindow(window))
         }
+    }
+
+    @Test("focus recovery stops at the first successful presentation")
+    @MainActor
+    func focusRecoveryStopsAfterSuccess() async {
+        let recovery = SparkleUpdateFocusRecovery()
+        var attempts = 0
+        var delays: [UInt64] = []
+        let task = recovery.start(sleep: { delays.append($0) }) {
+            attempts += 1
+            return attempts == 2
+        }
+        await task.value
+        #expect(attempts == 2)
+        #expect(delays == [80_000_000, 160_000_000])
+    }
+
+    @Test("focus recovery exhausts its bounded budget when no window appears")
+    @MainActor
+    func focusRecoveryIsBounded() async {
+        let recovery = SparkleUpdateFocusRecovery()
+        var attempts = 0
+        var totalDelay: UInt64 = 0
+        await recovery.start(sleep: { totalDelay += $0 }) {
+            attempts += 1
+            return false
+        }.value
+        #expect(attempts == 5)
+        #expect(totalDelay == 2_500_000_000)
+    }
+
+    @Test("a new check cancels an older pending focus even if its sleep ignores cancellation")
+    @MainActor
+    func newerCheckCancelsOldFocus() async {
+        let recovery = SparkleUpdateFocusRecovery()
+        let sleeping = AsyncStream<Void>.makeStream()
+        var resume: CheckedContinuation<Void, Never>?
+        var oldAttempts = 0
+        let old = recovery.start(sleep: { _ in
+            await withCheckedContinuation { continuation in
+                resume = continuation
+                sleeping.continuation.yield(())
+            }
+        }) {
+            oldAttempts += 1
+            return true
+        }
+        for await _ in sleeping.stream { break }
+        var newAttempts = 0
+        await recovery.start(sleep: { _ in }) {
+            newAttempts += 1
+            return true
+        }.value
+        resume?.resume()
+        await old.value
+        #expect(oldAttempts == 0)
+        #expect(newAttempts == 1)
     }
 
     @Test("Sparkle delegate cannot leave the About UI checking forever")

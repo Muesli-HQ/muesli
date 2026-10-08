@@ -471,6 +471,7 @@ public final class MuesliController: NSObject {
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
+    private let updateFocusRecovery = SparkleUpdateFocusRecovery()
     private var busyStatusGeneration = 0
 
     let appState = AppState()
@@ -5663,6 +5664,7 @@ public final class MuesliController: NSObject {
     }
 
     @objc func checkForUpdates() {
+        updateFocusRecovery.cancel()
         // NSMenu may restore the dashboard's key window as tracking ends.
         // Let that finish before Sparkle presents or refocuses its own UI.
         SparkleUpdatePresentation.afterMenuTracking { [weak self] in
@@ -5684,18 +5686,16 @@ public final class MuesliController: NSObject {
     }
 
     private func focusUpdaterWindowsAfterUpdateAction() {
-        for delay in [80_000_000, 240_000_000, 600_000_000, 1_200_000_000, 2_500_000_000] {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay))
-                guard self != nil else { return }
-                let windows = NSApplication.shared.windows.filter(SparkleUpdatePresentation.isUpdaterWindow)
-                guard !windows.isEmpty else { return }
-                self?.activateApplicationForSparkle()
-                for window in windows {
-                    if window.isMiniaturized { window.deminiaturize(nil) }
-                    window.makeKeyAndOrderFront(nil)
-                }
+        updateFocusRecovery.start { [weak self] in
+            guard let self else { return true }
+            let windows = NSApplication.shared.windows.filter(SparkleUpdatePresentation.isUpdaterWindow)
+            guard !windows.isEmpty else { return false }
+            self.activateApplicationForSparkle()
+            for window in windows {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
             }
+            return true
         }
     }
 
