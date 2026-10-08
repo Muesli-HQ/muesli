@@ -35,6 +35,11 @@ struct MarketingVersion: Comparable, Equatable {
 }
 
 enum FeatureTourTarget: String, Hashable {
+    case recordingIndicatorStyle
+    case computerUseShortcut
+    case meetingSummaryProvider
+    case meetingRetranscription
+    case dictationRecordingMode
     case quillSettings
     case dictationProviderSetting
     case parakeetFamilyCard
@@ -57,7 +62,13 @@ enum FeatureTourTarget: String, Hashable {
         switch self {
         case .quillSettings, .dictationProviderSetting, .cloudCleanupSetting:
             return .settings(.dictation)
-        case .liveCaptionsSetting:
+        case .recordingIndicatorStyle:
+            return .settings(.appearance)
+        case .computerUseShortcut, .dictationRecordingMode:
+            return .tab(.shortcuts)
+        case .meetingRetranscription:
+            return .meetingRetranscription
+        case .liveCaptionsSetting, .meetingSummaryProvider:
             return .settings(.meetings)
         case .timelineSidebar, .timelineFilters, .insightsEntry:
             return .tab(.timeline)
@@ -76,6 +87,17 @@ enum FeatureTourTarget: String, Hashable {
         }
     }
 
+    // Presentation only: these IDs identify choices to explain, never values to apply.
+    var settingPreview: (id: String, highlightedChoices: Set<String>)? {
+        switch self {
+        case .meetingSummaryProvider: return ("summary_source", ["anthropic", "claude_code"])
+        case .dictationRecordingMode: return ("dictation_activation", ["toggle"])
+        case .bodhanFlexCard: return ("bodhan_output", ["romanized"])
+        case .computerUseShortcut: return ("cua_shortcut", ["on"])
+        default: return nil
+        }
+    }
+
     var modelsCategory: ModelsCategory? {
         guard case let .models(category) = navigationRoute else { return nil }
         return category
@@ -89,6 +111,7 @@ enum FeatureTourNavigationRoute: Equatable {
     case timelineApplications
     case meetingsBrowser
     case meetingPeople
+    case meetingRetranscription
 }
 
 struct FeatureTourStep: Identifiable, Equatable {
@@ -124,55 +147,55 @@ extension AppState {
 
 enum FeatureTourCatalog {
     static var latest: FeatureTour {
-        FeatureTour(version: "0.8.4", steps: [
+        FeatureTour(version: "0.8.5", steps: [
             FeatureTourStep(
-                id: "quill",
-                eyebrow: "QUILL MODE",
-                title: "Edit text with your voice",
-                message: "Highlight text or place the cursor, activate Quill, and say what you want changed. Use a configured AI provider, or download Gemma 4 for a private, on-device workflow.",
-                systemImage: "pencil.and.scribble",
-                target: .quillSettings
+                id: "notch",
+                eyebrow: "A NEW LOOK",
+                title: "Meet Muesli at the notch",
+                message: "Choose Notch under Settings → Appearance → Recording indicator. Follow recording and processing at the top of your screen. Displays without a notch use a temporary Classic indicator.",
+                systemImage: "menubar.rectangle",
+                target: .recordingIndicatorStyle
             ),
             FeatureTourStep(
-                id: "apple-shortcuts",
-                eyebrow: "APPLE SHORTCUTS",
-                title: "Control Muesli with Command-Space",
-                message: "Press Command-Space, then type Start Dictation, Stop Dictation, Start Meeting, or Stop Meeting.",
-                systemImage: "command",
-                target: nil
+                id: "voice-settings",
+                eyebrow: "COMPUTER USE COMMAND",
+                title: "Change settings with your voice",
+                message: "Enable Computer Use Command in Shortcuts, then hold your shortcut and ask Muesli to change a setting. Use experimental local Gemma or your connected ChatGPT account for hosted processing.",
+                systemImage: "slider.horizontal.3",
+                target: .computerUseShortcut
             ),
             FeatureTourStep(
-                id: "hosted-dictation",
-                eyebrow: "OPTIONAL CLOUD TRANSCRIPTION",
-                title: "Choose OpenAI or OpenRouter for dictation",
-                message: "Use a hosted transcription model when you want one. Local remains the default, and audio is sent only after you choose OpenAI or OpenRouter as your provider.",
-                systemImage: "cloud",
-                target: .dictationProviderSetting
+                id: "claude-summaries",
+                eyebrow: "MEETING NOTES",
+                title: "Claude, now for meeting notes",
+                message: "Choose Claude Code or Anthropic API as your summary backend. Use a signed-in Claude Code installation or your Anthropic API key. Meeting content is sent to Claude for summaries.",
+                systemImage: "text.bubble",
+                target: .meetingSummaryProvider
             ),
             FeatureTourStep(
-                id: "parakeet-unified",
-                eyebrow: "ON-DEVICE ENGLISH",
-                title: "Meet the best English STT model",
-                message: "Parakeet Unified balances speed and accuracy for fast, reliable English transcription on your Mac. For other languages, choose multilingual Parakeet v3.",
+                id: "retranscribe",
+                eyebrow: "SAVED RECORDINGS",
+                title: "Re-transcribe an existing meeting",
+                message: "Open a meeting with saved audio, then choose Re-transcribe above the transcript (also available in More actions). Pick a downloaded meeting model to give the recording another pass without recording it again.",
                 systemImage: "waveform",
-                target: .parakeetFamilyCard
+                target: .meetingRetranscription
             ),
             FeatureTourStep(
-                id: "bodhan",
-                eyebrow: "BODHAN CORE & FLEX",
-                title: "Dictate across Indian languages and English",
-                message: "Use Bodhan Flex for Indian-accented English and code-switched speech that mixes Indic languages with English. Core favors native-script output. Download either model for private, on-device transcription. Requires macOS 15 or later.",
-                systemImage: "globe",
+                id: "toggle-dictation",
+                eyebrow: "PRESS TO TOGGLE",
+                title: "No need to hold all the time",
+                message: "In Shortcuts → Dictation, set Recording mode to Press to toggle and choose a modifier + key shortcut. Press once to start dictation, then press again to stop.",
+                systemImage: "keyboard",
+                target: .dictationRecordingMode
+            ),
+            FeatureTourStep(
+                id: "bodhan-script",
+                eyebrow: "BODHAN FLEX",
+                title: "Your language. Your script.",
+                message: "Choose Native, Mixed, or Romanized output in Models → Dictation → Bodhan Flex. Write Indic speech in Latin letters with Romanized output, using the same downloaded model.",
+                systemImage: "character.book.closed",
                 target: .bodhanFlexCard
-            ),
-            FeatureTourStep(
-                id: "resummarize",
-                eyebrow: "MEETING SUMMARIES",
-                title: "Choose a different model for your meeting summary",
-                message: "Open a saved meeting and pick a provider and model from Re-summarize or Apply Template to generate a fresh summary, without changing your default settings.",
-                systemImage: "arrow.clockwise",
-                target: nil
-            ),
+            )
         ])
     }
 }

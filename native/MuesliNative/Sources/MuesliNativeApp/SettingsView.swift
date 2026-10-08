@@ -347,7 +347,7 @@ struct SettingsView: View {
     }
 
     private var selectedUpcomingMeetingsWindow: UpcomingMeetingsWindow {
-        UpcomingMeetingsWindow.resolve(dayCount: appState.config.upcomingMeetingsDayCount)
+        appState.config.upcomingMeetingsWindow
     }
 
     private var selectedBodhanLanguage: BodhanLanguage {
@@ -565,6 +565,8 @@ struct SettingsView: View {
               target == .liveCaptionsSetting
                 || target == .cloudCleanupSetting
                 || target == .dictationProviderSetting
+                || target == .recordingIndicatorStyle
+                || target == .meetingSummaryProvider
                 || target == .quillSettings else { return }
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -1591,6 +1593,8 @@ struct SettingsView: View {
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
+                        .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
+                        .featureTourTarget(.meetingSummaryProvider)
                         .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
                     if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
@@ -2145,7 +2149,7 @@ struct SettingsView: View {
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
                     settingsControl("upcoming_meetings")
                 }
-                .help("How many calendar days appear in Coming Up, the menu bar, and meeting reminders.")
+                .help("How far ahead to show scheduled meetings and check meeting reminders.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
@@ -2178,6 +2182,7 @@ struct SettingsView: View {
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
+                .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, 12)
                 if appState.config.recordingIndicatorStyle == .notch {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
