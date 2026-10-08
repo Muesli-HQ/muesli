@@ -578,6 +578,24 @@ struct PasteControllerTests {
         #expect(texts == ["item-one", "item-two"])
     }
 
+    @Test("staged and restored clipboard writes carry clipboard-manager skip markers")
+    func pasteMarksClipboardWritesSkippedByClipboardManagers() async {
+        let skipTypes = Set(PasteController.clipboardManagerSkipTypes)
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        #expect(skipTypes.isDisjoint(with: pasteboard.types ?? []))
+
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { _ in true })
+
+        #expect(pasteboard.string(forType: .string) == "dictated text")
+        #expect(skipTypes.isSubset(of: pasteboard.types ?? []))
+
+        let restored = await waitForClipboardString(in: pasteboard, expected: "original")
+        #expect(restored == "original")
+        #expect(pasteboard.pasteboardItems?.allSatisfy { skipTypes.isSubset(of: $0.types) } == true)
+    }
+
     @Test("stale paste restore does not overwrite newer clipboard contents")
     func stalePasteRestoreDoesNotOverwriteNewerClipboardContents() async throws {
         let pasteboard = makePasteboard()

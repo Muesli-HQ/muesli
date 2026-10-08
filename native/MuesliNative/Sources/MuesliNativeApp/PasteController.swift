@@ -29,6 +29,12 @@ enum PasteController {
     /// How long to wait after simulating Cmd+V before restoring the clipboard.
     /// The receiving app must have consumed the paste data within this window.
     private static let clipboardRestoreDelay: TimeInterval = 0.5
+    /// nspasteboard.org markers that tell clipboard managers to skip recording a write.
+    /// Managers differ in which marker they honor (CopyClip only checks Concealed), so both are set.
+    static let clipboardManagerSkipTypes: [NSPasteboard.PasteboardType] = [
+        NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
+        NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+    ]
     /// Accessibility calls cross a process boundary and can block their caller while
     /// the target app is busy. Keep both each request and the full menu walk bounded;
     /// an unavailable command falls back to leaving Quill output on the clipboard.
@@ -102,7 +108,10 @@ enum PasteController {
         let pastedText = appendDictationSentenceSpace
             ? text + DictationPasteSpacing.trailingSeparator(after: text)
             : text
-        let didStageText = pasteboard.setString(pastedText, forType: .string)
+        let stagedItem = NSPasteboardItem()
+        stagedItem.setString(pastedText, forType: .string)
+        markSkippedByClipboardManagers(stagedItem)
+        let didStageText = pasteboard.writeObjects([stagedItem])
         let pasteChangeCount = pasteboard.changeCount
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
@@ -500,6 +509,8 @@ enum PasteController {
 
     /// Restore previously saved clipboard contents. If nothing was saved, clears the clipboard
     /// so dictation text doesn't linger.
+    /// Restored items carry the skip markers so clipboard managers don't record the user's
+    /// earlier content a second time.
     private static func restoreClipboard(_ pasteboard: NSPasteboard, from saved: [[(NSPasteboard.PasteboardType, Data)]]) {
         pasteboard.clearContents()
         if saved.isEmpty { return }
@@ -509,8 +520,15 @@ enum PasteController {
             for (type, data) in itemPairs {
                 item.setData(data, forType: type)
             }
+            markSkippedByClipboardManagers(item)
             restoredItems.append(item)
         }
         pasteboard.writeObjects(restoredItems)
+    }
+
+    private static func markSkippedByClipboardManagers(_ item: NSPasteboardItem) {
+        for type in clipboardManagerSkipTypes {
+            item.setData(Data(), forType: type)
+        }
     }
 }
