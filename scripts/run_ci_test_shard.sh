@@ -117,6 +117,9 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      WeChatCallDetectionAdapterTests
+      WeChatCallDetectionLifecycleTests
+      WeChatCallDetectionCollectorTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
