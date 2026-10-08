@@ -10384,6 +10384,7 @@ public final class MuesliController: NSObject {
         runtime.onEvent = { [weak self] event in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
+            self.indicator.recordComputerUseToolResult(event, config: self.config)
         }
         runtime.onObservedApplication = { [weak self] name, bundleID in
             guard let self, self.computerUseCommandTaskID == taskID else { return }

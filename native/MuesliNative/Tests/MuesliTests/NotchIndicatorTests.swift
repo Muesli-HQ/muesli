@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import SwiftUI
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Notch indicator geometry")
@@ -66,17 +67,58 @@ struct NotchIndicatorTests {
         #expect(NotchOutcome.failure.duration == 5)
     }
 
-    @Test("Expanded instruction panel is centered below the camera on offset screens")
+    @Test("Expanded instruction panel aligns with the asymmetric bar on offset screens")
     func instructionPanelGeometry() {
         let geometry = NotchIndicatorGeometry(cutout: CGRect(x: 1500, y: 900, width: 180, height: 32), wingWidth: 110)
         let frame = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900))
-        #expect(frame.midX == geometry.cutout.midX)
+        #expect(frame.midX == geometry.frame().midX)
+        #expect(frame.midX == geometry.cutout.midX - 16)
         #expect(frame.maxY == geometry.cutout.minY)
         #expect(frame.width == 440)
-        #expect(frame.height == 115)
+        #expect(frame.height == 100)
+        let progress = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), resultCount: 99)
+        #expect(progress.height == 190)
+        #expect(progress.maxY == geometry.cutout.minY)
+        let narrow = CGRect(x: 1500, y: 0, width: 300, height: 900)
+        #expect(geometry.instructionFrame(in: narrow).minX == narrow.minX)
+        #expect(geometry.instructionFrame(in: narrow).maxX == narrow.maxX)
+        #expect(geometry.expandedOriginX(width: 500, in: CGRect(x: 1000, y: 0, width: 1200, height: 900)) + 250 == geometry.frame().midX)
         let review = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), requiresReview: true)
         #expect(review.height == 180)
         #expect(review.maxY == geometry.cutout.minY)
+    }
+
+    @MainActor
+    @Test("Compact tool responses are bounded, deduplicated, and cleared between commands")
+    func toolResultLifecycle() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        defer { indicator.close() }
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        indicator.showComputerUseTranscript("Open Calendar", config: config)
+        let observation = ComputerUseTraceEvent(kind: "observation", title: "Observation", body: "Raw screen state")
+        indicator.recordComputerUseToolResult(observation, config: config)
+        #expect(indicator.notchToolResults.isEmpty)
+        for step in 1...4 {
+            let event = ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened\n app \(step)", status: "executed", step: step)
+            indicator.recordComputerUseToolResult(event, config: config)
+            indicator.recordComputerUseToolResult(event, config: config)
+        }
+        #expect(indicator.notchToolResults.map(\.message) == ["Opened app 2", "Opened app 3", "Opened app 4"])
+        indicator.setTranscribingTitle("Reading screen", config: config)
+        #expect(indicator.notchToolResults.count == 3)
+        let long = try #require(NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: String(repeating: "x", count: 300), status: "failed")))
+        #expect(long.message.count == 180)
+        #expect(long.message.hasSuffix("…"))
+        #expect(long.failed)
+        indicator.showComputerUseTranscript("Open Calendar", config: config)
+        #expect(indicator.notchToolResults.isEmpty)
+        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened Calendar"), config: config)
+        indicator.setState(.idle, config: config)
+        #expect(indicator.notchToolResults.isEmpty)
+        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Late result"), config: config)
+        #expect(indicator.notchToolResults.isEmpty)
     }
 
     @MainActor

@@ -2,10 +2,35 @@ import Foundation
 import Testing
 import SwiftUI
 import AppKit
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Recording indicator style settings")
 struct RecordingIndicatorStyleTests {
+    @MainActor
+    @Test("Compact computer-use expansion renders bounded responses", arguments: [0, 3])
+    func compactToolResponses(count: Int) throws {
+        let results = ["Opened Google Chrome (already running)", "Navigated to the requested page", String(repeating: "A long tool response ", count: 20)]
+            .prefix(count).compactMap { NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: $0, status: "executed")) }
+        let geometry = NotchIndicatorGeometry(cutout: CGRect(x: 200, y: 900, width: 180, height: 32), wingWidth: 110)
+        let frame = geometry.instructionFrame(in: CGRect(x: 0, y: 0, width: 1200, height: 900), resultCount: count)
+        let hosting = NSHostingView(rootView: NotchLiveInstructionView(
+            instruction: "Can you open Twitter on Google Chrome?", status: "Working…",
+            appName: "Instruction", appIcon: nil, accent: .blue, toolResults: results,
+            onCollapse: {}, onCancel: {}).frame(width: frame.width, height: frame.height))
+        let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: frame.width, height: frame.height),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        defer { window.close() }
+        hosting.layoutSubtreeIfNeeded()
+        let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        #expect(bitmap.pixelsHigh >= Int(frame.height))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("muesli-compact-tool-responses-\(count).png"))
+    }
+
     @MainActor
     @Test("Live instruction panel renders long text and review controls", arguments: [false, true])
     func liveInstructionPanel(review: Bool) throws {
