@@ -9,21 +9,35 @@
             <title>0.8.5-preprod.2</title>
             <pubDate>Fri, 09 Oct 2026 02:24:53 +0530</pubDate>
             <description><![CDATA[
-<h2>MuesliPreprod 0.8.5-preprod.2</h2>
-<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
-<h3>Install</h3>
+<h2>Muesli 0.8.5 preproduction 2</h2>
+<p>This preview includes the 0.8.5 features plus two fixes from preproduction testing:</p>
 <ul>
-<li>Download <code>MuesliPreprod-0.8.5-preprod.2.dmg</code></li>
-<li>Open the DMG and drag MuesliPreprod to Applications</li>
-<li>Launch MuesliPreprod from Applications</li>
+<li>Change a disabled shortcut directly to resolve a conflict, without changing Dictation first or enabling the feature automatically.</li>
+<li>Improves Check for Updates window presentation while Muesli is open. Existing updater windows can be brought forward; recovery stops after presentation so later minimize or focus choices are respected.</li>
 </ul>
-<h3>Notes</h3>
+<p>Update from 0.8.5-preprod.1 to test installation. After relaunch, check for updates with the dashboard active, with another app active, and with existing updater UI to verify the presentation fix.</p>
+<h3>Meet Muesli at the notch</h3>
+<p>Choose Notch in Settings → Appearance to follow recording, processing, and Computer Use progress at the top of your screen. Displays without a notch use the Classic indicator.</p>
+<h3>Change settings with your voice</h3>
+<p>Enable Computer Use Command in Shortcuts, then ask Muesli to change a setting or shortcut. Use experimental local Gemma or your connected ChatGPT account. Muesli asks for clarification when needed and checks that changes were saved. AI instructions and prompt settings remain manual-only.</p>
+<h3>Claude for meeting notes</h3>
+<p>Choose Anthropic with your API key, or a signed-in Claude Code installation, as your meeting summary backend. Meeting content is sent to Claude when you choose it.</p>
+<h3>Re-transcribe saved meetings</h3>
+<p>Give an existing meeting another pass using a downloaded meeting model and its retained audio. Follow progress while browsing elsewhere in Muesli, or cancel and keep the original result. Re-transcription needs saved audio and replaces the transcript when completed.</p>
+<h3>No need to hold all the time</h3>
+<p>Choose Press to toggle in Shortcuts → Dictation and assign a modifier + key shortcut. Press once to start dictation, then again to stop.</p>
+<h3>Bodhan, in your preferred script</h3>
+<p>Choose Native, Mixed, or Romanized output for Bodhan Flex. Write Indic speech in Latin letters using the same downloaded model. Mixed remains the default.</p>
+<h3>More control over meetings</h3>
 <ul>
-<li>Installs alongside production Muesli.</li>
-<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
-<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
-<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+<li>Show scheduled meetings for the next six or twelve hours, alongside the existing day-based windows.</li>
+<li>Hide an individual event directly from the status-bar menu without deleting it from your calendar.</li>
+<li>Improves meeting detection, stop controls, clipboard pasting, and navigation through long meeting-folder lists.</li>
+<li>Adds a guided What’s New tour using the real app controls.</li>
 </ul>
+<p>Dictation and meeting transcription remain local by default. Hosted features send the input needed for the selected feature to its provider.</p>
+<h3>Testing this preview</h3>
+<p>MuesliPreprod installs alongside Muesli with separate local app data. To test the updater, keep your older MuesliPreprod installed and use Check for Updates after the preproduction feed is live. The stable release and Homebrew version remain 0.8.4.</p>
 ]]></description>
             <sparkle:version>8005002</sparkle:version>
             <sparkle:shortVersionString>0.8.5-preprod.2</sparkle:shortVersionString>
@@ -91,6 +105,67 @@
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.4-preprod.1/MuesliPreprod-0.8.4-preprod.1.dmg" length="102914619" type="application/octet-stream" sparkle:edSignature="qiftMV1W6TlvfegSMEw/bjmMnI+J8vOoTWEom21mQURBvCqQltaCmDaBomNSGiJUTJ4d+y1ImssKNjOUeLLiAg=="/>
+        </item>
+        <item>
+            <title>0.8.2-preprod.3</title>
+            <pubDate>Tue, 18 Aug 2026 09:23:48 +0530</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.8.2-preprod.3</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.8.2-preprod.3.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
+            <sparkle:version>8002003</sparkle:version>
+            <sparkle:shortVersionString>0.8.2-preprod.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2-preprod.3/MuesliPreprod-0.8.2-preprod.3.dmg" length="98654711" type="application/octet-stream" sparkle:edSignature="W5y1XskmeHkOWoLhayR3hq8s8Qqa+maa3QGIoocZAtzopynG3Jsdi3zn22RjARWh+Gi5p3569YMS+uuJy5LECA=="/>
+        </item>
+        <item>
+            <title>0.8.2-preprod.2</title>
+            <pubDate>Tue, 18 Aug 2026 02:06:49 +0530</pubDate>
+            <sparkle:version>8002002</sparkle:version>
+            <sparkle:shortVersionString>0.8.2-preprod.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2-preprod.2/MuesliPreprod-0.8.2-preprod.2.dmg" length="98655352" type="application/octet-stream" sparkle:edSignature="DGy7uLrYvep5w3wsg5w3Z5Al/nAH2DE4TWiEFrXe/9s/PR2HQrgTesLOcupgDzdF3AXZm64E9tThd1IoMLxxBw=="/>
+        </item>
+        <item>
+            <title>0.8.2-preprod.1</title>
+            <pubDate>Sat, 15 Aug 2026 23:15:37 +0530</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.8.2-preprod.1</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.8.2-preprod.1.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
+            <sparkle:version>8002001</sparkle:version>
+            <sparkle:shortVersionString>0.8.2-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2-preprod.1/MuesliPreprod-0.8.2-preprod.1.dmg" length="98286984" type="application/octet-stream" sparkle:edSignature="4ztiG5qcNscEGfVyg3HUUfHXyx6ZM7GS5z3gHbxxy126C+hRVwEer9pNHkXGoOhQg0NXoMgNSuw1qgvPk5L7Cw=="/>
         </item>
         <item>
             <title>0.7.0-preprod.1</title>
