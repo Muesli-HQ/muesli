@@ -24,7 +24,7 @@ The native implementation owns behavior and token values. Browser specimens illu
 | Notes and transcript reading columns | `MeetingNotesView.swift`, `MeetingDetailView.swift` |
 | Accent swatches, account and maintenance actions | `MuesliSettingsOptions.swift`, `SettingsView.swift` |
 | Centered indicator choice captions | `RecordingIndicatorStylePicker.swift` |
-| Single-line notch geometry and controls | `NotchIndicatorController.swift` |
+| Single-line notch, aligned expansion, and compact computer-use tool responses | `NotchIndicatorController.swift` |
 | Image-only notification close button | `NotificationDismissButton.swift` |
 | Provider marks, sharing, and sync invitation | `ModelsView.swift`, `AboutView.swift`, `IPhoneBridgeCard.swift` |
 
@@ -44,3 +44,9 @@ The app/model rankings in `DictationStore.insightsUsage` count one saved, non-de
 App rankings group by destination bundle ID, falling back to the app name. Model rankings group by backend, model, and recorded endpoint. Rankings sort by session count, then word count. Counts describe saved records, not time spent in an application or model invocations/retries.
 
 The overview's `dictationSessions` currently uses the broader daily cache and includes saved Quill/computer-use records. That inconsistency is documented here, not corrected as part of this visual reference update. The aggregation source is `native/MuesliNative/Sources/MuesliCore/DictationStore.swift`.
+
+## Computer-use expanded notch
+
+Center the expanded instruction and question panels beneath the visible bar (its midpoint), while keeping the top bar’s camera gap aligned with the hardware. The unequal 110pt/78pt wings place this midpoint 16pt left of the camera center. Clamp panels to the active display.
+
+Show the latest three tool summaries under the working status, using 10pt text and at most two lines per summary. Generate display copy from the operation and outcome (for example, “Read page text” or “Open app — failed”), never from raw response bodies. Full responses, observations, errors, and tool arguments remain in Timeline. Older trace events without a summary remain readable there and do not fall back to raw text in the notch. Use 13pt instruction text in a scrollable area. The normal panel starts at 100pt high and adds 30pt per result, capped at 190pt; review and question surfaces retain their dedicated layouts. Clear summaries when a new command starts or the session ends.

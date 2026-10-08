@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import MuesliCore
 
 /// Visual sandbox only: no recording, automation, or approval side effects.
 /// Keeping state above the expanded panel preserves instructions when collapsed.
@@ -65,7 +66,7 @@ struct NotchInstructionPreview: View {
                             Button { expanded.toggle() } label: {
                                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
-                        }.frame(width: 110, height: 34)
+                        }.frame(width: 78, height: 34)
                     }
                     .background(.black)
                     .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: expanded ? 0 : 12,
@@ -82,7 +83,7 @@ struct NotchInstructionPreview: View {
             }
             .frame(height: 340)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            Text("The panel stays centered beneath the camera. Collapsing it keeps the instruction.")
+            Text("The panel stays centered beneath the visible bar. Collapsing it keeps the instruction.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24).frame(width: 700)
@@ -107,7 +108,22 @@ struct NotchInstructionPreview: View {
         }
     }
 
-    private var instructionPanel: some View {
+    @ViewBuilder private var instructionPanel: some View {
+        if mode == "Computer use", phase == "Working" {
+            NotchLiveInstructionView(instruction: instruction, status: "Working…",
+                appName: "Calendar", appIcon: nil, accent: accent,
+                toolResults: [
+                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened Calendar (already running)", compactSummary: "Opened app", status: "executed")),
+                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Selected tomorrow’s date", compactSummary: "Clicked target", status: "executed"))
+                ].compactMap { $0 },
+                onCollapse: { expanded = false }, onCancel: { response = "Preview cancelled" })
+                .frame(width: 440, height: 160)
+        } else {
+            instructionDetails
+        }
+    }
+
+    private var instructionDetails: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(instruction).font(.system(size: 17, weight: .medium))
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)

@@ -309,6 +309,15 @@ final class FloatingIndicatorController: NSObject {
     enum InstructionMode { case quill, computerUse }
     var instructionMode: InstructionMode?
     private(set) var notchInstruction: String?
+    private(set) var notchToolResults: [NotchToolResult] = []
+
+    func recordComputerUseToolResult(_ event: ComputerUseTraceEvent, config: AppConfig) {
+        guard instructionMode == .computerUse, state == .transcribing,
+              let result = NotchToolResult(event),
+              !notchToolResults.contains(where: { $0.id == result.id }) else { return }
+        notchToolResults = Array((notchToolResults + [result]).suffix(3))
+        setState(state, config: config)
+    }
     private var instructionAppName = ""
     private var instructionAppIcon: NSImage?
     private var instructionAppBundleID = ""
@@ -634,6 +643,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
+        notchToolResults = []
         instructionMode = .computerUse
         notchInstruction = Self.normalizedInstructionTranscript(transcript)
         showInstructionTranscript(
@@ -645,6 +655,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showQuilInstruction(_ instruction: String, config: AppConfig) {
+        notchToolResults = []
         instructionMode = .quill
         notchInstruction = Self.normalizedInstructionTranscript(instruction)
         showInstructionTranscript(
@@ -695,6 +706,7 @@ final class FloatingIndicatorController: NSObject {
             question.cancel()
         }
         if state == .idle {
+            notchToolResults = []
             instructionMode = nil
             notchInstruction = nil
             instructionAppName = ""
@@ -744,7 +756,8 @@ final class FloatingIndicatorController: NSObject {
                     (instructionMode == .computerUse ? NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "Computer use") ?? Self.idleIndicatorIcon(config: config) : Self.idleIndicatorIcon(config: config)),
                 accent: RecordingIndicatorPalette.accent(hex: config.recordingColorHex),
                 instruction: notchInstruction, instructionStatus: instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle,
-                appName: instructionAppName, appIcon: instructionAppIcon, question: question) {
+                appName: instructionAppName, appIcon: instructionAppIcon, question: question,
+                toolResults: notchToolResults) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 return

@@ -308,10 +308,11 @@ final class ComputerUsePlannerRuntime {
                 } else {
                     result = await execute(toolCall, registry)
                 }
-                traceLog.append(traceEvent(
+                traceLog.append(ComputerUseTraceEvent(
                     kind: "tool_result",
                     title: "Tool result",
                     body: result.message,
+                    compactSummary: ComputerUseTraceFormatter.compactSummary(for: toolCall.tool, status: result.status),
                     status: "\(result.status)",
                     step: step
                 ))
