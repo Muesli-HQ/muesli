@@ -32,17 +32,18 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 
 <p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
 
-### New in 0.8.4
+### New in 0.8.5
 
 | Feature | What you can do |
 |---|---|
-| **Quill** | Ask a question, rewrite selected text, or create text at the cursor with your voice. |
-| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. Bodhan Flex also offers romanized output in Latin letters. |
-| **Live meeting transcripts** | Use Apple Speech on macOS 26+. Live transcription is off by default. |
-| **Re-summarize meetings** | Choose a different summary model for a saved meeting. |
-| **BYOK dictation** | Use OpenAI or OpenRouter when you want hosted transcription. Local by default. |
+| **Muesli at the notch** | Choose Notch in Settings → Appearance to follow recording, processing, and Computer Use progress. |
+| **Change settings with your voice** | Enable Computer Use Command in Shortcuts, then change supported settings using experimental local Gemma or your connected ChatGPT account. AI prompt settings remain manual-only. |
+| **Claude for meeting notes** | Use Anthropic with your API key or a signed-in Claude Code installation. Meeting content is sent to Claude for summaries. |
+| **Re-transcribe saved meetings** | Give a meeting another pass with a downloaded meeting model and retained audio. |
+| **Press to toggle** | In Shortcuts → Dictation, choose Press to toggle and assign a modifier + key shortcut. Press once to start, again to stop. |
+| **Bodhan in your preferred script** | Choose Native, Mixed, or Romanized output for Bodhan Flex, including Indic speech in Latin letters. |
 
-This release also adds S1-mini English cleanup, Apple Shortcuts and Siri actions, clearer macOS calendar management, and iCloud reconnection recovery. [Read the full 0.8.4 release notes](docs/release-notes/0.8.4.md).
+This release also adds six- and twelve-hour calendar windows, hiding individual events from the status-bar menu, easier shortcut-conflict recovery, and improved update-window presentation. Dictation and meeting transcription remain local by default. [Read the full 0.8.5 release notes](docs/release-notes/0.8.5.md).
 
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
@@ -69,7 +70,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
 - **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech (Flex includes native, mixed-script, and romanized output), and experimental Gemma 4 E2B.
-- **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
+- **Hold-to-talk & hands-free** — Hold the hotkey for quick dictation, double-tap for sustained recording, or choose Press to toggle with a modifier + key shortcut.
 - **Quill voice writing and answers** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
@@ -78,7 +79,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 - **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
 - **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
 - **Join & Transcribe** — Extracts meeting URLs from calendar events (Zoom, Google Meet, Teams, Webex, Chime, FaceTime). Split-button notification: "Join & Transcribe" opens the meeting + starts transcription, "Join Only" opens without transcribing, "Transcribe Only" starts transcription without joining. Platform icons (Zoom, Meet) in the notification panel.
-- **macOS Calendar integration** — See upcoming meetings from calendars connected to your Mac, including iCloud, Google, and Exchange, in the Coming Up section and status bar. Choose whether Muesli watches today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
+- **macOS Calendar integration** — See upcoming meetings from calendars connected to your Mac, including iCloud, Google, and Exchange, in the Coming Up section and status bar. Choose the next six or twelve hours, today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
 - **Import Audio** — Import m4a, mp4, wav, or mp3 files for offline transcription, speaker diarization, title generation, summaries, and saved meeting history.
 - **Meeting export** — Export meeting notes or transcripts as PDF (paginated US Letter) or Markdown. Format picker in the save panel, auto-opens the exported file.
 - **Meeting templates** — Built-in and custom templates for meeting notes. Choose a template before or after recording — re-summarize any meeting with a different template.
