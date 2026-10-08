@@ -637,6 +637,38 @@ struct ComputerUseSettingsTests {
         #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
     }
 
+    @Test("a disabled Computer Use shortcut can be repaired without changing Dictation or enabling Computer Use")
+    func repairDisabledComputerUseShortcut() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.dictationHotkey = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+        initial.computerUseHotkey = initial.dictationHotkey
+        initial.enableComputerUseHotkey = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+
+        #expect(!controller.updateComputerUseHotkeyEnabled(true).didUpdate)
+        // The Change button uses the shared settings path even with the toggle off.
+        let replacement = HotkeyConfig(keyCode: 61, label: "Right Option")
+        try await controller.applySetting("cua_hotkey", value: ShortcutAssignment.value(for: replacement))
+        let saved = configStore.load()
+        #expect(saved.computerUseHotkey == replacement)
+        #expect(saved.dictationHotkey == initial.dictationHotkey)
+        #expect(saved.enablePushToTalk == initial.enablePushToTalk)
+        #expect(!saved.enableComputerUseHotkey)
+        #expect(ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
+            currentHotkey: saved.computerUseHotkey, dictationHotkey: saved.dictationHotkey,
+            meetingRecordingHotkey: saved.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: saved.enableMeetingRecordingHotkey).result.didUpdate)
+    }
+
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")
     func shortcutValueRules() {
         for target in ShortcutAssignment.allCases {

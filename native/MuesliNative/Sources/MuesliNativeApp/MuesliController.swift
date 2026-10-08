@@ -471,6 +471,7 @@ public final class MuesliController: NSObject {
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
+    private let updateFocusRecovery = SparkleUpdateFocusRecovery()
     private var busyStatusGeneration = 0
 
     let appState = AppState()
@@ -5663,7 +5664,12 @@ public final class MuesliController: NSObject {
     }
 
     @objc func checkForUpdates() {
-        presentStandardUpdateCheck()
+        updateFocusRecovery.cancel()
+        // NSMenu may restore the dashboard's key window as tracking ends.
+        // Let that finish before Sparkle presents or refocuses its own UI.
+        SparkleUpdatePresentation.afterMenuTracking { [weak self] in
+            self?.presentStandardUpdateCheck()
+        }
     }
 
     private func presentStandardUpdateCheck() {
@@ -5671,57 +5677,26 @@ public final class MuesliController: NSObject {
             appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
             return
         }
-        let existingWindows = Set(NSApplication.shared.windows.map(ObjectIdentifier.init))
         activateApplicationForSparkle()
         // Always enter Sparkle's standard path. Sparkle uses this same call to
         // refocus existing updater UI, so local availability gates would make
         // in-app buttons less reliable than the status-bar action.
         updaterController.checkForUpdates(nil)
-        focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
+        focusUpdaterWindowsAfterUpdateAction()
     }
 
-    private func focusUpdaterWindowsCreatedAfterUpdateAction(excluding existingWindows: Set<ObjectIdentifier>) {
-        for delay in [80_000_000, 240_000_000, 600_000_000, 1_200_000_000, 2_500_000_000] {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay))
-                self?.focusUpdaterWindows(excluding: existingWindows)
+    private func focusUpdaterWindowsAfterUpdateAction() {
+        updateFocusRecovery.start { [weak self] in
+            guard let self else { return true }
+            let windows = NSApplication.shared.windows.filter(SparkleUpdatePresentation.isUpdaterWindow)
+            guard !windows.isEmpty else { return false }
+            self.activateApplicationForSparkle()
+            for window in windows {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
             }
-        }
-    }
-
-    private func focusUpdaterWindows(excluding existingWindows: Set<ObjectIdentifier>) {
-        let updaterWindows = NSApplication.shared.windows.filter { window in
-            guard window.isVisible else { return false }
-            return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)
-        }
-        guard !updaterWindows.isEmpty else { return }
-
-        activateApplicationForSparkle()
-        for window in updaterWindows {
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    private func isLikelyUpdaterWindow(_ window: NSWindow) -> Bool {
-        let className = String(describing: type(of: window))
-        if className.localizedCaseInsensitiveContains("SPU") ||
-            className.localizedCaseInsensitiveContains("SU") ||
-            className.localizedCaseInsensitiveContains("Sparkle") {
             return true
         }
-
-        // Sparkle's standard UI can present through AppKit alert/window
-        // classes. Keep this semantic fallback narrow and only apply it to
-        // windows created after the update action.
-        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return false }
-        if title.localizedCaseInsensitiveContains("update") ||
-            title.localizedCaseInsensitiveContains("updater") ||
-            title.localizedCaseInsensitiveContains("new version") ||
-            title.localizedCaseInsensitiveContains("available") {
-            return true
-        }
-        return false
     }
 
     private func showBusyStatus(_ message: String, restoring previousStatus: SparkleUpdateStatus) {
