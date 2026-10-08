@@ -444,6 +444,7 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
     case korean = "ko"
     case russian = "ru"
     case arabic = "ar"
+    case ukrainian = "uk"
 
     static let defaultLanguage: Self = .auto
 
@@ -463,6 +464,7 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
         case .korean: return 14
         case .russian: return 11
         case .arabic: return 7
+        case .ukrainian: return 19
         }
     }
 
@@ -481,6 +483,7 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
         case .korean: return "Korean"
         case .russian: return "Russian"
         case .arabic: return "Arabic"
+        case .ukrainian: return "Ukrainian"
         }
     }
 
@@ -658,6 +661,7 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
     case korean = "ko"
     case russian = "ru"
     case arabic = "ar"
+    case ukrainian = "uk"
 
     static let defaultLanguage: Self = .auto
 
@@ -676,6 +680,7 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
         case .korean: return "Korean"
         case .russian: return "Russian"
         case .arabic: return "Arabic"
+        case .ukrainian: return "Ukrainian"
         }
     }
 

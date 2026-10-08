@@ -890,6 +890,8 @@ struct Nemotron35LanguageTests {
         #expect(Nemotron35Language.spanish.promptId == 3)
         #expect(Nemotron35Language.chinese.promptId == 4)
         #expect(Nemotron35Language.japanese.promptId == 10)
+        #expect(Nemotron35Language.ukrainian.promptId == 19)
+        #expect(Nemotron35Language.resolved("uk") == .ukrainian)
     }
 
     @Test("default is auto-detect")
@@ -1000,5 +1002,18 @@ struct WhisperKitLanguageTests {
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small") == .auto)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
+    }
+
+    @Test("Ukrainian persists and pins WhisperKit decoding instead of falling back to auto-detect")
+    func ukrainianPinsDecoding() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"whisper_language":"uk"}"#.utf8))
+        #expect(decoded.resolvedWhisperLanguage == .ukrainian)
+        #expect(decoded.whisperLanguage == "uk")
+        #expect(WhisperKitLanguage.ukrainian.label == "Ukrainian")
+
+        let options = WhisperKitTranscriber.makeDecodeOptions(language: .ukrainian, modelName: "large-v3-v20240930_626MB")
+        #expect(options.language == "uk")
+        #expect(!options.detectLanguage)
+        #expect(WhisperKitTranscriber.makeDecodeOptions(language: .ukrainian, modelName: "small.en").language == nil)
     }
 }
