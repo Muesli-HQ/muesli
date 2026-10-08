@@ -1335,6 +1335,18 @@ public final class MuesliController: NSObject {
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
             appState.selectedMeetingRecord = nil
+        case .meetingRetranscription:
+            if let meeting = (try? dictationStore.recentMeetings(limit: 100))?.first(where: {
+                $0.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    && ($0.status == .completed || $0.status == .failed)
+            }) {
+                showMeetingDocument(id: meeting.id)
+            } else {
+                appState.selectedTab = .meetings
+                appState.meetingsNavigationState = .browser
+                appState.selectedMeetingID = nil
+                appState.selectedMeetingRecord = nil
+            }
         case .meetingPeople:
             guard let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id else {
                 completeFeatureTour()
@@ -2851,11 +2863,13 @@ public final class MuesliController: NSObject {
         capture.session.setPreferredMicrophoneInputDeviceID(deviceID)
     }
 
-    func updateUpcomingMeetingsWindow(dayCount: Int) {
-        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: dayCount).dayCount
-        guard config.upcomingMeetingsDayCount != resolvedDayCount else { return }
+    func updateUpcomingMeetingsWindow(_ window: UpcomingMeetingsWindow) {
+        guard config.upcomingMeetingsWindow != window else { return }
 
-        updateConfig { $0.upcomingMeetingsDayCount = resolvedDayCount }
+        updateConfig {
+            $0.upcomingMeetingsDayCount = window.dayCount
+            $0.upcomingMeetingsHourCount = window.hourCount
+        }
         Task {
             let refreshed = await refreshUpcomingCalendarEvents()
             guard refreshed else { return }
@@ -3828,10 +3842,12 @@ public final class MuesliController: NSObject {
         let refreshNow = Date()
         let refreshStartOfDay = Calendar.current.startOfDay(for: refreshNow)
         let disabledIDs = Set(config.disabledCalendarIDs)
-        let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let window = config.upcomingMeetingsWindow
+        let dayCount = window.dayCount
         guard let result = await calendarEventQuery.load({
             CalendarMonitor.upcomingEvents(
                 daysAhead: dayCount,
+                hoursAhead: window.hourCount,
                 disabledCalendarIDs: disabledIDs,
                 now: refreshNow
             )
@@ -3839,9 +3855,9 @@ public final class MuesliController: NSObject {
         let ekEvents = result.events
         let observedEventIDs = Set(ekEvents.map(\.id))
         let currentDisabledIDs = Set(config.disabledCalendarIDs)
-        let currentDayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let currentWindow = config.upcomingMeetingsWindow
         let currentStartOfDay = Calendar.current.startOfDay(for: Date())
-        guard dayCount == currentDayCount,
+        guard window == currentWindow,
               disabledIDs == currentDisabledIDs,
               refreshStartOfDay == currentStartOfDay else {
             return false
@@ -6888,6 +6904,11 @@ public final class MuesliController: NSObject {
         statusBarController?.setStatus("Meeting: \(activeMeetingDisplayTitle())")
         statusBarController?.refresh()
         syncAppState()
+    }
+
+    @objc func hideCalendarEventFromMenuItem(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? CalendarMenuMeetingPayload else { return }
+        hideCalendarEvent(payload.event)
     }
 
     @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {

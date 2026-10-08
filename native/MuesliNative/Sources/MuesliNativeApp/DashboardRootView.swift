@@ -130,18 +130,18 @@ struct DashboardRootView: View {
                                 dy: -globalRootFrame.minY
                             )
                         }
-                    if step.target == nil || targetFrame != nil {
-                        FeatureTourOverlay(
-                            tour: tour,
-                            stepIndex: appState.featureTourStepIndex,
-                            spotlightRect: targetFrame,
-                            containerSize: proxy.size,
-                            onBack: { controller.showPreviousFeatureTourStep() },
-                            onNext: { controller.showNextFeatureTourStep() },
-                            onDismiss: { controller.dismissFeatureTour() }
-                        )
-                        .zIndex(100)
-                    }
+                    // Missing or not-yet-laid-out targets use the centered callout.
+                    // Keep navigation available even for an empty meeting library.
+                    FeatureTourOverlay(
+                        tour: tour,
+                        stepIndex: appState.featureTourStepIndex,
+                        spotlightRect: targetFrame,
+                        containerSize: proxy.size,
+                        onBack: { controller.showPreviousFeatureTourStep() },
+                        onNext: { controller.showNextFeatureTourStep() },
+                        onDismiss: { controller.dismissFeatureTour() }
+                    )
+                    .zIndex(100)
                 }
             }
         }

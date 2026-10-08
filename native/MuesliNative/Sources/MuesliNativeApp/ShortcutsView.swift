@@ -19,32 +19,38 @@ struct ShortcutsView: View {
     }
 
     private var settingsContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-                Text("Shortcuts")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+                    Text("Shortcuts")
+                        .font(MuesliTheme.title1())
+                        .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose your preferred shortcuts for dictation and computer use commands.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
+                    Text("Choose your preferred shortcuts for dictation and computer use commands.")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
 
-                dictationShortcutSection
+                    dictationShortcutSection
 
-                computerUseShortcutSection
+                    computerUseShortcutSection
 
-                quilShortcutSection
+                    quilShortcutSection
 
-                meetingRecordingShortcutSection
+                    meetingRecordingShortcutSection
 
-                doubleTapSection
+                    doubleTapSection
 
-                resetButton
+                    resetButton
+                }
+                .padding(.horizontal, MuesliTheme.spacing32)
+                .padding(.top, MuesliTheme.pageTop)
+                .padding(.bottom, MuesliTheme.spacing32)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, MuesliTheme.spacing32)
-            .padding(.top, MuesliTheme.pageTop)
-            .padding(.bottom, MuesliTheme.spacing32)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onAppear { scrollToFeatureTourTarget(using: proxy) }
+            .onChange(of: appState.activeFeatureTourTarget) { _, _ in
+                scrollToFeatureTourTarget(using: proxy)
+            }
         }
         .onAppear {
             controller.beginInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
@@ -81,6 +87,16 @@ struct ShortcutsView: View {
         }
     }
 
+    private func scrollToFeatureTourTarget(using proxy: ScrollViewProxy) {
+        guard let target = appState.activeFeatureTourTarget,
+              target == .computerUseShortcut || target == .dictationRecordingMode else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(target.rawValue, anchor: .center)
+            }
+        }
+    }
+
     private var recordingTarget: ShortcutTarget? { recorder.target }
 
     private var isDictationCombinationToggle: Bool {
@@ -101,6 +117,8 @@ struct ShortcutsView: View {
             .frame(width: 200)
             .help("Choose Press to toggle to record a modifier + key shortcut when needed.")
         }
+        .id(FeatureTourTarget.dictationRecordingMode.rawValue)
+        .featureTourTarget(.dictationRecordingMode)
         .disabled(!isPushToTalkEnabled || recordingTarget != nil)
         .opacity(isPushToTalkEnabled ? 1 : 0.55)
     }
@@ -195,6 +213,8 @@ struct ShortcutsView: View {
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
             }
+            .id(FeatureTourTarget.computerUseShortcut.rawValue)
+            .featureTourTarget(.computerUseShortcut)
 
             Divider()
                 .background(MuesliTheme.surfaceBorder)
