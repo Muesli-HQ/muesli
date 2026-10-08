@@ -15,10 +15,7 @@ struct MuesliSettingControl: View {
         Group {
             if let setting = definitions.first(where: { $0.id == id }) {
                 let state = filteredSnapshot(setting)
-                if let preview = controller.appState.activeFeatureTourTarget?.settingPreview,
-                   preview.id == id {
-                    tourOptions(state, highlighted: preview.highlightedChoices)
-                } else if Set(state.choices.map(\.id)) == ["on", "off"] {
+                if Set(state.choices.map(\.id)) == ["on", "off"] {
                     HStack {
                         if state.current == "off", state.unavailable["on"] != nil,
                            let requestPermission = setting.requestPermission {
@@ -85,51 +82,6 @@ struct MuesliSettingControl: View {
             get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
                 Button("OK") { errorMessage = nil }
             } message: { Text(errorMessage ?? "") }
-    }
-
-    /// An inline menu preview has no bindings or actions, so touring cannot save a setting.
-    private func tourOptions(_ state: MuesliSetting.Snapshot, highlighted: Set<String>) -> some View {
-        // Claude Code is hidden from the live picker until installed. The tour can
-        // explain it without making it selectable or bypassing that prerequisite.
-        let choices = id == "summary_source"
-            ? MeetingSummaryBackendOption.all.map { MuesliSetting.Choice(id: $0.backend, label: $0.label) }
-            : state.choices
-        let current = choices.first(where: { $0.id == state.current })?.label ?? state.current
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Tour preview · options")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
-            ForEach(choices, id: \.id) { choice in
-                HStack(spacing: 8) {
-                    Text(choice.label)
-                    Spacer(minLength: 4)
-                    if highlighted.contains(choice.id) {
-                        Image(systemName: "sparkles")
-                            .accessibilityLabel("Featured in this update")
-                    }
-                }
-                .font(MuesliTheme.body())
-                .foregroundStyle(highlighted.contains(choice.id) ? MuesliTheme.accent : MuesliTheme.textSecondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(highlighted.contains(choice.id) ? MuesliTheme.accent.opacity(0.12) : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                if choice.id == "claude_code", !state.choices.contains(where: { $0.id == choice.id }) {
-                    Text("Requires an installed Claude Code CLI")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                }
-            }
-            Divider()
-            Text("Saved: \(current)")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
-        }
-        .padding(10)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
-        .accessibilityElement(children: .contain)
     }
 
     private func filteredSnapshot(_ setting: MuesliSetting) -> MuesliSetting.Snapshot {

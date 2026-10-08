@@ -757,9 +757,7 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func compactHeaderActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            if appState.activeFeatureTourTarget == .meetingRetranscription {
-                recordingRecoveryHeaderAction(for: meeting)
-            }
+            recordingRecoveryHeaderAction(for: meeting)
             resumeChooserIfAvailable(for: meeting)
             exportMenu(for: meeting)
 
@@ -868,10 +866,8 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func recordingRecoveryHeaderAction(for meeting: MeetingRecord) -> some View {
-        if Self.showsRecordingRecoveryAction(for: meeting) || appState.activeFeatureTourTarget == .meetingRetranscription {
-            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
-                .featureTourTarget(.meetingRetranscription)
-        }
+        retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
+            .featureTourTarget(.meetingRetranscription)
     }
 
     @ViewBuilder

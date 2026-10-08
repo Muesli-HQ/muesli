@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SwiftUI
 @testable import MuesliNativeApp
 
 @Suite("Feature tour")
@@ -69,6 +70,16 @@ struct FeatureTourTests {
         #expect(calloutFrame.maxX <= container.width - 20)
         #expect(calloutFrame.minY >= 20)
         #expect(calloutFrame.maxY <= container.height - 20)
+    }
+
+    @Test("tour background hit region leaves the real control interactive")
+    func spotlightAllowsInteraction() {
+        let shape = FeatureTourDimmingShape(
+            spotlight: CGRect(x: 100, y: 100, width: 200, height: 60), cornerRadius: 10
+        )
+        let path = shape.path(in: CGRect(x: 0, y: 0, width: 900, height: 600))
+        #expect(!path.contains(CGPoint(x: 200, y: 130), eoFill: true))
+        #expect(path.contains(CGPoint(x: 50, y: 50), eoFill: true))
     }
 
     @Test("missing meeting targets keep the callout centered and available")

@@ -87,17 +87,6 @@ enum FeatureTourTarget: String, Hashable {
         }
     }
 
-    // Presentation only: these IDs identify choices to explain, never values to apply.
-    var settingPreview: (id: String, highlightedChoices: Set<String>)? {
-        switch self {
-        case .meetingSummaryProvider: return ("summary_source", ["anthropic", "claude_code"])
-        case .dictationRecordingMode: return ("dictation_activation", ["toggle"])
-        case .bodhanFlexCard: return ("bodhan_output", ["romanized"])
-        case .computerUseShortcut: return ("cua_shortcut", ["on"])
-        default: return nil
-        }
-    }
-
     var modelsCategory: ModelsCategory? {
         guard case let .models(category) = navigationRoute else { return nil }
         return category
@@ -168,7 +157,7 @@ enum FeatureTourCatalog {
                 id: "claude-summaries",
                 eyebrow: "MEETING NOTES",
                 title: "Claude, now for meeting notes",
-                message: "Choose Claude Code or Anthropic API as your summary backend. Use a signed-in Claude Code installation or your Anthropic API key. Meeting content is sent to Claude for summaries.",
+                message: "Open the highlighted Summary backend menu and choose Anthropic or, when installed, Claude Code. Use a signed-in Claude Code installation or your Anthropic API key. Meeting content is sent to Claude for summaries.",
                 systemImage: "text.bubble",
                 target: .meetingSummaryProvider
             ),

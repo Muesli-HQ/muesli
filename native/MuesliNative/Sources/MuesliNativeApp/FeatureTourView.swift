@@ -197,10 +197,13 @@ struct FeatureTourOverlay: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear
-                .contentShape(Rectangle())
-
             if let expandedSpotlight {
+                // Consume background clicks but let the real highlighted control
+                // receive input, including its native popup menu.
+                Color.clear
+                    .contentShape(FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10), eoFill: true)
+                    .onTapGesture {}
+
                 FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10)
                     .fill(
                         Color.black.opacity(0.72),
@@ -216,7 +219,8 @@ struct FeatureTourOverlay: View {
                     .allowsHitTesting(false)
             } else {
                 Color.black.opacity(0.72)
-                    .allowsHitTesting(false)
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
             }
 
             callout
@@ -395,7 +399,7 @@ struct FeatureTourInvitationView: View {
     }
 }
 
-private struct FeatureTourDimmingShape: Shape {
+struct FeatureTourDimmingShape: Shape {
     let spotlight: CGRect
     let cornerRadius: CGFloat
 
