@@ -101,23 +101,23 @@ struct NotchIndicatorTests {
         indicator.recordComputerUseToolResult(observation, config: config)
         #expect(indicator.notchToolResults.isEmpty)
         for step in 1...4 {
-            let event = ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened\n app \(step)", status: "executed", step: step)
+            let event = ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Full tool response", compactSummary: "Opened\n app \(step)", status: "executed", step: step)
             indicator.recordComputerUseToolResult(event, config: config)
             indicator.recordComputerUseToolResult(event, config: config)
         }
         #expect(indicator.notchToolResults.map(\.message) == ["Opened app 2", "Opened app 3", "Opened app 4"])
         indicator.setTranscribingTitle("Reading screen", config: config)
         #expect(indicator.notchToolResults.count == 3)
-        let long = try #require(NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: String(repeating: "x", count: 300), status: "failed")))
+        let long = try #require(NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Full tool response", compactSummary: String(repeating: "x", count: 300), status: "failed")))
         #expect(long.message.count == 180)
         #expect(long.message.hasSuffix("…"))
         #expect(long.failed)
         indicator.showComputerUseTranscript("Open Calendar", config: config)
         #expect(indicator.notchToolResults.isEmpty)
-        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened Calendar"), config: config)
+        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Full tool response", compactSummary: "Opened Calendar"), config: config)
         indicator.setState(.idle, config: config)
         #expect(indicator.notchToolResults.isEmpty)
-        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Late result"), config: config)
+        indicator.recordComputerUseToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Full tool response", compactSummary: "Late result"), config: config)
         #expect(indicator.notchToolResults.isEmpty)
     }
 

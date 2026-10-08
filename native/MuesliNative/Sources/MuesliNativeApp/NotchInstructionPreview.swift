@@ -113,8 +113,8 @@ struct NotchInstructionPreview: View {
             NotchLiveInstructionView(instruction: instruction, status: "Working…",
                 appName: "Calendar", appIcon: nil, accent: accent,
                 toolResults: [
-                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened Calendar (already running)", status: "executed")),
-                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Selected tomorrow’s date", status: "executed"))
+                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Opened Calendar (already running)", compactSummary: "Opened app", status: "executed")),
+                    NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Selected tomorrow’s date", compactSummary: "Clicked target", status: "executed"))
                 ].compactMap { $0 },
                 onCollapse: { expanded = false }, onCancel: { response = "Preview cancelled" })
                 .frame(width: 440, height: 160)

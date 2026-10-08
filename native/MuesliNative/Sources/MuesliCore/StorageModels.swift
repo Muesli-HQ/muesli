@@ -246,6 +246,8 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
     public let kind: String
     public let title: String
     public let body: String
+    /// Short display copy for compact progress surfaces; body retains the complete response.
+    public let compactSummary: String?
     public let status: String?
     public let step: Int?
     public let timestamp: String
@@ -255,6 +257,7 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
         kind: String,
         title: String,
         body: String,
+        compactSummary: String? = nil,
         status: String? = nil,
         step: Int? = nil,
         timestamp: String = ISO8601DateFormatter().string(from: Date())
@@ -263,6 +266,7 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
         self.kind = kind
         self.title = title
         self.body = body
+        self.compactSummary = compactSummary
         self.status = status
         self.step = step
         self.timestamp = timestamp

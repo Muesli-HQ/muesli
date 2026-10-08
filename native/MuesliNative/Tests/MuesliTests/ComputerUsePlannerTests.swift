@@ -1351,6 +1351,53 @@ struct ComputerUsePlannerRuntimeTests {
 @Suite("Computer Use run diagnostics")
 struct ComputerUseRunDiagnosticsTests {
     @Test @MainActor
+    func compactSummariesPreserveFullTimelineResponses() async throws {
+        let payload = String(repeating: "Raw page text and DOM JSON {\"private\":true}\n", count: 100)
+        let calls: [ComputerUseToolName] = [.pageGetText, .pageQueryDOM, .listApps, .listWindows, .listBrowserTabs, .pasteText]
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { request in
+                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                    tool: request.step <= calls.count ? calls[request.step - 1] : .finish,
+                    appBundleID: "com.google.Chrome", text: "Example text", selector: "a"))
+            },
+            execute: { _, _ in .executed(payload) }
+        )
+        let result = await runtime.run(command: "Read and paste")
+        #expect(result.status == .done, "\(result.message)")
+        let events = result.traceEvents.filter { $0.kind == "tool_result" }
+        #expect(events.count == calls.count)
+        #expect(events.allSatisfy { $0.body == payload })
+        #expect(events.compactMap { NotchToolResult($0)?.message } == [
+            "Read page text", "Inspected page elements", "Listed apps", "Listed windows", "Listed browser tabs", "Pasted text"
+        ])
+        let decoded = try JSONDecoder().decode([ComputerUseTraceEvent].self, from: JSONEncoder().encode(events))
+        #expect(decoded == events)
+        let legacy = ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: payload)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        json.removeValue(forKey: "compactSummary")
+        let oldEvent = try JSONDecoder().decode(ComputerUseTraceEvent.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(oldEvent.body == payload)
+        #expect(NotchToolResult(oldEvent) == nil)
+    }
+
+    @Test("Compact summaries distinguish unsuccessful outcomes")
+    func compactSummaryOutcomes() {
+        for tool in ComputerUseToolName.allCases {
+            for status in [ComputerUseExecutionResult.Status.executed, .failed, .unsupported, .cancelled, .needsConfirmation] {
+                let summary = ComputerUseTraceFormatter.compactSummary(for: tool, status: status)
+                #expect(!summary.isEmpty && summary.count < 80)
+                if status != .executed {
+                    #expect(summary != ComputerUseTraceFormatter.compactSummary(for: tool, status: .executed))
+                }
+            }
+        }
+        #expect(ComputerUseTraceFormatter.compactSummary(for: .pageGetText, status: .failed) == "Read page text — failed")
+        #expect(ComputerUseTraceFormatter.compactSummary(for: .launchApp, status: .needsConfirmation) == "Open app — needs approval")
+    }
+
+    @Test @MainActor
     func liveProgressPrecedesPlannerCompletion() async {
         var events: [ComputerUseTraceEvent] = []
         let runtime = ComputerUsePlannerRuntime(

@@ -2,15 +2,15 @@ import AppKit
 import SwiftUI
 import MuesliCore
 
-/// A bounded, readable excerpt of an executed tool's response, not its raw arguments.
+/// A bounded display summary. Full tool responses belong in the Timeline trace.
 struct NotchToolResult: Identifiable, Equatable {
     let id: UUID
     let message: String
     let failed: Bool
 
     init?(_ event: ComputerUseTraceEvent) {
-        guard event.kind == "tool_result" else { return nil }
-        let text = event.body.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard event.kind == "tool_result", let summary = event.compactSummary else { return nil }
+        let text = summary.prefix(181).split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         guard !text.isEmpty else { return nil }
         id = event.id
         message = text.count > 180 ? String(text.prefix(179)) + "…" : text
@@ -458,7 +458,7 @@ struct NotchLiveInstructionView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.75))
                     .frame(height: 24, alignment: .top)
-                    .help(result.message)
+                    .help("Full response available in Timeline")
                 }
             }
             if requiresReview {
