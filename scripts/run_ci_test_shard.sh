@@ -127,6 +127,7 @@ case "${shard}" in
       MeetingMonitoringModePolicyTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
+      SignalCallDetectionAdapterTests
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
