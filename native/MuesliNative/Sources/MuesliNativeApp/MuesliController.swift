@@ -379,7 +379,16 @@ public final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
-    lazy var meetingChatCoordinator = MeetingChatCoordinator(databaseURL: dictationStore.resolvedDatabaseURL)
+    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    var meetingChatCoordinator: MeetingChatCoordinator {
+        get {
+            if let existing = storedMeetingChatCoordinator { return existing }
+            let coordinator = MeetingChatCoordinator(databaseURL: dictationStore.resolvedDatabaseURL)
+            storedMeetingChatCoordinator = coordinator
+            return coordinator
+        }
+        set { storedMeetingChatCoordinator = newValue }
+    }
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
@@ -1379,6 +1388,7 @@ public final class MuesliController: NSObject {
     }
 
     func syncAppState() {
+        storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
             limit: appState.timelinePageSize,
             offset: 0,

@@ -14,7 +14,9 @@ private actor MeetingChatWorker {
         let history = try store.turns(sessionID: turn.sessionID).filter {
             $0.ordinal < turn.ordinal && $0.ordinal >= (session?.contextStartOrdinal ?? 0) && $0.scope == turn.scope && $0.state == .completed
         }
-        let broad = ["recap", "summar", "decisions", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
+        let broadIntent = ["recap", "summar", "decisions", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
+        // A unique topic must win over broad prompt vocabulary, even in a recap or draft.
+        let broad = broadIntent && ![" about ", " regarding ", " related to ", " for project "].contains { turn.question.localizedCaseInsensitiveContains($0) }
         var evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question), broadRecap: broad)
         // Include exactly the history that fits the same budget used by prompt construction.
         var selected: [MeetingChatTurn] = []; var bytes = 0
@@ -27,12 +29,11 @@ private actor MeetingChatWorker {
             evidence.dependencies += inherited
         }
         evidence.dependencies = Array(Set(evidence.dependencies))
-        try store.attachEvidence(turnID: turn.id, dependencies: evidence.dependencies)
-        try store.setTurnState(id: turn.id, state: .writing)
+        try store.attachEvidence(turnID: turn.id, dependencies: evidence.dependencies, attemptID: turn.attemptID)
         return (evidence, selected)
     }
     func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool) throws -> Bool {
-        try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft)
+        try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID)
     }
 }
 
@@ -52,6 +53,8 @@ final class MeetingChatCoordinator {
     var composerDraft = ""
     var errorMessage: String?
     var fastAnswers = true
+    var scrollAnchors: [UUID: UUID] = [:]
+    private(set) var sourceMutationVersion: Int64 = 0
     private(set) var sourceChoices: [MeetingChatSourceChoice] = []
     var scope: MeetingChatScope { sessions.first { $0.id == selectedSessionID }?.scope ?? .init() }
     var isBusy: Bool { activeRequestID != nil }
@@ -59,6 +62,7 @@ final class MeetingChatCoordinator {
     init(databaseURL: URL, generator: any MeetingTextGenerating = MeetingTextGenerationClient()) {
         store = .init(databaseURL: databaseURL); worker = .init(databaseURL: databaseURL); self.generator = generator
         do { try store.interruptPendingTurns(); reload() } catch { errorMessage = error.localizedDescription }
+        sourceMutationVersion = (try? store.sourceMutationVersion()) ?? 0
         let worker = worker
         Task { do { sourceChoices = try await worker.choices() } catch { errorMessage = "Could not prepare meeting search. Retry by asking a question." } }
     }
@@ -108,7 +112,7 @@ final class MeetingChatCoordinator {
         } catch { errorMessage = error.localizedDescription }
     }
     private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool) {
-        let requestID = UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
+        let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
         let worker = worker; let generator = generator
         tasks[requestID] = Task {
             defer {
@@ -132,14 +136,14 @@ final class MeetingChatCoordinator {
                 guard activeRequestID == requestID else { return }
                 let stopped = Task.isCancelled || error is CancellationError
                 let message = stopped ? nil : (error is MeetingChatError || error is MeetingTextGenerationError ? error.localizedDescription : "Meeting AI request failed. Please retry or check your connection settings.")
-                try? store.setTurnState(id: turn.id, state: stopped ? .stopped : .failed, error: message)
+                try? store.setTurnState(id: turn.id, state: stopped ? .stopped : .failed, error: message, attemptID: turn.attemptID)
             }
         }
     }
     func stop() {
         guard let id = activeRequestID else { return }
         tasks[id]?.cancel()
-        if let turnID = activeTurnID { try? store.setTurnState(id: turnID, state: .stopped) }
+        if let turnID = activeTurnID { try? store.setTurnState(id: turnID, state: .stopped, attemptID: id) }
         activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""; reload()
     }
     func deleteChat(id: UUID) {
@@ -152,4 +156,14 @@ final class MeetingChatCoordinator {
     func refreshChoices() async { do { sourceChoices = try await worker.choices() } catch { errorMessage = error.localizedDescription } }
     func source(_ id: Int64) async -> MeetingChatSourceSnapshot? { try? await worker.source(id) }
     func waitForIdle() async { while let task = tasks.values.first { await task.value } }
+    func refreshForSourceChanges() {
+        guard let version = try? store.sourceMutationVersion(), version != sourceMutationVersion else { return }
+        sourceMutationVersion = version
+        if let sessionID = activeSessionID, let turnID = activeTurnID {
+            let current = try? store.turns(sessionID: sessionID).first { $0.id == turnID }
+            if current == nil || current?.state == .sourceDeleted { stop() }
+        }
+        reload()
+        Task { await refreshChoices() }
+    }
 }

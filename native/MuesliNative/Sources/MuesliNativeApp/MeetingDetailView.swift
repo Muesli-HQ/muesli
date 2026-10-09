@@ -699,12 +699,12 @@ struct MeetingDetailView: View {
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: appState.meetingChatDocumentTarget?.citation.kind == .manualNotes ? meeting.manualNotes : Self.notesContent(for: meeting),
-                        highlightedExcerpt: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? nil : $0.citation.excerpt })
+                        highlightedRange: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript, highlightedExcerpt: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? $0.citation.excerpt : nil })
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, highlightedRange: appState.meetingChatDocumentTarget.flatMap { $0.showsTranscript ? $0.locate(in: meeting.rawTranscript) : nil })
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -2192,12 +2192,12 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
-    var highlightedExcerpt: String? = nil
+    var highlightedRange: NSRange? = nil
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String, highlightedExcerpt: String? = nil) {
+    init(transcript: String, highlightedRange: NSRange? = nil) {
         self.transcript = transcript
-        self.highlightedExcerpt = highlightedExcerpt
+        self.highlightedRange = highlightedRange
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
@@ -2225,15 +2225,15 @@ private struct MeetingTranscriptView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
-        .onChange(of: highlightedExcerpt) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
         .onChange(of: transcript) { _, newTranscript in
             messages = TranscriptChatMessage.messages(from: newTranscript)
         }
         }
     }
     private var highlightedMessageID: Int? {
-        guard let excerpt = highlightedExcerpt, let range = transcript.range(of: excerpt) else { return nil }
-        return transcript[..<range.lowerBound].split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        guard let range = highlightedRange else { return nil }
+        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range)
     }
 }
 

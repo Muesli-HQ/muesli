@@ -11,7 +11,10 @@ struct MeetingChatView: View {
     @State private var deletingChat: UUID?
     @State private var renamingChat: UUID?
     @State private var newTitle = ""
-    @State private var scrollAnchor: UUID?
+    private var scrollAnchor: Binding<UUID?> {
+        Binding(get: { coordinator.selectedSessionID.flatMap { coordinator.scrollAnchors[$0] } },
+                set: { if let session = coordinator.selectedSessionID { coordinator.scrollAnchors[session] = $0 } })
+    }
     @State private var editingDraft: MeetingChatTurn?
     @State private var participantPrompt = false
     @State private var participantName = ""
@@ -48,6 +51,7 @@ struct MeetingChatView: View {
                     HStack {
                         Button(scopeLabel, systemImage: "line.3.horizontal.decrease") { showScope = true }.accessibilityIdentifier("meeting-chat-scope")
                         if let start = coordinator.scope.startDate { Text("From \(start.formatted(date: .abbreviated, time: .omitted))").font(.caption) }
+                        if let end = coordinator.scope.endDateExclusive { Text("through \(end.addingTimeInterval(-0.001).formatted(date: .abbreviated, time: .omitted))").font(.caption) }
                         Spacer()
                     }.padding(16)
                     ScrollView {
@@ -56,11 +60,15 @@ struct MeetingChatView: View {
                                 Text("Ask about decisions, details, or next steps across your saved meetings.").font(.title3).padding(.top, 30)
                                 if coordinator.sourceChoices.isEmpty { Text("Save a meeting or written note to build your meeting context.").foregroundStyle(.secondary); Button("Open Meetings") { controller.showMeetingsHome() } }
                             }
-                            ForEach(coordinator.turns) { turn in
+                            ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
+                                if index == 0 || coordinator.turns[index - 1].scope != turn.scope {
+                                    Divider()
+                                    Text("Context: " + (turn.scopeLabel ?? "Earlier meeting context")).font(.caption).foregroundStyle(.secondary)
+                                }
                                 turnView(turn).id(turn.id)
                             }
                         }.scrollTargetLayout().padding(24).frame(maxWidth: 840, alignment: .leading).frame(maxWidth: .infinity)
-                    }.scrollPosition(id: $scrollAnchor)
+                    }.scrollPosition(id: scrollAnchor)
                     if let error = coordinator.errorMessage { Text(error).foregroundStyle(.orange).font(.callout).padding(.horizontal, 16) }
                     Divider()
                     composer
@@ -91,6 +99,10 @@ struct MeetingChatView: View {
             Button("Cancel", role: .cancel) { }
         }
         .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
+        .onChange(of: coordinator.sourceMutationVersion) { _, _ in
+            if let draft = editingDraft, !coordinator.turns.contains(where: { $0.id == draft.id && $0.state == .completed }) { editingDraft = nil }
+            if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
+        }
         .task { coordinator.reload(); await coordinator.refreshChoices() }
     }
     private var composer: some View {
@@ -99,7 +111,7 @@ struct MeetingChatView: View {
                 HStack { ForEach(MeetingChatQuickAction.allCases) { action in Button(action.label) { prepare(action, name: nil) }.disabled(coordinator.isBusy) } }
             }
             HStack {
-                Toggle("Fast answers", isOn: $coordinator.fastAnswers).toggleStyle(.checkbox)
+                Toggle("Fast answers", isOn: $coordinator.fastAnswers).toggleStyle(.checkbox).help("Uses GPT-5.4 Mini for ChatGPT/OpenAI. Other providers keep their configured model.")
                 Text("\(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend).label) · \(MeetingTextGenerationClient.model(requestConfig))").font(.caption).foregroundStyle(.secondary)
                 Spacer(); Button("AI Settings") { appState.selectedSettingsPane = .meetings; appState.selectedTab = .settings }
             }
@@ -120,7 +132,7 @@ struct MeetingChatView: View {
         }
         coordinator.send(question: coordinator.composerDraft, config: appState.config, isDraft: preparedIsDraft)
         preparedIsDraft = false
-        scrollAnchor = coordinator.turns.last?.id
+        scrollAnchor.wrappedValue = coordinator.turns.last?.id
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 12) {

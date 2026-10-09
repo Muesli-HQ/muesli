@@ -53,4 +53,50 @@ struct MeetingChatNavigationTests {
         #expect(choices.count == 1)
         #expect(choices.first?.title == "Launch")
     }
+
+    @Test func sourceDeletionRefreshesDisplayedAnswersImmediately() throws {
+        let (controller, _, citation) = try controllerFixture()
+        controller.showMeetingChat(meetingID: citation.meetingID)
+        let coordinator = controller.meetingChatCoordinator
+        let sessionID = coordinator.selectedSessionID!
+        let turn = try coordinator.store.beginTurn(sessionID: sessionID, question: "When?", scope: coordinator.scope, provider: "test", model: "test")
+        let dependency = MeetingChatDependency(meetingID: citation.meetingID, revision: citation.revision)
+        try coordinator.store.attachEvidence(turnID: turn.id, dependencies: [dependency])
+        #expect(try coordinator.store.finishTurn(turnID: turn.id, answer: "Friday [[S1]]", citations: [citation], dependencies: [dependency]))
+        coordinator.reload()
+        #expect(coordinator.turns.first?.originalAnswer != nil)
+        controller.deleteMeeting(id: citation.meetingID)
+        #expect(coordinator.turns.first?.originalAnswer == nil)
+    }
+
+    @Test func transcriptLocatorHandlesChunksAndRepeatedExcerpts() {
+        let text = "first chunk second chunk\nnext speaker\nsecond chunk"
+        let second = (text as NSString).range(of: "second chunk")
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: second) == 0)
+        let repeated = (text as NSString).range(of: "second chunk", options: .backwards)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: repeated) == 2)
+    }
+
+    @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() throws {
+        let (_, store, _) = try controllerFixture()
+        let folder = try store.createFolder(name: "Original project")
+        let chat = MeetingChatStore(databaseURL: store.resolvedDatabaseURL)
+        let scope = MeetingChatScope(selection: .folder(folder), startDate: Date(timeIntervalSince1970: 1_000), endDateExclusive: Date(timeIntervalSince1970: 2_000))
+        let session = try chat.createSession(scope: scope, title: "Scope")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Decisions?", scope: scope, provider: "test", model: "test")
+        #expect(turn.scopeLabel?.contains("Original project") == true)
+        #expect(turn.scopeLabel?.contains("through") == true)
+    }
+
+    @Test func sourceReturnRetainsSessionScrollAnchor() throws {
+        let (controller, _, citation) = try controllerFixture()
+        controller.showMeetingChat(meetingID: citation.meetingID)
+        let coordinator = controller.meetingChatCoordinator
+        let session = coordinator.selectedSessionID!
+        let anchor = UUID()
+        coordinator.scrollAnchors[session] = anchor
+        controller.showMeetingChatSource(.init(citation: citation, sessionID: session))
+        controller.returnToMeetingChat()
+        #expect(coordinator.scrollAnchors[session] == anchor)
+    }
 }

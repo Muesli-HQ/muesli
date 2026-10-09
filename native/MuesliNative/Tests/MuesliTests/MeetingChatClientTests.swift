@@ -164,6 +164,32 @@ struct MeetingChatClientTests {
         #expect(await probe.requests.count == 2)
     }
 
+    @Test @MainActor func targetedDecisionQuestionKeepsOldRelevantMeeting() async throws {
+        let probe = ChatPromptProbe()
+        let (store, coordinator, _) = try coordinatorFixture(generator: probe)
+        _ = try store.insertMeeting(title: "Sunflower", calendarEventID: nil, startTime: Date(timeIntervalSince1970: 1_000), endTime: Date(timeIntervalSince1970: 1_060), rawTranscript: "The sunflower contract was approved.", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        for _ in 0..<300 { _ = try store.insertMeeting(title: "Routine", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "Unrelated check-in.", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil) }
+        coordinator.createChat(scope: .init())
+        coordinator.send(question: "What decisions did we make about sunflower?", config: AppConfig())
+        await coordinator.waitForIdle()
+        #expect(await probe.requests.last?.user.contains("The sunflower contract was approved.") == true)
+    }
+
+    @Test @MainActor func clearingHistoryCancelsSuspendedGenerationAndClearsVisibleTurns() async throws {
+        let gate = ChatReplyGate()
+        let (store, coordinator, _) = try coordinatorFixture(generator: gate)
+        let directory = store.resolvedDatabaseURL.deletingLastPathComponent().appendingPathComponent("chat-wipe-support-\(UUID())")
+        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+        controller.meetingChatCoordinator = coordinator
+        coordinator.createChat(scope: .init()); coordinator.send(question: "launch", config: AppConfig())
+        await gate.waitUntilStarted()
+        controller.clearMeetingHistory()
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.turns.isEmpty)
+        await gate.finish(); await coordinator.waitForIdle()
+        #expect(coordinator.sessions.isEmpty)
+    }
+
     @Test @MainActor func stopThenLateResultIsIgnored() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("coordinator-\(UUID()).db")
         let store = DictationStore(databaseURL: url); try store.migrateIfNeeded()

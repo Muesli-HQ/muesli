@@ -6,6 +6,7 @@ enum MeetingChatExporter {
         var answer = MeetingChatClient.displayText(useEditedDraft ? turn.editableDraft ?? turn.originalAnswer ?? "" : turn.originalAnswer ?? "")
         for (index, source) in turn.citations.enumerated() { answer = answer.replacingOccurrences(of: "[[\(source.sourceKey)]]", with: "[\(index + 1)]") }
         var parts = ["# \(session.title)", "", "**Question:** \(turn.question)", "**AI:** \(turn.provider) · \(turn.model)", ""]
+        if let scopeLabel = turn.scopeLabel { parts += ["**Context:** " + scopeLabel, ""] }
         if useEditedDraft && turn.editableDraft != nil { parts += ["*Edited draft — source references belong to the original answer.*", ""] }
         parts += [answer, "", "## Sources", ""]
         for (index, source) in turn.citations.enumerated() {

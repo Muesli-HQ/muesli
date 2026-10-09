@@ -42,20 +42,24 @@ public struct MeetingChatStore: Sendable {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             var session = try session(sessionID, db: db)
             let turn = MeetingChatTurn(id: UUID(), sessionID: sessionID, ordinal: try nextOrdinal(sessionID: sessionID, db: db), question: question,
-                scope: scope, state: .finding, citations: [], provider: provider, model: model)
+                scope: scope, state: .finding, citations: [], provider: provider, model: model,
+                attemptID: UUID(), scopeLabel: try scopeLabel(scope, db: db))
             try MeetingChatSQL.execute("INSERT INTO meeting_chat_turns VALUES(?,?,?,?,?)", [.text(turn.id.uuidString), .text(sessionID.uuidString), .integer(Int64(turn.ordinal)), .text(turn.state.rawValue), .text(try MeetingChatSQL.encode(turn))], db: db)
             session.updatedAt = Date(); try saveSession(session, db: db)
             return turn
         } }
     }
-    public func attachEvidence(turnID: UUID, dependencies: [MeetingChatDependency]) throws {
+    public func attachEvidence(turnID: UUID, dependencies: [MeetingChatDependency], attemptID: UUID? = nil) throws {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
-            guard let turn = try turn(turnID, db: db), turn.state.isPending else { throw MeetingChatError.missingSession }
+            guard var turn = try turn(turnID, db: db), turn.state.isPending,
+                  attemptID == nil || turn.attemptID == attemptID else { throw MeetingChatError.missingSession }
             guard try sourcesMatch(dependencies, db: db) else { throw MeetingChatError.sourceChanged }
             try MeetingChatSQL.execute("DELETE FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db)
             for dependency in dependencies {
                 try MeetingChatSQL.execute("INSERT OR REPLACE INTO meeting_chat_dependencies VALUES(?,?,?)", [.text(turnID.uuidString), .integer(dependency.meetingID), .text(dependency.revision)], db: db)
             }
+            turn.state = .writing
+            try saveTurn(turn, db: db)
         } }
     }
     public func dependencies(turnID: UUID) throws -> [MeetingChatDependency] {
@@ -66,9 +70,10 @@ public struct MeetingChatStore: Sendable {
     public func dependenciesAreCurrent(_ dependencies: [MeetingChatDependency]) throws -> Bool {
         try connection { db in try sourcesMatch(dependencies, db: db) }
     }
-    public func finishTurn(turnID: UUID, answer: String, citations: [MeetingChatCitation], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage? = nil, isDraft: Bool = false) throws -> Bool {
+    public func finishTurn(turnID: UUID, answer: String, citations: [MeetingChatCitation], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage? = nil, isDraft: Bool = false, attemptID: UUID? = nil) throws -> Bool {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard var turn = try turn(turnID, db: db), turn.state.isPending,
+                  attemptID == nil || turn.attemptID == attemptID,
                   try sourcesMatch(dependencies, db: db) else { return false }
             let storedDependencies = try MeetingChatSQL.rows("SELECT meeting_id,revision FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db) {
                 MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
@@ -80,9 +85,11 @@ public struct MeetingChatStore: Sendable {
             return true
         } }
     }
-    public func setTurnState(id: UUID, state: MeetingChatTurnState, error: String? = nil) throws {
+    public func setTurnState(id: UUID, state: MeetingChatTurnState, error: String? = nil, attemptID: UUID? = nil) throws {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard var turn = try turn(id, db: db), turn.state != .sourceDeleted else { return }
+            guard attemptID == nil || turn.attemptID == attemptID else { return }
+            guard state != .writing || turn.state.isPending else { return }
             turn.state = state; turn.error = error
             if state != .completed { turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = [] }
             try saveTurn(turn, db: db)
@@ -99,6 +106,7 @@ public struct MeetingChatStore: Sendable {
             guard var turn = try turn(id, db: db), turn.state != .sourceDeleted else { return nil }
             turn.state = .finding; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
             turn.error = nil; turn.provider = provider; turn.model = model; turn.coverage = nil
+            turn.attemptID = UUID()
             try MeetingChatSQL.execute("DELETE FROM meeting_chat_dependencies WHERE turn_id=?", [.text(id.uuidString)], db: db)
             try saveTurn(turn, db: db); return turn
         } }
@@ -108,6 +116,22 @@ public struct MeetingChatStore: Sendable {
     }
     public func interruptPendingTurns() throws {
         try connection { db in try MeetingChatSQL.execute("UPDATE meeting_chat_turns SET state='interrupted',body=json_set(body,'$.state','interrupted') WHERE state IN ('finding','writing')", db: db) }
+    }
+    public func sourceMutationVersion() throws -> Int64 {
+        try connection { db in try MeetingChatSQL.rows("SELECT version FROM meeting_chat_source_version WHERE id=1", db: db) { sqlite3_column_int64($0, 0) }.first ?? 0 }
+    }
+    private func scopeLabel(_ scope: MeetingChatScope, db: OpaquePointer?) throws -> String {
+        var label: String
+        switch scope.selection {
+        case .all: label = "All saved meetings"
+        case .folder(let id):
+            let name = try MeetingChatSQL.rows("SELECT name FROM meeting_folders WHERE id=?", [.integer(id)], db: db) { MeetingChatSQL.text($0, 0) }.first ?? "Folder"
+            label = name + " · This folder only"
+        case .meetings(let ids): label = "\(ids.count) selected meetings"
+        }
+        if let start = scope.startDate { label += " · From " + start.formatted(date: .abbreviated, time: .omitted) }
+        if let end = scope.endDateExclusive { label += " through " + end.addingTimeInterval(-0.001).formatted(date: .abbreviated, time: .omitted) }
+        return label
     }
     public func sourceSnapshots(scope: MeetingChatScope) throws -> [MeetingChatSourceSnapshot] {
         try connection { db in

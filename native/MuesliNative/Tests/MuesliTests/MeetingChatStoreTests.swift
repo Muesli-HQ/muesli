@@ -119,4 +119,12 @@ struct MeetingChatStoreTests {
         #expect(try chat.turns(sessionID: session.id).first?.originalAnswer == nil)
         #expect(try chat.turns(sessionID: session.id).first?.state == .sourceDeleted)
     }
+
+    @Test func stopBetweenEvidenceAndWritingCannotReviveTurn() throws {
+        let (_, chat, id) = try fixture()
+        let (session, turn, _) = try pending(chat, id)
+        try chat.setTurnState(id: turn.id, state: .stopped)
+        try chat.setTurnState(id: turn.id, state: .writing)
+        #expect(try chat.turns(sessionID: session.id).first?.state == .stopped)
+    }
 }

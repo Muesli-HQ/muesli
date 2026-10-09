@@ -82,6 +82,8 @@ public struct MeetingChatTurn: Codable, Identifiable, Sendable {
     public var error: String?
     public var coverage: MeetingChatCoverage?
     public var isDraft: Bool = false
+    public var attemptID: UUID?
+    public var scopeLabel: String?
 }
 
 public struct MeetingChatCoverage: Codable, Equatable, Sendable {

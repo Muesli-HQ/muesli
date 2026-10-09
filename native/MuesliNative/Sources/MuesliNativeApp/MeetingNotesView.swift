@@ -3,7 +3,7 @@ import MuesliCore
 
 struct MeetingNotesView: View {
     let markdown: String
-    var highlightedExcerpt: String? = nil
+    var highlightedRange: NSRange? = nil
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -24,12 +24,12 @@ struct MeetingNotesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
-        .onChange(of: highlightedExcerpt) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
         }
     }
     private var highlightedLine: Int? {
-        guard let excerpt = highlightedExcerpt, let range = markdown.range(of: excerpt) else { return nil }
-        return markdown[..<range.lowerBound].filter { $0 == "\n" }.count
+        guard let range = highlightedRange, range.location >= 0, range.location <= (markdown as NSString).length else { return nil }
+        return (markdown as NSString).substring(to: range.location).components(separatedBy: .newlines).count - 1
     }
 
     @ViewBuilder

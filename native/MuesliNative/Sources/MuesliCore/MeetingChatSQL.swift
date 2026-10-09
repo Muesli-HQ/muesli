@@ -67,6 +67,16 @@ enum MeetingChatSQL {
             "CREATE TABLE IF NOT EXISTS meeting_chat_dirty_sources (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE)",
             "CREATE TABLE IF NOT EXISTS meeting_chat_index_state (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, start_time REAL NOT NULL, folder_id INTEGER)",
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_index_scope ON meeting_chat_index_state(folder_id,start_time)",
+            "CREATE TABLE IF NOT EXISTS meeting_chat_source_version (id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL)",
+            "INSERT OR IGNORE INTO meeting_chat_source_version VALUES(1,0)",
+            """
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_version_changed AFTER UPDATE OF deleted_at,title,start_time,folder_id,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
+            BEGIN UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1; END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_version_inserted AFTER INSERT ON meetings
+            BEGIN UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1; END
+            """,
             """
             CREATE TRIGGER IF NOT EXISTS meeting_chat_index_source_inserted AFTER INSERT ON meetings
             WHEN NEW.deleted_at IS NULL BEGIN INSERT INTO meeting_chat_dirty_sources SELECT NEW.id
@@ -110,7 +120,8 @@ enum MeetingChatSQL {
                 CREATE TRIGGER IF NOT EXISTS meeting_chat_participant_\(name) AFTER \(event) ON meeting_participants
                 BEGIN INSERT INTO meeting_chat_dirty_sources
                   SELECT id FROM meetings WHERE id=\(owner).meeting_id AND deleted_at IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=\(owner).meeting_id); END
+                    AND NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=\(owner).meeting_id);
+                  UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1; END
                 """, db: db)
         }
         try execute("""
@@ -129,6 +140,7 @@ enum MeetingChatSQL {
         }
     }
     static func clear(db: OpaquePointer?) throws {
+        try execute("UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1", db: db)
         try execute("DELETE FROM meeting_chat_sessions", db: db)
         try execute("DELETE FROM meeting_chat_passages", db: db)
         try execute("DELETE FROM meeting_chat_index_state", db: db)
