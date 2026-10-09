@@ -21,6 +21,11 @@ public struct MeetingChatStore: Sendable {
             try MeetingChatSQL.decode(MeetingChatSession.self, MeetingChatSQL.text($0, 0))
         } }
     }
+    public func hasChatHistory() throws -> Bool {
+        try connection { db in
+            !(try MeetingChatSQL.rows("SELECT 1 FROM meeting_chat_turns LIMIT 1", db: db) { _ in true }).isEmpty
+        }
+    }
     public func turns(sessionID: UUID) throws -> [MeetingChatTurn] {
         try connection { db in try MeetingChatSQL.rows("SELECT body FROM meeting_chat_turns WHERE session_id=? ORDER BY ordinal", [.text(sessionID.uuidString)], db: db) {
             try MeetingChatSQL.decode(MeetingChatTurn.self, MeetingChatSQL.text($0, 0))

@@ -105,4 +105,20 @@ struct MeetingChatNavigationTests {
         let view = MeetingDetailView(meeting: nil, controller: controller, appState: controller.appState)
         #expect(view.meeting == nil)
     }
+
+    @Test func historyPanelIgnoresBlankChatsAndTracksLastConversationDeletion() throws {
+        let (controller, _, _) = try controllerFixture()
+        let coordinator = controller.meetingChatCoordinator
+        #expect(!coordinator.hasChatHistory)
+        coordinator.createChat(scope: .init())
+        let session = try #require(coordinator.selectedSessionID)
+        #expect(!coordinator.hasChatHistory)
+        _ = try coordinator.store.beginTurn(sessionID: session, question: "When is launch?", scope: .init(), provider: "test", model: "test")
+        coordinator.reload()
+        #expect(coordinator.hasChatHistory)
+        coordinator.createChat(scope: .init())
+        #expect(coordinator.hasChatHistory)
+        coordinator.deleteChat(id: session)
+        #expect(!coordinator.hasChatHistory)
+    }
 }

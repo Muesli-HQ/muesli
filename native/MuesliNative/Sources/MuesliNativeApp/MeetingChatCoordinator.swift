@@ -70,6 +70,7 @@ final class MeetingChatCoordinator {
     @ObservationIgnored private let generator: any MeetingTextGenerating
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
     private(set) var sessions: [MeetingChatSession] = []
+    private(set) var hasChatHistory = false
     private(set) var turns: [MeetingChatTurn] = []
     private(set) var selectedSessionID: UUID?
     private(set) var activeRequestID: UUID?
@@ -95,6 +96,7 @@ final class MeetingChatCoordinator {
     func reload() {
         do {
             sessions = try store.sessions()
+            hasChatHistory = try store.hasChatHistory()
             if let id = selectedSessionID, sessions.contains(where: { $0.id == id }) { turns = try store.turns(sessionID: id) }
             else { selectedSessionID = nil; turns = [] }
         } catch { errorMessage = "Could not load meeting chat history." }

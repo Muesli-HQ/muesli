@@ -5,7 +5,8 @@ struct MeetingChatView: View {
     let appState: AppState
     let controller: MuesliController
     @Bindable var coordinator: MeetingChatCoordinator
-    @State private var showHistory = true
+    @State private var showHistory: Bool?
+    private var historyIsVisible: Bool { showHistory ?? coordinator.hasChatHistory }
     @State private var showScope = false
     @State private var citation: MeetingChatCitation?
     @State private var deletingChat: UUID?
@@ -31,13 +32,13 @@ struct MeetingChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button { showHistory.toggle() } label: { Image(systemName: "sidebar.left") }.help("Toggle chat history")
+                Button { showHistory = !historyIsVisible } label: { Image(systemName: "sidebar.left") }.help("Toggle chat history")
                 Text("Ask Meetings").font(MuesliTheme.title2()); Spacer()
                 Button("New Chat", systemImage: "plus") { coordinator.createChat(scope: .init()); composerFocused = true }
             }.padding(24)
             Divider()
             HStack(spacing: 0) {
-                if showHistory {
+                if historyIsVisible {
                     List(coordinator.sessions, selection: Binding(get: { coordinator.selectedSessionID }, set: { if let id = $0 { coordinator.selectChat(id: id) } })) { session in
                         Text(session.title).lineLimit(2).tag(session.id)
                             .contextMenu {
@@ -99,6 +100,9 @@ struct MeetingChatView: View {
             Button("Cancel", role: .cancel) { }
         }
         .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
+        .onChange(of: coordinator.hasChatHistory) { _, hasHistory in
+            if !hasHistory { showHistory = nil }
+        }
         .onChange(of: coordinator.sourceMutationVersion) { _, _ in
             if let draft = editingDraft, !coordinator.turns.contains(where: { $0.id == draft.id && $0.state == .completed }) { editingDraft = nil }
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
