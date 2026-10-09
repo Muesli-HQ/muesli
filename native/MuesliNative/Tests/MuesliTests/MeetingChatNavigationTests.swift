@@ -99,4 +99,10 @@ struct MeetingChatNavigationTests {
         controller.returnToMeetingChat()
         #expect(coordinator.scrollAnchors[session] == anchor)
     }
+
+    @Test func emptyMeetingDetailDoesNotRequireACitationTarget() throws {
+        let (controller, _, _) = try controllerFixture()
+        let view = MeetingDetailView(meeting: nil, controller: controller, appState: controller.appState)
+        #expect(view.meeting == nil)
+    }
 }

@@ -139,7 +139,11 @@ struct MeetingDetailView: View {
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
         let sourceTarget = appState.meetingChatDocumentTarget
-        _documentMode = State(initialValue: sourceTarget?.citation.meetingID == meeting?.id ? (sourceTarget!.showsTranscript ? .transcript : .notes) : meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        if let sourceTarget, let meeting, sourceTarget.citation.meetingID == meeting.id {
+            _documentMode = State(initialValue: sourceTarget.showsTranscript ? .transcript : .notes)
+        } else {
+            _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        }
     }
 
     var body: some View {
