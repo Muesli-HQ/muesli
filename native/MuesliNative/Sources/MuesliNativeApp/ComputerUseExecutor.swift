@@ -78,7 +78,8 @@ enum ComputerUseToolExecutor {
 
     static func execute(
         _ toolCall: ComputerUseToolCall,
-        registry: ComputerUseElementRegistry?
+        registry: ComputerUseElementRegistry?,
+        pasteShortcut: PasteShortcut = .automatic
     ) async -> ComputerUseExecutionResult {
         if let failure = toolCall.validationFailure() {
             return .unsupported(failure)
@@ -105,6 +106,8 @@ enum ComputerUseToolExecutor {
             return click(toolCall, registry: registry)
         case .performSecondaryAction:
             return performSecondaryAction(toolCall, registry: registry)
+        case .editText:
+            return .unsupported("edit_text requires the runtime writing preparation step")
         case .setValue:
             return setValue(toolCall, registry: registry)
         case .drag:
@@ -117,7 +120,7 @@ enum ComputerUseToolExecutor {
         case .typeText:
             return await enterText(toolCall, registry: registry, mode: .keyboard)
         case .pasteText:
-            return await enterText(toolCall, registry: registry, mode: .paste)
+            return await enterText(toolCall, registry: registry, mode: .paste, pasteShortcut: pasteShortcut)
         case .scroll:
             return scroll(toolCall, registry: registry)
         case .listBrowserTabs:
@@ -496,7 +499,8 @@ enum ComputerUseToolExecutor {
     private static func enterText(
         _ toolCall: ComputerUseToolCall,
         registry: ComputerUseElementRegistry?,
-        mode: TextEntryMode
+        mode: TextEntryMode,
+        pasteShortcut: PasteShortcut = .automatic
     ) async -> ComputerUseExecutionResult {
         let targetApp = await prepareTextEntryApp(toolCall)
         if case let .failure(message) = targetApp {
@@ -532,16 +536,53 @@ enum ComputerUseToolExecutor {
                 return .failed(error.localizedDescription)
             }
         case .paste:
-            PasteController.paste(text: toolCall.text ?? "")
-            do {
-                try await Task.sleep(nanoseconds: 700_000_000)
-            } catch is CancellationError {
-                return .cancelled()
-            } catch {
-                return .failed(error.localizedDescription)
-            }
+            return await pasteText(toolCall.text ?? "", shortcut: pasteShortcut)
         }
         return .executed(mode.completedMessage)
+    }
+
+    /// Await dispatch, not a timer or app attribution: nil attribution can also
+    /// accompany successful dispatch. This does not prove insertion in the target app.
+    static func pasteText(
+        _ text: String,
+        shortcut: PasteShortcut,
+        pasteboard: NSPasteboard = .general,
+        targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
+            NSWorkspace.shared.frontmostApplication
+        },
+        simulatePasteAction: (@MainActor (PasteShortcut) -> Bool)? = nil
+    ) async -> ComputerUseExecutionResult {
+        guard !Task.isCancelled else { return .cancelled() }
+        // PasteController intentionally does not invoke callbacks for empty input.
+        guard !text.isEmpty else { return .failed("No text to paste.") }
+
+        let didDispatch: Bool = await withCheckedContinuation { continuation in
+            var dispatched = false
+            PasteController.paste(
+                text: text,
+                pasteboard: pasteboard,
+                shortcut: shortcut,
+                targetApplicationProvider: targetApplicationProvider,
+                simulatePasteAction: simulatePasteAction,
+                onPasteDispatched: { dispatched = true },
+                onPasteFinished: { _ in continuation.resume(returning: dispatched) }
+            )
+        }
+        guard !Task.isCancelled else { return .cancelled() }
+        guard didDispatch else {
+            return .failed("Paste shortcut could not be dispatched. Check the keyboard layout or configured paste shortcut.")
+        }
+
+        do {
+            // Preserve the existing settling window after the 50 ms staging delay,
+            // including clipboard restoration, before the planner observes the app.
+            try await Task.sleep(nanoseconds: 650_000_000)
+        } catch is CancellationError {
+            return .cancelled()
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        return .executed(TextEntryMode.paste.completedMessage)
     }
 
     private enum AppPreparationResult {

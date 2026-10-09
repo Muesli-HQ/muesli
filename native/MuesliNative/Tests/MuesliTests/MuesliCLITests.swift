@@ -3,6 +3,7 @@ import SQLite3
 import Testing
 import MuesliCore
 @testable import MuesliCLI
+@testable import MuesliNativeApp
 
 @Suite("MuesliCLI", .serialized)
 struct MuesliCLITests {
@@ -78,6 +79,47 @@ struct MuesliCLITests {
         #expect(CLISummaryClient.resolvedOpenRouterModel("") == "openrouter/free")
         #expect(CLISummaryClient.resolvedOpenRouterModel("  \n") == "openrouter/free")
         #expect(CLISummaryClient.resolvedOpenRouterModel("custom/model") == "custom/model")
+    }
+
+    @Test("CLI reads the app's dedicated Anthropic settings")
+    func cliAnthropicConfiguration() throws {
+        let data = Data(#"{"meeting_summary_backend":"anthropic","anthropic_api_key":"test-key","anthropic_workspace_id":"wrkspc_test","anthropic_model":"claude-opus-5-5"}"#.utf8)
+        let config = try JSONDecoder().decode(CLISummaryConfig.self, from: data)
+        #expect(config.meetingSummaryBackend == "anthropic")
+        #expect(config.anthropicAPIKey == "test-key")
+        #expect(config.anthropicWorkspaceID == "wrkspc_test")
+        #expect(config.anthropicModel == "claude-opus-5-5")
+    }
+
+    @Test("CLI summary config decodes app-generated custom LLM settings")
+    func cliSummaryConfigDecodesAppGeneratedSettings() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-summary-config-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var appConfig = AppConfig()
+        appConfig.meetingSummaryBackend = MeetingSummaryBackendOption.customLLM.backend
+        appConfig.customLLMURL = "https://gateway.example.com/v1"
+        appConfig.customLLMAPIKey = "static-key"
+        appConfig.customLLMAPIKeyCommand = "/usr/local/bin/credential-helper"
+        appConfig.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "source", value: "muesli"),
+        ]
+        appConfig.customLLMModel = "custom-model"
+        appConfig.customLLMFormat = CustomLLMFormat.anthropic.rawValue
+
+        let data = try JSONEncoder().encode(appConfig)
+        try data.write(to: directory.appendingPathComponent("config.json"))
+
+        let cliConfig = CLISummaryConfig.load(from: directory)
+        #expect(cliConfig.meetingSummaryBackend == "custom_llm")
+        #expect(cliConfig.customLLMURL == "https://gateway.example.com/v1")
+        #expect(cliConfig.customLLMAPIKey == "static-key")
+        #expect(cliConfig.customLLMHeaders.map(\.name) == ["source"])
+        #expect(cliConfig.customLLMHeaders.map(\.value) == ["muesli"])
+        #expect(cliConfig.customLLMModel == "custom-model")
+        #expect(cliConfig.customLLMFormat == "anthropic")
     }
 
     @Test("migration runs before a read so a legacy database gains new columns")

@@ -145,6 +145,35 @@ struct MeetingsNavigationTests {
         )
     }
 
+    @Test("re-summarize rejects unconfigured Anthropic without changing saved notes")
+    func resummarizeWithoutAnthropicKeyPreservesNotes() throws {
+        guard MeetingSummaryClient.resolvedAnthropicAPIKey(config: AppConfig()).isEmpty else { return }
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        let storedMeeting = try store.meeting(id: meetingID)
+        let meeting = try #require(storedMeeting)
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
+            $0.anthropicAPIKey = ""
+        }
+
+        #expect(!controller.canUseSummaryProvider(.anthropic))
+        var outcome: Result<Void, Error>?
+        controller.resummarize(meeting: meeting) { outcome = $0 }
+        guard case .failure(let error)? = outcome else {
+            Issue.record("Expected re-summarization to reject the missing key")
+            return
+        }
+        guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+            Issue.record("Unexpected error: \(error)")
+            return
+        }
+        #expect(backend == "Anthropic")
+        let savedNotes = try store.meeting(id: meetingID)?.formattedNotes
+        #expect(savedNotes == "## Notes")
+    }
+
     @Test("app state defaults meetings to browser mode")
     func meetingsDefaultToBrowser() {
         let appState = AppState()

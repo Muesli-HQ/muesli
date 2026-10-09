@@ -1,6 +1,8 @@
 import Foundation
 
 enum UpcomingMeetingsWindow: Int, CaseIterable, Identifiable {
+    case sixHours = 6
+    case twelveHours = 12
     case today = 1
     case twoDays = 2
     case threeDays = 3
@@ -12,10 +14,23 @@ enum UpcomingMeetingsWindow: Int, CaseIterable, Identifiable {
     }
 
     var id: Int { rawValue }
-    var dayCount: Int { rawValue }
+    var dayCount: Int { hourCount == nil ? rawValue : 1 }
+    var hourCount: Int? {
+        switch self {
+        case .sixHours: return 6
+        case .twelveHours: return 12
+        default: return nil
+        }
+    }
+    var settingID: String { hourCount.map { "hours_\($0)" } ?? String(dayCount) }
+    static func fromSettingID(_ id: String) -> Self? {
+        allCases.first { $0.settingID == id }
+    }
 
     var label: String {
         switch self {
+        case .sixHours: return "Next 6 hours"
+        case .twelveHours: return "Next 12 hours"
         case .today:
             return "Today only"
         case .twoDays:
@@ -25,8 +40,10 @@ enum UpcomingMeetingsWindow: Int, CaseIterable, Identifiable {
         }
     }
 
-    static func resolve(dayCount: Int?) -> UpcomingMeetingsWindow {
-        guard let dayCount, let window = UpcomingMeetingsWindow(rawValue: dayCount) else {
+    static func resolve(dayCount: Int?, hourCount: Int? = nil) -> UpcomingMeetingsWindow {
+        if hourCount == 6 { return .sixHours }
+        if hourCount == 12 { return .twelveHours }
+        guard let dayCount, let window = UpcomingMeetingsWindow(rawValue: dayCount), window.hourCount == nil else {
             return .today
         }
         return window
@@ -35,9 +52,13 @@ enum UpcomingMeetingsWindow: Int, CaseIterable, Identifiable {
     static func endDate(
         from now: Date = Date(),
         calendar: Calendar = .current,
-        dayCount: Int
+        dayCount: Int,
+        hourCount: Int? = nil
     ) -> Date? {
-        let window = resolve(dayCount: dayCount)
+        let window = resolve(dayCount: dayCount, hourCount: hourCount)
+        if let hours = window.hourCount {
+            return now.addingTimeInterval(TimeInterval(hours * 60 * 60))
+        }
         let startOfToday = calendar.startOfDay(for: now)
         return calendar.date(byAdding: .day, value: window.dayCount, to: startOfToday)
     }

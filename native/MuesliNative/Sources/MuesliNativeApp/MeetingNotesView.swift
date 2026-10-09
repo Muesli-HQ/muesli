@@ -16,10 +16,10 @@ struct MeetingNotesView: View {
                         .id(index)
                 }
             }
-            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing24)
             .padding(.vertical, MuesliTheme.spacing16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -66,22 +66,22 @@ struct MeetingNotesView: View {
         } else if let numbered = Self.numberedListContent(from: line) {
             HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
                 Text(numbered.marker)
-                    .font(MuesliTheme.body())
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 22, alignment: .trailing)
                 Text(Self.inline(numbered.text))
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .lineSpacing(3)
+                    .font(MuesliTheme.reading())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineSpacing(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Text(Self.inline(line))
-                .font(MuesliTheme.body())
+                .font(MuesliTheme.reading())
                 .foregroundStyle(MuesliTheme.textPrimary)
-                .lineSpacing(3)
+                .lineSpacing(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -107,9 +107,9 @@ struct MeetingNotesView: View {
                     .frame(width: 14, alignment: .center)
             }
             Text(Self.inline(text))
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .lineSpacing(3)
+                .font(MuesliTheme.reading())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineSpacing(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)

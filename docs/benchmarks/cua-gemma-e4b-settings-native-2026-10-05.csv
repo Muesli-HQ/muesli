@@ -1,0 +1,26 @@
+actual,coldStart,command,expected,message,model,mutations,otherSettingsUnchanged,round,seconds,setting,status,success
+off,True,Turn sound effects off.,off,Sound effects: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['sound'],True,1,9.95189516665414,sound,done,True
+on,False,Turn dark mode on.,on,Dark mode: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['dark_mode'],True,1,7.085278708371334,dark_mode,done,True
+on,False,Turn pause media during dictation on.,on,Pause media during dictation: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['pause_media'],True,1,7.093598625040613,pause_media,done,True
+off,False,Turn open dashboard on launch off.,off,Open dashboard on launch: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['open_dashboard'],True,1,7.128656458342448,open_dashboard,done,True
+notch,False,Change recording indicator style to notch.,notch,Recording indicator style: Notch,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['indicator_style'],True,1,7.146595958271064,indicator_style,done,True
+off,False,Turn sound effects off.,off,Sound effects: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['sound'],True,2,7.081371875014156,sound,done,True
+on,False,Turn dark mode on.,on,Dark mode: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['dark_mode'],True,2,7.109210000024177,dark_mode,done,True
+on,False,Turn pause media during dictation on.,on,Pause media during dictation: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['pause_media'],True,2,7.11657929175999,pause_media,done,True
+off,False,Turn open dashboard on launch off.,off,Open dashboard on launch: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['open_dashboard'],True,2,7.187697333283722,open_dashboard,done,True
+notch,False,Change recording indicator style to notch.,notch,Recording indicator style: Notch,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['indicator_style'],True,2,7.059526541735977,indicator_style,done,True
+off,False,Turn sound effects off.,off,Sound effects: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['sound'],True,3,7.024424375034869,sound,done,True
+on,False,Turn dark mode on.,on,Dark mode: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['dark_mode'],True,3,7.132880208315328,dark_mode,done,True
+on,False,Turn pause media during dictation on.,on,Pause media during dictation: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['pause_media'],True,3,7.1577665416989475,pause_media,done,True
+off,False,Turn open dashboard on launch off.,off,Open dashboard on launch: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['open_dashboard'],True,3,7.081329041626304,open_dashboard,done,True
+notch,False,Change recording indicator style to notch.,notch,Recording indicator style: Notch,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['indicator_style'],True,3,7.067957083345391,indicator_style,done,True
+off,False,Turn sound effects off.,off,Sound effects: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['sound'],True,4,6.984251291723922,sound,done,True
+on,False,Turn dark mode on.,on,Dark mode: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['dark_mode'],True,4,7.07031708327122,dark_mode,done,True
+on,False,Turn pause media during dictation on.,on,Pause media during dictation: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['pause_media'],True,4,7.099149791756645,pause_media,done,True
+off,False,Turn open dashboard on launch off.,off,Open dashboard on launch: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['open_dashboard'],True,4,7.100598666584119,open_dashboard,done,True
+notch,False,Change recording indicator style to notch.,notch,Recording indicator style: Notch,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['indicator_style'],True,4,7.064900083234534,indicator_style,done,True
+off,False,Turn sound effects off.,off,Sound effects: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['sound'],True,5,7.0161235416308045,sound,done,True
+on,False,Turn dark mode on.,on,Dark mode: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['dark_mode'],True,5,7.087531624943949,dark_mode,done,True
+on,False,Turn pause media during dictation on.,on,Pause media during dictation: On,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['pause_media'],True,5,7.070513916667551,pause_media,done,True
+off,False,Turn open dashboard on launch off.,off,Open dashboard on launch: Off,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['open_dashboard'],True,5,7.123111208318733,open_dashboard,done,True
+notch,False,Change recording indicator style to notch.,notch,Recording indicator style: Notch,local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm,['indicator_style'],True,5,7.070077208336443,indicator_style,done,True

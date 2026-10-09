@@ -44,7 +44,7 @@ struct DictationPasteSpacingTests {
                 pasteboard: pasteboard,
                 requireStagedClipboardOwnership: true,
                 targetApplicationProvider: { nil },
-                simulatePasteAction: {
+                simulatePasteAction: { _ in
                     delivered = pasteboard.string(forType: .string) ?? ""
                     return true
                 },

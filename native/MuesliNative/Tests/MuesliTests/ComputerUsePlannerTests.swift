@@ -385,7 +385,7 @@ struct ComputerUsePlannerModelTests {
         config.chatGPTModel = "gpt-5.4-mini"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == ComputerUsePlannerClient.defaultModel)
-        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-sol")
+        #expect(ComputerUsePlannerClient.defaultModel == "gpt-6.1-sol")
 
         config.computerUsePlannerModel = "gpt-5.4"
 
@@ -540,6 +540,28 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
         #expect(result.message == "blocked")
+    }
+
+    @Test("thinking is excluded from the execution budget; actions still exhaust it", arguments: [false, true])
+    @MainActor
+    func executionOnlyTimeout(slowAction: Bool) async {
+        var clock: TimeInterval = 0
+        var calls = 0
+        let runtime = ComputerUsePlannerRuntime(config: AppConfig(), timeoutSeconds: 10, now: { clock },
+            observe: { _, _, _ in Self.observation() },
+            plan: { _ in
+                clock += 100 // much longer than the execution allowance
+                calls += 1
+                return ComputerUsePlannerResponse(toolCall: calls == 1
+                    ? ComputerUseToolCall(tool: .launchApp, appName: "Chrome")
+                    : ComputerUseToolCall(tool: .finish, reason: "Done"))
+            }, execute: { _, _ in
+                clock += slowAction ? 11 : 1
+                return .executed("Opened Chrome")
+            })
+        let result = await runtime.run(command: "Open Chrome")
+        #expect(result.status == (slowAction ? .timedOut : .done))
+        #expect(calls == (slowAction ? 1 : 2))
     }
 
     @Test("timeout produces timed out runtime result")
@@ -1328,6 +1350,53 @@ struct ComputerUsePlannerRuntimeTests {
 
 @Suite("Computer Use run diagnostics")
 struct ComputerUseRunDiagnosticsTests {
+    @Test @MainActor
+    func compactSummariesPreserveFullTimelineResponses() async throws {
+        let payload = String(repeating: "Raw page text and DOM JSON {\"private\":true}\n", count: 100)
+        let calls: [ComputerUseToolName] = [.pageGetText, .pageQueryDOM, .listApps, .listWindows, .listBrowserTabs, .pasteText]
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
+            plan: { request in
+                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                    tool: request.step <= calls.count ? calls[request.step - 1] : .finish,
+                    appBundleID: "com.google.Chrome", text: "Example text", selector: "a"))
+            },
+            execute: { _, _ in .executed(payload) }
+        )
+        let result = await runtime.run(command: "Read and paste")
+        #expect(result.status == .done, "\(result.message)")
+        let events = result.traceEvents.filter { $0.kind == "tool_result" }
+        #expect(events.count == calls.count)
+        #expect(events.allSatisfy { $0.body == payload })
+        #expect(events.compactMap { NotchToolResult($0)?.message } == [
+            "Read page text", "Inspected page elements", "Listed apps", "Listed windows", "Listed browser tabs", "Pasted text"
+        ])
+        let decoded = try JSONDecoder().decode([ComputerUseTraceEvent].self, from: JSONEncoder().encode(events))
+        #expect(decoded == events)
+        let legacy = ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: payload)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        json.removeValue(forKey: "compactSummary")
+        let oldEvent = try JSONDecoder().decode(ComputerUseTraceEvent.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(oldEvent.body == payload)
+        #expect(NotchToolResult(oldEvent) == nil)
+    }
+
+    @Test("Compact summaries distinguish unsuccessful outcomes")
+    func compactSummaryOutcomes() {
+        for tool in ComputerUseToolName.allCases {
+            for status in [ComputerUseExecutionResult.Status.executed, .failed, .unsupported, .cancelled, .needsConfirmation] {
+                let summary = ComputerUseTraceFormatter.compactSummary(for: tool, status: status)
+                #expect(!summary.isEmpty && summary.count < 80)
+                if status != .executed {
+                    #expect(summary != ComputerUseTraceFormatter.compactSummary(for: tool, status: .executed))
+                }
+            }
+        }
+        #expect(ComputerUseTraceFormatter.compactSummary(for: .pageGetText, status: .failed) == "Read page text — failed")
+        #expect(ComputerUseTraceFormatter.compactSummary(for: .launchApp, status: .needsConfirmation) == "Open app — needs approval")
+    }
+
     @Test @MainActor
     func liveProgressPrecedesPlannerCompletion() async {
         var events: [ComputerUseTraceEvent] = []

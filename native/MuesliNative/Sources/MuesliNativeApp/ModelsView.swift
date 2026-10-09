@@ -71,6 +71,12 @@ struct ModelsView: View {
     }
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -169,6 +175,7 @@ struct ModelsView: View {
         } message: {
             Text("Live meetings will fall back to standard chunk-by-chunk captions until this model is downloaded again.")
         }
+
     }
 
     private var modelsCategorySelection: Binding<ModelsCategory> {
@@ -226,7 +233,6 @@ struct ModelsView: View {
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
-                .featureTourTarget(.bodhanFlexCard)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -610,12 +616,7 @@ struct ModelsView: View {
         .id(FeatureTourTarget.experimentalModels.rawValue)
     }
 
-    private var cohereLanguageSelection: Binding<CohereTranscribeLanguage> {
-        Binding(
-            get: { appState.config.resolvedCohereLanguage },
-            set: { controller.selectCohereLanguage($0) }
-        )
-    }
+
 
     @ViewBuilder
     private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
@@ -627,49 +628,17 @@ struct ModelsView: View {
         }
     }
 
-    private func bodhanLanguageSelection(for model: String) -> Binding<BodhanLanguage> {
-        Binding(
-            get: { appState.config.resolvedBodhanLanguage.supported(for: model) },
-            set: { controller.selectBodhanLanguage($0) }
-        )
-    }
 
-    private var nemotron35LanguageSelection: Binding<Nemotron35Language> {
-        Binding(
-            get: { appState.config.resolvedNemotron35Language },
-            set: { language in
-                Task { await controller.setNemotron35Language(language) }
-            }
-        )
-    }
 
-    private var whisperLanguageSelection: Binding<WhisperKitLanguage> {
-        Binding(
-            get: { appState.config.resolvedWhisperLanguage },
-            set: { controller.selectWhisperLanguage($0) }
-        )
-    }
 
-    private var parakeetLanguageSelection: Binding<ParakeetLanguage> {
-        Binding(
-            get: { appState.config.resolvedParakeetLanguage },
-            set: { controller.selectParakeetLanguage($0) }
-        )
-    }
 
-    private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
-        Binding(
-            get: { appState.config.resolvedQwen3AsrLanguage },
-            set: { controller.selectQwen3AsrLanguage($0) }
-        )
-    }
 
-    private var appleSpeechLanguageSelection: Binding<String> {
-        Binding(
-            get: { appState.config.resolvedAppleSpeechLanguage },
-            set: { controller.selectAppleSpeechLanguage($0) }
-        )
-    }
+
+
+
+
+
+
 
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
@@ -959,11 +928,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: whisperLanguageSelection) {
-                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "whisper_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -978,11 +943,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: parakeetLanguageSelection) {
-                        ForEach(ParakeetLanguage.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "parakeet_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1154,22 +1115,31 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func brandLogo(_ name: String?) -> some View {
-        if name == "apple-system-logo" {
-            Image(systemName: "apple.logo")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .frame(width: 24, height: 24)
-                .padding(.top, 2)
-        } else if let name,
-           let url = Bundle.main.url(forResource: name, withExtension: "png")
-                ?? Bundle.main.url(forResource: name, withExtension: "svg"),
-           let nsImage = NSImage(contentsOf: url) {
-            Image(nsImage: nsImage)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 24, height: 24)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .padding(.top, 2)
+        if let name {
+            Group {
+                if name == "apple-system-logo" {
+                    Image(systemName: "apple.logo")
+                        .font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                } else if name == "openai-logo" {
+                    OpenAILogoShape()
+                        .fill(MuesliTheme.textPrimary)
+                        .frame(width: 23, height: 23)
+                } else if let url = Bundle.main.url(forResource: name, withExtension: "png")
+                    ?? Bundle.main.url(forResource: name, withExtension: "svg"),
+                    let nsImage = NSImage(contentsOf: url) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 24, height: 24)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(width: 32, height: 32)
+            .accessibilityHidden(true)
         }
     }
 
@@ -1349,11 +1319,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: cohereLanguageSelection) {
-                        ForEach(CohereTranscribeLanguage.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "cohere_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1368,11 +1334,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: bodhanLanguageSelection(for: option.model)) {
-                        ForEach(BodhanLanguage.choices(for: option.model), id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "bodhan_language",
+                        allowedChoiceIDs: Set(BodhanLanguage.choices(for: option.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1400,15 +1363,8 @@ struct ModelsView: View {
                     HStack(spacing: MuesliTheme.spacing12) {
                         Text("Output").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                             .frame(width: 64, alignment: .leading)
-                        Picker("Output script", selection: Binding(
-                            get: { appState.config.resolvedBodhanOutputMode },
-                            set: { controller.selectBodhanOutputMode($0) }
-                        )) {
-                            ForEach(BodhanOutputMode.allCases, id: \.self) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: 220, alignment: .leading)
+                        MuesliSettingControl(controller: controller, id: "bodhan_output").frame(maxWidth: 220, alignment: .leading)
+                        .featureTourTarget(.bodhanFlexCard)
                         .disabled(incompatibilityReason != nil)
                         .help("Native script, mixed Indic and English scripts, or all Latin letters.")
                     }
@@ -1423,11 +1379,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: qwen3AsrLanguageSelection) {
-                        ForEach(Qwen3AsrLanguage.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "qwen_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1442,11 +1394,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: appleSpeechLanguageSelection) {
-                        ForEach(appleSpeechLanguageOptions) { language in
-                            Text(language.label).tag(language.id)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "apple_speech_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1461,11 +1409,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: whisperLanguageSelection) {
-                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "whisper_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1479,11 +1423,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: nemotron35LanguageSelection) {
-                        ForEach(Nemotron35Language.allCases, id: \.self) { language in
-                            Text(language.label).tag(language)
-                        }
-                    }
+                    MuesliSettingControl(controller: controller, id: "nemotron_language")
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1902,6 +1842,7 @@ struct ModelsView: View {
                 options.append(.locale(Locale(identifier: selectedIdentifier)))
             }
             appleSpeechLanguageOptions = options
+            controller.appState.settingsAppleSpeechLanguages = options
         }
     }
 

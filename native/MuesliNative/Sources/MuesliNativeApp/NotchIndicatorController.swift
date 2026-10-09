@@ -1,5 +1,22 @@
 import AppKit
 import SwiftUI
+import MuesliCore
+
+/// A bounded display summary. Full tool responses belong in the Timeline trace.
+struct NotchToolResult: Identifiable, Equatable {
+    let id: UUID
+    let message: String
+    let failed: Bool
+
+    init?(_ event: ComputerUseTraceEvent) {
+        guard event.kind == "tool_result", let summary = event.compactSummary else { return nil }
+        let text = summary.prefix(181).split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        id = event.id
+        message = text.count > 180 ? String(text.prefix(179)) + "…" : text
+        failed = ["failed", "unsupported", "cancelled", "needsConfirmation"].contains(event.status ?? "")
+    }
+}
 
 enum NotchOutcome: Equatable {
     case success, needsInput, failure
@@ -84,6 +101,11 @@ struct NotchIndicatorGeometry: Equatable {
     let cutout: CGRect
     let wingWidth: CGFloat
 
+    // First-pass menu-bar clearance: shorten the original 110-point right wing
+    // by 32 points without moving the camera gap. This does not detect the system
+    // privacy item's frame; verify clearance on the user's display/layout.
+    var rightWingWidth: CGFloat { cutout.width > 0 ? min(wingWidth, 78) : wingWidth }
+
     static func resolve(screen: CGRect, topInset: CGFloat, left: CGRect?, right: CGRect?) -> Self? {
         guard topInset.isFinite, topInset > 0, topInset < screen.height / 4,
               let left, let right,
@@ -103,20 +125,26 @@ struct NotchIndicatorGeometry: Equatable {
     func frame() -> CGRect {
         let height = cutout.height
         return CGRect(x: cutout.minX - wingWidth, y: cutout.maxY - height,
-                      width: cutout.width + 2 * wingWidth, height: height)
+                      width: wingWidth + cutout.width + rightWingWidth, height: height)
     }
 
-    func instructionFrame(in screen: CGRect, requiresReview: Bool = false) -> CGRect {
+    func instructionFrame(in screen: CGRect, requiresReview: Bool = false, resultCount: Int = 0) -> CGRect {
         let width = min(440, screen.width)
-        let height: CGFloat = requiresReview ? 180 : 115
-        return CGRect(x: min(max(cutout.midX - width / 2, screen.minX), screen.maxX - width),
+        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 30
+        return CGRect(x: expandedOriginX(width: width, in: screen),
                       y: cutout.minY - height, width: width, height: height)
+    }
+
+    func expandedOriginX(width: CGFloat, in screen: CGRect) -> CGFloat {
+        // Match the visible asymmetric bar without shifting the physical camera gap.
+        min(max(frame().midX - width / 2, screen.minX), screen.maxX - width)
     }
 }
 
 @MainActor
 private final class NotchIndicatorPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    var acceptsKeyboardInput = false
+    override var canBecomeKey: Bool { acceptsKeyboardInput }
     override var canBecomeMain: Bool { false }
 }
 
@@ -138,8 +166,10 @@ final class NotchIndicatorController {
     private var icon = NSImage()
     private var accent = RecordingIndicatorPalette.accent(hex: "")
     private var instructionPanel: NSPanel?
+    private var question: ComputerUseQuestionSession?
     private var instruction: String?
     private var instructionStatus = ""
+    private var toolResults: [NotchToolResult] = []
     private var appName = ""
     private var appIcon: NSImage?
     private var expanded = true
@@ -173,7 +203,8 @@ final class NotchIndicatorController {
     func show(on screen: NSScreen, title: String, detail: String,
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
-              appName: String = "", appIcon: NSImage? = nil) -> Bool {
+              appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
+              toolResults: [NotchToolResult] = []) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         requiresReview = false
         outcome = nil
@@ -191,8 +222,11 @@ final class NotchIndicatorController {
             return true
         }
         self.icon = icon
+        if self.question?.id != question?.id { expanded = true }
+        self.question = question
         self.instruction = instruction
         self.instructionStatus = instructionStatus
+        self.toolResults = toolResults
         self.appName = appName
         self.appIcon = appIcon
         self.screenBounds = screen.visibleFrame
@@ -242,6 +276,7 @@ final class NotchIndicatorController {
         instructionPanel?.orderOut(nil)
         instructionPanel?.contentView = nil
         instruction = nil
+        question = nil
         dismissActivity?.cancel()
         dismissActivity = nil
         visibility = NotchActivityVisibility()
@@ -306,7 +341,7 @@ final class NotchIndicatorController {
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
-            hasInstruction: instruction != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome,
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome,
             onToggleInstruction: { [weak self] in
                 guard let self else { return }
                 self.expanded.toggle()
@@ -322,7 +357,8 @@ final class NotchIndicatorController {
     }
 
     private func renderInstruction() {
-        guard let geometry, let instruction, !instruction.isEmpty, expanded, visibility.active else {
+        guard let geometry, expanded, visibility.active,
+              question != nil || instruction?.isEmpty == false else {
             instructionPanel?.orderOut(nil)
             instructionPanel?.contentView = nil
             return
@@ -339,10 +375,25 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             instructionPanel = panel
         }
-        let frame = geometry.instructionFrame(in: screenBounds, requiresReview: requiresReview)
-        let view = NotchLiveInstructionView(instruction: instruction, status: instructionStatus,
+        (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if let question {
+            let size = ComputerUseQuestionLayout.size(in: screenBounds)
+            let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - size.height), width: size.width, height: size.height)
+            let view = ComputerUseQuestionView(session: question, notch: true,
+                onCollapse: { [weak self] in self?.expanded = false; self?.render() }, accent: Color(nsColor: accent))
+            if let hosting = instructionPanel?.contentView as? NSHostingView<ComputerUseQuestionView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
+        if instructionPanel?.isKeyWindow == true { instructionPanel?.resignKey() }
+        let frame = geometry.instructionFrame(in: screenBounds, requiresReview: requiresReview, resultCount: toolResults.count)
+        let view = NotchLiveInstructionView(instruction: instruction ?? "", status: instructionStatus,
             appName: appName, appIcon: appIcon, accent: Color(nsColor: accent),
-            requiresReview: requiresReview, outcome: outcome,
+            requiresReview: requiresReview, outcome: outcome, toolResults: toolResults,
             onReview: { [weak self] in self?.onReview?(); self?.hide() },
             onCollapse: { [weak self] in self?.expanded = false; self?.render() },
             onCancel: { [weak self] in self?.cancelOrDismiss() })
@@ -366,6 +417,7 @@ struct NotchLiveInstructionView: View {
     let accent: Color
     var requiresReview = false
     var outcome: NotchOutcome? = nil
+    var toolResults: [NotchToolResult] = []
     var onReview: () -> Void = {}
     let onCollapse: () -> Void
     let onCancel: () -> Void
@@ -380,7 +432,7 @@ struct NotchLiveInstructionView: View {
                     .accessibilityLabel("Collapse instruction")
             }
             ScrollView {
-                Text(instruction).font(.system(size: 16, weight: .medium))
+                Text(instruction).font(.system(size: 13, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
@@ -391,6 +443,23 @@ struct NotchLiveInstructionView: View {
                 Text(status).font(.caption).lineLimit(2)
                 Spacer()
                 Button(outcome != nil || requiresReview ? "Dismiss" : "Cancel", action: onCancel).buttonStyle(.bordered)
+            }
+            if !requiresReview && outcome == nil {
+                ForEach(toolResults.suffix(3)) { result in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: result.failed ? "exclamationmark.circle" : "checkmark.circle")
+                            .foregroundStyle(result.failed ? Color.orange : accent)
+                            .accessibilityLabel(result.failed ? "Tool did not complete" : "Tool response")
+                        Text(result.message)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(height: 24, alignment: .top)
+                    .help("Full response available in Timeline")
+                }
             }
             if requiresReview {
                 Text("Your attention is needed. Review the details in Muesli.")
@@ -442,6 +511,12 @@ private struct NotchIndicatorView: View {
         UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
     }
 
+    private var waveformWidth: CGFloat {
+        let controlWidth: CGFloat = active ? (meeting ? 40 : (recording && handsFree ? 42 : 22)) : 0
+        let gaps: CGFloat = active ? ((meeting || (recording && handsFree)) ? 8 : 4) : 0
+        return max(0, min(58, geometry.rightWingWidth - 12 - controlWidth - gaps))
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 4) {
@@ -466,6 +541,12 @@ private struct NotchIndicatorView: View {
                 }
                 .accessibilityLabel("\(title). Open Muesli home")
                 .help("Open Muesli home")
+                if hasInstruction {
+                    Button(action: onToggleInstruction) {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .frame(width: 20, height: 22)
+                    }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
+                }
             }
             .padding(.horizontal, 7)
             .frame(width: geometry.wingWidth)
@@ -474,17 +555,11 @@ private struct NotchIndicatorView: View {
             Color.black.frame(width: geometry.cutout.width).allowsHitTesting(false)
                 .accessibilityHidden(true)
 
-            HStack(spacing: meeting ? 4 : 7) {
-                if hasInstruction {
-                    Button(action: onToggleInstruction) {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .frame(width: 20, height: 22)
-                    }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
-                }
+            HStack(spacing: 4) {
                 Group {
                     if recording && !paused {
                         NotchWaveform(power: power, scrolling: handsFree, reduceMotion: reduceMotion, accent: accent)
-                            .frame(width: (meeting || handsFree) ? min(42, geometry.wingWidth - 64) : 58,
+                            .frame(width: waveformWidth,
                                    height: min(20, geometry.cutout.height - 8))
                     } else if paused {
                         Image(systemName: "pause.fill")
@@ -536,8 +611,8 @@ private struct NotchIndicatorView: View {
                     .help(outcome != nil ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(width: geometry.wingWidth)
+            .padding(.horizontal, 6)
+            .frame(width: geometry.rightWingWidth)
         }
         .buttonStyle(.plain)
         .foregroundStyle(outcome == .needsInput || outcome == .success ? .black : .white)

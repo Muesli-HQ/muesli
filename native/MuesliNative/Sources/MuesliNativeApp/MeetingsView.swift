@@ -290,7 +290,7 @@ struct MeetingsView: View {
                 if presentation.meetings.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: MuesliTheme.spacing12) {
+                    LazyVStack(spacing: 0) {
                         ForEach(presentation.meetings) { meeting in
                             MeetingListItemView(
                                 record: meeting,
@@ -313,7 +313,7 @@ struct MeetingsView: View {
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)

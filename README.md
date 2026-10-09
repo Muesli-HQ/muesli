@@ -24,7 +24,7 @@
 
 ## What is Muesli?
 
-Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. Dictation and meeting transcription run locally on Apple Silicon by default. Optional hosted dictation sends audio to OpenAI or through OpenRouter to your selected model. Hosted cleanup, Quill, summaries, and Computer Use send the input needed for those features when selected. iCloud sync transfers text and sync metadata, never audio.
+Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. Dictation and meeting transcription run locally on Apple Silicon by default. Optional hosted dictation sends audio to OpenAI or through OpenRouter to your selected model. Hosted cleanup, Quill, summaries, and hosted Computer Use send the input needed for those features when selected. The experimental on-device Computer Use planner runs with downloaded Gemma models without ChatGPT. iCloud sync transfers text and sync metadata, never audio.
 
 <p align="center">
   <img src="assets/muesli-github-ss.png" alt="Muesli 0.8.4 Timeline with illustrative dictation, meeting, iPhone, and Computer Use entries" width="900" />
@@ -32,17 +32,18 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 
 <p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
 
-### New in 0.8.4
+### New in 0.8.5
 
 | Feature | What you can do |
 |---|---|
-| **Quill** | Ask a question, rewrite selected text, or create text at the cursor with your voice. |
-| **Bodhan for Indic languages** | Dictate across Indic languages and English, including code-switching. Bodhan Flex also offers romanized output in Latin letters. |
-| **Live meeting transcripts** | Use Apple Speech on macOS 26+. Live transcription is off by default. |
-| **Re-summarize meetings** | Choose a different summary model for a saved meeting. |
-| **BYOK dictation** | Use OpenAI or OpenRouter when you want hosted transcription. Local by default. |
+| **Muesli at the notch** | Choose Notch in Settings → Appearance to follow recording, processing, and Computer Use progress. |
+| **Change settings with your voice** | Enable Computer Use Command in Shortcuts, then change supported settings using experimental local Gemma or your connected ChatGPT account. AI prompt settings remain manual-only. |
+| **Claude for meeting notes** | Use Anthropic with your API key or a signed-in Claude Code installation. Meeting content is sent to Claude for summaries. |
+| **Re-transcribe saved meetings** | Give a meeting another pass with a downloaded meeting model and retained audio. |
+| **Press to toggle** | In Shortcuts → Dictation, choose Press to toggle and assign a modifier + key shortcut. Press once to start, again to stop. |
+| **Bodhan in your preferred script** | Choose Native, Mixed, or Romanized output for Bodhan Flex, including Indic speech in Latin letters. |
 
-This release also adds S1-mini English cleanup, Apple Shortcuts and Siri actions, clearer macOS calendar management, and iCloud reconnection recovery. [Read the full 0.8.4 release notes](docs/release-notes/0.8.4.md).
+This release also adds six- and twelve-hour calendar windows, hiding individual events from the status-bar menu, easier shortcut-conflict recovery, and improved update-window presentation. Dictation and meeting transcription remain local by default. [Read the full 0.8.5 release notes](docs/release-notes/0.8.5.md).
 
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
@@ -53,7 +54,11 @@ By default, dictation uses an on-device model. You can instead opt into OpenAI S
 Select text and speak an instruction to rewrite it, or ask a question and generate text at the cursor with no selection. Choose your model in **Models → Quill**. If a required local model is missing or a selected account is signed out, Muesli prompts you to download the model or sign in before use.
 
 ### Meeting Transcription
-Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
+Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI or Anthropic API keys, free OpenRouter models, your ChatGPT Plus/Pro subscription, Claude Code, or local Ollama models.
+
+For Anthropic API summaries, choose **Anthropic** in Settings → Meetings → Meeting Summaries, enter your API key, and select a Claude model. A key not scoped to one Anthropic workspace also needs its workspace ID. Non-empty `ANTHROPIC_API_KEY` and `ANTHROPIC_WORKSPACE_ID` values override the saved values in the app and headless CLI. Claude Code sign-in remains a separate provider.
+
+The default OpenAI and ChatGPT meeting summary model is now GPT-6.1 Sol, and the default ChatGPT transcript cleanup model is GPT-6 Luna. Existing explicit model selections remain saved; accounts that left either model on its default will use the new default on their next request. Check the model choice in Settings if you prefer a different speed or price point.
 
 Live meeting transcripts have two explicit modes. **Nemotron 3.5** and **Apple Speech** supply live captions and the normal final raw transcript before diarization and note generation. The existing recorded-audio transcription pipeline remains available for missing or incomplete streaming results. **Parakeet Realtime EOU** provides provisional live previews while a separately selected meeting model creates the final transcript. Apple Speech adds system-supported languages on macOS 26+, while Parakeet Realtime EOU remains the low-latency English option. Settings always shows which model owns the final transcript.
 
@@ -65,7 +70,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
 - **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Bodhan Core/Flex for Indic and English speech (Flex includes native, mixed-script, and romanized output), and experimental Gemma 4 E2B.
-- **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
+- **Hold-to-talk & hands-free** — Hold the hotkey for quick dictation, double-tap for sustained recording, or choose Press to toggle with a modifier + key shortcut.
 - **Quill voice writing and answers** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
@@ -74,7 +79,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 - **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
 - **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
 - **Join & Transcribe** — Extracts meeting URLs from calendar events (Zoom, Google Meet, Teams, Webex, Chime, FaceTime). Split-button notification: "Join & Transcribe" opens the meeting + starts transcription, "Join Only" opens without transcribing, "Transcribe Only" starts transcription without joining. Platform icons (Zoom, Meet) in the notification panel.
-- **macOS Calendar integration** — See upcoming meetings from calendars connected to your Mac, including iCloud, Google, and Exchange, in the Coming Up section and status bar. Choose whether Muesli watches today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
+- **macOS Calendar integration** — See upcoming meetings from calendars connected to your Mac, including iCloud, Google, and Exchange, in the Coming Up section and status bar. Choose the next six or twelve hours, today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
 - **Import Audio** — Import m4a, mp4, wav, or mp3 files for offline transcription, speaker diarization, title generation, summaries, and saved meeting history.
 - **Meeting export** — Export meeting notes or transcripts as PDF (paginated US Letter) or Markdown. Format picker in the save panel, auto-opens the exported file.
 - **Meeting templates** — Built-in and custom templates for meeting notes. Choose a template before or after recording — re-summarize any meeting with a different template.
@@ -82,15 +87,16 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 - **iCloud Text Sync & iPhone Bridge** — Privately sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through iCloud. Audio recordings are never synced.
 - **Optional transcript cleanup** — Refine dictated text locally with **[S1-mini by Superwhisper](https://huggingface.co/superwhisper/s1-mini-GGUF)**, Muesli's GGUF cleanup models, or on-device Gemma 4 E2B; hosted providers are also available when preferred. S1-mini is for English dictation. Missing local cleanup models prompt a download and open **Models → Cleanup**.
 - **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
-- **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any saved meeting with a different summary model.
+- **AI meeting notes** — BYOK with OpenAI or Anthropic, connect OpenRouter, sign in with ChatGPT, use your local Claude Code installation and sign-in, or run Ollama. Anthropic uses the Messages API with your own key; Claude Code runs `claude -p` through your configured account or proxy. Neither runs the model on-device. Auto-generated meeting titles. Re-summarize any saved meeting with a different summary model.
 - **Ask Meetings** — Ask questions across saved meetings, a folder, a date range, or selected meetings. Answers cite transcript or note passages you can inspect and open in the original meeting. Search runs locally with an incremental index; large recaps clearly show partial coverage. Chat uses your existing meeting AI connection. Fast answers use GPT-5.4 Mini for ChatGPT/OpenAI, with an option to keep your selected model. Chats stay local, support follow-ups and editable drafts, and copy/export to Markdown or PDF with references. Deleting a source meeting removes dependent answers; clearing meeting history clears chats. Search uses lexical matching, so a specific term or narrower scope can help when paraphrases miss.
+- **Custom LLM gateways** — Configure additional headers and an optional **API Key Command** for short-lived credentials. Commands run via `/bin/sh` with your user permissions; use absolute executable paths. Non-empty output takes precedence over the static key; failures fall back to it. `muesli-cli` uses `CUSTOM_LLM_API_KEY` or the static key without executing configured commands. For a server on your LAN or elsewhere, use HTTPS with a certificate trusted by your Mac, directly or through a reverse proxy such as Caddy. Plain HTTP network endpoints can be blocked by macOS transport security. The `http://localhost:8080/v1` example is for a server running on the same Mac.
 - **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
-- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings.
+- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings. Use the CUA shortcut to change supported Muesli settings by voice, such as “switch to the notch” or “change the Quill shortcut to Left Control.” Ambiguous settings requests offer choices and a free-form answer; changes are validated and saved before showing Done. Download Gemma 4 E2B or E4B in Models, then select its on-device entry under Settings → Computer Use → Planner model (macOS 15+). Local planning initially uses Accessibility text and explicit coordinates, not screenshot vision; it never falls back to ChatGPT. CUA delegates writing and rewriting in supported text fields to Quill’s shared Writing model; choose an on-device Writing model for local CUA.
 - **Post-meeting hooks** — Run a user-supplied executable after completed meetings. Hooks receive a JSON payload on stdin and log results in the app support directory.
 - **Personal dictionary** — Add custom words, phrase matches, and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
 - **Model management** — Download, delete, and switch between models from the Models tab. Background downloads that don't block the app.
 - **Configurable hotkeys** — Choose any modifier key (Cmd, Option, Ctrl, Fn, Shift) for dictation.
-- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, OpenRouter, or Ollama. Progress saved on every step — survives crashes and manual quits.
+- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, Anthropic, OpenRouter, or Ollama. Claude Code is offered when its CLI is already installed, with a sign-in status check. Progress saved on every step — survives crashes and manual quits.
 - **Launch at Login** — Start Muesli automatically with macOS login items, with approval-state refresh in Settings.
 - **Dark & light mode** — Adaptive theme with toggle in sidebar.
 - **SwiftUI dashboard** — Dictation history, meeting notes (Notes-style split view), meeting folders, dictionary, models, shortcuts, settings, about page.
@@ -243,7 +249,7 @@ Generate markdown notes with the configured API/local summary backend when avail
 muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes.md
 ```
 
-`--summarize` uses configured OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
+`--summarize` uses configured Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM settings. When Claude Code is already installed, Muesli offers it under Settings → Meeting Summaries. Muesli passes the prompt on stdin, disables Claude's tools and MCP servers for this call, and does not save a Claude session. Your Claude Code user settings, including any configured provider or hooks, still apply. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
 
 Save the import into Muesli as `source = audio_import`:
 
@@ -455,7 +461,7 @@ Muesli uses macOS Calendar through EventKit. A direct Google Calendar sign-in is
 | Speaker diarization | pyannote via FluidAudio (CoreML on ANE) |
 | Camera detection | CoreMediaIO property listeners (event-driven) |
 | System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
-| Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
+| Meeting notes | OpenAI / Anthropic (BYOK), OpenRouter, ChatGPT subscription (OAuth), Claude Code, or Ollama |
 | Calendar | Apple EventKit (macOS Calendar accounts) |
 | Sync | CloudKit private database for text-only iCloud sync |
 | Automation | Computer Use planner and post-meeting executable hooks |

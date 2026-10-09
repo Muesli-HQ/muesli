@@ -106,21 +106,18 @@ struct MeetingListItemView: View {
             }
 
             Text(previewText())
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .lineLimit(2)
         }
         .padding(MuesliTheme.spacing16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? MuesliTheme.surfaceSelected : MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
-                .strokeBorder(
-                    isSelected ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder,
-                    lineWidth: 1
-                )
-        )
+        .background(isSelected ? MuesliTheme.accentSubtle : (isHovering ? MuesliTheme.backgroundHover : Color.clear))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing16)
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
