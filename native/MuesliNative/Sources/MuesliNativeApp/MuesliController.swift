@@ -379,6 +379,16 @@ public final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
+    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    var meetingChatCoordinator: MeetingChatCoordinator {
+        get {
+            if let existing = storedMeetingChatCoordinator { return existing }
+            let coordinator = MeetingChatCoordinator(databaseURL: dictationStore.resolvedDatabaseURL)
+            storedMeetingChatCoordinator = coordinator
+            return coordinator
+        }
+        set { storedMeetingChatCoordinator = newValue }
+    }
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
@@ -1415,6 +1425,7 @@ public final class MuesliController: NSObject {
     }
 
     func syncAppState() {
+        storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
             limit: appState.timelinePageSize,
             offset: 0,
@@ -5594,6 +5605,7 @@ public final class MuesliController: NSObject {
     }
 
     func showMeetingsHome(folderID: Int64? = nil) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.selectedFolderID = folderID
         appState.meetingsNavigationState = .browser
@@ -5608,6 +5620,7 @@ public final class MuesliController: NSObject {
     }
 
     func showMeetingDocument(id: Int64) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.meetingDetailReturnDestination = .meetings
         appState.selectedMeetingID = id
@@ -5622,6 +5635,16 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingRecord = meeting(id: id)
         appState.meetingsNavigationState = .document(id)
     }
+
+    func showMeetingChat(meetingID: Int64? = nil) {
+        appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
+        if let id = meetingID { meetingChatCoordinator.createChat(scope: .init(selection: .meetings([id]))) }
+    }
+    func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {
+        guard meeting(id: target.citation.meetingID) != nil else { meetingChatCoordinator.errorMessage = "This source meeting is no longer available."; return }
+        showMeetingDocument(id: target.citation.meetingID); appState.meetingChatDocumentTarget = target
+    }
+    func returnToMeetingChat() { appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil }
 
     private func showActiveMeetingDocumentIfNeeded() {
         guard let activeMeetingID,

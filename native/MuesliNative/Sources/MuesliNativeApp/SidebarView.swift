@@ -148,6 +148,7 @@ struct SidebarView: View {
             collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
             collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
             collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
+            collapsedItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Ask Meetings")
             collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
 
@@ -216,6 +217,7 @@ struct SidebarView: View {
                         sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
                         sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
                         meetingsSection
+                        sidebarItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Ask Meetings")
                         sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
                         sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
                     }

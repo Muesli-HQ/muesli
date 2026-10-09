@@ -232,8 +232,11 @@ struct MeetingsView: View {
                     meeting: meeting,
                     controller: controller,
                     appState: appState,
-                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) },
-                    backLabel: "Back to Meetings"
+                    onBack: {
+                        if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
+                        else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
+                    },
+                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {

@@ -252,6 +252,8 @@ struct DashboardRootView: View {
                 )
             case .meetings:
                 MeetingsView(appState: appState, controller: controller)
+            case .meetingChat:
+                MeetingChatView(appState: appState, controller: controller, coordinator: controller.meetingChatCoordinator)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:
