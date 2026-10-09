@@ -14,10 +14,36 @@ private actor MeetingChatWorker {
         let history = try store.turns(sessionID: turn.sessionID).filter {
             $0.ordinal < turn.ordinal && $0.ordinal >= (session?.contextStartOrdinal ?? 0) && $0.scope == turn.scope && $0.state == .completed
         }
-        let broadIntent = ["recap", "summar", "decisions", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
-        // A unique topic must win over broad prompt vocabulary, even in a recap or draft.
-        let broad = broadIntent && ![" about ", " regarding ", " related to ", " for project "].contains { turn.question.localizedCaseInsensitiveContains($0) }
-        var evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question), broadRecap: broad)
+        let broadIntent = ["recap", "summar", "decisions", "decide", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
+        // Every question gets lexical relevance first. Broad vocabulary never disables a topic match.
+        var evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question))
+        if broadIntent {
+            let representative = try retrieval.retrieve(question: turn.question, scope: turn.scope, broadRecap: true)
+            var selected: [MeetingChatPassage] = []; var seen = Set<String>(); var bytes = 0; var packetBytes = 0
+            for var passage in evidence.passages where bytes + passage.excerpt.utf8.count <= 6_000 {
+                passage.sourceKey = "S\(selected.count + 1)"
+                let footprint = MeetingChatPassages.promptByteCount(passage)
+                if packetBytes + footprint <= 5_000, seen.insert(passage.id).inserted {
+                    selected.append(passage); bytes += passage.excerpt.utf8.count; packetBytes += footprint
+                }
+            }
+            for var passage in representative.passages where bytes + passage.excerpt.utf8.count <= 12_000 {
+                passage.sourceKey = "S\(selected.count + 1)"
+                let footprint = MeetingChatPassages.promptByteCount(passage)
+                if packetBytes + footprint <= 10_000, seen.insert(passage.id).inserted {
+                    selected.append(passage); bytes += passage.excerpt.utf8.count; packetBytes += footprint
+                }
+            }
+            for index in selected.indices { selected[index].sourceKey = "S\(index + 1)" }
+            let represented = Set(selected.map(\.meetingID))
+            evidence = .init(scope: turn.scope, passages: selected,
+                dependencies: Array(Set(selected.map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) })),
+                coverage: .init(eligibleMeetingCount: representative.coverage.eligibleMeetingCount, evidenceMeetingCount: represented.count,
+                    isPartialRecap: representative.coverage.isPartialRecap || represented.count < representative.coverage.eligibleMeetingCount),
+                metrics: .init(sourceSnapshotCount: evidence.metrics.sourceSnapshotCount + representative.metrics.sourceSnapshotCount,
+                    reindexedMeetingCount: evidence.metrics.reindexedMeetingCount + representative.metrics.reindexedMeetingCount,
+                    decodedCandidateCount: evidence.metrics.decodedCandidateCount + representative.metrics.decodedCandidateCount))
+        }
         // Include exactly the history that fits the same budget used by prompt construction.
         var selected: [MeetingChatTurn] = []; var bytes = 0
         for previous in history.reversed() {

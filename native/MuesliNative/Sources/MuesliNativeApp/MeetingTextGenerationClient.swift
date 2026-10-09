@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 struct MeetingTextGenerationRequest {
     let system: String
@@ -24,12 +25,21 @@ enum MeetingTextGenerationError: Error, LocalizedError {
 }
 
 struct MeetingTextGenerationClient: MeetingTextGenerating {
-    var credentialResolver: @Sendable (AppConfig) -> String = { Self.credential($0) }
+    var credentialResolver: @Sendable (AppConfig) async throws -> String = { config in
+        if MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .customLLM {
+            return try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
+        }
+        return Self.credential(config)
+    }
     var load: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
     var chatGPT: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ChatGPTResponsesClient.respond(systemPrompt: request.system, userPrompt: request.user,
             model: Self.model(request.config), maxOutputTokens: request.maxOutputTokens,
             reasoningEffort: request.config.meetingSummaryReasoningEffort, logCategory: "meeting-chat")
+    }
+    var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
+        try await ClaudeCodeSummarizer.run(instructions: request.system, input: request.user,
+            model: request.config.claudeCodeModel, executablePath: request.config.claudeCodeExecutablePath)
     }
 
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
@@ -37,7 +47,13 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .chatGPT {
             return try await chatGPT(request)
         }
-        let urlRequest = try Self.makeRequest(request, credential: credentialResolver(request.config))
+        if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .claudeCode {
+            return try await claudeCode(request)
+        }
+        if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .customLLM {
+            _ = try CustomLLMRequestHeaders.validated(request.config.customLLMHeaders)
+        }
+        let urlRequest = try Self.makeRequest(request, credential: await credentialResolver(request.config))
         let (data, response) = try await load(urlRequest)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
@@ -47,6 +63,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         switch MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) {
         case .openAI: text = MeetingSummaryClient.extractOpenAIText(from: json)
         case .ollama: text = (json["message"] as? [String: Any])?["content"] as? String
+        case .anthropic: text = MeetingSummaryClient.extractAnthropicText(from: json)
         case .customLLM where request.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue:
             text = MeetingSummaryClient.extractAnthropicText(from: json)
         default: text = MeetingSummaryClient.extractOpenRouterText(from: json)
@@ -59,7 +76,15 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let configured = config[keyPath: provider.modelKeyPath].trimmingCharacters(in: .whitespacesAndNewlines)
         if !configured.isEmpty { return configured }
-        switch provider { case .chatGPT, .openAI: return "gpt-5.4-mini"; case .openRouter: return "openrouter/free"; case .ollama: return "qwen3.5"; default: return "" }
+        switch provider {
+        case .chatGPT: return SummaryModelPreset.chatGPTModels.first?.id ?? "gpt-5.4-mini"
+        case .openAI: return SummaryModelPreset.openAIModels.first?.id ?? "gpt-5.4-mini"
+        case .anthropic: return SummaryModelPreset.anthropicModels.first?.id ?? "claude-sonnet-5-5"
+        case .claudeCode: return "CLI default"
+        case .openRouter: return "openrouter/free"
+        case .ollama: return "qwen3.5"
+        default: return ""
+        }
     }
     static func fastConfiguration(_ original: AppConfig) -> AppConfig {
         var config = original
@@ -72,7 +97,8 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     }
     private static func credential(_ config: AppConfig) -> String {
         switch MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) {
-        case .openAI: return ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        case .openAI: return MeetingSummaryClient.resolvedOpenAIAPIKey(config: config)
+        case .anthropic: return MeetingSummaryClient.resolvedAnthropicAPIKey(config: config)
         case .openRouter: return OpenRouterCredentialResolver.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey)
         case .customLLM: return config.customLLMAPIKey
         default: return ""
@@ -97,6 +123,11 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         case .openRouter:
             guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
             url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        case .anthropic:
+            guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
+            url = URL(string: "https://api.anthropic.com/v1/messages")!
+            anthropic = true
+            body = ["model": model, "system": input.system, "messages": [["role": "user", "content": input.user]], "max_tokens": input.maxOutputTokens]
         case .ollama:
             guard let base = URL(string: config.ollamaURL.isEmpty ? "http://localhost:11434" : config.ollamaURL), ["http", "https"].contains(base.scheme ?? "") else { throw MeetingTextGenerationError.invalidEndpoint }
             url = base.appendingPathComponent("api/chat")
@@ -122,6 +153,11 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         if !credential.isEmpty { request.setValue(anthropic ? credential : "Bearer \(credential)", forHTTPHeaderField: anthropic ? "x-api-key" : "Authorization") }
         if provider == .openRouter { request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title") }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        if provider == .anthropic {
+            return try AnthropicAPIRequest.make(url: url, apiKey: credential,
+                workspaceID: MeetingSummaryClient.resolvedAnthropicWorkspaceID(config: config), body: body, timeout: request.timeoutInterval)
+        }
+        if provider == .customLLM { try CustomLLMRequestHeaders.apply(config.customLLMHeaders, to: &request) }
         return request
     }
 }

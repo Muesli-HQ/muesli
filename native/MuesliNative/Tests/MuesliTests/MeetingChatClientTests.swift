@@ -46,10 +46,11 @@ struct MeetingChatClientTests {
         #expect(long.totalUTF8Bytes <= 24_000)
     }
 
-    @Test(arguments: ["openai", "openrouter", "ollama", "lmstudio", "custom_llm"])
+    @Test(arguments: ["openai", "anthropic", "openrouter", "ollama", "lmstudio", "custom_llm"])
     func buildsRequestForSelectedProvider(backend: String) throws {
         var config = AppConfig(); config.meetingSummaryBackend = backend
         config.openAIModel = "test-model"; config.openRouterModel = "test-model"; config.ollamaModel = "test-model"
+        config.anthropicModel = "test-model"
         config.lmStudioModel = "test-model"; config.customLLMModel = "test-model"; config.customLLMURL = "http://localhost:1234"
         let request = try MeetingTextGenerationClient.makeRequest(.init(system: "System", user: "User", config: config), credential: "synthetic-test-key")
         let data = try #require(request.httpBody)
@@ -71,6 +72,27 @@ struct MeetingChatClientTests {
         var config = AppConfig(); config.meetingSummaryBackend = "chatgpt"
         let generator = MeetingTextGenerationClient(chatGPT: { _ in "synthetic reply" })
         #expect(try await generator.generate(.init(system: "System", user: "User", config: config)) == "synthetic reply")
+    }
+
+    @Test func claudeCodeUsesConfiguredBridgeWithoutStartingARealProcess() async throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "claude_code"
+        let generator = MeetingTextGenerationClient(claudeCode: { request in
+            #expect(request.system == "System")
+            return "synthetic CLI reply"
+        })
+        #expect(try await generator.generate(.init(system: "System", user: "User", config: config)) == "synthetic CLI reply")
+    }
+
+    @Test func customGatewayHeadersAndCredentialCommandRouteArePreserved() async throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "custom_llm"; config.customLLMModel = "test"
+        config.customLLMHeaders = [.init(name: "X-Gateway", value: "synthetic")]
+        config.customLLMAPIKeyCommand = "synthetic-command-not-executed"
+        let generator = MeetingTextGenerationClient(credentialResolver: { _ in "synthetic-resolved" }, load: { request in
+            #expect(request.value(forHTTPHeaderField: "X-Gateway") == "synthetic")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-resolved")
+            return (Data(#"{"choices":[{"message":{"content":"reply"}}]}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        #expect(try await generator.generate(.init(system: "System", user: "User", config: config)) == "reply")
     }
 
     @Test(arguments: ["openai", "openrouter", "ollama", "lmstudio", "custom_llm"])
@@ -164,13 +186,14 @@ struct MeetingChatClientTests {
         #expect(await probe.requests.count == 2)
     }
 
-    @Test @MainActor func targetedDecisionQuestionKeepsOldRelevantMeeting() async throws {
+    @Test(arguments: ["What decisions did we make about sunflower?", "Sunflower decisions", "Draft a follow-up on sunflower", "Next steps for sunflower"])
+    @MainActor func targetedDecisionQuestionKeepsOldRelevantMeeting(question: String) async throws {
         let probe = ChatPromptProbe()
         let (store, coordinator, _) = try coordinatorFixture(generator: probe)
         _ = try store.insertMeeting(title: "Sunflower", calendarEventID: nil, startTime: Date(timeIntervalSince1970: 1_000), endTime: Date(timeIntervalSince1970: 1_060), rawTranscript: "The sunflower contract was approved.", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
         for _ in 0..<300 { _ = try store.insertMeeting(title: "Routine", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "Unrelated check-in.", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil) }
         coordinator.createChat(scope: .init())
-        coordinator.send(question: "What decisions did we make about sunflower?", config: AppConfig())
+        coordinator.send(question: question, config: AppConfig())
         await coordinator.waitForIdle()
         #expect(await probe.requests.last?.user.contains("The sunflower contract was approved.") == true)
     }

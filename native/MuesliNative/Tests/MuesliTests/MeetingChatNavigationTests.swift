@@ -13,7 +13,7 @@ struct MeetingChatNavigationTests {
             rawTranscript: "[00:00:01] You: Launch Friday.", formattedNotes: "## Decision\nLaunch Friday.", micAudioPath: nil, systemAudioPath: nil)
         let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Friday", scope: .init())
-        return (controller, store, try #require(evidence.passages.first?.citation))
+        return (controller, store, try #require(evidence.passages.first { $0.kind == .transcript }?.citation))
     }
     @Test func entryUsesSingleMeetingScopeAndReturnPreservesComposer() throws {
         let (controller, _, citation) = try controllerFixture()

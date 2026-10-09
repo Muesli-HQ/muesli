@@ -163,4 +163,12 @@ struct MeetingChatRetrievalTests {
         print("Synthetic 1,001-meeting archive warm search milliseconds: \(milliseconds.sorted())")
         // Report timing without a flaky wall-clock assertion; deterministic work bounds are asserted above.
     }
+
+    @Test func broadEvidenceAccountsForSerializedMetadataNotOnlyExcerptBytes() throws {
+        let store = try database()
+        for _ in 0..<300 { _ = try insert(store, text: "Brief decision.") }
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 10_000)
+        #expect(evidence.coverage.isPartialRecap)
+    }
 }

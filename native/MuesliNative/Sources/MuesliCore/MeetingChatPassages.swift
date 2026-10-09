@@ -41,6 +41,17 @@ public struct MeetingChatRetrievalMetrics: Sendable {
 }
 
 public enum MeetingChatPassages {
+    public static func promptByteCount(_ passage: MeetingChatPassage) -> Int {
+        var title = ""; var count = 0
+        for character in passage.title {
+            let size = String(character).utf8.count
+            guard count + size <= 300 else { break }
+            title.append(character); count += size
+        }
+        let source = ["id": passage.sourceKey, "title": title, "date": passage.startDate.ISO8601Format(),
+                      "kind": passage.kind.label, "timestamp": passage.timestamp ?? "", "excerpt": passage.excerpt]
+        return ((try? JSONSerialization.data(withJSONObject: source, options: [.sortedKeys]).count) ?? Int.max / 2) + 8
+    }
     public static func extract(from source: MeetingChatSourceSnapshot) -> [MeetingChatPassage] {
         var passages: [MeetingChatPassage] = []
         for (kind, text) in [(MeetingChatSourceKind.transcript, source.transcript), (.manualNotes, source.manualNotes), (.generatedNotes, source.generatedNotes)] {

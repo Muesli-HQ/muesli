@@ -31,7 +31,7 @@ public struct MeetingChatRetrieval: Sendable {
                         ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id ORDER BY \(originalsFirst),p.id),s.start_time DESC,p.id LIMIT 257
                         """, scopeBindings, db: db)
                 } else if ftsAvailable, !tokens.isEmpty,
-                          let matched = try? readPassages("SELECT p.body FROM meeting_chat_fts f JOIN meeting_chat_passages p ON p.id=f.id \(baseJoin) WHERE \(scopeCondition) AND meeting_chat_fts MATCH ? ORDER BY \(originalsFirst),bm25(meeting_chat_fts) LIMIT 257", scopeBindings + [.text(tokens.map { "\"\($0)\"" }.joined(separator: " OR "))], db: db) {
+                          let matched = try? readPassages("SELECT p.body FROM meeting_chat_fts f JOIN meeting_chat_passages p ON p.id=f.id \(baseJoin) WHERE \(scopeCondition) AND meeting_chat_fts MATCH ? ORDER BY bm25(meeting_chat_fts),\(originalsFirst) LIMIT 257", scopeBindings + [.text(tokens.map { "\"\($0)\"" }.joined(separator: " OR "))], db: db) {
                     candidates = matched
                 } else {
                     let terms = tokens.isEmpty ? [question.trimmingCharacters(in: .whitespacesAndNewlines)] : tokens
@@ -46,10 +46,14 @@ public struct MeetingChatRetrieval: Sendable {
                 metrics.decodedCandidateCount = candidates.count
                 let candidateLimited = candidates.count > 256
                 candidates = Array(candidates.prefix(256))
-                var selected: [MeetingChatPassage] = []; var usedBytes = 0
+                var selected: [MeetingChatPassage] = []; var usedBytes = 0; var packetBytes = 0
                 for var passage in candidates {
                     try Task.checkCancellation()
                     guard usedBytes + passage.excerpt.utf8.count <= 12_000 else { continue }
+                    passage.sourceKey = "S\(selected.count + 1)"
+                    let footprint = MeetingChatPassages.promptByteCount(passage)
+                    guard packetBytes + footprint <= 10_000 else { continue }
+                    packetBytes += footprint
                     usedBytes += passage.excerpt.utf8.count
                     passage.sourceKey = "S\(selected.count + 1)"; selected.append(passage)
                 }
