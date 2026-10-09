@@ -700,6 +700,58 @@ struct DictationAudioSessionManagerTests {
             #expect(harness.manager.currentState == .armed(secondSessionID))
         }
     }
+
+    @Test("stalled microphone start is reported failed while start is still blocked")
+    func stalledMicrophoneStartIsReportedWhileBlocked() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.startupTimeout = 0.1
+        let gate = DispatchSemaphore(value: 0)
+        harness.recorder.startGate = gate
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: false, mediaPauseEnabled: false)
+        Thread.sleep(forTimeInterval: 0.4)
+
+        // The manager queue is still blocked inside start(); the failure must
+        // already be visible without it.
+        #expect(harness.failedCount() == 1)
+        #expect(harness.manager.currentSessionID == nil)
+
+        // The user's stop lands behind the stalled start, as in the field.
+        harness.manager.stop()
+        gate.signal()
+        harness.wait()
+
+        #expect(harness.failedCount() == 1)
+        #expect(harness.recorder.cancelCalls >= 1)
+    }
+
+    @Test("startup watchdog stays quiet once audio arrives")
+    func startupWatchdogQuietAfterFirstBuffer() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.startupTimeout = 0.1
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.wait()
+        harness.recorder.onFirstCapturedAudioBuffer?(Date())
+        Thread.sleep(forTimeInterval: 0.3)
+        harness.wait()
+
+        #expect(harness.failedCount() == 0)
+    }
+
+    @Test("startup watchdog stays quiet for a session stopped before first audio")
+    func startupWatchdogQuietAfterEarlyStop() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.startupTimeout = 0.1
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.manager.stop()
+        harness.wait()
+        Thread.sleep(forTimeInterval: 0.3)
+        harness.wait()
+
+        #expect(harness.failedCount() == 0)
+    }
 }
 
 private final class Harness {
@@ -710,6 +762,7 @@ private final class Harness {
     let managerQueue = DispatchQueue(label: "test.dictation-session.manager")
     let eventQueue = DispatchQueue(label: "test.dictation-session.events")
     var events: [DictationAudioSessionEvent] = []
+    var startupTimeout: TimeInterval = 3
     lazy var manager: DictationAudioSessionManager = {
         let manager = DictationAudioSessionManager(
             recorder: recorder,
@@ -717,7 +770,8 @@ private final class Harness {
             mediaPlaybackController: media,
             routingController: route,
             queue: managerQueue,
-            eventQueue: eventQueue
+            eventQueue: eventQueue,
+            startupTimeout: startupTimeout
         )
         manager.onEvent = { [weak self] event in
             self?.events.append(event)
@@ -735,6 +789,12 @@ private final class Harness {
     func wait() {
         managerQueue.sync {}
         eventQueue.sync {}
+    }
+
+    func failedCount() -> Int {
+        eventQueue.sync {
+            events.filter { if case .failed = $0 { return true } else { return false } }.count
+        }
     }
 }
 
@@ -760,6 +820,8 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var activeRecordingID: UUID?
     var warmUpDelay: TimeInterval = 0
     var activateError: Error?
+    /// Simulates AudioQueueStart blocking inside CoreAudio until signalled.
+    var startGate: DispatchSemaphore?
 
     func prepare() throws {
         prepareCalls += 1
@@ -792,6 +854,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
 
     func start() throws -> UUID {
         startCalls += 1
+        startGate?.wait()
         let id = UUID()
         activeRecordingID = id
         return id
