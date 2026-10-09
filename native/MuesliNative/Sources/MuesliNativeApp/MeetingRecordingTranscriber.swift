@@ -126,7 +126,8 @@ final class RecordedAudioDiarizationSession {
             let lower = max(Float(start), segment.startTimeSeconds)
             let upper = min(Float(end), segment.endTimeSeconds)
             guard !segment.speakerId.isEmpty, lower.isFinite, upper.isFinite, upper > lower else { return nil }
-            return TimedSpeakerSegment(speakerId: segment.speakerId, embedding: [],
+            let embedding = (try? OwnerVoiceProfile.normalized(segment.embedding)) ?? []
+            return TimedSpeakerSegment(speakerId: segment.speakerId, embedding: embedding,
                                        startTimeSeconds: lower, endTimeSeconds: upper,
                                        qualityScore: segment.qualityScore)
         }
@@ -199,6 +200,7 @@ enum RecordedTranscriptDiarization {
     struct Outcome: Sendable {
         let transcript: String
         let warning: String?
+        var segments: [TimedSpeakerSegment] = []
     }
 
     /// Speaker identification enriches a successful ASR result; it must not
@@ -215,7 +217,7 @@ enum RecordedTranscriptDiarization {
                 transcription: transcription, diarizationSegments: segments,
                 meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
             )
-            return Outcome(transcript: text, warning: nil)
+            return Outcome(transcript: text, warning: nil, segments: segments)
         } catch is CancellationError {
             throw CancellationError()
         } catch {

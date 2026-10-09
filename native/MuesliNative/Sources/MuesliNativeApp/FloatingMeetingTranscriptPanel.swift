@@ -62,11 +62,13 @@ enum FloatingMeetingTranscriptInteraction: Equatable {
 @Observable
 final class FloatingMeetingTranscriptModel {
     let presentation = LiveTranscriptPresentationModel()
+    var microphoneLabel = "You"
     var isPaused = false
     var isPresented = false
     var didCopy = false
 
-    func update(transcript: String, partialYou: String, partialOthers: String) {
+    func update(transcript: String, partialYou: String, partialOthers: String, microphoneLabel: String = "You") {
+        self.microphoneLabel = microphoneLabel
         presentation.update(
             transcript: transcript,
             partialYou: partialYou,
@@ -78,7 +80,8 @@ final class FloatingMeetingTranscriptModel {
         let text = LiveTranscriptCopyContent.text(
             transcript: presentation.transcript,
             partialYou: presentation.partialYou,
-            partialOthers: presentation.partialOthers
+            partialOthers: presentation.partialOthers,
+            microphoneLabel: microphoneLabel
         )
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -132,11 +135,12 @@ final class FloatingMeetingTranscriptPanelController {
         hostingView?.superview != nil && hostingView?.isHidden == false
     }
 
-    func update(transcript: String, partialYou: String, partialOthers: String) {
+    func update(transcript: String, partialYou: String, partialOthers: String, microphoneLabel: String = "You") {
         model.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            microphoneLabel: microphoneLabel
         )
     }
 
@@ -334,6 +338,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
                 horizontalPadding: MuesliTheme.spacing12,
                 topPadding: MuesliTheme.spacing8,
                 bottomPadding: MuesliTheme.spacing8,
+                microphoneLabel: model.microphoneLabel,
                 onOpen: onOpenNotes
             )
         }
