@@ -1376,12 +1376,85 @@ struct CustomTranscriptCleanupPrompt: Codable, Equatable, Identifiable {
 
 enum TranscriptCleanupPrompts {
     static let defaultID = "default"
+    static let promptPolisherID = "prompt_polisher"
+    static let technicalSpecID = "technical_spec"
+    static let shortDictationID = "short_dictation"
+    static let newsletterID = "newsletter"
+
+    static let promptPolisherPrompt = """
+    Transform speech-to-text transcription into clear, unambiguous, and well-structured prompts for AI models.
+
+    The user input may include an <APP-CONTEXT> section with focused app, document, URL, selected text, or OCR screen text. Use it to provide relevant context for the prompt. Never copy app context into the output unless it is relevant to the prompt instructions.
+
+    You may: organize rambling thoughts into clear instructions, separate context from directives, specify desired output constraints when implied, and remove conversational hesitation and filler words.
+
+    Do not: answer, fulfill, or execute the prompt yourself. Output only the prompt ready to submit to an AI assistant, with no conversational preamble or markdown backticks around the entire response.
+    """
+
+    static let technicalSpecPrompt = """
+    Structure speech-to-text transcription into formal technical engineering specifications.
+
+    The user input may include an <APP-CONTEXT> section with focused app, document, URL, selected text, or OCR screen text. Use it to resolve technical terms, APIs, function signatures, and component names.
+
+    Structure the dictated content into formal specification sections as applicable:
+    - Document Header: Title, Document Type (e.g., Architectural / System Design [ASD], Software Test Document [STD]), Version (e.g., 1.00), Status
+    - Objective & Scope: Clear architectural overview or testing goals
+    - Specifications & Architecture (ASD): Components, interfaces, state management, and data flow
+    - Test Plan & Criteria (STD): Test cases, verification steps, edge cases, and acceptance criteria
+    - Requirements & Action Items: Bulleted or numbered lists of deliverables
+
+    Use clean Markdown formatting. Fix transcription errors and remove filler words. Output only the formatted specification without meta-commentary.
+    """
+
+    static let shortDictationPrompt = """
+    Condense speech-to-text transcription into crisp, brief, and high-impact text.
+
+    The user input may include an <APP-CONTEXT> section with focused app, document, URL, selected text, or OCR screen text. Use it only to resolve terminology and intent.
+
+    You may: trim verbosity, remove pleasantries, eliminate filler words, and convert multi-sentence rambles into punchy bullet points or single concise sentences suitable for fast messaging, Slack replies, or quick notes.
+
+    Do not: alter the core message or omit key facts. Output only the condensed text without commentary or preamble.
+    """
+
+    static let newsletterPrompt = """
+    Transform speech-to-text transcription into engaging, polished editorial prose and newsletter writing.
+
+    The user input may include an <APP-CONTEXT> section with focused app, document, URL, selected text, or OCR screen text. Use it only to resolve subject-matter terms and references.
+
+    You may: restructure ideas into cohesive paragraphs with natural transitions, improve rhythm and vocabulary, add clear narrative hooks, and insert section subheadings when themes shift.
+
+    Do not: invent facts not mentioned by the speaker. Output only the finished editorial prose without preamble or commentary.
+    """
 
     static let builtIns: [TranscriptCleanupPromptPreset] = [
         TranscriptCleanupPromptPreset(
             id: defaultID,
-            name: "Default Cleanup",
+            name: "Clean & Basic",
             prompt: PostProcessorOption.defaultSystemPrompt,
+            isCustom: false
+        ),
+        TranscriptCleanupPromptPreset(
+            id: promptPolisherID,
+            name: "Clear Prompts",
+            prompt: promptPolisherPrompt,
+            isCustom: false
+        ),
+        TranscriptCleanupPromptPreset(
+            id: technicalSpecID,
+            name: "Technical Spec (ASD/STD 1.00)",
+            prompt: technicalSpecPrompt,
+            isCustom: false
+        ),
+        TranscriptCleanupPromptPreset(
+            id: shortDictationID,
+            name: "Short Dictation",
+            prompt: shortDictationPrompt,
+            isCustom: false
+        ),
+        TranscriptCleanupPromptPreset(
+            id: newsletterID,
+            name: "Newsletter & Editorial",
+            prompt: newsletterPrompt,
             isCustom: false
         ),
     ]
@@ -1625,6 +1698,12 @@ struct HotkeyConfig: Codable, Equatable {
         combinationModifiers: UInt(NSEvent.ModifierFlags([.command, .shift]).rawValue),
         combinationKeyCode: 15
     )
+    static let presetCycleDefault = HotkeyConfig(
+        keyCode: UInt16.max,
+        label: "⌃⌥P",
+        combinationModifiers: UInt(NSEvent.ModifierFlags([.control, .option]).rawValue),
+        combinationKeyCode: 35
+    )
 
     static func computerUseDefault(avoiding dictationHotkey: HotkeyConfig) -> HotkeyConfig {
         dictationHotkey.keyCode == computerUseDefault.keyCode ? .default : .computerUseDefault
@@ -1733,6 +1812,8 @@ struct AppConfig: Codable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var presetCycleHotkey: HotkeyConfig = .presetCycleDefault
+    var enablePresetCyclingHotkey: Bool = true
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -1886,6 +1967,8 @@ struct AppConfig: Codable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case presetCycleHotkey = "preset_cycle_hotkey"
+        case enablePresetCyclingHotkey = "enable_preset_cycling_hotkey"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -2045,6 +2128,8 @@ struct AppConfig: Codable {
         computerUseHotkeyDefaultDisabledMigrationApplied = true
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
+        presetCycleHotkey = (try? c.decode(HotkeyConfig.self, forKey: .presetCycleHotkey)) ?? defaults.presetCycleHotkey
+        enablePresetCyclingHotkey = (try? c.decode(Bool.self, forKey: .enablePresetCyclingHotkey)) ?? defaults.enablePresetCyclingHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel

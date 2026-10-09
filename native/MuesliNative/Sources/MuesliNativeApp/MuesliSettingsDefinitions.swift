@@ -37,9 +37,12 @@ extension MuesliController {
         func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>,
                     requestPermission: (() -> Void)? = nil,
                     unavailable: @escaping (Bool) -> String? = { _ in nil },
+                    voiceRestriction: String? = nil,
                     apply: ((Bool) throws -> Void)? = nil) {
             add(id, label, [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
-                read: { $0[keyPath: key] ? "on" : "off" }, requestPermission: requestPermission,
+                read: { $0[keyPath: key] ? "on" : "off" },
+                voiceRestriction: voiceRestriction,
+                requestPermission: requestPermission,
                 unavailable: { unavailable($0 == "on") }) { value in
                 if let apply { try apply(value == "on") }
                 else { self.updateConfig { $0[keyPath: key] = value == "on" } }
@@ -115,6 +118,7 @@ extension MuesliController {
                 choices: ShortcutAssignment.singleKeys.map {
                     Choice(id: ShortcutAssignment.value(for: $0), label: $0.label)
                 }, read: { ShortcutAssignment.value(for: $0[keyPath: target.keyPath]) },
+                voiceRestriction: target == .presetCycle ? "Preset switching shortcut can only be changed manually in Settings." : nil,
                 unavailable: { _ in nil }, apply: { value in
                     guard let hotkey = target.hotkey(for: value) else {
                         throw MuesliSettings.Failure.rejected("This shortcut is unsupported.")
@@ -127,6 +131,7 @@ extension MuesliController {
         }
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
+        toggle("preset_cycle_shortcut", "Cycle dictation presets shortcut", \.enablePresetCyclingHotkey, voiceRestriction: "Preset switching shortcut can only be changed manually in Settings.") { try checkShortcut(self.updatePresetCycleHotkeyEnabled($0)) }
         toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestPushToTalkSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in
             if self.updatePushToTalkEnabled(enabled, requestPermissions: enabled) == .needsPermissions {
                 throw MuesliSettings.Failure.rejected("Push to talk needs permission. Complete setup in Settings before using the shortcut.")

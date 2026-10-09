@@ -119,6 +119,26 @@ struct ShortcutHotkeyPolicy {
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
 
+    static func validatePresetCycleHotkey(
+        _ hotkey: HotkeyConfig,
+        dictationHotkey: HotkeyConfig,
+        computerUseHotkey: HotkeyConfig,
+        isComputerUseEnabled: Bool,
+        meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
+        isMeetingRecordingEnabled: Bool = false
+    ) -> ShortcutHotkeyUpdateResult {
+        if hotkeysConflict(hotkey, dictationHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
+
     static func commonGlobalShortcutWarning(for hotkey: HotkeyConfig) -> String? {
         guard hotkey.isCombination,
               let modifiers = hotkey.resolvedCombinationModifiers,

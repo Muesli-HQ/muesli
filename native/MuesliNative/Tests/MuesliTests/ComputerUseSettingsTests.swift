@@ -456,6 +456,8 @@ struct ComputerUseSettingsTests {
         #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex FP16" } })
         #expect(!settings.contains { $0.id.localizedCaseInsensitiveContains("api_key") })
         #expect(settings.first { $0.id == "cleanup_preset" }?.voiceRestriction != nil)
+        #expect(settings.first { $0.id == "preset_cycle_hotkey" }?.voiceRestriction != nil)
+        #expect(settings.first { $0.id == "preset_cycle_shortcut" }?.voiceRestriction != nil)
         #expect(settings.first { $0.id == "quill_source" }?.followUpSelections[QuilModelSourceOption.localModels.id] == "quill_local_model")
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -555,6 +557,7 @@ struct ComputerUseSettingsTests {
         #expect(ShortcutAssignment.quil.hotkey(for: "command+k") != nil)
         #expect(ShortcutAssignment.quil.hotkey(for: "command+shift+k") == nil)
         #expect(ShortcutAssignment.meetingRecording.hotkey(for: "command+control+option+shift+k") != nil)
+        #expect(ShortcutAssignment.presetCycle.hotkey(for: "control+option+p") != nil)
         #expect(ShortcutAssignment.dictation.combinationRules == nil)
         #expect(ShortcutAssignment.computerUse.combinationRules == nil)
     }

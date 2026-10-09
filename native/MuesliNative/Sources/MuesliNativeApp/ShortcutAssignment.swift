@@ -2,7 +2,7 @@ import AppKit
 
 /// Shared by the key recorder and settings tools. Values describe keys, never code.
 enum ShortcutAssignment: String, CaseIterable {
-    case dictation, computerUse, quil, meetingRecording
+    case dictation, computerUse, quil, meetingRecording, presetCycle
 
     var settingID: String {
         switch self {
@@ -10,6 +10,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: "cua_hotkey"
         case .quil: "quill_hotkey"
         case .meetingRecording: "meeting_hotkey"
+        case .presetCycle: "preset_cycle_hotkey"
         }
     }
 
@@ -19,6 +20,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: "Computer use shortcut key"
         case .quil: "Quill shortcut key"
         case .meetingRecording: "Meeting recording shortcut key"
+        case .presetCycle: "Cycle presets shortcut key"
         }
     }
 
@@ -28,6 +30,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: \.computerUseHotkey
         case .quil: \.quilHotkey
         case .meetingRecording: \.meetingRecordingHotkey
+        case .presetCycle: \.presetCycleHotkey
         }
     }
 
@@ -35,7 +38,7 @@ enum ShortcutAssignment: String, CaseIterable {
         switch self {
         case .dictation, .computerUse: 0
         case .quil: 1
-        case .meetingRecording: 4
+        case .meetingRecording, .presetCycle: 4
         }
     }
 
@@ -94,6 +97,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: controller.updateComputerUseHotkey(hotkey)
         case .quil: controller.updateQuilHotkey(hotkey)
         case .meetingRecording: controller.updateMeetingRecordingHotkey(hotkey)
+        case .presetCycle: controller.updatePresetCycleHotkey(hotkey)
         }
     }
 }

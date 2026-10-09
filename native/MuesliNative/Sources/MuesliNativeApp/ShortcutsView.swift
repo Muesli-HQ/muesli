@@ -13,6 +13,7 @@ struct ShortcutsView: View {
     @State private var computerUseShortcutMessage: String?
     @State private var quilShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
+    @State private var presetCycleShortcutMessage: String?
 
     var body: some View {
         // Build once for this surface; Observation refreshes dynamic choices.
@@ -32,6 +33,8 @@ struct ShortcutsView: View {
                     .foregroundStyle(MuesliTheme.textSecondary)
 
                 dictationShortcutSection
+
+                presetCycleShortcutSection
 
                 computerUseShortcutSection
 
@@ -72,6 +75,9 @@ struct ShortcutsView: View {
         .onChange(of: appState.config.enableMeetingRecordingHotkey) { _, enabled in
             reconcileIndependentShortcutState()
             if !enabled, recordingTarget == .meetingRecording { stopRecording() }
+        }
+        .onChange(of: appState.config.enablePresetCyclingHotkey) { _, enabled in
+            if !enabled, recordingTarget == .presetCycle { stopRecording() }
         }
         .onDisappear {
             controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
@@ -135,6 +141,57 @@ struct ShortcutsView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+    }
+
+    private var presetCycleShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Cycle Dictation Presets")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Switch between Clean, Clear Prompts, Technical Spec, and other presets")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                MuesliSettingControl(controller: controller, id: "preset_cycle_shortcut")
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider()
+                .background(MuesliTheme.surfaceBorder)
+
+            shortcutControls(
+                target: .presetCycle,
+                isEnabled: appState.config.enablePresetCyclingHotkey && appState.config.enablePostProcessor
+            )
+
+            if !appState.config.enablePostProcessor {
+                presetCycleCleanupDisabledMessage
+            } else if let presetCycleShortcutMessage {
+                shortcutMessage(presetCycleShortcutMessage)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
+    private var presetCycleCleanupDisabledMessage: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(MuesliTheme.accent)
+            Text("AI transcript cleanup is turned off in Settings. Presets must be enabled for this shortcut to cycle.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
     }
 
     private var computerUseShortcutSection: some View {
@@ -291,9 +348,9 @@ struct ShortcutsView: View {
 
     private func shortcutControls(
         target: ShortcutTarget,
-        threshold: Int,
+        threshold: Int? = nil,
         isEnabled: Bool = true,
-        onThresholdChange: @escaping (Int) -> Void
+        onThresholdChange: ((Int) -> Void)? = nil
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
             hotkeyBadge(hotkey(for: target))
@@ -301,7 +358,7 @@ struct ShortcutsView: View {
                 .disabled(!isEnabled)
                 .opacity(isEnabled ? 1 : 0.55)
             Spacer(minLength: MuesliTheme.spacing16)
-            if isEnabled {
+            if isEnabled, let threshold, let onThresholdChange {
                 thresholdInput(
                     value: threshold,
                     onChange: onThresholdChange
@@ -600,16 +657,19 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil; presetCycleShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil; presetCycleShortcutMessage = nil }
         case .quil:
             quilShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; presetCycleShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil; presetCycleShortcutMessage = nil }
+        case .presetCycle:
+            presetCycleShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
         }
     }
 

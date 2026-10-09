@@ -1045,6 +1045,10 @@ final class FloatingIndicatorController: NSObject {
         showNotice(message, icon: "✓", duration: duration, background: NSColor.colorWith(hex: 0x34C759, alpha: 0.92))
     }
 
+    func showPresetNotification(_ presetName: String) {
+        showNotice("Preset: \(presetName)", icon: "✨", duration: 2.2, background: NSColor.colorWith(hex: 0x4A6FA5, alpha: 0.95))
+    }
+
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
         hideShortcutPillChrome()
         guard state == .idle else { return }
