@@ -197,9 +197,6 @@ final class MeetingSession {
     private let micRecoveryCoordinator = MeetingMicRecoveryCoordinator()
     private let systemAudioWatchdog = MeetingSystemAudioWatchdog()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
-    /// Owned by chunkRotationQueue. Stop keeps the final mic delivery path open
-    /// only until native shutdown completes (or its existing deadline expires).
-    private var drainingMicrophoneOnStop = false
     private var chunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkRecorder: PCMChunkRecorder?
@@ -598,6 +595,7 @@ final class MeetingSession {
 
     /// Abandon the recording — stop everything, delete temp files, don't transcribe.
     func discard() {
+        captureLifecycle.finishMicrophoneDelivery()
         let shutdown = captureLifecycle.requestStop()
         discardCleanup.withLock { cleanup in
             guard cleanup == nil else { return }
@@ -647,9 +645,6 @@ final class MeetingSession {
 
     func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
         onProgress?(.stoppingCapture)
-        chunkRotationQueue.sync {
-            drainingMicrophoneOnStop = capturePhase.acceptsSamples
-        }
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
         stopSystemAudioWatchdog()
@@ -674,7 +669,7 @@ final class MeetingSession {
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
-            drainingMicrophoneOnStop = false
+            captureLifecycle.finishMicrophoneDelivery()
 
             // Flush partial AEC frame before stopping chunk recorder
             appendFlushedStreamingMicOnQueue()
@@ -1179,7 +1174,7 @@ final class MeetingSession {
         guard !rawSamples.isEmpty else { return }
 
         chunkRotationQueue.async { [weak self] in
-            guard let self, self.capturePhase.acceptsSamples || self.drainingMicrophoneOnStop else { return }
+            guard let self, self.captureLifecycle.acceptsMicrophoneSamples else { return }
 
             if self.capturePhase.acceptsSamples {
                 let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)

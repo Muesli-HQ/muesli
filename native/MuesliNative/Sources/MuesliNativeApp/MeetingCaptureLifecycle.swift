@@ -29,6 +29,8 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         var waiter: CheckedContinuation<Void, Error>?
         var deadline: DispatchWorkItem?
         var shutdown: Task<MeetingCaptureShutdown.Result, Never>?
+        var drainsMicrophoneOnStop = false
+        var microphoneDeliveryClosed = false
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let microphone: MeetingMicRecording
@@ -48,6 +50,21 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
 
     var phase: MeetingCapturePhase { state.withLock { $0.phase } }
     var isEnding: Bool { phase.isEnding }
+
+    /// The first stop request snapshots capture eligibility before changing phase.
+    /// Already accepted mic buffers can outlive native quiescence; the session
+    /// closes this window at its processing-queue barrier, or immediately on discard.
+    var acceptsMicrophoneSamples: Bool {
+        state.withLock {
+            !$0.microphoneDeliveryClosed && ($0.phase.acceptsSamples || $0.drainsMicrophoneOnStop)
+        }
+    }
+
+    /// Permanently reject delivery on discard or after the session's final drain
+    /// barrier, even if a timed-out native stop is still retiring in the background.
+    func finishMicrophoneDelivery() {
+        state.withLock { $0.microphoneDeliveryClosed = true }
+    }
 
     func start(timeout: TimeInterval = 20) async throws {
         try await withTaskCancellationHandler {
@@ -146,6 +163,7 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
+            state.drainsMicrophoneOnStop = state.phase.acceptsSamples
             state.phase = .stopping
             let micStart = state.microphoneOperation
             let systemStart = state.systemOperation

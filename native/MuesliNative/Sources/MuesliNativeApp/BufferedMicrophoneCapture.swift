@@ -42,6 +42,9 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
         // High-channel-count interfaces get fewer slots rather than losing
         // support solely because their normal format needs more bytes per frame.
         let slotCount = min(capacity, Int(8 * 1_024 * 1_024 / bytesPerSlot))
+        if slotCount < capacity {
+            fputs("[mic-capture] buffer budget reduced slots from \(capacity) to \(slotCount) (channels=\(format.channelCount), maxFrames=\(maximumFrames))\n", stderr)
+        }
         var slots: [AVAudioPCMBuffer] = []
         for _ in 0..<slotCount {
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: maximumFrames) else {

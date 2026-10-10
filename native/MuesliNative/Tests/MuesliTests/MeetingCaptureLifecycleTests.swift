@@ -1,10 +1,76 @@
 import CoreAudio
 import Foundation
 import Testing
+import os
 @testable import MuesliNativeApp
 
 @Suite("Meeting capture lifetime")
 struct MeetingCaptureLifecycleTests {
+    @Test("early and repeated stop preserve accepted mic delivery until the session barrier", arguments: [false, true])
+    func earlyStopPreservesMicrophoneDrain(startCapture: Bool) async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        if startCapture { try await capture.start() }
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        mic.onRawPCMSamples = { samples in
+            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+        }
+        mic.stopAction = { mic.onRawPCMSamples?([1, 2, 3]) }
+        defer { mic.onRawPCMSamples = nil; mic.stopAction = {} }
+        // Same ordering as the controller: beginStoppingCapture, then session.stop.
+        let earlyShutdown = capture.requestStop()
+        _ = await earlyShutdown.value
+        #expect(capture.phase == .stopped)
+        _ = await capture.requestStop().value
+        // Delivery already queued by the mic may run after native quiescence.
+        mic.onRawPCMSamples?([4])
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        capture.finishMicrophoneDelivery()
+        mic.onRawPCMSamples?([5])
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        #expect(mic.stopCount == 1)
+    }
+
+    @Test("paused stop and discard never admit microphone tail", arguments: [false, true])
+    func closedMicrophoneDrain(discard: Bool) async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        try await capture.start()
+        if discard { capture.finishMicrophoneDelivery() }
+        else { #expect(capture.setPaused(true)) }
+        mic.stopAction = { #expect(!capture.acceptsMicrophoneSamples) }
+        defer { mic.stopAction = {} }
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
+    @Test("closing session delivery rejects callbacks from a still-retiring driver")
+    func closeBeforeDriverQuiesces() async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        let entered = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        mic.stopAction = {
+            entered.continuation.yield(())
+            #expect(release.wait(timeout: .now() + 5) == .success)
+            #expect(!capture.acceptsMicrophoneSamples)
+        }
+        defer { mic.stopAction = {} }
+        try await capture.start()
+        let shutdown = capture.requestStop()
+        for await _ in entered.stream { break }
+        #expect(capture.acceptsMicrophoneSamples)
+        // The session's deadline/discard barrier must not wait for native stop.
+        capture.finishMicrophoneDelivery()
+        release.signal()
+        _ = await shutdown.value
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
     enum Stage: CaseIterable { case microphonePrepare, systemStart, microphoneStart }
 
     @Test("cancellation returns while a driver is blocked, stops the other track, and rejects late stages", arguments: Stage.allCases)

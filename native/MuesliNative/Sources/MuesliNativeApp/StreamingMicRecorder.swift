@@ -534,6 +534,9 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     /// Rotate to a new file. Returns the completed WAV URL. No audio gap.
     func rotateFile() -> URL? {
+        // Serialize with graph replacement/teardown before entering the worker.
+        // This can wait for an in-flight native restart; call off MainActor and
+        // never from a recorder delivery callback (which runs on processingQueue).
         graphLock.lock()
         defer { graphLock.unlock() }
         guard runState.isRunning else { return nil }
