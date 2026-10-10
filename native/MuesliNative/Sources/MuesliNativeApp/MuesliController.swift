@@ -4694,7 +4694,7 @@ public final class MuesliController: NSObject {
         let nextIndex = (currentIndex + 1) % presets.count
         let nextPreset = presets[nextIndex]
         selectTranscriptCleanupPrompt(id: nextPreset.id)
-        floatingIndicatorController.showPresetNotification(nextPreset.name)
+        indicator.showPresetNotification(nextPreset.name)
     }
 
     @discardableResult

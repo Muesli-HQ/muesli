@@ -118,7 +118,6 @@ extension MuesliController {
                 choices: ShortcutAssignment.singleKeys.map {
                     Choice(id: ShortcutAssignment.value(for: $0), label: $0.label)
                 }, read: { ShortcutAssignment.value(for: $0[keyPath: target.keyPath]) },
-                voiceRestriction: target == .presetCycle ? "Preset switching shortcut can only be changed manually in Settings." : nil,
                 unavailable: { _ in nil }, apply: { value in
                     guard let hotkey = target.hotkey(for: value) else {
                         throw MuesliSettings.Failure.rejected("This shortcut is unsupported.")
@@ -127,7 +126,8 @@ extension MuesliController {
                     guard result.didUpdate else {
                         throw MuesliSettings.Failure.rejected(result.message ?? "This shortcut could not be changed.")
                     }
-                }, shortcutAssignment: target))
+                }, shortcutAssignment: target,
+                voiceRestriction: target == .presetCycle ? "Preset switching shortcut can only be changed manually in Settings." : nil))
         }
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }

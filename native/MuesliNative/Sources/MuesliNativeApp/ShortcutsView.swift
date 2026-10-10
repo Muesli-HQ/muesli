@@ -528,6 +528,8 @@ struct ShortcutsView: View {
             return "Press a key or modifier..."
         case .quil:
             return "Press one key or a two-key shortcut..."
+        case .presetCycle:
+            return "Press a shortcut combination..."
         case .dictation, .computerUse:
             return "Press a modifier key..."
         }
