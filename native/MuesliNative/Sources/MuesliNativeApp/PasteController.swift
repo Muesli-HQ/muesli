@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Darwin
 import MuesliCore
 
 enum PasteController {
@@ -10,6 +11,10 @@ enum PasteController {
     }
 
     enum LifecycleEvent: String, CaseIterable, Sendable {
+        case clipboardSnapshotBegun = "clipboard_snapshot_begun"
+        case clipboardSnapshotCompleted = "clipboard_snapshot_completed"
+        case clipboardSnapshotFailed = "clipboard_snapshot_failed"
+        case clipboardSnapshotTimedOut = "clipboard_snapshot_timed_out"
         case clipboardStaged = "clipboard_staged"
         case clipboardStageFailed = "clipboard_stage_failed"
         case targetSnapshotted = "target_snapshotted"
@@ -25,6 +30,209 @@ enum PasteController {
         case clipboardRestoreSkipped = "clipboard_restore_skipped"
         case clipboardRetainedForManualPaste = "clipboard_retained_for_manual_paste"
     }
+
+    /// Only value types cross from the snapshot queue to the main actor.
+    struct ClipboardSnapshot: Sendable {
+        let items: [[(String, Data)]]
+    }
+
+    /// Clipboard providers can block indefinitely and AppKit requires promise
+    /// fulfillment on the main thread. Read in the bundled CLI's separate process,
+    /// on its main actor, and kill it when the request's total deadline expires.
+    /// This queue only handles process/pipe IO; no pasteboard APIs run on it.
+    @MainActor
+    final class ClipboardSnapshotWorker {
+        static let shared = ClipboardSnapshotWorker()
+        typealias Reader = @Sendable (String, Int) -> ClipboardSnapshot?
+        private let queue = DispatchQueue(label: "com.muesli.clipboard-snapshot", qos: .userInitiated)
+        private let reader: Reader?
+        private let helperURL: URL?
+        private let timeout: TimeInterval
+        private let startupTimeout: TimeInterval
+        private let transferTimeout: TimeInterval
+        private var busy = false
+        private var pending: [Request] = []
+
+        @MainActor private final class Request {
+            let name: String
+            let changeCount: Int
+            let deadline: DispatchTime
+            var completion: ((ClipboardSnapshot?, Bool) -> Void)?
+
+            init(name: String, changeCount: Int, deadline: DispatchTime, completion: @escaping (ClipboardSnapshot?, Bool) -> Void) {
+                self.name = name
+                self.changeCount = changeCount
+                self.deadline = deadline
+                self.completion = completion
+            }
+
+            func finish(_ snapshot: ClipboardSnapshot?, timedOut: Bool) {
+                let callback = completion
+                completion = nil
+                callback?(snapshot, timedOut)
+            }
+        }
+
+        // Startup and encoding/transfer have separate allowances so cold dyld
+        // startup and image serialization do not consume the provider-read budget.
+        // The sum is also an absolute request limit, including queue waiting.
+        init(
+            timeout: TimeInterval = 0.2,
+            startupTimeout: TimeInterval = 2,
+            transferTimeout: TimeInterval = 2,
+            helperURL: URL? = nil,
+            reader: Reader? = nil
+        ) {
+            self.timeout = timeout
+            self.startupTimeout = startupTimeout
+            self.transferTimeout = transferTimeout
+            self.helperURL = helperURL ?? Self.bundledHelperURL()
+            self.reader = reader
+        }
+
+        private static func bundledHelperURL() -> URL? {
+            let bundle = Bundle.main.bundleURL.resolvingSymlinksInPath()
+            guard bundle.pathExtension == "app" else { return nil }
+            let directory = bundle.appendingPathComponent("Contents/MacOS", isDirectory: true)
+            let helper = directory.appendingPathComponent("muesli-cli").resolvingSymlinksInPath()
+            guard helper.deletingLastPathComponent() == directory,
+                  FileManager.default.isExecutableFile(atPath: helper.path) else { return nil }
+            return helper
+        }
+
+        func snapshot(name: String, changeCount: Int, completion: @escaping (ClipboardSnapshot?, Bool) -> Void) {
+            guard pending.count < 16 else {
+                completion(nil, true)
+                return
+            }
+            // Queue waiting counts against the total budget. Injected readers
+            // retain a simple deadline, including noncooperative test readers.
+            let totalTimeout = reader == nil ? startupTimeout + timeout + transferTimeout : timeout
+            let request = Request(name: name, changeCount: changeCount, deadline: .now() + totalTimeout, completion: completion)
+            pending.append(request)
+            DispatchQueue.main.asyncAfter(deadline: request.deadline) { [self] in
+                pending.removeAll { $0 === request }
+                request.finish(nil, timedOut: true)
+            }
+            startNext()
+        }
+
+        private func startNext() {
+            guard !busy, !pending.isEmpty else { return }
+            busy = true
+            let request = pending.removeFirst()
+            let name = request.name
+            let changeCount = request.changeCount
+            let reader = reader
+            let helperURL = helperURL
+            let deadline = request.deadline
+            let startupTimeout = startupTimeout
+            let readTimeout = timeout
+            let transferTimeout = transferTimeout
+            queue.async {
+                let result: (ClipboardSnapshot?, Bool)
+                if let reader {
+                    result = (reader(name, changeCount), false)
+                } else {
+                    result = Self.readInHelper(
+                        name: name, changeCount: changeCount, helperURL: helperURL,
+                        deadline: deadline, startupTimeout: startupTimeout,
+                        readTimeout: readTimeout, transferTimeout: transferTimeout
+                    )
+                }
+                DispatchQueue.main.async { [self] in
+                    busy = false
+                    request.finish(result.0, timedOut: result.1)
+                    startNext()
+                }
+            }
+        }
+
+        nonisolated private static func readInHelper(
+            name: String, changeCount: Int, helperURL: URL?, deadline: DispatchTime,
+            startupTimeout: TimeInterval, readTimeout: TimeInterval, transferTimeout: TimeInterval
+        ) -> (ClipboardSnapshot?, Bool) {
+            guard DispatchTime.now() < deadline else { return (nil, true) }
+            guard let helperURL else { return (nil, false) }
+            var phaseDeadline = min(deadline, .now() + startupTimeout)
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = helperURL
+            process.arguments = ["clipboard-snapshot", "--pasteboard-name", name, "--change-count", String(changeCount)]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            defer {
+                try? output.fileHandleForReading.close()
+                try? output.fileHandleForWriting.close()
+            }
+            do { try process.run() } catch { return (nil, false) }
+            try? output.fileHandleForWriting.close()
+            // Reap every child before releasing this worker slot, even on timeout.
+            // SIGKILL cannot be ignored by an unresponsive clipboard provider wait.
+            defer {
+                if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
+                process.waitUntilExit()
+            }
+            let fd = output.fileHandleForReading.fileDescriptor
+            guard fcntl(fd, F_SETFL, O_NONBLOCK) != -1 else { return (nil, false) }
+            var bytes = Data()
+            let maximumBytes = ClipboardSnapshotTransport.maximumWireBytes
+            var ready = false
+            var payloadReady = false
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            var reachedEOF = false
+            while !reachedEOF || process.isRunning {
+                let now = DispatchTime.now()
+                guard now < phaseDeadline else { return (nil, true) }
+                if reachedEOF {
+                    usleep(1_000)
+                    continue
+                }
+                let remaining = phaseDeadline.uptimeNanoseconds - now.uptimeNanoseconds
+                var descriptor = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let status = poll(&descriptor, 1, Int32(max(1, min(remaining / 1_000_000, 200))))
+                if status < 0 {
+                    if errno == EINTR { continue }
+                    return (nil, false)
+                }
+                if status == 0 { continue }
+                let count = Darwin.read(fd, &buffer, buffer.count)
+                if count == 0 {
+                    reachedEOF = true
+                } else if count > 0 {
+                    guard bytes.count + count <= maximumBytes else { return (nil, false) }
+                    bytes.append(contentsOf: buffer.prefix(count))
+                    if !ready, bytes.count >= ClipboardSnapshotTransport.ready.count {
+                        guard bytes.starts(with: ClipboardSnapshotTransport.ready) else { return (nil, false) }
+                        bytes.removeFirst(ClipboardSnapshotTransport.ready.count)
+                        ready = true
+                        phaseDeadline = min(deadline, .now() + readTimeout)
+                    }
+                    if ready, !payloadReady, let marker = bytes.first {
+                        guard marker == ClipboardSnapshotTransport.payloadReady else { return (nil, false) }
+                        bytes.removeFirst()
+                        payloadReady = true
+                        phaseDeadline = min(deadline, .now() + transferTimeout)
+                    }
+                } else if errno != EAGAIN && errno != EINTR {
+                    return (nil, false)
+                }
+            }
+            process.waitUntilExit()
+            guard process.terminationStatus == 0, ready, payloadReady,
+                  let wire = try? PropertyListDecoder().decode(ClipboardSnapshotPayload.self, from: bytes),
+                  wire.changeCount == changeCount else { return (nil, false) }
+            return (ClipboardSnapshot(items: wire.items.map { $0.map { ($0.type, $0.data) } }), false)
+        }
+    }
+
+    // Pending requests can supersede one another without taking restoration
+    // ownership away from a previously staged paste.
+    @MainActor private static var pendingPastes: [String: UUID] = [:]
+    // Successive pastes may overlap the restore delay. Carry forward the original
+    // snapshot while we still own the staged text, rather than saving dictation.
+    @MainActor private static var stagedSnapshots: [String: (id: UUID, changeCount: Int, snapshot: ClipboardSnapshot?)] = [:]
 
     /// How long to wait after simulating Cmd+V before restoring the clipboard.
     /// The receiving app must have consumed the paste data within this window.
@@ -74,6 +282,7 @@ enum PasteController {
         appendDictationSentenceSpace: Bool = false,
         pasteboard: NSPasteboard = .general,
         shortcut: PasteShortcut = .automatic,
+        snapshotWorker: ClipboardSnapshotWorker? = nil,
         requireStagedClipboardOwnership: Bool = false,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
@@ -93,112 +302,147 @@ enum PasteController {
         guard !text.isEmpty else { return }
         let simulatePasteAction = simulatePasteAction ?? { PasteController.simulatePaste(shortcut: $0) }
 
-        // Save current clipboard contents (all types) so we can restore after paste.
-        let savedItems = saveClipboard(pasteboard)
-
-        let clearedChangeCount = pasteboard.clearContents()
-        // Only live dictation opts in. Quill, history copy, and other paste uses
-        // keep their exact text; stored transcripts are never padded.
-        let pastedText = appendDictationSentenceSpace
-            ? text + DictationPasteSpacing.trailingSeparator(after: text)
-            : text
-        let didStageText = pasteboard.setString(pastedText, forType: .string)
-        let pasteChangeCount = pasteboard.changeCount
-        onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Snapshot immediately before Paste dispatch so attribution and the command
-            // refer to the same frontmost application.
-            let targetApplication = targetApplicationProvider()
-            onLifecycleEvent(.targetSnapshotted)
-
-            @MainActor
-            func settleFailedDispatch() {
-                if retainStagedTextOnFailure, pasteboard.changeCount == pasteChangeCount {
-                    onLifecycleEvent(.clipboardRetainedForManualPaste)
-                } else if pasteboard.changeCount == pasteChangeCount {
-                    restoreClipboard(pasteboard, from: savedItems)
-                    onLifecycleEvent(.clipboardRestored)
-                } else {
-                    onLifecycleEvent(.clipboardRestoreSkipped)
-                }
+        let name = pasteboard.name.rawValue
+        let requestID = UUID()
+        pendingPastes[name] = requestID
+        let originalChangeCount = pasteboard.changeCount
+        let previousStage = stagedSnapshots[name].flatMap { $0.changeCount == originalChangeCount ? $0 : nil }
+        let settle: @MainActor () -> Void = {
+            if pendingPastes[name] == requestID { pendingPastes.removeValue(forKey: name) }
+            if stagedSnapshots[name]?.id == requestID { stagedSnapshots.removeValue(forKey: name) }
+            onClipboardSettled()
+        }
+        onLifecycleEvent(.clipboardSnapshotBegun)
+        let stage: @MainActor (ClipboardSnapshot?, Bool) -> Void = { snapshot, timedOut in
+            onLifecycleEvent(timedOut ? .clipboardSnapshotTimedOut : (snapshot == nil ? .clipboardSnapshotFailed : .clipboardSnapshotCompleted))
+            guard pendingPastes[name] == requestID, shouldDispatchPaste() else {
+                onLifecycleEvent(.pasteDispatchCancelled)
                 onPasteFinished(nil)
-                onClipboardSettled()
+                settle()
+                return
             }
+            guard pasteboard.changeCount == originalChangeCount else {
+                onLifecycleEvent(.clipboardOwnershipLost)
+                onPasteFinished(nil)
+                settle()
+                return
+            }
+            let savedItems = snapshot?.items.map { $0.map { (NSPasteboard.PasteboardType($0.0), $0.1) } }
 
-            if requireStagedClipboardOwnership {
-                guard didStageText else {
-                    // Restore only when Muesli still owns the cleared pasteboard. If another
-                    // app wrote to it, preserving that newer content takes precedence.
-                    if pasteboard.changeCount == clearedChangeCount {
+            let clearedChangeCount = pasteboard.clearContents()
+            // Only live dictation opts in. Quill, history copy, and other paste uses
+            // keep their exact text; stored transcripts are never padded.
+            let pastedText = appendDictationSentenceSpace
+                ? text + DictationPasteSpacing.trailingSeparator(after: text)
+                : text
+            let didStageText = pasteboard.setString(pastedText, forType: .string)
+            let pasteChangeCount = pasteboard.changeCount
+            stagedSnapshots[name] = (requestID, pasteChangeCount, snapshot)
+            if pendingPastes[name] == requestID { pendingPastes.removeValue(forKey: name) }
+            onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                // Snapshot immediately before Paste dispatch so attribution and the command
+                // refer to the same frontmost application.
+                let targetApplication = targetApplicationProvider()
+                onLifecycleEvent(.targetSnapshotted)
+
+                @MainActor
+                func settleFailedDispatch() {
+                    if retainStagedTextOnFailure, pasteboard.changeCount == pasteChangeCount {
+                        onLifecycleEvent(.clipboardRetainedForManualPaste)
+                    } else if stagedSnapshots[name]?.id == requestID,
+                              pasteboard.changeCount == pasteChangeCount, let savedItems {
                         restoreClipboard(pasteboard, from: savedItems)
                         onLifecycleEvent(.clipboardRestored)
                     } else {
                         onLifecycleEvent(.clipboardRestoreSkipped)
                     }
                     onPasteFinished(nil)
-                    onClipboardSettled()
-                    return
+                    settle()
                 }
-                guard pasteboard.changeCount == pasteChangeCount else {
-                    onLifecycleEvent(.clipboardOwnershipLost)
-                    onPasteFinished(nil)
-                    onClipboardSettled()
-                    return
-                }
-            }
-            guard shouldDispatchPaste() else {
-                onLifecycleEvent(.pasteDispatchCancelled)
-                settleFailedDispatch()
-                return
-            }
 
-            let didDispatchPaste: Bool
-            switch dispatchStrategy {
-            case .keyboardShortcut:
-                didDispatchPaste = simulatePasteAction(shortcut)
-            case .targetApplicationPasteCommand:
-                guard let targetApplication else {
-                    onLifecycleEvent(.targetPasteCommandUnavailable)
-                    onLifecycleEvent(.pasteDispatchFailed)
+                if requireStagedClipboardOwnership {
+                    guard didStageText else {
+                        // Restore only when Muesli still owns the cleared pasteboard. If another
+                        // app wrote to it, preserving that newer content takes precedence.
+                        if stagedSnapshots[name]?.id == requestID,
+                           pasteboard.changeCount == clearedChangeCount, let savedItems {
+                            restoreClipboard(pasteboard, from: savedItems)
+                            onLifecycleEvent(.clipboardRestored)
+                        } else {
+                            onLifecycleEvent(.clipboardRestoreSkipped)
+                        }
+                        onPasteFinished(nil)
+                        settle()
+                        return
+                    }
+                    guard pasteboard.changeCount == pasteChangeCount else {
+                        onLifecycleEvent(.clipboardOwnershipLost)
+                        onPasteFinished(nil)
+                        settle()
+                        return
+                    }
+                }
+                guard stagedSnapshots[name]?.id == requestID, shouldDispatchPaste() else {
+                    onLifecycleEvent(.pasteDispatchCancelled)
                     settleFailedDispatch()
                     return
                 }
-                switch targetPasteAction(targetApplication) {
-                case true:
-                    onLifecycleEvent(.targetPasteCommandDispatched)
-                    didDispatchPaste = true
-                case false:
-                    onLifecycleEvent(.targetPasteCommandRejected)
-                    didDispatchPaste = false
-                case nil:
-                    onLifecycleEvent(.targetPasteCommandUnavailable)
-                    didDispatchPaste = false
-                }
-            }
-            onLifecycleEvent(didDispatchPaste ? .pasteDispatched : .pasteDispatchFailed)
-            if didDispatchPaste {
-                onPasteDispatched()
-            } else {
-                settleFailedDispatch()
-                return
-            }
 
-            // Arm restoration before completion bookkeeping. The dictation completion callback
-            // persists attribution and refreshes UI; neither is allowed to extend how long the
-            // transcript owns the user's clipboard.
-            onLifecycleEvent(.clipboardRestoreScheduled)
-            DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-                if pasteboard.changeCount == pasteChangeCount {
-                    restoreClipboard(pasteboard, from: savedItems)
-                    onLifecycleEvent(.clipboardRestored)
+                let didDispatchPaste: Bool
+                switch dispatchStrategy {
+                case .keyboardShortcut:
+                    didDispatchPaste = simulatePasteAction(shortcut)
+                case .targetApplicationPasteCommand:
+                    guard let targetApplication else {
+                        onLifecycleEvent(.targetPasteCommandUnavailable)
+                        onLifecycleEvent(.pasteDispatchFailed)
+                        settleFailedDispatch()
+                        return
+                    }
+                    switch targetPasteAction(targetApplication) {
+                    case true:
+                        onLifecycleEvent(.targetPasteCommandDispatched)
+                        didDispatchPaste = true
+                    case false:
+                        onLifecycleEvent(.targetPasteCommandRejected)
+                        didDispatchPaste = false
+                    case nil:
+                        onLifecycleEvent(.targetPasteCommandUnavailable)
+                        didDispatchPaste = false
+                    }
+                }
+                onLifecycleEvent(didDispatchPaste ? .pasteDispatched : .pasteDispatchFailed)
+                if didDispatchPaste {
+                    onPasteDispatched()
                 } else {
-                    onLifecycleEvent(.clipboardRestoreSkipped)
+                    settleFailedDispatch()
+                    return
                 }
-                onClipboardSettled()
-            }
 
-            onPasteFinished(didDispatchPaste ? targetApplication : nil)
+                // Arm restoration before completion bookkeeping. The dictation completion callback
+                // persists attribution and refreshes UI; neither is allowed to extend how long the
+                // transcript owns the user's clipboard.
+                onLifecycleEvent(.clipboardRestoreScheduled)
+                DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
+                    if stagedSnapshots[name]?.id == requestID,
+                       pasteboard.changeCount == pasteChangeCount, let savedItems {
+                        restoreClipboard(pasteboard, from: savedItems)
+                        onLifecycleEvent(.clipboardRestored)
+                    } else {
+                        onLifecycleEvent(.clipboardRestoreSkipped)
+                    }
+                    settle()
+                }
+
+                onPasteFinished(didDispatchPaste ? targetApplication : nil)
+            }
+        }
+        if let previousStage {
+            stage(previousStage.snapshot, false)
+        } else {
+            (snapshotWorker ?? .shared).snapshot(name: name, changeCount: originalChangeCount, completion: stage)
         }
     }
 

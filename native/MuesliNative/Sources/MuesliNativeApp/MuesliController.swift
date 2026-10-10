@@ -9819,7 +9819,9 @@ public final class MuesliController: NSObject {
                         shortcut: configSnapshot.pasteShortcut,
                         requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
-                        shouldDispatchPaste: { snapshot.isTargetStillFocused() },
+                        shouldDispatchPaste: {
+                            self.quilTaskID == taskID && snapshot.isTargetStillFocused()
+                        },
                         dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
                             ? .targetApplicationPasteCommand
                             : .keyboardShortcut,
@@ -11908,7 +11910,7 @@ public final class MuesliController: NSObject {
                     }
                     return
                 }
-                await MainActor.run {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                     if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
                         var didDispatchPaste = false
@@ -11917,8 +11919,13 @@ public final class MuesliController: NSObject {
                             appendDictationSentenceSpace: true,
                             shortcut: self.config.pasteShortcut,
                             requireStagedClipboardOwnership: true,
+                            shouldDispatchPaste: { [weak self] in
+                                self?.isCurrentDictationTranscription(id: transcriptionTaskID) == true
+                            },
                             onPasteFinished: { [weak self] targetApplication in
-                                guard let self else { return }
+                                defer { continuation.resume() }
+                                guard let self,
+                                      self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
@@ -11942,6 +11949,10 @@ public final class MuesliController: NSObject {
                             },
                             onClipboardSettled: { [weak self] in
                                 guard let self else { return }
+                                // A cancelled snapshot must not save an undelivered, obsolete result.
+                                guard didDispatchPaste || self.isCurrentDictationTranscription(id: transcriptionTaskID) else {
+                                    return
+                                }
                                 self.finishStandardDictationBookkeeping(
                                     text: text,
                                     duration: duration,
@@ -11984,6 +11995,7 @@ public final class MuesliController: NSObject {
                             "bookkeeping_completed",
                             trace: completionLatencyTrace
                         )
+                        continuation.resume()
                     }
                 }
             } catch is CancellationError {

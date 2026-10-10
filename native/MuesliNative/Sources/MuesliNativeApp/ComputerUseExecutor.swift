@@ -547,6 +547,7 @@ enum ComputerUseToolExecutor {
         _ text: String,
         shortcut: PasteShortcut,
         pasteboard: NSPasteboard = .general,
+        snapshotWorker: PasteController.ClipboardSnapshotWorker? = nil,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
@@ -556,17 +557,24 @@ enum ComputerUseToolExecutor {
         // PasteController intentionally does not invoke callbacks for empty input.
         guard !text.isEmpty else { return .failed("No text to paste.") }
 
-        let didDispatch: Bool = await withCheckedContinuation { continuation in
-            var dispatched = false
-            PasteController.paste(
-                text: text,
-                pasteboard: pasteboard,
-                shortcut: shortcut,
-                targetApplicationProvider: targetApplicationProvider,
-                simulatePasteAction: simulatePasteAction,
-                onPasteDispatched: { dispatched = true },
-                onPasteFinished: { _ in continuation.resume(returning: dispatched) }
-            )
+        let cancellation = PasteCancellationState()
+        let didDispatch: Bool = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                var dispatched = false
+                PasteController.paste(
+                    text: text,
+                    pasteboard: pasteboard,
+                    shortcut: shortcut,
+                    snapshotWorker: snapshotWorker,
+                    targetApplicationProvider: targetApplicationProvider,
+                    shouldDispatchPaste: { !cancellation.isCancelled },
+                    simulatePasteAction: simulatePasteAction,
+                    onPasteDispatched: { dispatched = true },
+                    onPasteFinished: { _ in continuation.resume(returning: dispatched) }
+                )
+            }
+        } onCancel: {
+            cancellation.cancel()
         }
         guard !Task.isCancelled else { return .cancelled() }
         guard didDispatch else {
@@ -1249,5 +1257,24 @@ enum ComputerUseExecutor {
 
     static func keyCode(for key: String) -> CGKeyCode? {
         ComputerUseToolExecutor.keyCode(for: key)
+    }
+}
+
+/// Cancellation handlers can run off MainActor while the snapshot or dispatch
+/// timer is pending. A locked flag makes cancellation visible before any write.
+private final class PasteCancellationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
