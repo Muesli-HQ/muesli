@@ -85,6 +85,63 @@ struct ComputerUseExecutorTests {
         #expect(pasteboard.string(forType: .string) == "original")
     }
 
+    @Test("cancelling during snapshot prevents staging and dispatch")
+    @MainActor
+    func cancelledDuringSnapshot() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let gate = DispatchSemaphore(value: 0)
+        let (started, start) = AsyncStream<Void>.makeStream()
+        let worker = PasteController.ClipboardSnapshotWorker(timeout: 1) { _, _ in
+            start.yield(())
+            start.finish()
+            gate.wait()
+            return .init(items: [])
+        }
+        var dispatches = 0
+        let task = Task { @MainActor in
+            await ComputerUseToolExecutor.pasteText(
+                "obsolete", shortcut: .automatic, pasteboard: pasteboard, snapshotWorker: worker,
+                simulatePasteAction: { _ in dispatches += 1; return true }
+            )
+        }
+        for await _ in started { break }
+        task.cancel()
+        gate.signal()
+        #expect(await task.value.status == .cancelled)
+        #expect(dispatches == 0)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("cancelling before command dispatch restores staged text without pasting")
+    @MainActor
+    func cancelledBeforePasteDispatch() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        var dispatches = 0
+        var cancel: () -> Void = {}
+        let task = Task { @MainActor in
+            await ComputerUseToolExecutor.pasteText(
+                "obsolete", shortcut: .automatic, pasteboard: pasteboard,
+                snapshotWorker: makeTestClipboardSnapshotWorker(),
+                targetApplicationProvider: {
+                    // This callback runs after staging and immediately before the
+                    // cancellation predicate, while outside the originating task.
+                    #expect(pasteboard.string(forType: .string) == "obsolete")
+                    cancel()
+                    return nil
+                },
+                simulatePasteAction: { _ in dispatches += 1; return true }
+            )
+        }
+        cancel = { task.cancel() }
+        #expect(await task.value.status == .cancelled)
+        #expect(dispatches == 0)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
     @Test("cancellation after dispatch does not report success or prevent clipboard restoration")
     @MainActor
     func cancelledAfterPasteDispatch() async throws {

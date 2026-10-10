@@ -13,6 +13,7 @@ enum PasteController {
     enum LifecycleEvent: String, CaseIterable, Sendable {
         case clipboardSnapshotBegun = "clipboard_snapshot_begun"
         case clipboardSnapshotCompleted = "clipboard_snapshot_completed"
+        case clipboardSnapshotFailed = "clipboard_snapshot_failed"
         case clipboardSnapshotTimedOut = "clipboard_snapshot_timed_out"
         case clipboardStaged = "clipboard_staged"
         case clipboardStageFailed = "clipboard_stage_failed"
@@ -47,6 +48,8 @@ enum PasteController {
         private let reader: Reader?
         private let helperURL: URL?
         private let timeout: TimeInterval
+        private let startupTimeout: TimeInterval
+        private let transferTimeout: TimeInterval
         private var busy = false
         private var pending: [Request] = []
 
@@ -70,8 +73,19 @@ enum PasteController {
             }
         }
 
-        init(timeout: TimeInterval = 0.2, helperURL: URL? = nil, reader: Reader? = nil) {
+        // Startup and encoding/transfer have separate allowances so cold dyld
+        // startup and image serialization do not consume the provider-read budget.
+        // The sum is also an absolute request limit, including queue waiting.
+        init(
+            timeout: TimeInterval = 0.2,
+            startupTimeout: TimeInterval = 2,
+            transferTimeout: TimeInterval = 2,
+            helperURL: URL? = nil,
+            reader: Reader? = nil
+        ) {
             self.timeout = timeout
+            self.startupTimeout = startupTimeout
+            self.transferTimeout = transferTimeout
             self.helperURL = helperURL ?? Self.bundledHelperURL()
             self.reader = reader
         }
@@ -91,7 +105,10 @@ enum PasteController {
                 completion(nil, true)
                 return
             }
-            let request = Request(name: name, changeCount: changeCount, deadline: .now() + timeout, completion: completion)
+            // Queue waiting counts against the total budget. Injected readers
+            // retain a simple deadline, including noncooperative test readers.
+            let totalTimeout = reader == nil ? startupTimeout + timeout + transferTimeout : timeout
+            let request = Request(name: name, changeCount: changeCount, deadline: .now() + totalTimeout, completion: completion)
             pending.append(request)
             DispatchQueue.main.asyncAfter(deadline: request.deadline) { [self] in
                 pending.removeAll { $0 === request }
@@ -109,12 +126,19 @@ enum PasteController {
             let reader = reader
             let helperURL = helperURL
             let deadline = request.deadline
+            let startupTimeout = startupTimeout
+            let readTimeout = timeout
+            let transferTimeout = transferTimeout
             queue.async {
                 let result: (ClipboardSnapshot?, Bool)
                 if let reader {
                     result = (reader(name, changeCount), false)
                 } else {
-                    result = Self.readInHelper(name: name, changeCount: changeCount, helperURL: helperURL, deadline: deadline)
+                    result = Self.readInHelper(
+                        name: name, changeCount: changeCount, helperURL: helperURL,
+                        deadline: deadline, startupTimeout: startupTimeout,
+                        readTimeout: readTimeout, transferTimeout: transferTimeout
+                    )
                 }
                 DispatchQueue.main.async { [self] in
                     busy = false
@@ -124,20 +148,13 @@ enum PasteController {
             }
         }
 
-        private struct WireSnapshot: Decodable {
-            struct Flavor: Decodable {
-                let type: String
-                let data: Data
-            }
-            let changeCount: Int
-            let items: [[Flavor]]
-        }
-
         nonisolated private static func readInHelper(
-            name: String, changeCount: Int, helperURL: URL?, deadline: DispatchTime
+            name: String, changeCount: Int, helperURL: URL?, deadline: DispatchTime,
+            startupTimeout: TimeInterval, readTimeout: TimeInterval, transferTimeout: TimeInterval
         ) -> (ClipboardSnapshot?, Bool) {
             guard DispatchTime.now() < deadline else { return (nil, true) }
             guard let helperURL else { return (nil, false) }
+            var phaseDeadline = min(deadline, .now() + startupTimeout)
             let process = Process()
             let output = Pipe()
             process.executableURL = helperURL
@@ -160,17 +177,19 @@ enum PasteController {
             let fd = output.fileHandleForReading.fileDescriptor
             guard fcntl(fd, F_SETFL, O_NONBLOCK) != -1 else { return (nil, false) }
             var bytes = Data()
-            let maximumBytes = 12 * 1024 * 1024
+            let maximumBytes = ClipboardSnapshotTransport.maximumWireBytes
+            var ready = false
+            var payloadReady = false
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             var reachedEOF = false
             while !reachedEOF || process.isRunning {
                 let now = DispatchTime.now()
-                guard now < deadline else { return (nil, true) }
+                guard now < phaseDeadline else { return (nil, true) }
                 if reachedEOF {
                     usleep(1_000)
                     continue
                 }
-                let remaining = deadline.uptimeNanoseconds - now.uptimeNanoseconds
+                let remaining = phaseDeadline.uptimeNanoseconds - now.uptimeNanoseconds
                 var descriptor = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
                 let status = poll(&descriptor, 1, Int32(max(1, min(remaining / 1_000_000, 200))))
                 if status < 0 {
@@ -184,19 +203,33 @@ enum PasteController {
                 } else if count > 0 {
                     guard bytes.count + count <= maximumBytes else { return (nil, false) }
                     bytes.append(contentsOf: buffer.prefix(count))
+                    if !ready, bytes.count >= ClipboardSnapshotTransport.ready.count {
+                        guard bytes.starts(with: ClipboardSnapshotTransport.ready) else { return (nil, false) }
+                        bytes.removeFirst(ClipboardSnapshotTransport.ready.count)
+                        ready = true
+                        phaseDeadline = min(deadline, .now() + readTimeout)
+                    }
+                    if ready, !payloadReady, let marker = bytes.first {
+                        guard marker == ClipboardSnapshotTransport.payloadReady else { return (nil, false) }
+                        bytes.removeFirst()
+                        payloadReady = true
+                        phaseDeadline = min(deadline, .now() + transferTimeout)
+                    }
                 } else if errno != EAGAIN && errno != EINTR {
                     return (nil, false)
                 }
             }
             process.waitUntilExit()
-            guard process.terminationStatus == 0,
-                  let wire = try? JSONDecoder().decode(WireSnapshot.self, from: bytes),
+            guard process.terminationStatus == 0, ready, payloadReady,
+                  let wire = try? PropertyListDecoder().decode(ClipboardSnapshotPayload.self, from: bytes),
                   wire.changeCount == changeCount else { return (nil, false) }
             return (ClipboardSnapshot(items: wire.items.map { $0.map { ($0.type, $0.data) } }), false)
         }
     }
 
-    @MainActor private static var activePastes: [String: UUID] = [:]
+    // Pending requests can supersede one another without taking restoration
+    // ownership away from a previously staged paste.
+    @MainActor private static var pendingPastes: [String: UUID] = [:]
     // Successive pastes may overlap the restore delay. Carry forward the original
     // snapshot while we still own the staged text, rather than saving dictation.
     @MainActor private static var stagedSnapshots: [String: (id: UUID, changeCount: Int, snapshot: ClipboardSnapshot?)] = [:]
@@ -271,18 +304,18 @@ enum PasteController {
 
         let name = pasteboard.name.rawValue
         let requestID = UUID()
-        activePastes[name] = requestID
+        pendingPastes[name] = requestID
         let originalChangeCount = pasteboard.changeCount
         let previousStage = stagedSnapshots[name].flatMap { $0.changeCount == originalChangeCount ? $0 : nil }
         let settle: @MainActor () -> Void = {
-            if activePastes[name] == requestID { activePastes.removeValue(forKey: name) }
+            if pendingPastes[name] == requestID { pendingPastes.removeValue(forKey: name) }
             if stagedSnapshots[name]?.id == requestID { stagedSnapshots.removeValue(forKey: name) }
             onClipboardSettled()
         }
         onLifecycleEvent(.clipboardSnapshotBegun)
         let stage: @MainActor (ClipboardSnapshot?, Bool) -> Void = { snapshot, timedOut in
-            onLifecycleEvent(timedOut ? .clipboardSnapshotTimedOut : .clipboardSnapshotCompleted)
-            guard activePastes[name] == requestID, shouldDispatchPaste() else {
+            onLifecycleEvent(timedOut ? .clipboardSnapshotTimedOut : (snapshot == nil ? .clipboardSnapshotFailed : .clipboardSnapshotCompleted))
+            guard pendingPastes[name] == requestID, shouldDispatchPaste() else {
                 onLifecycleEvent(.pasteDispatchCancelled)
                 onPasteFinished(nil)
                 settle()
@@ -305,6 +338,7 @@ enum PasteController {
             let didStageText = pasteboard.setString(pastedText, forType: .string)
             let pasteChangeCount = pasteboard.changeCount
             stagedSnapshots[name] = (requestID, pasteChangeCount, snapshot)
+            if pendingPastes[name] == requestID { pendingPastes.removeValue(forKey: name) }
             onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -317,7 +351,7 @@ enum PasteController {
                 func settleFailedDispatch() {
                     if retainStagedTextOnFailure, pasteboard.changeCount == pasteChangeCount {
                         onLifecycleEvent(.clipboardRetainedForManualPaste)
-                    } else if activePastes[name] == requestID,
+                    } else if stagedSnapshots[name]?.id == requestID,
                               pasteboard.changeCount == pasteChangeCount, let savedItems {
                         restoreClipboard(pasteboard, from: savedItems)
                         onLifecycleEvent(.clipboardRestored)
@@ -332,7 +366,7 @@ enum PasteController {
                     guard didStageText else {
                         // Restore only when Muesli still owns the cleared pasteboard. If another
                         // app wrote to it, preserving that newer content takes precedence.
-                        if activePastes[name] == requestID,
+                        if stagedSnapshots[name]?.id == requestID,
                            pasteboard.changeCount == clearedChangeCount, let savedItems {
                             restoreClipboard(pasteboard, from: savedItems)
                             onLifecycleEvent(.clipboardRestored)
@@ -350,7 +384,7 @@ enum PasteController {
                         return
                     }
                 }
-                guard activePastes[name] == requestID, shouldDispatchPaste() else {
+                guard stagedSnapshots[name]?.id == requestID, shouldDispatchPaste() else {
                     onLifecycleEvent(.pasteDispatchCancelled)
                     settleFailedDispatch()
                     return
@@ -392,7 +426,7 @@ enum PasteController {
                 // transcript owns the user's clipboard.
                 onLifecycleEvent(.clipboardRestoreScheduled)
                 DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-                    if activePastes[name] == requestID,
+                    if stagedSnapshots[name]?.id == requestID,
                        pasteboard.changeCount == pasteChangeCount, let savedItems {
                         restoreClipboard(pasteboard, from: savedItems)
                         onLifecycleEvent(.clipboardRestored)
