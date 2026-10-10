@@ -54,6 +54,12 @@ protocol MeetingMicRecording: AnyObject {
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
 
+    /// Install once, before prepare/start. Buffered producers must check this
+    /// before copying input, not when delivering it after a processing delay.
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool)
+    /// True only when callbacks represent buffers gated before asynchronous work.
+    var hasBufferedSampleAdmission: Bool { get }
+
     /// Permanently disqualify this instance from starting capture again —
     /// synchronous, so teardown always wins against a stale queued handoff
     /// worker. Default no-op for recorders without retained worker state.
@@ -68,12 +74,15 @@ protocol MeetingMicRecording: AnyObject {
 }
 
 extension MeetingMicRecording {
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
+    var hasBufferedSampleAdmission: Bool { false }
     func waitForQuiescence() {}
     func invalidateForTeardown() {}
     func requestHealthRecovery(_ trigger: MeetingMicRecoveryTrigger) -> MeetingMicRecoveryRequestResult { .unavailable }
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
+    var hasBufferedSampleAdmission: Bool { recorder is BufferedMicrophoneAdmissionControlling }
     var preferredInputDeviceID: AudioObjectID? {
         get { recorder.preferredInputDeviceID }
         set { recorder.preferredInputDeviceID = newValue }
@@ -145,12 +154,18 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
     private func wireCallbacks() {
         recorder.onAudioBuffer = { [weak self] samples in
             guard let self else { return }
-            guard !self.lock.withLock({ $0 }) else { return }
+            // Buffered producers enforce pause at admission. Rechecking here
+            // would throw away pre-pause buffers delayed by conversion/file I/O.
+            guard self.hasBufferedSampleAdmission || !self.lock.withLock({ $0 }) else { return }
             let int16Samples = samples.map { sample -> Int16 in
                 Int16(max(-1.0, min(1.0, sample)) * 32767)
             }
             self.onRawPCMSamples?(int16Samples)
         }
+    }
+
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        (recorder as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = check
     }
 }
 
@@ -233,6 +248,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var onRawPCMSamplesStorage: (([Int16]) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
         var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
+        var sampleAdmissionCheck: (() -> Bool)?
     }
 
     private var preferredInputDeviceIDStorage: AudioObjectID? {
@@ -242,6 +258,15 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private var lifecycleState: LifecycleState { lock.withLock { $0.lifecycleState } }
     private var onRawPCMSamplesStorage: (([Int16]) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
     private var onRecordingFailedStorage: ((Error) -> Void)? { lock.withLock { $0.onRecordingFailedStorage } }
+
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        lock.withLock { $0.sampleAdmissionCheck = check }
+    }
+
+    var hasBufferedSampleAdmission: Bool {
+        let recorder = lock.withLock { $0.active?.recorder }
+        return recorder?.hasBufferedSampleAdmission ?? false
+    }
 
     init(
         systemDefaultRecorder: MeetingMicRecording? = nil,
@@ -601,6 +626,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             seededAppScopedRecorder = nil
         }
         recorder.preferredInputDeviceID = deviceID
+        if let check = lock.withLock({ $0.sampleAdmissionCheck }) {
+            recorder.setSampleAdmissionCheck(check)
+        }
         let child = Child(id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID)
         // The recorder owns these callbacks. Capturing Child would retain that
         // same recorder (and its native graph) even after stop or retirement.

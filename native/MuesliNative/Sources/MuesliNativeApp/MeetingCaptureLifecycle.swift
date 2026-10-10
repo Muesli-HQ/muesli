@@ -46,17 +46,23 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         self.microphone = microphone
         self.systemAudio = systemAudio
         self.onQuiesced = onQuiesced
+        microphone.setSampleAdmissionCheck { [weak self] in
+            self?.state.withLock { !$0.microphoneDeliveryClosed && $0.phase.acceptsSamples } ?? false
+        }
     }
 
     var phase: MeetingCapturePhase { state.withLock { $0.phase } }
     var isEnding: Bool { phase.isEnding }
 
-    /// The first stop request snapshots capture eligibility before changing phase.
+    /// Producers reject new paused input at admission, so delayed pre-pause
+    /// buffers retain delivery eligibility while paused and during stop.
     /// Already accepted mic buffers can outlive native quiescence; the session
     /// closes this window at its processing-queue barrier, or immediately on discard.
     var acceptsMicrophoneSamples: Bool {
-        state.withLock {
-            !$0.microphoneDeliveryClosed && ($0.phase.acceptsSamples || $0.drainsMicrophoneOnStop)
+        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
+        return state.withLock {
+            !$0.microphoneDeliveryClosed
+                && ($0.phase.acceptsSamples || ($0.phase == .paused && acceptsPausedTail) || $0.drainsMicrophoneOnStop)
         }
     }
 
@@ -161,9 +167,10 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
 
     @discardableResult
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
+        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
-            state.drainsMicrophoneOnStop = state.phase.acceptsSamples
+            state.drainsMicrophoneOnStop = state.phase.acceptsSamples || (state.phase == .paused && acceptsPausedTail)
             state.phase = .stopping
             let micStart = state.microphoneOperation
             let systemStart = state.systemOperation

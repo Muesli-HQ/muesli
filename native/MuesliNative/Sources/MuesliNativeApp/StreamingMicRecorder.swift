@@ -38,6 +38,12 @@ protocol PausableStreamingDictationRecording: AnyObject {
     func resume()
 }
 
+/// Configure before starting capture. The producer checks this before accepting
+/// a buffer; delayed delivery retains that decision across pause and stop.
+protocol BufferedMicrophoneAdmissionControlling: AnyObject {
+    var shouldAdmitSamples: (() -> Bool)? { get set }
+}
+
 struct StreamingMicRecorderRunState: Equatable {
     private(set) var isRunning = false
 
@@ -54,7 +60,8 @@ struct StreamingMicRecorderRunState: Equatable {
     }
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+    var shouldAdmitSamples: (() -> Bool)?
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -302,7 +309,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         }
         let maximumFrames = AVAudioFrameCount(max(16_384, ceil(hwFormat.sampleRate / 4)))
         let capture = try BufferedMicrophoneCapture(
-            format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames
+            format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
+            shouldAdmitSamples: shouldAdmitSamples ?? { true }
         ) { [weak self] buffer in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }

@@ -23,12 +23,14 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
     private let state: OSAllocatedUnfairLock<State>
     private let queue: DispatchQueue
     private let consume: (AVAudioPCMBuffer) -> Void
+    private let shouldAdmitSamples: () -> Bool
 
     init(
         format: AVAudioFormat,
         queue: DispatchQueue,
         capacity: Int = 16,
         maximumFrames: AVAudioFrameCount = 16_384,
+        shouldAdmitSamples: @escaping () -> Bool = { true },
         consume: @escaping (AVAudioPCMBuffer) -> Void
     ) throws {
         // Bound storage even for pathological device formats. The normal stereo
@@ -56,12 +58,14 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
         state = OSAllocatedUnfairLock(initialState: State(available: Array(slots.indices)))
         self.queue = queue
         self.consume = consume
+        self.shouldAdmitSamples = shouldAdmitSamples
     }
 
     @discardableResult
     func offer(_ input: AVAudioPCMBuffer) -> Admission {
         state.withLock { state in
-            guard state.accepting, !state.paused, input.frameLength > 0 else { return .ignored }
+            guard state.accepting, !state.paused, input.frameLength > 0,
+                  shouldAdmitSamples() else { return .ignored }
             guard let index = state.available.popLast() else {
                 // Do not silently drop a middle chunk and compress the recording
                 // timeline. Fail this capture episode once and let its existing

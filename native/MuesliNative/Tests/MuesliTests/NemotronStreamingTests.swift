@@ -25,7 +25,9 @@ struct StreamingDictationControllerTests {
             #expect(text == String(repeating: " hello", count: (tailCount + 7) / 8))
         }
         let chunks = await transcriber.receivedSamples
-        #expect(chunks.flatMap { $0 }.filter { $0 != 0 } == Array(repeating: 0.25, count: tailCount))
+        let speechSamples: [Float] = chunks.flatMap { $0 }.filter { $0 != 0 }
+        let expectedSamples = [Float](repeating: 0.25, count: tailCount)
+        #expect(speechSamples == expectedSamples)
         #expect(recorder.stopCalls == 1)
 
         #expect(controller.start())
