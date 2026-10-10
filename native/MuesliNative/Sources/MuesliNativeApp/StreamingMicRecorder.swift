@@ -42,6 +42,11 @@ protocol PausableStreamingDictationRecording: AnyObject {
 /// a buffer; delayed delivery retains that decision across pause and stop.
 protocol BufferedMicrophoneAdmissionControlling: AnyObject {
     var shouldAdmitSamples: (() -> Bool)? { get set }
+    var hasBufferedSampleAdmission: Bool { get }
+}
+
+extension BufferedMicrophoneAdmissionControlling {
+    var hasBufferedSampleAdmission: Bool { true }
 }
 
 struct StreamingMicRecorderRunState: Equatable {

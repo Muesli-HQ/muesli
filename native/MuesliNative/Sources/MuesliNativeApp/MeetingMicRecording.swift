@@ -82,7 +82,9 @@ extension MeetingMicRecording {
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
-    var hasBufferedSampleAdmission: Bool { recorder is BufferedMicrophoneAdmissionControlling }
+    var hasBufferedSampleAdmission: Bool {
+        (recorder as? BufferedMicrophoneAdmissionControlling)?.hasBufferedSampleAdmission ?? false
+    }
     var preferredInputDeviceID: AudioObjectID? {
         get { recorder.preferredInputDeviceID }
         set { recorder.preferredInputDeviceID = newValue }

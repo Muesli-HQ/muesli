@@ -7,10 +7,21 @@ import os
 
 @Suite("Meeting capture lifetime")
 struct MeetingCaptureLifecycleTests {
-    @Test("buffered meeting mic preserves pre-pause audio and rejects input throughout pause", arguments: [false, true])
-    func bufferedPauseTail(stopBeforeDelivery: Bool) async throws {
+    enum BufferedSource: CaseIterable { case direct, fallbackAfterPrepareFailure, fallbackAfterStartFailure }
+
+    @Test("buffered meeting mic preserves pre-pause audio and rejects input throughout pause", arguments: [false, true], BufferedSource.allCases)
+    func bufferedPauseTail(stopBeforeDelivery: Bool, source: BufferedSource) async throws {
         let producer = BufferedLifetimeRecorder()
-        let adapter = StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming)
+        let recording: StreamingDictationRecording
+        switch source {
+        case .direct: recording = producer
+        case .fallbackAfterPrepareFailure, .fallbackAfterStartFailure:
+            recording = FallbackStreamingDictationRecorder(
+                primary: FailingLifetimeRecorder(failPrepare: source == .fallbackAfterPrepareFailure),
+                fallback: producer
+            )
+        }
+        let adapter = StreamingMeetingMicRecorderAdapter(recorder: recording, kind: .systemDefaultStreaming)
         let mic = RouteAwareMeetingMicRecorder(systemDefaultRecorder: adapter)
         let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
         let received = OSAllocatedUnfairLock(initialState: [Int16]())
@@ -301,6 +312,19 @@ private final class BufferedLifetimeRecorder: StreamingDictationRecording, Pausa
     func cancel() { recorder.cancel() }
     func currentPower() -> Float { recorder.currentPower() }
     func invalidateForTeardown() { recorder.invalidateForTeardown() }
+}
+
+private final class FailingLifetimeRecorder: StreamingDictationRecording {
+    var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+    let failPrepare: Bool
+    init(failPrepare: Bool) { self.failPrepare = failPrepare }
+    func prepare() throws { if failPrepare { throw NSError(domain: "test.prepare", code: 1) } }
+    func start() throws { throw NSError(domain: "test.start", code: 1) }
+    func stop() -> URL? { nil }
+    func cancel() {}
+    func currentPower() -> Float { -160 }
 }
 
 private final class LifetimeMicrophone: MeetingMicRecording {
