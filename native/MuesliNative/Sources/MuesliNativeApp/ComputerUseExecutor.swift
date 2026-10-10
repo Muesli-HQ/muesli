@@ -547,6 +547,7 @@ enum ComputerUseToolExecutor {
         _ text: String,
         shortcut: PasteShortcut,
         pasteboard: NSPasteboard = .general,
+        snapshotWorker: PasteController.ClipboardSnapshotWorker? = nil,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
@@ -562,6 +563,7 @@ enum ComputerUseToolExecutor {
                 text: text,
                 pasteboard: pasteboard,
                 shortcut: shortcut,
+                snapshotWorker: snapshotWorker,
                 targetApplicationProvider: targetApplicationProvider,
                 simulatePasteAction: simulatePasteAction,
                 onPasteDispatched: { dispatched = true },

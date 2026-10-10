@@ -13,6 +13,7 @@ struct ComputerUseExecutorTests {
         var attempted = false
         let result = await ComputerUseToolExecutor.pasteText(
             "dictated", shortcut: .automatic, pasteboard: pasteboard,
+            snapshotWorker: makeTestClipboardSnapshotWorker(),
             targetApplicationProvider: { nil },
             simulatePasteAction: { shortcut in
                 attempted = true
@@ -37,6 +38,7 @@ struct ComputerUseExecutorTests {
         var attempted = false
         let result = await ComputerUseToolExecutor.pasteText(
             "dictated", shortcut: shortcut, pasteboard: pasteboard,
+            snapshotWorker: makeTestClipboardSnapshotWorker(),
             targetApplicationProvider: { hasAttribution ? NSRunningApplication.current : nil },
             simulatePasteAction: { received in
                 attempted = true
@@ -58,6 +60,7 @@ struct ComputerUseExecutorTests {
         pasteboard.setString("original", forType: .string)
         let result = await ComputerUseToolExecutor.pasteText(
             "", shortcut: .automatic, pasteboard: pasteboard,
+            snapshotWorker: makeTestClipboardSnapshotWorker(),
             simulatePasteAction: { _ in Issue.record("Empty input must not dispatch"); return true }
         )
         #expect(result.status == .failed)
@@ -74,6 +77,7 @@ struct ComputerUseExecutorTests {
             withUnsafeCurrentTask { $0?.cancel() }
             return await ComputerUseToolExecutor.pasteText(
                 "dictated", shortcut: .automatic, pasteboard: pasteboard,
+                snapshotWorker: makeTestClipboardSnapshotWorker(),
                 simulatePasteAction: { _ in Issue.record("Cancelled input must not dispatch"); return true }
             )
         }
@@ -91,6 +95,7 @@ struct ComputerUseExecutorTests {
         let task = Task { @MainActor in
             await ComputerUseToolExecutor.pasteText(
                 "dictated", shortcut: .automatic, pasteboard: pasteboard,
+                snapshotWorker: makeTestClipboardSnapshotWorker(),
                 targetApplicationProvider: { nil },
                 simulatePasteAction: { _ in
                     cancelPaste()
