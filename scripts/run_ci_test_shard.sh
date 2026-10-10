@@ -117,6 +117,8 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMicrophoneCaptureTests
+      StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
@@ -130,6 +132,7 @@ case "${shard}" in
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
+      CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests

@@ -57,6 +57,9 @@ final class StreamingDictationController {
     private var isActive = false
     private var activeSessionID: UUID?
     private var stoppingSessionID: UUID?
+    /// Capture delivery closes when recorder.stop() returns, before the longer
+    /// ASR drain. A stopped session must not accept stale recorder callbacks.
+    private var drainingRecorderSessionID: UUID?
     private var streamStateTask: Task<Void, Never>?
     private let chunkSamples: Int  // 35840 for Nemotron 3.5's 2240ms tier
     private let stopStreamStateTimeout: TimeInterval
@@ -185,6 +188,7 @@ final class StreamingDictationController {
                     isActive = false
                     self.activeSessionID = nil
                     stoppingSessionID = activeSessionID
+                    drainingRecorderSessionID = activeSessionID
                 }
                 return .start(activeSessionID)
             }
@@ -218,6 +222,7 @@ final class StreamingDictationController {
 
         // Collect remaining buffered samples
         let remaining: [Float] = bufferLock.withLock {
+            drainingRecorderSessionID = nil
             let samples = sampleBuffer
             sampleBuffer.removeAll()
             return samples
@@ -278,6 +283,7 @@ final class StreamingDictationController {
             isActive = false
             activeSessionID = nil
             stoppingSessionID = nil
+            drainingRecorderSessionID = nil
             sampleBuffer.removeAll()
             return sessionID
         }
@@ -319,18 +325,21 @@ final class StreamingDictationController {
 
     // MARK: - Audio Buffer Handling
 
-    /// Called on AVAudioEngine's audio processing thread (4096 samples per call).
+    /// Called synchronously by the recorder's delivery worker, including its
+    /// stop-time drain of buffers accepted before capture closed.
     private func handleAudioBuffer(_ samples: [Float], sessionID expectedSessionID: UUID) {
         let capture = bufferLock.withLock { () -> (sessionID: UUID?, chunks: [[Float]]) in
-            guard isActive, let sessionID = activeSessionID,
-                  sessionID == expectedSessionID else { return (nil, []) }
+            let acceptsLive = isActive && activeSessionID == expectedSessionID
+            let acceptsTail = stoppingSessionID == expectedSessionID
+                && drainingRecorderSessionID == expectedSessionID
+            guard acceptsLive || acceptsTail else { return (nil, []) }
             var chunks: [[Float]] = []
             sampleBuffer.append(contentsOf: samples)
             while sampleBuffer.count >= chunkSamples {
                 chunks.append(Array(sampleBuffer.prefix(chunkSamples)))
                 sampleBuffer.removeFirst(chunkSamples)
             }
-            return (sessionID, chunks)
+            return (expectedSessionID, chunks)
         }
 
         if !capture.chunks.isEmpty {

@@ -1,10 +1,145 @@
 import CoreAudio
+import AVFoundation
 import Foundation
 import Testing
+import os
 @testable import MuesliNativeApp
 
 @Suite("Meeting capture lifetime")
 struct MeetingCaptureLifecycleTests {
+    enum BufferedSource: CaseIterable { case direct, fallbackAfterPrepareFailure, fallbackAfterStartFailure }
+
+    @Test("buffered meeting mic preserves pre-pause audio and rejects input throughout pause", arguments: [false, true], BufferedSource.allCases)
+    func bufferedPauseTail(stopBeforeDelivery: Bool, source: BufferedSource) async throws {
+        let producer = BufferedLifetimeRecorder()
+        let recording: StreamingDictationRecording
+        switch source {
+        case .direct: recording = producer
+        case .fallbackAfterPrepareFailure, .fallbackAfterStartFailure:
+            recording = FallbackStreamingDictationRecorder(
+                primary: FailingLifetimeRecorder(failPrepare: source == .fallbackAfterPrepareFailure),
+                fallback: producer
+            )
+        }
+        let adapter = StreamingMeetingMicRecorderAdapter(recorder: recording, kind: .systemDefaultStreaming)
+        let mic = RouteAwareMeetingMicRecorder(systemDefaultRecorder: adapter)
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        let delivered = DispatchSemaphore(value: 0)
+        mic.onRawPCMSamples = { samples in
+            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+            delivered.signal()
+        }
+        defer { producer.releaseDelivery.signal(); producer.releasePause.signal(); mic.onRawPCMSamples = nil }
+        try await capture.start()
+        try producer.emit(0.25)
+        for await _ in producer.deliveryEntered.stream { break }
+        try producer.emit(0.5) // Accepted, but blocked behind the first consumer.
+        #expect(capture.setPaused(true))
+        for await _ in producer.pauseEntered.stream { break }
+        // The driver pause has not run yet. The lifecycle admission gate must
+        // already reject this input without waiting for that driver operation.
+        try producer.emit(0.75)
+        producer.releasePause.signal()
+        for await _ in producer.pauseCompleted.stream { break }
+        try producer.emit(0.75)
+        #expect(mic.hasBufferedSampleAdmission)
+
+        let shutdown: Task<MeetingCaptureShutdown.Result, Never>
+        if stopBeforeDelivery {
+            shutdown = capture.requestStop()
+            producer.releaseDelivery.signal()
+        } else {
+            producer.releaseDelivery.signal()
+            let drained = try await MeetingCaptureLifecycle.onDriverQueue {
+                delivered.wait(timeout: .now() + 5) == .success
+                    && delivered.wait(timeout: .now() + 5) == .success
+            }
+            #expect(drained)
+            #expect(received.withLock { $0 } == [8191, 16383])
+            #expect(capture.setPaused(false))
+            for await _ in producer.resumeCompleted.stream { break }
+            try producer.emit(0.125)
+            shutdown = capture.requestStop()
+        }
+        let result = await shutdown.value
+        #expect(!result.timedOut)
+        let url = try #require(result.microphone)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let data = try Data(contentsOf: url)
+        let expected: [Int16] = stopBeforeDelivery ? [8191, 16383] : [8191, 16383, 4095]
+        #expect(data.count == 44 + expected.count * 2)
+        #expect(received.withLock { $0 } == expected)
+        capture.finishMicrophoneDelivery()
+        try producer.emit(0.75)
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
+    @Test("early and repeated stop preserve accepted mic delivery until the session barrier", arguments: [false, true])
+    func earlyStopPreservesMicrophoneDrain(startCapture: Bool) async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        if startCapture { try await capture.start() }
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        mic.onRawPCMSamples = { samples in
+            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+        }
+        mic.stopAction = { mic.onRawPCMSamples?([1, 2, 3]) }
+        defer { mic.onRawPCMSamples = nil; mic.stopAction = {} }
+        // Same ordering as the controller: beginStoppingCapture, then session.stop.
+        let earlyShutdown = capture.requestStop()
+        _ = await earlyShutdown.value
+        #expect(capture.phase == .stopped)
+        _ = await capture.requestStop().value
+        // Delivery already queued by the mic may run after native quiescence.
+        mic.onRawPCMSamples?([4])
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        capture.finishMicrophoneDelivery()
+        mic.onRawPCMSamples?([5])
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        #expect(mic.stopCount == 1)
+    }
+
+    @Test("unbuffered paused stop and discard never admit microphone tail", arguments: [false, true])
+    func closedMicrophoneDrain(discard: Bool) async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        try await capture.start()
+        if discard { capture.finishMicrophoneDelivery() }
+        else { #expect(capture.setPaused(true)) }
+        mic.stopAction = { #expect(!capture.acceptsMicrophoneSamples) }
+        defer { mic.stopAction = {} }
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+        _ = await capture.requestStop().value
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
+    @Test("closing session delivery rejects callbacks from a still-retiring driver")
+    func closeBeforeDriverQuiesces() async throws {
+        let mic = LifetimeMicrophone()
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        let entered = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        mic.stopAction = {
+            entered.continuation.yield(())
+            #expect(release.wait(timeout: .now() + 5) == .success)
+            #expect(!capture.acceptsMicrophoneSamples)
+        }
+        defer { mic.stopAction = {} }
+        try await capture.start()
+        let shutdown = capture.requestStop()
+        for await _ in entered.stream { break }
+        #expect(capture.acceptsMicrophoneSamples)
+        // The session's deadline/discard barrier must not wait for native stop.
+        capture.finishMicrophoneDelivery()
+        release.signal()
+        _ = await shutdown.value
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
     enum Stage: CaseIterable { case microphonePrepare, systemStart, microphoneStart }
 
     @Test("cancellation returns while a driver is blocked, stops the other track, and rejects late stages", arguments: Stage.allCases)
@@ -122,6 +257,74 @@ struct MeetingCaptureLifecycleTests {
         #expect(mic.stopCount == 1)
         #expect(system.stopCount == 1)
     }
+}
+
+/// Real bounded recorder and meeting adapter, with only native graph startup
+/// replaced. Gates model a delayed worker and delayed driver pause independently.
+private final class BufferedLifetimeRecorder: StreamingDictationRecording, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+    private let recorder = StreamingMicRecorder(directoryName: "meeting-pause-tail-tests")
+    private var tap: AVAudioNodeTapBlock?
+    private let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+    private var firstDelivery = true // Recorder processing queue only.
+    let deliveryEntered = AsyncStream<Void>.makeStream()
+    let pauseEntered = AsyncStream<Void>.makeStream()
+    let pauseCompleted = AsyncStream<Void>.makeStream()
+    let resumeCompleted = AsyncStream<Void>.makeStream()
+    let releaseDelivery = DispatchSemaphore(value: 0)
+    let releasePause = DispatchSemaphore(value: 0)
+    var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+    var shouldAdmitSamples: (() -> Bool)? {
+        get { recorder.shouldAdmitSamples }
+        set { recorder.shouldAdmitSamples = newValue }
+    }
+    func prepare() throws {}
+    func start() throws {
+        recorder.onAudioBuffer = { [weak self] samples in
+            guard let self else { return }
+            if firstDelivery {
+                firstDelivery = false
+                deliveryEntered.continuation.yield(())
+                #expect(releaseDelivery.wait(timeout: .now() + 5) == .success)
+            }
+            onAudioBuffer?(samples)
+        }
+        tap = try recorder.testing_startWithTap(format: format)
+    }
+    func emit(_ sample: Float) throws {
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
+        buffer.frameLength = 1
+        buffer.floatChannelData![0][0] = sample
+        tap?(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000))
+    }
+    func pause() {
+        pauseEntered.continuation.yield(())
+        #expect(releasePause.wait(timeout: .now() + 5) == .success)
+        recorder.pause()
+        pauseCompleted.continuation.yield(())
+    }
+    func resume() {
+        recorder.resume()
+        resumeCompleted.continuation.yield(())
+    }
+    func stop() -> URL? { recorder.stop() }
+    func cancel() { recorder.cancel() }
+    func currentPower() -> Float { recorder.currentPower() }
+    func invalidateForTeardown() { recorder.invalidateForTeardown() }
+}
+
+private final class FailingLifetimeRecorder: StreamingDictationRecording {
+    var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+    let failPrepare: Bool
+    init(failPrepare: Bool) { self.failPrepare = failPrepare }
+    func prepare() throws { if failPrepare { throw NSError(domain: "test.prepare", code: 1) } }
+    func start() throws { throw NSError(domain: "test.start", code: 1) }
+    func stop() -> URL? { nil }
+    func cancel() {}
+    func currentPower() -> Float { -160 }
 }
 
 private final class LifetimeMicrophone: MeetingMicRecording {

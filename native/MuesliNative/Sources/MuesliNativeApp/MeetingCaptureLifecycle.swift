@@ -29,6 +29,8 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         var waiter: CheckedContinuation<Void, Error>?
         var deadline: DispatchWorkItem?
         var shutdown: Task<MeetingCaptureShutdown.Result, Never>?
+        var drainsMicrophoneOnStop = false
+        var microphoneDeliveryClosed = false
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let microphone: MeetingMicRecording
@@ -44,10 +46,31 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         self.microphone = microphone
         self.systemAudio = systemAudio
         self.onQuiesced = onQuiesced
+        microphone.setSampleAdmissionCheck { [weak self] in
+            self?.state.withLock { !$0.microphoneDeliveryClosed && $0.phase.acceptsSamples } ?? false
+        }
     }
 
     var phase: MeetingCapturePhase { state.withLock { $0.phase } }
     var isEnding: Bool { phase.isEnding }
+
+    /// Producers reject new paused input at admission, so delayed pre-pause
+    /// buffers retain delivery eligibility while paused and during stop.
+    /// Already accepted mic buffers can outlive native quiescence; the session
+    /// closes this window at its processing-queue barrier, or immediately on discard.
+    var acceptsMicrophoneSamples: Bool {
+        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
+        return state.withLock {
+            !$0.microphoneDeliveryClosed
+                && ($0.phase.acceptsSamples || ($0.phase == .paused && acceptsPausedTail) || $0.drainsMicrophoneOnStop)
+        }
+    }
+
+    /// Permanently reject delivery on discard or after the session's final drain
+    /// barrier, even if a timed-out native stop is still retiring in the background.
+    func finishMicrophoneDelivery() {
+        state.withLock { $0.microphoneDeliveryClosed = true }
+    }
 
     func start(timeout: TimeInterval = 20) async throws {
         try await withTaskCancellationHandler {
@@ -144,8 +167,10 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
 
     @discardableResult
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
+        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
+            state.drainsMicrophoneOnStop = state.phase.acceptsSamples || (state.phase == .paused && acceptsPausedTail)
             state.phase = .stopping
             let micStart = state.microphoneOperation
             let systemStart = state.systemOperation

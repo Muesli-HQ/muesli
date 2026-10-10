@@ -5,6 +5,53 @@ import CoreAudio
 
 @Suite("StreamingDictationController")
 struct StreamingDictationControllerTests {
+    @available(macOS 15, *)
+    @Test("stop includes recorder-drained audio but rejects callbacks after recorder stop", arguments: [3, 8, 11])
+    func recorderDrainReachesFinalTranscript(tailCount: Int) async {
+        let transcriber = DelayedStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber, recorder: recorder, chunkSamples: 8
+        )
+        #expect(controller.start())
+        let callback = recorder.onAudioBuffer
+        recorder.onStop = { callback?(Array(repeating: 0.25, count: tailCount)) }
+        let completion = AsyncStream<String>.makeStream()
+        controller.stop { completion.continuation.yield($0); completion.continuation.finish() }
+        // The session still awaits model initialization, but capture is closed.
+        callback?(Array(repeating: 0.75, count: 8))
+        await transcriber.releaseState()
+        for await text in completion.stream {
+            #expect(text == String(repeating: " hello", count: (tailCount + 7) / 8))
+        }
+        let chunks = await transcriber.receivedSamples
+        let speechSamples: [Float] = chunks.flatMap { $0 }.filter { $0 != 0 }
+        let expectedSamples = [Float](repeating: 0.25, count: tailCount)
+        #expect(speechSamples == expectedSamples)
+        #expect(recorder.stopCalls == 1)
+
+        #expect(controller.start())
+        // A callback retained by an old recorder must not feed a new session.
+        callback?(Array(repeating: 0.75, count: 8))
+        recorder.onStop = nil
+        #expect(await stop(controller) == "")
+    }
+
+    @available(macOS 15, *)
+    @Test("cancel rejects microphone callbacks delivered by recorder cancellation")
+    func cancelDiscardsRecorderTail() async {
+        let transcriber = DelayedStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(transcriber: transcriber, recorder: recorder, chunkSamples: 8)
+        #expect(controller.start())
+        let callback = recorder.onAudioBuffer
+        recorder.onCancel = { callback?(Array(repeating: 0.25, count: 8)) }
+        controller.cancel()
+        callback?(Array(repeating: 0.75, count: 8))
+        await transcriber.releaseState()
+        #expect(await stop(controller) == "")
+        #expect(await transcriber.transcribeCalls == 0)
+    }
 
     @available(macOS 15, *)
     @Test("retired audio callback cannot add chunks to a replacement streaming session")
@@ -449,6 +496,8 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
     var startedPreferredInputDeviceID: AudioObjectID?
     var stopURL: URL?
     var power: Float = -160
+    var onStop: (() -> Void)?
+    var onCancel: (() -> Void)?
 
     func prepare() throws {
         prepareCalls += 1
@@ -466,11 +515,13 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
 
     func stop() -> URL? {
         stopCalls += 1
+        onStop?()
         return stopURL
     }
 
     func cancel() {
         cancelCalls += 1
+        onCancel?()
     }
 
     func currentPower() -> Float {
@@ -483,6 +534,7 @@ private actor DelayedStreamingTranscriber: NemotronStreamingTranscribing {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
     private(set) var transcribeCalls = 0
+    private(set) var receivedSamples: [[Float]] = []
 
     func makeStreamState() async throws -> RNNTStreamState {
         if !released {
@@ -506,6 +558,7 @@ private actor DelayedStreamingTranscriber: NemotronStreamingTranscribing {
         state: inout RNNTStreamState
     ) async throws -> String {
         transcribeCalls += 1
+        receivedSamples.append(samples)
         return " hello"
     }
 }

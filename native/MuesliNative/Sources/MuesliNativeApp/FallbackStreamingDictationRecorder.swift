@@ -1,7 +1,21 @@
 import CoreAudio
 import Foundation
 
-final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
+final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+    var shouldAdmitSamples: (() -> Bool)? {
+        get { lock.withLock { sampleAdmissionCheck } }
+        set {
+            lock.withLock { sampleAdmissionCheck = newValue }
+            // Configured before prepare/start, including children not yet selected.
+            // Never call a child while holding the callback-selection lock.
+            (primary as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = newValue
+            (fallback as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = newValue
+        }
+    }
+    var hasBufferedSampleAdmission: Bool {
+        guard let selected = lock.withLock({ activeRecorder }) else { return false }
+        return (recorder(for: selected) as? BufferedMicrophoneAdmissionControlling)?.hasBufferedSampleAdmission ?? false
+    }
     // Snapshot the consumer together with generation validation. An accepted
     // callback may finish during cancellation, but must never pick a new sink.
     var onAudioBuffer: (([Float]) -> Void)? {
@@ -44,6 +58,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     private var generation: UInt64 = 0
     private var invalidated = false
     private var preferredInputDeviceIDStorage: AudioObjectID?
+    private var sampleAdmissionCheck: (() -> Bool)?
 
     init(
         primary: StreamingDictationRecording,
@@ -138,7 +153,10 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     }
 
     func invalidateForTeardown() {
-        lock.withLock { invalidated = true; generation &+= 1 }
+        // checkCurrent rejects startup using invalidated. Keep the current
+        // callback generation alive for the active child's accepted stop tail;
+        // stop/cancel still advance it when delivery must become terminal.
+        lock.withLock { invalidated = true }
         primary.invalidateForTeardown()
         fallback.invalidateForTeardown()
     }

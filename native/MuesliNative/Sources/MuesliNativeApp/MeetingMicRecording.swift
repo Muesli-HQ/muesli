@@ -54,6 +54,12 @@ protocol MeetingMicRecording: AnyObject {
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
 
+    /// Install once, before prepare/start. Buffered producers must check this
+    /// before copying input, not when delivering it after a processing delay.
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool)
+    /// True only when callbacks represent buffers gated before asynchronous work.
+    var hasBufferedSampleAdmission: Bool { get }
+
     /// Permanently disqualify this instance from starting capture again —
     /// synchronous, so teardown always wins against a stale queued handoff
     /// worker. Default no-op for recorders without retained worker state.
@@ -68,12 +74,17 @@ protocol MeetingMicRecording: AnyObject {
 }
 
 extension MeetingMicRecording {
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
+    var hasBufferedSampleAdmission: Bool { false }
     func waitForQuiescence() {}
     func invalidateForTeardown() {}
     func requestHealthRecovery(_ trigger: MeetingMicRecoveryTrigger) -> MeetingMicRecoveryRequestResult { .unavailable }
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
+    var hasBufferedSampleAdmission: Bool {
+        (recorder as? BufferedMicrophoneAdmissionControlling)?.hasBufferedSampleAdmission ?? false
+    }
     var preferredInputDeviceID: AudioObjectID? {
         get { recorder.preferredInputDeviceID }
         set { recorder.preferredInputDeviceID = newValue }
@@ -145,12 +156,18 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
     private func wireCallbacks() {
         recorder.onAudioBuffer = { [weak self] samples in
             guard let self else { return }
-            guard !self.lock.withLock({ $0 }) else { return }
+            // Buffered producers enforce pause at admission. Rechecking here
+            // would throw away pre-pause buffers delayed by conversion/file I/O.
+            guard self.hasBufferedSampleAdmission || !self.lock.withLock({ $0 }) else { return }
             let int16Samples = samples.map { sample -> Int16 in
                 Int16(max(-1.0, min(1.0, sample)) * 32767)
             }
             self.onRawPCMSamples?(int16Samples)
         }
+    }
+
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        (recorder as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = check
     }
 }
 
@@ -221,6 +238,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var invalidated = false
         var active: Child?
         var pending: Child?
+        // Only this former active child may flush accepted buffers during Stop.
+        // Pending/replaced graphs never gain a final-delivery entitlement.
+        var drainingChildID: UUID?
         var startingIDs: Set<UUID> = []
         var retiringIDs: Set<UUID> = []
         var deferredRouteHandoff = false
@@ -230,6 +250,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var onRawPCMSamplesStorage: (([Int16]) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
         var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
+        var sampleAdmissionCheck: (() -> Bool)?
     }
 
     private var preferredInputDeviceIDStorage: AudioObjectID? {
@@ -239,6 +260,15 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private var lifecycleState: LifecycleState { lock.withLock { $0.lifecycleState } }
     private var onRawPCMSamplesStorage: (([Int16]) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
     private var onRecordingFailedStorage: ((Error) -> Void)? { lock.withLock { $0.onRecordingFailedStorage } }
+
+    func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        lock.withLock { $0.sampleAdmissionCheck = check }
+    }
+
+    var hasBufferedSampleAdmission: Bool {
+        let recorder = lock.withLock { $0.active?.recorder }
+        return recorder?.hasBufferedSampleAdmission ?? false
+    }
 
     init(
         systemDefaultRecorder: MeetingMicRecording? = nil,
@@ -286,10 +316,13 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func invalidateForTeardown() {
         let children = lock.withLock { state in
+            // requestStop schedules native retirement before issuing its
+            // synchronous invalidation. Preserve the child if Stop already
+            // removed it from active while its driver is still draining.
+            state.drainingChildID = state.active?.id ?? state.drainingChildID
             state.invalidated = true
             state.lifecycleState = .stopping
             state.generation &+= 1
-            state.onRawPCMSamplesStorage = nil
             return (state.active, state.pending)
         }
         invalidateChildrenForTeardown(children)
@@ -354,6 +387,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.lifecycleState = .stopping
                 state.generation &+= 1
                 let result = (state.active, state.pending)
+                state.drainingChildID = state.active?.id
                 state.active = nil
                 state.pending = nil
                 state.shouldRecoverOnResume = false
@@ -375,6 +409,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         cancelAsync(resources.pending)
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
+        lock.withLock { $0.drainingChildID = nil }
         resources.active?.recorder.cancel()
         lock.withLock { $0.lifecycleState = .idle }
         return url
@@ -383,6 +418,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     func cancel() {
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
+                state.drainingChildID = nil
                 state.lifecycleState = .stopping
                 state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
@@ -592,6 +628,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             seededAppScopedRecorder = nil
         }
         recorder.preferredInputDeviceID = deviceID
+        if let check = lock.withLock({ $0.sampleAdmissionCheck }) {
+            recorder.setSampleAdmissionCheck(check)
+        }
         let child = Child(id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID)
         // The recorder owns these callbacks. Capturing Child would retain that
         // same recorder (and its native graph) even after stop or retirement.
@@ -606,7 +645,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     private func receive(_ samples: [Int16], from childID: UUID) {
         let role = lock.withLock { state -> (isActive: Bool, isPending: Bool, UInt64) in
-            (state.active?.id == childID, state.pending?.id == childID, state.pending?.generation ?? state.generation)
+            (state.active?.id == childID || state.drainingChildID == childID,
+             !state.invalidated && state.pending?.id == childID,
+             state.pending?.generation ?? state.generation)
         }
         if role.isActive {
             onRawPCMSamplesStorage?(samples)
