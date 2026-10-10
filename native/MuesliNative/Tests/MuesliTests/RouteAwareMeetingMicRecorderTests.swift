@@ -5,6 +5,39 @@ import Testing
 
 @Suite("RouteAwareMeetingMicRecorder", .serialized)
 struct RouteAwareMeetingMicRecorderTests {
+    @Test("Stop forwards the active child's buffered tail, then rejects late delivery")
+    func stopDrainsActiveChildOnly() throws {
+        let child = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorder: child)
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { delivered.append(contentsOf: $0) }
+        try recorder.start()
+        child.onStop = {
+            recorder.invalidateForTeardown()
+            child.onRawPCMSamples?([4, 5])
+        }
+        defer { child.onStop = nil }
+        recorder.invalidateForTeardown()
+        _ = recorder.stop()
+        child.onRawPCMSamples?([99])
+        #expect(delivered == [4, 5])
+    }
+
+    @Test("disconnecting the consumer before teardown discards the buffered tail")
+    func discardRejectsBufferedTail() throws {
+        let child = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorder: child)
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { delivered.append(contentsOf: $0) }
+        try recorder.start()
+        child.onStop = { child.onRawPCMSamples?([4, 5]) }
+        defer { child.onStop = nil }
+        recorder.invalidateForTeardown()
+        recorder.onRawPCMSamples = nil
+        _ = recorder.stop()
+        #expect(delivered.isEmpty)
+    }
+
     @Test("stopping releases the microphone child and its driver ownership")
     func stopReleasesChild() throws {
         weak var child: FakeMeetingMicRecorder?
@@ -880,6 +913,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     var cancelCalls = 0
     var startError: Error?
     var onStart: (() -> Void)?
+    var onStop: (() -> Void)?
     var onCancel: (() -> Void)?
     var onPrepareStarted: (() -> Void)?
     var prepareGate: DispatchSemaphore?
@@ -916,6 +950,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
 
     func stop() -> URL? {
         stopCalls += 1
+        onStop?()
         return nil
     }
 

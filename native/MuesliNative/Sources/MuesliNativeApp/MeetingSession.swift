@@ -197,6 +197,9 @@ final class MeetingSession {
     private let micRecoveryCoordinator = MeetingMicRecoveryCoordinator()
     private let systemAudioWatchdog = MeetingSystemAudioWatchdog()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
+    /// Owned by chunkRotationQueue. Stop keeps the final mic delivery path open
+    /// only until native shutdown completes (or its existing deadline expires).
+    private var drainingMicrophoneOnStop = false
     private var chunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkRecorder: PCMChunkRecorder?
@@ -644,8 +647,16 @@ final class MeetingSession {
 
     func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
         onProgress?(.stoppingCapture)
+        chunkRotationQueue.sync {
+            drainingMicrophoneOnStop = capturePhase.acceptsSamples
+        }
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
+        stopSystemAudioWatchdog()
+        // The mic driver drains its bounded processing queue before returning.
+        // Keep its sink connected until then; finishing the chunk first would
+        // lose accepted buffers whenever disk/conversion work was briefly delayed.
+        let stoppedCapture = await shutdown.value
         var micSegments: [SpeechSegment] = []
         var systemSegments: [SpeechSegment] = []
         let usesStreamingFinalTranscript = config.enableLiveStreamingPartials
@@ -663,6 +674,7 @@ final class MeetingSession {
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
+            drainingMicrophoneOnStop = false
 
             // Flush partial AEC frame before stopping chunk recorder
             appendFlushedStreamingMicOnQueue()
@@ -681,13 +693,8 @@ final class MeetingSession {
         // reject samples in the stopping phase. Only now is the coordinator's episode
         // state final; close any open degradation episode as unrecovered.
         micRecoveryCoordinator.finishMeeting()
-        // Cancel the watchdog before stopping the recorder so no late tick can
-        // request a rebuild mid-teardown, then terminalize any open tap
-        // episode.
-        stopSystemAudioWatchdog()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil
-        let stoppedCapture = await shutdown.value
         if stoppedCapture.timedOut {
             fputs("[meeting] capture shutdown deadline exceeded; preserving completed chunks while drivers retire\n", stderr)
             onCaptureShutdownTimedOut?()
@@ -1172,11 +1179,13 @@ final class MeetingSession {
         guard !rawSamples.isEmpty else { return }
 
         chunkRotationQueue.async { [weak self] in
-            guard let self, self.capturePhase.acceptsSamples else { return }
+            guard let self, self.capturePhase.acceptsSamples || self.drainingMicrophoneOnStop else { return }
 
-            let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
-            self.onMicHealthChanged?(healthSnapshot)
-            self.micRecoveryCoordinator.process(healthSnapshot)
+            if self.capturePhase.acceptsSamples {
+                let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
+                self.onMicHealthChanged?(healthSnapshot)
+                self.micRecoveryCoordinator.process(healthSnapshot)
+            }
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 

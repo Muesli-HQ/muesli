@@ -221,6 +221,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var invalidated = false
         var active: Child?
         var pending: Child?
+        // Only this former active child may flush accepted buffers during Stop.
+        // Pending/replaced graphs never gain a final-delivery entitlement.
+        var drainingChildID: UUID?
         var startingIDs: Set<UUID> = []
         var retiringIDs: Set<UUID> = []
         var deferredRouteHandoff = false
@@ -286,10 +289,13 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func invalidateForTeardown() {
         let children = lock.withLock { state in
+            // requestStop schedules native retirement before issuing its
+            // synchronous invalidation. Preserve the child if Stop already
+            // removed it from active while its driver is still draining.
+            state.drainingChildID = state.active?.id ?? state.drainingChildID
             state.invalidated = true
             state.lifecycleState = .stopping
             state.generation &+= 1
-            state.onRawPCMSamplesStorage = nil
             return (state.active, state.pending)
         }
         invalidateChildrenForTeardown(children)
@@ -354,6 +360,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.lifecycleState = .stopping
                 state.generation &+= 1
                 let result = (state.active, state.pending)
+                state.drainingChildID = state.active?.id
                 state.active = nil
                 state.pending = nil
                 state.shouldRecoverOnResume = false
@@ -375,6 +382,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         cancelAsync(resources.pending)
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
+        lock.withLock { $0.drainingChildID = nil }
         resources.active?.recorder.cancel()
         lock.withLock { $0.lifecycleState = .idle }
         return url
@@ -383,6 +391,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     func cancel() {
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
+                state.drainingChildID = nil
                 state.lifecycleState = .stopping
                 state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
@@ -606,7 +615,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     private func receive(_ samples: [Int16], from childID: UUID) {
         let role = lock.withLock { state -> (isActive: Bool, isPending: Bool, UInt64) in
-            (state.active?.id == childID, state.pending?.id == childID, state.pending?.generation ?? state.generation)
+            (state.active?.id == childID || state.drainingChildID == childID,
+             !state.invalidated && state.pending?.id == childID,
+             state.pending?.generation ?? state.generation)
         }
         if role.isActive {
             onRawPCMSamplesStorage?(samples)
