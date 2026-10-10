@@ -380,7 +380,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
                     kAudioSubTapDriftCompensationKey: true,
                 ],
             ],
-            kAudioAggregateDeviceTapAutoStartKey: true,
+            // Start explicitly via AudioDeviceStart, even while the mix is silent.
+            // Tap autostart waits for a tapped client to produce audio; that
+            // dependency reproduced Zoom's audio-startup hang when we recorded
+            // first (#600). Keep the global tap alive without that startup gate.
+            kAudioAggregateDeviceTapAutoStartKey: false,
         ]
     }
 
