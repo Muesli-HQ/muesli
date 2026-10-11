@@ -189,7 +189,7 @@ private final class IdleShortcutPillView: NSView {
 
 @MainActor
 final class FloatingIndicatorController: NSObject {
-    private let notchIndicator = NotchIndicatorController()
+    private let notchIndicator: NotchIndicatorController
     private var question: ComputerUseQuestionSession?
     private var questionReturnFrame: CGRect?
     private var questionHostingView: NSHostingView<ComputerUseQuestionView>?
@@ -263,7 +263,9 @@ final class FloatingIndicatorController: NSObject {
         case waiting
     }
 
-    init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+    init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         notchIndicator injectedNotch: NotchIndicatorController? = nil) {
+        self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
         self.pointerLocation = pointerLocation
         super.init()
@@ -700,6 +702,14 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .idle {
+            // Activity takes ownership of presentation from background loading.
+            // Late progress/completion must not replace it or reset it to idle.
+            deferredLoadingMessage = nil
+            isShowingLoading = false
+            loadingSpinner?.stopAnimation(nil)
+            loadingSpinner?.isHidden = true
+        }
         if state != .transcribing, let question {
             self.question = nil
             restoreFloatingQuestionSurface()
@@ -940,12 +950,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
-        notchIndicator.hide()
         // The cursor bubble reuses this panel and disables its mouse events.
         // While a run is stoppable, deliberately keep the stationary transcript
         // and Stop control for the entire run. A simultaneous cursor bubble
         // requires a separate panel; switching this one would hide Stop.
-        guard !isComputerUseCancellationAvailable else { return }
+        guard state == .idle, !isComputerUseCancellationAvailable else { return }
+        notchIndicator.hide()
         hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
@@ -1138,7 +1148,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
-        guard !isMeetingRecording else { return }
+        guard state == .idle, !isMeetingRecording else { return }
         if isDragging {
             deferredLoadingMessage = message
             return
@@ -1258,8 +1268,8 @@ final class FloatingIndicatorController: NSObject {
         isShowingLoading = false
         loadingSpinner?.stopAnimation(nil)
         loadingSpinner?.isHidden = true
-        // Only reset to idle if no dictation started during the warmup window
-        if state == .idle || state == .preparing {
+        // Loading does not own an activity that started during warmup.
+        if state == .idle {
             setState(.idle, config: configStore.load())
         }
     }

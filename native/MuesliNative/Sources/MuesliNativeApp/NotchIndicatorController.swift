@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import MuesliCore
+import os
 
 /// A bounded display summary. Full tool responses belong in the Timeline trace.
 struct NotchToolResult: Identifiable, Equatable {
@@ -151,6 +152,18 @@ private final class NotchIndicatorPanel: NSPanel {
 /// Owns only presentation; recording and meeting state remain in the existing controller.
 @MainActor
 final class NotchIndicatorController {
+    #if DEBUG
+    private static let lifecycleLogger = Logger(subsystem: "com.muesli.native", category: "NotchLifecycle")
+    #endif
+
+    /// Local debug metadata only: no transcript, tool response, or application names.
+    private func logPresentation(_ action: String) {
+        #if DEBUG
+        let frame = panel.map { NSStringFromRect($0.frame) } ?? "none"
+        Self.lifecycleLogger.notice("\(action, privacy: .public) active=\(self.visibility.active) visible=\(self.isVisible) appHidden=\(NSApp?.isHidden ?? false) hasContent=\(self.panel?.contentView != nil) frame=\(frame, privacy: .public)")
+        #endif
+    }
+
     private var panel: NSPanel?
     private var geometry: NotchIndicatorGeometry?
     private var title = "Ready"
@@ -252,6 +265,7 @@ final class NotchIndicatorController {
         }
         render()
         panel?.orderFrontRegardless()
+        logPresentation("show")
         scheduleDismissal()
         return true
     }
@@ -270,7 +284,8 @@ final class NotchIndicatorController {
         }
     }
 
-    func hide() {
+    func hide(reason: String = #function) {
+        logPresentation("hide from \(reason)")
         outcome = nil
         requiresReview = false
         instructionPanel?.orderOut(nil)
