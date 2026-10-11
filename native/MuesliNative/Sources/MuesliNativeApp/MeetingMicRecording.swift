@@ -239,8 +239,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var active: Child?
         var pending: Child?
         // Only this former active child may flush accepted buffers during Stop.
-        // Pending/replaced graphs never gain a final-delivery entitlement.
+        // Pending graphs never gain a final-delivery entitlement.
         var drainingChildID: UUID?
+        // Independent of Stop's active child: retirement can overlap teardown.
+        // Handoff back-pressure permits only one retiring graph at a time.
+        var handoffDrainingChild: Child?
         var startingIDs: Set<UUID> = []
         var retiringIDs: Set<UUID> = []
         var deferredRouteHandoff = false
@@ -266,8 +269,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     }
 
     var hasBufferedSampleAdmission: Bool {
-        let recorder = lock.withLock { $0.active?.recorder }
-        return recorder?.hasBufferedSampleAdmission ?? false
+        let recorders = lock.withLock { state in
+            (state.active?.recorder, state.handoffDrainingChild?.recorder)
+        }
+        return (recorders.0?.hasBufferedSampleAdmission ?? false)
+            || (recorders.1?.hasBufferedSampleAdmission ?? false)
     }
 
     init(
@@ -419,6 +425,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
                 state.drainingChildID = nil
+                state.handoffDrainingChild = nil
                 state.lifecycleState = .stopping
                 state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
@@ -645,7 +652,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     private func receive(_ samples: [Int16], from childID: UUID) {
         let role = lock.withLock { state -> (isActive: Bool, isPending: Bool, UInt64) in
-            (state.active?.id == childID || state.drainingChildID == childID,
+            (state.active?.id == childID || state.drainingChildID == childID
+                || state.handoffDrainingChild?.id == childID,
              !state.invalidated && state.pending?.id == childID,
              state.pending?.generation ?? state.generation)
         }
@@ -713,13 +721,19 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                   state.pending?.id == childID,
                   let candidate = state.pending else { return (false, nil) }
             let old = state.active
-            if let old { state.retiringIDs.insert(old.id) }
+            if let old {
+                state.retiringIDs.insert(old.id)
+                state.handoffDrainingChild = old
+            }
             state.active = candidate
             state.pending = nil
             state.lifecycleState = .running
             return (true, old)
         }
         guard transition.completed else { return }
+        // Close admission synchronously, without waiting for native teardown.
+        // Only already-accepted work may drain on the cleanup worker.
+        transition.old?.recorder.invalidateForTeardown()
         onRawPCMSamplesStorage?(firstSamples)
         onHandoffOutcome?(.promoted)
         fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
@@ -798,6 +812,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         graphOperations.enter()
         cleanupQueue.async { [self] in
             let url = child.recorder.stop()
+            lock.withLock { state in
+                if state.handoffDrainingChild?.id == child.id { state.handoffDrainingChild = nil }
+            }
             child.recorder.cancel()
             if let url { try? FileManager.default.removeItem(at: url) }
             lock.withLock { _ = $0.retiringIDs.remove(child.id) }

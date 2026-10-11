@@ -5,6 +5,55 @@ import Testing
 
 @Suite("RouteAwareMeetingMicRecorder", .serialized)
 struct RouteAwareMeetingMicRecorderTests {
+    @Test("handoff drains retired audio until stop returns, including overlapping teardown", arguments: ["running", "paused", "stopped", "cancelled"])
+    func handoffDrainsRetiredTail(ending: String) throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.handoff-tail.lifecycle")
+        let worker = DispatchQueue(label: "test.handoff-tail.worker")
+        let cleanup = DispatchQueue(label: "test.handoff-tail.cleanup")
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: replacement,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        let deliveriesLock = NSLock()
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { samples in deliveriesLock.withLock { delivered.append(contentsOf: samples) } }
+        let enteredStop = DispatchSemaphore(value: 0)
+        let releaseStop = DispatchSemaphore(value: 0)
+        old.onStop = {
+            enteredStop.signal()
+            #expect(releaseStop.wait(timeout: .now() + 10) == .success)
+            old.onRawPCMSamples?([2, 3])
+        }
+        // Even a producer violating its callback contract during cancel must
+        // not inherit the accepted-tail entitlement.
+        old.onCancel = { old.onRawPCMSamples?([99]) }
+        defer { old.onStop = nil; old.onCancel = nil }
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        lifecycle.sync {}
+        worker.sync {}
+        replacement.onRawPCMSamples?([1])
+        lifecycle.sync {}
+        #expect(enteredStop.wait(timeout: .now() + 5) == .success)
+        #expect(old.invalidatedForTeardown)
+        switch ending {
+        case "paused": recorder.pause()
+        case "stopped": recorder.invalidateForTeardown(); _ = recorder.stop()
+        case "cancelled": recorder.cancel()
+        default: break
+        }
+        releaseStop.signal()
+        cleanup.sync {}
+        old.onRawPCMSamples?([98])
+        let expected: [Int16] = ending == "cancelled" ? [1] : [1, 2, 3]
+        #expect(deliveriesLock.withLock { delivered } == expected)
+        if ending == "running" || ending == "paused" { _ = recorder.stop() }
+        recorder.waitForQuiescence()
+    }
+
     @Test("Stop forwards the active child's buffered tail, then rejects late delivery")
     func stopDrainsActiveChildOnly() throws {
         let child = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)

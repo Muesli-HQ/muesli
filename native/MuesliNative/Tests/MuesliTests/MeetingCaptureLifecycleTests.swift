@@ -9,6 +9,52 @@ import os
 struct MeetingCaptureLifecycleTests {
     enum BufferedSource: CaseIterable { case direct, fallbackAfterPrepareFailure, fallbackAfterStartFailure }
 
+    @Test("real buffered handoff tail survives a paused unbuffered replacement and stop", arguments: [false, true])
+    func bufferedHandoffTail(stopBeforeDelivery: Bool) async throws {
+        let producer = BufferedLifetimeRecorder()
+        let adapter = StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming)
+        let replacement = LifetimeMicrophone()
+        let lifecycle = DispatchQueue(label: "test.buffered-handoff.lifecycle")
+        let worker = DispatchQueue(label: "test.buffered-handoff.worker")
+        let cleanup = DispatchQueue(label: "test.buffered-handoff.cleanup")
+        let mic = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: adapter, appScopedRecorder: replacement,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: { _, _ in }
+        )
+        let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        mic.onRawPCMSamples = { samples in
+            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+        }
+        defer { producer.releaseDelivery.signal(); mic.onRawPCMSamples = nil }
+        try await capture.start()
+        try producer.emit(0.25)
+        for await _ in producer.deliveryEntered.stream { break }
+        try producer.emit(0.5)
+        #expect(mic.requestHealthRecovery(.init(reason: "tail regression", requiresNonZeroSamples: false)) == .initiated)
+        try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
+        replacement.onRawPCMSamples?([1])
+        try await MeetingCaptureLifecycle.onDriverQueue { lifecycle.sync {} }
+        #expect(mic.activeRecorderKindForDebug() == .appScoped)
+        #expect(capture.setPaused(true))
+        #expect(mic.hasBufferedSampleAdmission) // Retiring buffered source, not the new unbuffered one.
+        try producer.emit(0.75) // Old graph's admission is already closed.
+        if stopBeforeDelivery {
+            let shutdown = capture.requestStop()
+            producer.releaseDelivery.signal()
+            #expect(!(await shutdown.value).timedOut)
+        } else {
+            producer.releaseDelivery.signal()
+            try await MeetingCaptureLifecycle.onDriverQueue { cleanup.sync {} }
+            #expect(!mic.hasBufferedSampleAdmission)
+            #expect(!(await capture.requestStop().value).timedOut)
+        }
+        #expect(received.withLock { $0 } == [1, 8191, 16383])
+        capture.finishMicrophoneDelivery()
+        #expect(!capture.acceptsMicrophoneSamples)
+    }
+
     @Test("buffered meeting mic preserves pre-pause audio and rejects input throughout pause", arguments: [false, true], BufferedSource.allCases)
     func bufferedPauseTail(stopBeforeDelivery: Bool, source: BufferedSource) async throws {
         let producer = BufferedLifetimeRecorder()
