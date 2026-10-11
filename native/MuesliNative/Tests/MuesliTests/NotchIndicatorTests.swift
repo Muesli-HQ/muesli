@@ -7,6 +7,81 @@ import MuesliCore
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
     @MainActor
+    private func makeNotch() -> NotchIndicatorController {
+        NotchIndicatorController(resolveGeometry: { screen in
+            NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+        })
+    }
+
+    @Test("Cursor feedback must not hide the active computer-use notch")
+    @MainActor
+    func cursorPreservesNotch() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        indicator.setComputerUseCancellationAvailable(true)
+        indicator.showComputerUseTranscript("Open Calendar", config: config)
+        let frame = try #require(notch.screenFrame)
+        indicator.showComputerUseCursor(at: CGPoint(x: 100, y: 100), label: "Calendar")
+        #expect(notch.isVisible)
+        #expect(notch.screenFrame == frame)
+        indicator.hideComputerUseCursor()
+        #expect(notch.isVisible)
+    }
+
+    @Test("Loading callbacks cannot retire an active notch", arguments: [DictationState.preparing, .recording, .transcribing])
+    @MainActor
+    func loadingPreservesNotch(state: DictationState) throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Warming up")
+        indicator.setState(state, config: config)
+        #expect(notch.isVisible)
+        indicator.hideLoading() // Completion from the loading task that preceded this session.
+        #expect(notch.isVisible)
+        var cancellations = 0
+        indicator.onCancelDictation = { cancellations += 1 }
+        indicator.cancelNotchActivity()
+        #expect(cancellations == 1) // Preparing must not have been reset to idle.
+        indicator.showLoading("Late loading progress")
+        #expect(notch.isVisible)
+        indicator.hideLoading()
+        #expect(notch.isVisible)
+        indicator.showComputerUseCursor(at: CGPoint(x: 100, y: 100), label: "Late cursor feedback")
+        #expect(notch.isVisible)
+        indicator.hideComputerUseCursor()
+        #expect(notch.isVisible)
+    }
+
+    @Test("Notch can recreate its content across repeated sessions")
+    @MainActor
+    func repeatedPresentation() throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        for _ in 0..<10 {
+            #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+                paused: false, meeting: false, handsFree: false, active: true, icon: NSImage(), accent: .systemBlue))
+            #expect(notch.isVisible)
+            #expect(notch.screenFrame?.height == 32)
+            notch.hide()
+            #expect(!notch.isVisible)
+        }
+    }
+
+    @MainActor
     @Test("Placement refresh does not extend success dismissal")
     func outcomeDeadline() async throws {
         let screen = try #require(NSScreen.main)
