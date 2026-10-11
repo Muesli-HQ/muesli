@@ -24,6 +24,9 @@ let package = Package(
         .package(url: "https://github.com/TelemetryDeck/SwiftSDK", from: "2.0.0"),
         .package(url: "https://github.com/MimicScribe/dtln-aec-coreml.git", from: "0.4.0-beta"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
+        // Kept test-only: rendering references are advisory evidence produced by
+        // the opt-in visual test runner, not part of the shipping app graph.
+        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing.git", exact: "1.19.6"),
     ],
     targets: [
         .target(
@@ -107,6 +110,18 @@ let package = Package(
             name: "MuesliTests",
             dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+            ]
+        ),
+        .testTarget(
+            name: "MuesliSnapshotTests",
+            dependencies: [
+                "MuesliNativeApp",
+                "MuesliCore",
+                .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+            ],
+            path: "Tests/MuesliSnapshotTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

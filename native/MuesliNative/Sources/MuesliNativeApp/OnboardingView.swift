@@ -190,6 +190,7 @@ struct OnboardingView: View {
                 default: EmptyView()
                 }
             }
+            .accessibilityIdentifier("onboarding.step.\(currentStep)")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider().background(MuesliTheme.surfaceBorder)
@@ -222,6 +223,7 @@ struct OnboardingView: View {
                             RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
                         )
+                        .accessibilityIdentifier("onboarding.back")
                     }
 
                     primaryButton
@@ -372,6 +374,7 @@ struct OnboardingView: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+        .accessibilityIdentifier("onboarding.next")
     }
 
     @ViewBuilder
@@ -388,6 +391,7 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .accessibilityIdentifier("onboarding.skip")
     }
 
     private var shouldShowModelDownloadIndicator: Bool {
