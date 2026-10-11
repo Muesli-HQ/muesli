@@ -8,13 +8,14 @@ reporter="$root/scripts/ui_rendering_report.py"
 output="$root/visual-results"
 trusted_baseline_root="${MUESLI_TRUSTED_BASELINE_ROOT:-}"
 trusted_baseline_revision="${MUESLI_TRUSTED_BASELINE_REVISION:-}"
+trusted_baseline_id="${MUESLI_TRUSTED_BASELINE_ID:-}"
 expected_cases="${MUESLI_UI_EXPECTED_CASES:-}"
 timeout_seconds="${MUESLI_UI_SUITE_TIMEOUT_SECONDS:-1800}"
 
 usage() {
   cat >&2 <<'EOF'
 usage: scripts/run_ui_rendering_tests.sh [--output DIRECTORY] \
-  [--trusted-baseline-root DIRECTORY --trusted-baseline-revision SHA] \
+  [--trusted-baseline-root DIRECTORY --trusted-baseline-revision SHA --trusted-baseline-id ID] \
   [--expected-cases FILE] [--timeout-seconds SECONDS]
 
 The dispatcher must provide an absolute external read-only baseline root, its
@@ -25,12 +26,13 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --output|--trusted-baseline-root|--trusted-baseline-revision|--expected-cases|--timeout-seconds)
+    --output|--trusted-baseline-root|--trusted-baseline-revision|--trusted-baseline-id|--expected-cases|--timeout-seconds)
       [[ $# -ge 2 ]] || { usage; exit 2; }
       case "$1" in
         --output) output="$2" ;;
         --trusted-baseline-root) trusted_baseline_root="$2" ;;
         --trusted-baseline-revision) trusted_baseline_revision="$2" ;;
+        --trusted-baseline-id) trusted_baseline_id="$2" ;;
         --expected-cases) expected_cases="$2" ;;
         --timeout-seconds) timeout_seconds="$2" ;;
       esac
@@ -49,19 +51,17 @@ output="$(cd "$output" && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/muesli-ui-rendering.XXXXXX")"
 active_pid=""
 
-children_of() { pgrep -P "$1" 2>/dev/null || true; }
-terminate_tree() {
-  local pid="$1" signal="$2" child
-  for child in $(children_of "$pid"); do terminate_tree "$child" "$signal"; done
-  kill "-$signal" "$pid" 2>/dev/null || true
-}
 stop_active_tree() {
   [[ -n "$active_pid" ]] || return 0
   kill -0 "$active_pid" 2>/dev/null || return 0
-  terminate_tree "$active_pid" TERM
+  # The Python launcher calls setsid before exec, so the suite PID is also its
+  # process-group ID. Signal the full group to contain forked descendants.
+  kill -TERM -- "-$active_pid" 2>/dev/null || kill -TERM "$active_pid" 2>/dev/null || true
   local deadline=$((SECONDS + 5))
   while kill -0 "$active_pid" 2>/dev/null && [[ "$SECONDS" -lt "$deadline" ]]; do sleep 1; done
-  kill -0 "$active_pid" 2>/dev/null && terminate_tree "$active_pid" KILL
+  if kill -0 "$active_pid" 2>/dev/null; then
+    kill -KILL -- "-$active_pid" 2>/dev/null || kill -KILL "$active_pid" 2>/dev/null || true
+  fi
   wait "$active_pid" 2>/dev/null || true
 }
 cleanup() {
@@ -171,7 +171,7 @@ fi
 renderer_profile="${preflight#OK:}"
 printf '%s\n' "$renderer_profile" > "$scratch/renderer-profile.json"
 
-contract_error="$(ROOT="$root" BASELINE_ROOT="$trusted_baseline_root" BASELINE_REVISION="$trusted_baseline_revision" CASES="$expected_cases" PROFILE="$profile" SCRATCH="$scratch" python3 - <<'PY'
+contract_error="$(ROOT="$root" BASELINE_ROOT="$trusted_baseline_root" BASELINE_REVISION="$trusted_baseline_revision" BASELINE_ID="$trusted_baseline_id" CASES="$expected_cases" PROFILE="$profile" SCRATCH="$scratch" python3 - <<'PY'
 import json
 import os
 import re
@@ -179,12 +179,15 @@ from pathlib import Path
 
 root, baseline, cases = Path(os.environ["ROOT"]).resolve(), Path(os.environ["BASELINE_ROOT"]), Path(os.environ["CASES"])
 revision = os.environ["BASELINE_REVISION"]
+baseline_id = os.environ["BASELINE_ID"]
 if not str(baseline) or not baseline.is_absolute() or not baseline.is_dir() or os.access(baseline, os.W_OK):
     print("trusted baseline root must be an absolute existing read-only directory")
 elif root == baseline.resolve() or root in baseline.resolve().parents:
     print("trusted baseline root must be external to the PR checkout")
 elif not re.fullmatch(r"[0-9a-f]{40}", revision):
     print("trusted baseline revision must be a full lowercase SHA")
+elif not re.fullmatch(r"[A-Za-z0-9._-]+", baseline_id):
+    print("trusted baseline ID must use only letters, numbers, dots, underscores, or hyphens")
 elif not str(cases) or not cases.is_absolute() or not cases.is_file():
     print("expected case contract must be an absolute file supplied by the dispatcher")
 elif root == cases.resolve() or root in cases.resolve().parents:
@@ -198,7 +201,9 @@ else:
         if any(not isinstance(ids, list) or not ids or len(ids) != len(set(ids)) or any(not isinstance(case, str) or not case for case in ids) for ids in suites.values()):
             raise ValueError("expected case contract has invalid case IDs")
         profile = json.loads(Path(os.environ["PROFILE"]).read_text(encoding="utf-8"))
-        provenance = {"root": str(baseline.resolve()), "revision": revision, "baseline_id": profile["baseline_id"]}
+        if profile["baseline_id"] != baseline_id:
+            raise ValueError("trusted baseline ID does not match the verified renderer profile")
+        provenance = {"root": str(baseline.resolve()), "revision": revision, "baseline_id": baseline_id}
         Path(os.environ["SCRATCH"], "baseline-provenance.json").write_text(json.dumps(provenance, sort_keys=True), encoding="utf-8")
         print("")
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
@@ -226,7 +231,7 @@ run_suite() {
   local suite="$1" default_command="$2" command_variable="MUESLI_UI_${3}_COMMAND"
   local command="${!command_variable:-$default_command}" result="$output/raw/$suite.json" log="$output/$suite.log" code=0 timed_out=false
   export MUESLI_VISUAL_TESTS=1 MUESLI_VISUAL_FIXTURE_DIR="$root/native/VisualTesting/Fixtures"
-  export MUESLI_VISUAL_BASELINE_ROOT="$trusted_baseline_root" MUESLI_VISUAL_BASELINE_DIR="$trusted_baseline_root/$(PROFILE="$profile" python3 -c 'import json, os; print(json.load(open(os.environ["PROFILE"]))["baseline_id"])')/$suite"
+  export MUESLI_VISUAL_BASELINE_ROOT="$trusted_baseline_root" MUESLI_VISUAL_BASELINE_DIR="$trusted_baseline_root/$trusted_baseline_id/$suite"
   export MUESLI_VISUAL_BASELINE_REVISION="$trusted_baseline_revision" MUESLI_VISUAL_BASELINE_PROVENANCE_JSON="$baseline_provenance"
   export MUESLI_VISUAL_RENDERER_PROFILE_JSON="$renderer_profile" MUESLI_VISUAL_RENDERER_PROFILE="$renderer_profile" MUESLI_VISUAL_EXPECTED_CASES_FILE="$expected_cases"
   export MUESLI_VISUAL_EXPECTED_CASES_JSON="$(SUITE="$suite" CASES="$expected_cases" python3 -c 'import json, os; print(json.dumps(json.load(open(os.environ["CASES"]))["suites"][os.environ["SUITE"]], separators=(",", ":")))')"
@@ -235,7 +240,8 @@ run_suite() {
   export MUESLI_VISUAL_SCENARIO_ID="${MUESLI_VISUAL_SCENARIO_ID:-recording-indicator-picker-dark}" MUESLI_VISUAL_WINDOW_ID="${MUESLI_VISUAL_WINDOW_ID:-window.visual-test}"
   mkdir -p "$MUESLI_VISUAL_DATA_DIR" "$MUESLI_VISUAL_ARTIFACT_DIR"
   echo "Running $suite UI rendering suite from $root (timeout ${timeout_seconds}s)"
-  bash -c 'cd "$1" && eval "$2"' bash "$root" "$command" >"$log" 2>&1 &
+  python3 -c 'import os, sys; os.setsid(); os.chdir(sys.argv[1]); os.execvp("bash", ["bash", "-c", sys.argv[2]])' \
+    "$root" "$command" >"$log" 2>&1 &
   active_pid="$!"
   local deadline=$((SECONDS + timeout_seconds))
   while kill -0 "$active_pid" 2>/dev/null; do
@@ -256,7 +262,7 @@ run_suite() {
 run_suite snapshot 'swift test --package-path native/MuesliNative --scratch-path "$MUESLI_SWIFTPM_SCRATCH_PATH" --filter MuesliSnapshotTests' SNAPSHOT
 run_suite e2e 'cd native/MuesliXcode && xcodegen generate && xcodebuild test -project MuesliXcode.xcodeproj -scheme MuesliVisualTests -destination "platform=macOS" -derivedDataPath "$MUESLI_XCODEBUILD_DERIVED_DATA"' E2E
 
-report_contract=(--expected-renderer-profile "$scratch/renderer-profile.json" --expected-cases "$expected_cases" --trusted-baseline-root "$trusted_baseline_root" --trusted-baseline-revision "$trusted_baseline_revision")
+report_contract=(--expected-renderer-profile "$scratch/renderer-profile.json" --expected-cases "$expected_cases" --trusted-baseline-root "$trusted_baseline_root" --trusted-baseline-revision "$trusted_baseline_revision" --trusted-baseline-id "$trusted_baseline_id")
 if ! write_report "${report_contract[@]}"; then exit 1; fi
 outcome="$(SUMMARY="$output/summary.json" python3 -c 'import json, os; print(json.load(open(os.environ["SUMMARY"], encoding="utf-8"))["outcome"])')"
 [[ "$outcome" == advisory ]] || { echo "UI rendering harness did not complete successfully: $outcome" >&2; exit 1; }

@@ -70,6 +70,7 @@ On a verified disposable macOS host, the credential-free entry point is:
 scripts/run_ui_rendering_tests.sh --output visual-results \
   --trusted-baseline-root /Volumes/vorflux-ui-baselines/muesli \
   --trusted-baseline-revision <40-lowercase-hex-sha> \
+  --trusted-baseline-id <verified-renderer-profile> \
   --expected-cases /Volumes/vorflux-ui-contracts/muesli-cases.json
 ```
 
@@ -155,6 +156,7 @@ python3 scripts/ui_rendering_report.py \
   --expected-cases /trusted/muesli-cases.json \
   --trusted-baseline-root /trusted/muesli-baselines \
   --trusted-baseline-revision <40-lowercase-hex-sha> \
+  --trusted-baseline-id <verified-renderer-profile> \
   --output visual-results
 ```
 

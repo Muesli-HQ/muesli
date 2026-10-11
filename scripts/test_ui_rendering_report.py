@@ -29,11 +29,14 @@ def case(case_id, status="changed", artifacts=None):
         artifacts = {"actual": f"cases/{case_id}/actual.png"}
         if status in {"matched", "changed"}:
             artifacts["expected"] = f"cases/{case_id}/expected.png"
+        if status == "changed":
+            artifacts["diff"] = f"cases/{case_id}/diff.png"
     return {"id": case_id, "status": status, "artifacts": artifacts}
 
 
 class UIRenderingReportTests(unittest.TestCase):
-    def report(self, documents, expected_profile=None, expected_cases=None, baseline_root=None, baseline_revision=None):
+    def report(self, documents, expected_profile=None, expected_cases=None, baseline_root=None,
+               baseline_revision=None, baseline_id=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -59,7 +62,9 @@ class UIRenderingReportTests(unittest.TestCase):
             path.write_text(json.dumps(expected_cases))
             command += ["--expected-cases", str(path)]
         if baseline_root:
-            command += ["--trusted-baseline-root", str(baseline_root), "--trusted-baseline-revision", baseline_revision]
+            command += ["--trusted-baseline-root", str(baseline_root),
+                        "--trusted-baseline-revision", baseline_revision,
+                        "--trusted-baseline-id", baseline_id]
         process = subprocess.run(command, text=True, capture_output=True, check=False)
         return process, output
 
@@ -90,7 +95,9 @@ class UIRenderingReportTests(unittest.TestCase):
         self.assertIn("renderer_profile is incomplete", process.stderr)
 
     def test_expected_artifact_must_exist(self):
-        document = completed("snapshot", [case("a", "changed", {"actual": "cases/a/actual.png", "expected": "cases/a/expected.png"})])
+        document = completed("snapshot", [case("a", "changed", {
+            "actual": "cases/a/actual.png", "expected": "cases/a/expected.png", "diff": "cases/a/diff.png",
+        })])
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -115,9 +122,33 @@ class UIRenderingReportTests(unittest.TestCase):
             for document in documents:
                 document["baseline_provenance"] = {**PROVENANCE, "root": str(trusted.resolve())}
             process, _ = self.report(documents, expected_profile=PROFILE, expected_cases=contract,
-                                     baseline_root=trusted, baseline_revision="a" * 40)
+                                     baseline_root=trusted, baseline_revision="a" * 40,
+                                     baseline_id="test-profile")
         self.assertEqual(process.returncode, 2)
         self.assertIn("expected_cases does not match", process.stderr)
+
+    def test_changed_case_requires_complete_evidence(self):
+        incomplete = case("a", "changed", {
+            "actual": "cases/a/actual.png", "expected": "cases/a/expected.png",
+        })
+        process, _ = self.report([
+            completed("snapshot", [incomplete]),
+            completed("e2e", [case("b", "missing_baseline")]),
+        ])
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("needs exactly", process.stderr)
+
+    def test_trusted_baseline_id_must_match(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted = Path(temporary) / "trusted"
+            trusted.mkdir()
+            documents = [completed("snapshot", [case("a")]), completed("e2e", [case("b")])]
+            for document in documents:
+                document["baseline_provenance"] = {**PROVENANCE, "root": str(trusted.resolve())}
+            process, _ = self.report(documents, baseline_root=trusted, baseline_revision="a" * 40,
+                                     baseline_id="different-profile")
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("baseline_provenance does not match", process.stderr)
 
     def test_harness_error_is_reported_not_advisory(self):
         error = {"schema_version": 1, "suite": "snapshot", "status": "harness_error", "renderer_profile": {},

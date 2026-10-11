@@ -166,8 +166,16 @@ def validate_result(document, source, artifact_root, expected_profile=None, expe
                                 for name, value in sorted(artifacts.items())}
         for name, relative_path in normalized_artifacts.items():
             existing_artifact(artifact_root, relative_path, f"{source} cases[{index}].artifacts.{name}")
-        if status in {"matched", "changed"} and "expected" not in normalized_artifacts:
-            raise ValidationError(f"{source} cases[{index}] needs an expected artifact for {status}")
+        required_artifacts = {
+            "matched": {"actual", "expected"},
+            "changed": {"actual", "expected", "diff"},
+            "missing_baseline": {"actual"},
+            "incompatible_environment": {"actual"},
+        }[status]
+        if set(normalized_artifacts) != required_artifacts:
+            raise ValidationError(
+                f"{source} cases[{index}] needs exactly {sorted(required_artifacts)} artifacts for {status}"
+            )
         identifiers.add(case_id)
         cases.append({"id": case_id, "status": status, "artifacts": normalized_artifacts})
     if not cases or identifiers != set(declared_cases):
@@ -249,18 +257,26 @@ def main(argv=None):
     parser.add_argument("--expected-cases", help="trusted expected-case contract JSON")
     parser.add_argument("--trusted-baseline-root", help="external read-only trusted baseline root")
     parser.add_argument("--trusted-baseline-revision", help="pinned trusted baseline revision")
+    parser.add_argument("--trusted-baseline-id", help="trusted renderer baseline profile ID")
     args = parser.parse_args(argv)
     try:
         output = Path(args.output).resolve()
         output.mkdir(parents=True, exist_ok=True)
-        if bool(args.trusted_baseline_root) != bool(args.trusted_baseline_revision):
-            raise ValidationError("trusted baseline root and revision must be provided together")
+        trusted_values = (args.trusted_baseline_root, args.trusted_baseline_revision, args.trusted_baseline_id)
+        if any(trusted_values) and not all(trusted_values):
+            raise ValidationError("trusted baseline root, revision, and ID must be provided together")
         expected_provenance = None
         if args.trusted_baseline_root:
             root = absolute_directory(args.trusted_baseline_root, "trusted baseline root")
             if not SHA.fullmatch(args.trusted_baseline_revision):
                 raise ValidationError("trusted baseline revision must be a full lowercase SHA")
-            expected_provenance = {"root": str(root), "revision": args.trusted_baseline_revision, "baseline_id": None}
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", args.trusted_baseline_id):
+                raise ValidationError("trusted baseline ID is invalid")
+            expected_provenance = {
+                "root": str(root),
+                "revision": args.trusted_baseline_revision,
+                "baseline_id": args.trusted_baseline_id,
+            }
         expected_profile = strict_json(args.expected_renderer_profile) if args.expected_renderer_profile else None
         if expected_profile is not None:
             expected_profile = validate_profile(expected_profile, "expected renderer profile")
@@ -269,12 +285,9 @@ def main(argv=None):
         for path in args.input:
             raw = strict_json(path)
             suite = raw.get("suite") if isinstance(raw, dict) else None
-            provenance = expected_provenance
-            if provenance is not None and isinstance(raw, dict) and isinstance(raw.get("baseline_provenance"), dict):
-                provenance = {**provenance, "baseline_id": raw["baseline_provenance"].get("baseline_id")}
             results.append(validate_result(raw, path, output, expected_profile,
                                            expected_cases.get(suite) if expected_cases and suite in SUITES else None,
-                                           provenance))
+                                           expected_provenance))
         summary = build_summary(results)
         atomic_write(output / "summary.json", json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n")
         atomic_write(output / "index.html", render_html(summary))

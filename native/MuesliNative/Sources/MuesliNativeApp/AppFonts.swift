@@ -18,6 +18,7 @@ enum AppFonts {
             .appendingPathComponent("assets/fonts", isDirectory: true)
         let locations = [
             Bundle.main.resourceURL?.appendingPathComponent("fonts", isDirectory: true),
+            Bundle.main.resourceURL,
             workingFonts,
         ].compactMap { $0 }
         let urls = locations.flatMap { directory -> [URL] in
