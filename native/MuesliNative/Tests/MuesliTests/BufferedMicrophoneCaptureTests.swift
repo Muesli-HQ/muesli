@@ -12,7 +12,7 @@ struct BufferedMicrophoneCaptureTests {
         input.frameLength = 32
         let queue = DispatchQueue(label: "buffer-copy-test")
         var observed: [[Float]] = []
-        let capture = try BufferedMicrophoneCapture(format: format, queue: queue) { buffer in
+        let capture = try BufferedMicrophoneCapture(format: format, queue: queue) { buffer, _ in
             for part in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
                 let floats = part.mData!.assumingMemoryBound(to: Float.self)
                 observed.append(Array(UnsafeBufferPointer(start: floats, count: Int(part.mDataByteSize) / 4)))
@@ -44,7 +44,7 @@ struct BufferedMicrophoneCaptureTests {
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         var deliveries = 0
-        let capture = try BufferedMicrophoneCapture(format: format, queue: queue, capacity: 2) { _ in
+        let capture = try BufferedMicrophoneCapture(format: format, queue: queue, capacity: 2) { _, _ in
             deliveries += 1
             if deliveries == 1 {
                 entered.signal()
@@ -70,7 +70,7 @@ struct BufferedMicrophoneCaptureTests {
     func invalidFormat() throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
         let queue = DispatchQueue(label: "bad-buffer-test")
-        let capture = try BufferedMicrophoneCapture(format: format, queue: queue, maximumFrames: 8) { _ in
+        let capture = try BufferedMicrophoneCapture(format: format, queue: queue, maximumFrames: 8) { _, _ in
             Issue.record("An oversized buffer reached the consumer")
         }
         let input = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16))

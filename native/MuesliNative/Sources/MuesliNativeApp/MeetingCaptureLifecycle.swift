@@ -58,11 +58,22 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     /// buffers retain delivery eligibility while paused and during stop.
     /// Already accepted mic buffers can outlive native quiescence; the session
     /// closes this window at its processing-queue barrier, or immediately on discard.
-    var acceptsMicrophoneSamples: Bool {
-        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
+    func acceptsMicrophoneSamples(_ audio: MicrophoneCaptureAudio? = nil) -> Bool {
         return state.withLock {
             !$0.microphoneDeliveryClosed
-                && ($0.phase.acceptsSamples || ($0.phase == .paused && acceptsPausedTail) || $0.drainsMicrophoneOnStop)
+                && (audio?.admitted == true || $0.phase.acceptsSamples || $0.drainsMicrophoneOnStop)
+        }
+    }
+
+    /// Shared by the session's AEC/chunk pipeline and capture-to-file tests.
+    /// Check the packet receipt on the destination queue, so pause/stop cannot
+    /// erase accepted input and discard still wins against queued delivery.
+    func enqueueMicrophoneSamples(_ audio: MicrophoneCaptureAudio, on queue: DispatchQueue,
+                                  consume: @escaping () -> Void) {
+        guard !audio.samples.isEmpty else { return }
+        queue.async { [weak self] in
+            guard self?.acceptsMicrophoneSamples(audio) == true else { return }
+            consume()
         }
     }
 
@@ -167,10 +178,9 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
 
     @discardableResult
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
-        let acceptsPausedTail = microphone.hasBufferedSampleAdmission
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
-            state.drainsMicrophoneOnStop = state.phase.acceptsSamples || (state.phase == .paused && acceptsPausedTail)
+            state.drainsMicrophoneOnStop = state.phase.acceptsSamples
             state.phase = .stopping
             let micStart = state.microphoneOperation
             let systemStart = state.systemOperation

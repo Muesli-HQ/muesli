@@ -1170,11 +1170,12 @@ final class MeetingSession {
         }
     }
 
-    private func enqueueRealtimeMicSamples(_ rawSamples: [Int16]) {
+    private func enqueueRealtimeMicSamples(_ audio: MicrophoneCaptureAudio) {
+        let rawSamples = audio.samples
         guard !rawSamples.isEmpty else { return }
 
-        chunkRotationQueue.async { [weak self] in
-            guard let self, self.captureLifecycle.acceptsMicrophoneSamples else { return }
+        captureLifecycle.enqueueMicrophoneSamples(audio, on: chunkRotationQueue) { [weak self] in
+            guard let self else { return }
 
             if self.capturePhase.acceptsSamples {
                 let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)

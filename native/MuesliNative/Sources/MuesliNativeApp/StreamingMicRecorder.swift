@@ -65,7 +65,8 @@ struct StreamingMicRecorderRunState: Equatable {
     }
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
+    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var shouldAdmitSamples: (() -> Bool)?
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
@@ -315,6 +316,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             throw Self.runtimeError(code: 11, message: "Invalid microphone sample rate")
         }
         let maximumFrames = AVAudioFrameCount(max(16_384, ceil(hwFormat.sampleRate / 4)))
+        let timeline = MicrophoneCaptureTimeline()
         let deliver: (AVAudioPCMBuffer) -> Void = { [weak self] monoBuffer in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
@@ -363,6 +365,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             }
 
             self.onPCMSamples?(int16Samples)
+            timeline.take(int16Samples) { self.onCapturedAudio?($0) }
 
             // Forward Float samples for VAD (in 4096-sample chunks)
             let floats = Array(UnsafeBufferPointer(start: floatData, count: frameCount))
@@ -384,12 +387,16 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let capture = try BufferedMicrophoneCapture(
             format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
             shouldAdmitSamples: shouldAdmitSamples ?? { true }
-        ) { convert($0) }
+        ) { buffer, start in
+            timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate, start: start)
+            convert(buffer)
+        }
         finishBufferedConversion = { convert(nil) }
         capture.setPaused(lock.withLock { $0.isPaused })
         bufferedCapture = capture
-        return { [weak self, capture] buffer, _ in
-            switch capture.offer(buffer) {
+        return { [weak self, capture] buffer, time in
+            let start = time.isHostTimeValid ? MicrophoneCaptureAudio.frame(atHostTime: time.hostTime) : nil
+            switch capture.offer(buffer, startFrame: start) {
             case .accepted, .ignored: break
             case .overflow:
                 self?.reportRecordingFailure(
@@ -689,6 +696,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         engineStorage = nil
         onAudioBuffer = nil
         onPCMSamples = nil
+        onCapturedAudio = nil
         onRecordingFailed = nil
 
         let state = lock.withLock { state -> FileState in

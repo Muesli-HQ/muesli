@@ -38,7 +38,7 @@ enum MeetingMicRecoveryRequestResult: Equatable {
 
 protocol MeetingMicRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
-    var onRawPCMSamples: (([Int16]) -> Void)? { get set }
+    var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)? { get set }
     var onRecordingFailed: ((Error) -> Void)? { get set }
     /// Fired when a route handoff settles: a candidate promoted to active, or
     /// failed/timed out. Recorders without a handoff primitive never fire it.
@@ -89,7 +89,7 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
         get { recorder.preferredInputDeviceID }
         set { recorder.preferredInputDeviceID = newValue }
     }
-    var onRawPCMSamples: (([Int16]) -> Void)?
+    var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)?
     var onRecordingFailed: ((Error) -> Void)? {
         get { recorder.onRecordingFailed }
         set { recorder.onRecordingFailed = newValue }
@@ -154,15 +154,21 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
     }
 
     private func wireCallbacks() {
+        if let producer = recorder as? MicrophoneCaptureReporting {
+            producer.onCapturedAudio = { [weak self] audio in self?.onRawPCMSamples?(audio) }
+            return
+        }
+        // Legacy/test producers have no admission receipt. They never receive
+        // permission to deliver while paused just because another child does.
         recorder.onAudioBuffer = { [weak self] samples in
             guard let self else { return }
-            // Buffered producers enforce pause at admission. Rechecking here
-            // would throw away pre-pause buffers delayed by conversion/file I/O.
-            guard self.hasBufferedSampleAdmission || !self.lock.withLock({ $0 }) else { return }
+            guard !self.lock.withLock({ $0 }) else { return }
             let int16Samples = samples.map { sample -> Int16 in
                 Int16(max(-1.0, min(1.0, sample)) * 32767)
             }
-            self.onRawPCMSamples?(int16Samples)
+            self.onRawPCMSamples?(MicrophoneCaptureAudio(samples: int16Samples,
+                startFrame: MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(samples.count),
+                admitted: false))
         }
     }
 
@@ -206,7 +212,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             }
         }
     }
-    var onRawPCMSamples: (([Int16]) -> Void)? {
+    var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)? {
         get { lock.withLock { $0.onRawPCMSamplesStorage } }
         set { lock.withLock { $0.onRawPCMSamplesStorage = newValue } }
     }
@@ -228,6 +234,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private let handoffWorkerQueue: DispatchQueue
     private let cleanupQueue: DispatchQueue
     private let graphOperations = DispatchGroup()
+    private let delivery = MeetingMicrophoneDelivery()
     private let handoffTimeout: TimeInterval
     private let scheduleHandoffTimeout: HandoffTimeoutScheduler
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -238,6 +245,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var invalidated = false
         var active: Child?
         var pending: Child?
+        var pendingAudio: [MicrophoneCaptureAudio] = []
+        var pendingAudioCount = 0
+        var pendingAudioOverflow = false
         // Only this former active child may flush accepted buffers during Stop.
         // Pending graphs never gain a final-delivery entitlement.
         var drainingChildID: UUID?
@@ -250,7 +260,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var pendingSignalRequirement: CandidateSignalRequirement = .callback
         var generation: UInt64 = 0
         var shouldRecoverOnResume = false
-        var onRawPCMSamplesStorage: (([Int16]) -> Void)?
+        var onRawPCMSamplesStorage: ((MicrophoneCaptureAudio) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
         var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
         var sampleAdmissionCheck: (() -> Bool)?
@@ -261,7 +271,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         set { lock.withLock { $0.preferredInputDeviceIDStorage = newValue } }
     }
     private var lifecycleState: LifecycleState { lock.withLock { $0.lifecycleState } }
-    private var onRawPCMSamplesStorage: (([Int16]) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
+    private var onRawPCMSamplesStorage: ((MicrophoneCaptureAudio) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
     private var onRecordingFailedStorage: ((Error) -> Void)? { lock.withLock { $0.onRecordingFailedStorage } }
 
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
@@ -269,11 +279,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     }
 
     var hasBufferedSampleAdmission: Bool {
-        let recorders = lock.withLock { state in
-            (state.active?.recorder, state.handoffDrainingChild?.recorder)
-        }
-        return (recorders.0?.hasBufferedSampleAdmission ?? false)
-            || (recorders.1?.hasBufferedSampleAdmission ?? false)
+        let recorder = lock.withLock { $0.active?.recorder }
+        return recorder?.hasBufferedSampleAdmission ?? false
     }
 
     init(
@@ -305,6 +312,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         self.handoffTimeout = handoffTimeout
         self.scheduleHandoffTimeout = handoffTimeoutScheduler ?? { delay, workItem in
             lifecycleQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+        delivery.deliver = { [weak self] audio in self?.onRawPCMSamplesStorage?(audio) }
+        delivery.onFailure = { [weak self] error in
+            guard let self else { return }
+            if let id = self.lock.withLock({ $0.active?.id }) { self.receive(error, from: id) }
         }
     }
 
@@ -361,6 +373,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.generation &+= 1
                 let pending = state.pending
                 state.pending = nil
+                state.pendingAudio.removeAll()
+                state.pendingAudioCount = 0
                 return (state.active?.recorder, pending)
             }
             cancelAsync(result.1)
@@ -396,6 +410,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.drainingChildID = state.active?.id
                 state.active = nil
                 state.pending = nil
+                state.pendingAudio.removeAll()
+                state.pendingAudioCount = 0
                 state.shouldRecoverOnResume = false
                 return result
             }
@@ -422,6 +438,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     }
 
     func cancel() {
+        delivery.cancel()
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
                 state.drainingChildID = nil
@@ -431,6 +448,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 let result = (state.active, state.pending)
                 state.active = nil
                 state.pending = nil
+                state.pendingAudio.removeAll()
+                state.pendingAudioCount = 0
                 state.shouldRecoverOnResume = false
                 return result
             }
@@ -515,6 +534,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         cancelAsync(previous)
         let child = makeChild(deviceID: desired, generation: lock.withLock { $0.generation })
+        delivery.activate(child.id)
         lock.withLock { $0.active = child }
         return child
     }
@@ -523,6 +543,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let stalePending = lock.withLock { state -> Child? in
             let pending = state.pending
             state.pending = nil
+            state.pendingAudio.removeAll()
+            state.pendingAudioCount = 0
             return pending
         }
         cancelAsync(stalePending)
@@ -561,6 +583,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let candidate = makeChild(deviceID: deviceID, generation: generation, kind: candidateKind)
         lock.withLock {
             $0.pending = candidate
+            $0.pendingAudio.removeAll()
+            $0.pendingAudioCount = 0
+            $0.pendingAudioOverflow = false
             $0.startingIDs.insert(candidate.id)
         }
         graphOperations.enter()
@@ -650,18 +675,36 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         return child
     }
 
-    private func receive(_ samples: [Int16], from childID: UUID) {
-        let role = lock.withLock { state -> (isActive: Bool, isPending: Bool, UInt64) in
-            (state.active?.id == childID || state.drainingChildID == childID
-                || state.handoffDrainingChild?.id == childID,
-             !state.invalidated && state.pending?.id == childID,
-             state.pending?.generation ?? state.generation)
+    private func receive(_ audio: MicrophoneCaptureAudio, from childID: UUID) {
+        let role = lock.withLock { state -> (active: Bool, promote: Bool, overflow: Bool, generation: UInt64) in
+            if state.active?.id == childID || state.drainingChildID == childID || state.handoffDrainingChild?.id == childID {
+                return (true, false, false, state.generation)
+            }
+            guard !state.invalidated, state.pending?.id == childID,
+                  !state.pendingAudioOverflow, !audio.samples.isEmpty else {
+                return (false, false, false, state.generation)
+            }
+            if state.pendingAudio.isEmpty, state.pendingSignalRequirement == .nonZeroSamples,
+               !audio.samples.contains(where: { $0 != 0 }) { return (false, false, false, state.generation) }
+            guard audio.samples.count <= 5 * 16_000 - state.pendingAudioCount else {
+                state.pendingAudioOverflow = true
+                return (false, false, true, state.generation)
+            }
+            let first = state.pendingAudio.isEmpty
+            state.pendingAudio.append(audio)
+            state.pendingAudioCount += audio.samples.count
+            return (false, first, false, state.generation)
         }
-        if role.isActive {
-            onRawPCMSamplesStorage?(samples)
-        } else if role.isPending {
+        if role.active {
+            delivery.receive(audio, from: childID)
+        } else if role.promote || role.overflow {
             lifecycleQueue.async { [weak self] in
-                self?.completePendingHandoff(childID: childID, generation: role.2, firstSamples: samples)
+                if role.overflow {
+                    self?.failPendingHandoff(candidateID: childID, generation: role.generation,
+                        error: NSError(domain: "MeetingMicrophoneDelivery", code: 1))
+                } else {
+                    self?.completePendingHandoff(childID: childID, generation: role.generation)
+                }
             }
         }
     }
@@ -692,6 +735,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             }
             state.lifecycleState = .failed
             let shouldRecover = state.pending == nil
+            if shouldRecover, !state.retiringIDs.isEmpty || !state.startingIDs.isEmpty {
+                state.deferredRouteHandoff = true
+            }
             if shouldRecover { state.generation &+= 1 }
             return (true, false, state.generation, state.onRecordingFailedStorage, shouldRecover)
         }
@@ -709,18 +755,24 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
     }
 
-    private func completePendingHandoff(childID: UUID, generation: UInt64, firstSamples: [Int16]) {
-        guard !firstSamples.isEmpty else { return }
-        let signalRequirement = lock.withLock { $0.pendingSignalRequirement }
-        if signalRequirement == .nonZeroSamples, !firstSamples.contains(where: { $0 != 0 }) {
+    private func completePendingHandoff(childID: UUID, generation: UInt64) {
+        if lock.withLock({ $0.pending?.id == childID && $0.pendingAudioOverflow }) {
+            failPendingHandoff(candidateID: childID, generation: generation,
+                error: NSError(domain: "MeetingMicrophoneDelivery", code: 1))
             return
         }
         let transition = lock.withLock { state -> (completed: Bool, old: Child?) in
             guard state.generation == generation,
                   state.lifecycleState == .running || state.lifecycleState == .failed,
                   state.pending?.id == childID,
-                  let candidate = state.pending else { return (false, nil) }
+                  let candidate = state.pending, !state.pendingAudio.isEmpty,
+                  !state.pendingAudioOverflow else { return (false, nil) }
             let old = state.active
+            // Enqueue before publishing active: subsequent callbacks cannot
+            // overtake the staged first blocks. This does not wait on delivery.
+            delivery.beginHandoff(from: old?.id, to: candidate.id, audio: state.pendingAudio)
+            state.pendingAudio.removeAll()
+            state.pendingAudioCount = 0
             if let old {
                 state.retiringIDs.insert(old.id)
                 state.handoffDrainingChild = old
@@ -734,7 +786,6 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         // Close admission synchronously, without waiting for native teardown.
         // Only already-accepted work may drain on the cleanup worker.
         transition.old?.recorder.invalidateForTeardown()
-        onRawPCMSamplesStorage?(firstSamples)
         onHandoffOutcome?(.promoted)
         fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
         retireAfterHandoffAsync(transition.old)
@@ -746,6 +797,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                   state.pending?.id == candidateID,
                   let candidate = state.pending else { return nil }
             state.pending = nil
+            state.pendingAudio.removeAll()
+            state.pendingAudioCount = 0
             state.retiringIDs.insert(candidate.id)
             return (candidate, state.lifecycleState == .failed)
         }
@@ -812,6 +865,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         graphOperations.enter()
         cleanupQueue.async { [self] in
             let url = child.recorder.stop()
+            delivery.finishRetiring(child.id)
             lock.withLock { state in
                 if state.handoffDrainingChild?.id == child.id { state.handoffDrainingChild = nil }
             }

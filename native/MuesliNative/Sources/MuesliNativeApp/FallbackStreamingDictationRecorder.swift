@@ -1,7 +1,12 @@
 import CoreAudio
 import Foundation
 
-final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
+    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)? {
+        get { lock.withLock { capturedHandler } }
+        set { lock.withLock { capturedHandler = newValue } }
+    }
+    private var capturedHandler: ((MicrophoneCaptureAudio) -> Void)?
     var shouldAdmitSamples: (() -> Bool)? {
         get { lock.withLock { sampleAdmissionCheck } }
         set {
@@ -216,6 +221,15 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
 
     private func wireCallbacks() {
         let callbackGeneration = lock.withLock { generation }
+        for (slot, child) in [(ActiveRecorder.primary, primary), (.fallback, fallback)] {
+            (child as? MicrophoneCaptureReporting)?.onCapturedAudio = { [weak self] audio in
+                guard let self else { return }
+                let callback = self.lock.withLock {
+                    self.activeRecorder == slot && self.generation == callbackGeneration ? self.capturedHandler : nil
+                }
+                callback?(audio)
+            }
+        }
         primary.onAudioBuffer = { [weak self] samples in
             self?.forwardAudioBuffer(samples, from: .primary, generation: callbackGeneration)
         }

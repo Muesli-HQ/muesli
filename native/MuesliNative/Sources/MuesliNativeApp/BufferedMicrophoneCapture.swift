@@ -22,7 +22,7 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
     private let buffers: [AVAudioPCMBuffer]
     private let state: OSAllocatedUnfairLock<State>
     private let queue: DispatchQueue
-    private let consume: (AVAudioPCMBuffer) -> Void
+    private let consume: (AVAudioPCMBuffer, Int64) -> Void
     private let shouldAdmitSamples: () -> Bool
 
     init(
@@ -31,7 +31,7 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
         capacity: Int = 16,
         maximumFrames: AVAudioFrameCount = 16_384,
         shouldAdmitSamples: @escaping () -> Bool = { true },
-        consume: @escaping (AVAudioPCMBuffer) -> Void
+        consume: @escaping (AVAudioPCMBuffer, Int64) -> Void
     ) throws {
         // Bound storage even for pathological device formats. The normal stereo
         // Float32 pool is 2 MiB; all slots are allocated before engine.start().
@@ -62,8 +62,12 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
     }
 
     @discardableResult
-    func offer(_ input: AVAudioPCMBuffer) -> Admission {
-        state.withLock { state in
+    func offer(_ input: AVAudioPCMBuffer, startFrame: Int64? = nil) -> Admission {
+        // Some drivers omit host time. Estimate once at capture, never on the
+        // delayed worker; hardware timestamps are preferred by both backends.
+        let capturedStart = startFrame ?? (MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())
+            - Int64((Double(input.frameLength) * 16_000 / input.format.sampleRate).rounded()))
+        return state.withLock { state in
             guard state.accepting, !state.paused, input.frameLength > 0,
                   shouldAdmitSamples() else { return .ignored }
             guard let index = state.available.popLast() else {
@@ -99,7 +103,7 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
             // Submission and closing are ordered by this short lock. The worker
             // cannot hold the lock while stalled in a consumer or a disk write.
             queue.async { [self] in
-                consume(buffers[index])
+                consume(buffers[index], capturedStart)
                 self.state.withLock { $0.available.append(index) }
             }
             return .accepted

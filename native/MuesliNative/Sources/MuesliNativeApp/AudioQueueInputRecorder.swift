@@ -3,7 +3,9 @@ import CoreAudio
 import Foundation
 import os
 
-final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
+final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
+    var shouldAdmitSamples: (() -> Bool)?
+    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
@@ -49,6 +51,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var isPaused = false
         var generation: UInt64 = 0
         var invalidated = false
+        var pendingBuffers = 0
+        var overloaded = false
     }
     private let callbackState = OSAllocatedUnfairLock(initialState: CallbackState())
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
@@ -116,6 +120,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             $0.isDraining = false
             $0.generation &+= 1
             $0.isRunning = true
+            $0.overloaded = false
         }
         for buffer in buffers {
             let status = native.enqueue(audioQueue, buffer)
@@ -304,45 +309,51 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         }
     }
 
-    private static let inputCallback: AudioQueueInputCallback = { userData, queue, buffer, _, _, _ in
+    private static let inputCallback: AudioQueueInputCallback = { userData, queue, buffer, time, _, _ in
         guard let userData else { return }
         let recorder = Unmanaged<AudioQueueInputRecorder>.fromOpaque(userData).takeUnretainedValue()
-        recorder.handleInputBuffer(queue: queue, buffer: buffer)
+        recorder.handleInputBuffer(queue: queue, buffer: buffer, time: time.pointee)
     }
 
-    private func handleInputBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
-        let state = callbackState.withLock { $0 }
-        guard state.queue == queue, state.isRunning || state.isDraining else { return }
-        let draining = state.isDraining
-        let generation = state.generation
-
+    private func handleInputBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef, time: AudioTimeStamp) {
         let byteCount = Int(buffer.pointee.mAudioDataByteSize)
-        guard byteCount > 0 else {
-            if !draining {
-                native.enqueue(queue, buffer)
+        let startFrame = time.mFlags.contains(.hostTimeValid)
+            ? MicrophoneCaptureAudio.frame(atHostTime: time.mHostTime)
+            : MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(byteCount / 4)
+        let result = callbackState.withLock { state -> (requeue: Bool, overflow: Bool) in
+            guard state.queue == queue, state.isRunning || state.isDraining else { return (false, false) }
+            let requeue = !state.isDraining && !state.invalidated && !state.overloaded
+            guard byteCount > 0, !state.isPaused, !state.invalidated, !state.overloaded,
+                  shouldAdmitSamples?() ?? true else { return (requeue, false) }
+            guard state.pendingBuffers < 64, byteCount <= 65_536 else {
+                state.overloaded = true
+                return (false, true)
             }
-            return
+            let data = Data(bytes: buffer.pointee.mAudioData, count: byteCount)
+            let generation = state.generation
+            state.pendingBuffers += 1
+            // Queue submission and admission closure share this short lock.
+            // Neither native commands nor arbitrary consumers run under it.
+            processingQueue.async { [weak self] in
+                guard let self else { return }
+                self.processAudioData(data, generation: generation, startFrame: startFrame)
+                self.callbackState.withLock { $0.pendingBuffers -= 1 }
+            }
+            return (requeue, false)
         }
-
-        let audioData = Data(bytes: buffer.pointee.mAudioData, count: byteCount)
-        // While draining, deliver but do not re-enqueue: the ring empties and
-        // the queue stops itself, carrying the final partial buffer (the tail
-        // of the user's last word) into the file first.
-        if !draining {
+        if result.overflow {
+            reportFailure(Self.runtimeError(code: 11, message: "Microphone processing exceeded its buffer budget"))
+        }
+        if result.requeue {
             let enqueueStatus = native.enqueue(queue, buffer)
             if enqueueStatus != noErr {
                 reportFailure(Self.runtimeError(code: 8, message: "AudioQueueEnqueueBuffer failed: \(enqueueStatus)"))
-                return
             }
-        }
-
-        processingQueue.async { [weak self] in
-            self?.processAudioData(audioData, generation: generation)
         }
     }
 
-    private func processAudioData(_ data: Data, generation: UInt64) {
-        guard callbackState.withLock({ $0.generation == generation && !$0.isPaused }) else { return }
+    private func processAudioData(_ data: Data, generation: UInt64, startFrame: Int64) {
+        guard callbackState.withLock({ $0.generation == generation }) else { return }
 
         let sampleCount = data.count / MemoryLayout<Float>.size
         guard sampleCount > 0 else { return }
@@ -376,6 +387,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             state.latestPowerDB = powerDB
         }
         onAudioBuffer?(samples)
+        onCapturedAudio?(MicrophoneCaptureAudio(samples: int16Samples, startFrame: startFrame, admitted: true))
     }
 
     private func cleanupAfterStartFailure() {

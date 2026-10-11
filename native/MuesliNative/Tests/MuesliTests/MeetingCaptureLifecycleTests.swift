@@ -25,7 +25,7 @@ struct MeetingCaptureLifecycleTests {
         let capture = MeetingCaptureLifecycle(microphone: mic, systemAudio: LifetimeSystemAudio())
         let received = OSAllocatedUnfairLock(initialState: [Int16]())
         mic.onRawPCMSamples = { samples in
-            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+            if capture.acceptsMicrophoneSamples(samples) { received.withLock { $0.append(contentsOf: samples.samples) } }
         }
         defer { producer.releaseDelivery.signal(); mic.onRawPCMSamples = nil }
         try await capture.start()
@@ -34,11 +34,12 @@ struct MeetingCaptureLifecycleTests {
         try producer.emit(0.5)
         #expect(mic.requestHealthRecovery(.init(reason: "tail regression", requiresNonZeroSamples: false)) == .initiated)
         try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
-        replacement.onRawPCMSamples?([1])
+        replacement.emit([1], at: 102, admitted: true)
         try await MeetingCaptureLifecycle.onDriverQueue { lifecycle.sync {} }
         #expect(mic.activeRecorderKindForDebug() == .appScoped)
         #expect(capture.setPaused(true))
-        #expect(mic.hasBufferedSampleAdmission) // Retiring buffered source, not the new unbuffered one.
+        #expect(!mic.hasBufferedSampleAdmission) // Old packets carry their own admission proof.
+        replacement.emit([99], at: 103) // Cannot borrow the retired producer's admission.
         try producer.emit(0.75) // Old graph's admission is already closed.
         if stopBeforeDelivery {
             let shutdown = capture.requestStop()
@@ -50,9 +51,9 @@ struct MeetingCaptureLifecycleTests {
             #expect(!mic.hasBufferedSampleAdmission)
             #expect(!(await capture.requestStop().value).timedOut)
         }
-        #expect(received.withLock { $0 } == [1, 8191, 16383])
+        #expect(received.withLock { $0 } == [8191, 16383, 1])
         capture.finishMicrophoneDelivery()
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
     }
 
     @Test("buffered meeting mic preserves pre-pause audio and rejects input throughout pause", arguments: [false, true], BufferedSource.allCases)
@@ -73,7 +74,7 @@ struct MeetingCaptureLifecycleTests {
         let received = OSAllocatedUnfairLock(initialState: [Int16]())
         let delivered = DispatchSemaphore(value: 0)
         mic.onRawPCMSamples = { samples in
-            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+            if capture.acceptsMicrophoneSamples(samples) { received.withLock { $0.append(contentsOf: samples.samples) } }
             delivered.signal()
         }
         defer { producer.releaseDelivery.signal(); producer.releasePause.signal(); mic.onRawPCMSamples = nil }
@@ -118,7 +119,7 @@ struct MeetingCaptureLifecycleTests {
         #expect(received.withLock { $0 } == expected)
         capture.finishMicrophoneDelivery()
         try producer.emit(0.75)
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
     }
 
     @Test("early and repeated stop preserve accepted mic delivery until the session barrier", arguments: [false, true])
@@ -128,9 +129,9 @@ struct MeetingCaptureLifecycleTests {
         if startCapture { try await capture.start() }
         let received = OSAllocatedUnfairLock(initialState: [Int16]())
         mic.onRawPCMSamples = { samples in
-            if capture.acceptsMicrophoneSamples { received.withLock { $0.append(contentsOf: samples) } }
+            if capture.acceptsMicrophoneSamples(samples) { received.withLock { $0.append(contentsOf: samples.samples) } }
         }
-        mic.stopAction = { mic.onRawPCMSamples?([1, 2, 3]) }
+        mic.stopAction = { mic.emit([1, 2, 3]) }
         defer { mic.onRawPCMSamples = nil; mic.stopAction = {} }
         // Same ordering as the controller: beginStoppingCapture, then session.stop.
         let earlyShutdown = capture.requestStop()
@@ -138,12 +139,12 @@ struct MeetingCaptureLifecycleTests {
         #expect(capture.phase == .stopped)
         _ = await capture.requestStop().value
         // Delivery already queued by the mic may run after native quiescence.
-        mic.onRawPCMSamples?([4])
+        mic.emit([4])
         #expect(received.withLock { $0 } == [1, 2, 3, 4])
         capture.finishMicrophoneDelivery()
-        mic.onRawPCMSamples?([5])
+        mic.emit([5])
         _ = await capture.requestStop().value
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
         #expect(received.withLock { $0 } == [1, 2, 3, 4])
         #expect(mic.stopCount == 1)
     }
@@ -155,12 +156,12 @@ struct MeetingCaptureLifecycleTests {
         try await capture.start()
         if discard { capture.finishMicrophoneDelivery() }
         else { #expect(capture.setPaused(true)) }
-        mic.stopAction = { #expect(!capture.acceptsMicrophoneSamples) }
+        mic.stopAction = { #expect(!capture.acceptsMicrophoneSamples()) }
         defer { mic.stopAction = {} }
         _ = await capture.requestStop().value
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
         _ = await capture.requestStop().value
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
     }
 
     @Test("closing session delivery rejects callbacks from a still-retiring driver")
@@ -172,18 +173,18 @@ struct MeetingCaptureLifecycleTests {
         mic.stopAction = {
             entered.continuation.yield(())
             #expect(release.wait(timeout: .now() + 5) == .success)
-            #expect(!capture.acceptsMicrophoneSamples)
+            #expect(!capture.acceptsMicrophoneSamples())
         }
         defer { mic.stopAction = {} }
         try await capture.start()
         let shutdown = capture.requestStop()
         for await _ in entered.stream { break }
-        #expect(capture.acceptsMicrophoneSamples)
+        #expect(capture.acceptsMicrophoneSamples())
         // The session's deadline/discard barrier must not wait for native stop.
         capture.finishMicrophoneDelivery()
         release.signal()
         _ = await shutdown.value
-        #expect(!capture.acceptsMicrophoneSamples)
+        #expect(!capture.acceptsMicrophoneSamples())
     }
 
     enum Stage: CaseIterable { case microphonePrepare, systemStart, microphoneStart }
@@ -307,17 +308,19 @@ struct MeetingCaptureLifecycleTests {
 
 /// Real bounded recorder and meeting adapter, with only native graph startup
 /// replaced. Gates model a delayed worker and delayed driver pause independently.
-private final class BufferedLifetimeRecorder: StreamingDictationRecording, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+private final class BufferedLifetimeRecorder: StreamingDictationRecording, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
     private let recorder = StreamingMicRecorder(directoryName: "meeting-pause-tail-tests")
     private var tap: AVAudioNodeTapBlock?
     private let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
     private var firstDelivery = true // Recorder processing queue only.
+    private var nextFrame: Int64 = 100
     let deliveryEntered = AsyncStream<Void>.makeStream()
     let pauseEntered = AsyncStream<Void>.makeStream()
     let pauseCompleted = AsyncStream<Void>.makeStream()
     let resumeCompleted = AsyncStream<Void>.makeStream()
     let releaseDelivery = DispatchSemaphore(value: 0)
     let releasePause = DispatchSemaphore(value: 0)
+    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
@@ -327,14 +330,14 @@ private final class BufferedLifetimeRecorder: StreamingDictationRecording, Pausa
     }
     func prepare() throws {}
     func start() throws {
-        recorder.onAudioBuffer = { [weak self] samples in
+        recorder.onCapturedAudio = { [weak self] samples in
             guard let self else { return }
             if firstDelivery {
                 firstDelivery = false
                 deliveryEntered.continuation.yield(())
                 #expect(releaseDelivery.wait(timeout: .now() + 5) == .success)
             }
-            onAudioBuffer?(samples)
+            onCapturedAudio?(samples)
         }
         tap = try recorder.testing_startWithTap(format: format)
     }
@@ -342,7 +345,8 @@ private final class BufferedLifetimeRecorder: StreamingDictationRecording, Pausa
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
         buffer.frameLength = 1
         buffer.floatChannelData![0][0] = sample
-        tap?(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000))
+        tap?(buffer, AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(nextFrame) / 16_000)))
+        nextFrame += 1
     }
     func pause() {
         pauseEntered.continuation.yield(())
@@ -375,7 +379,11 @@ private final class FailingLifetimeRecorder: StreamingDictationRecording {
 
 private final class LifetimeMicrophone: MeetingMicRecording {
     var preferredInputDeviceID: AudioObjectID?
-    var onRawPCMSamples: (([Int16]) -> Void)?
+    var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)?
+    func emit(_ samples: [Int16], at frame: Int64? = nil, admitted: Bool = false) {
+        onRawPCMSamples?(MicrophoneCaptureAudio(samples: samples,
+            startFrame: frame ?? MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()), admitted: admitted))
+    }
     var onRecordingFailed: ((Error) -> Void)?
     var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)?
     var prepareAction: () -> Void = {}
