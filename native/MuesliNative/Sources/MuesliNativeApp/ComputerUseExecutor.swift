@@ -520,7 +520,7 @@ enum ComputerUseToolExecutor {
             }
         }
 
-        guard focusedEditableTextTarget(requiredApp: app) != nil else {
+        guard let focusedTarget = focusedEditableTextTarget(requiredApp: app) else {
             let target = textEntryTargetDescription(app: app, toolCall: toolCall)
             return .failed("No focused editable text target\(target). Click an editable note body, title, text field, or text area before using \(mode.toolName).")
         }
@@ -536,7 +536,19 @@ enum ComputerUseToolExecutor {
                 return .failed(error.localizedDescription)
             }
         case .paste:
-            return await pasteText(toolCall.text ?? "", shortcut: pasteShortcut)
+            guard let targetProcessID = processID(of: focusedTarget) else {
+                return .failed("Could not verify the focused text target. Focus the intended editable field and try again.")
+            }
+            return await pasteText(
+                toolCall.text ?? "", shortcut: pasteShortcut,
+                isTargetStillFocused: {
+                    // Keep the validated field identity across the asynchronous
+                    // clipboard snapshot, including when no app was requested.
+                    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetProcessID,
+                          let currentTarget = focusedEditableTextTarget(requiredApp: app) else { return false }
+                    return CFEqual(focusedTarget, currentTarget)
+                }
+            )
         }
         return .executed(mode.completedMessage)
     }
@@ -551,6 +563,7 @@ enum ComputerUseToolExecutor {
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
+        isTargetStillFocused: @escaping @MainActor () -> Bool,
         simulatePasteAction: (@MainActor (PasteShortcut) -> Bool)? = nil
     ) async -> ComputerUseExecutionResult {
         guard !Task.isCancelled else { return .cancelled() }
@@ -558,6 +571,7 @@ enum ComputerUseToolExecutor {
         guard !text.isEmpty else { return .failed("No text to paste.") }
 
         let cancellation = PasteCancellationState()
+        var targetChanged = false
         let didDispatch: Bool = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 var dispatched = false
@@ -567,7 +581,14 @@ enum ComputerUseToolExecutor {
                     shortcut: shortcut,
                     snapshotWorker: snapshotWorker,
                     targetApplicationProvider: targetApplicationProvider,
-                    shouldDispatchPaste: { !cancellation.isCancelled },
+                    shouldDispatchPaste: {
+                        guard !cancellation.isCancelled else { return false }
+                        guard isTargetStillFocused() else {
+                            targetChanged = true
+                            return false
+                        }
+                        return true
+                    },
                     simulatePasteAction: simulatePasteAction,
                     onPasteDispatched: { dispatched = true },
                     onPasteFinished: { _ in continuation.resume(returning: dispatched) }
@@ -578,6 +599,9 @@ enum ComputerUseToolExecutor {
         }
         guard !Task.isCancelled else { return .cancelled() }
         guard didDispatch else {
+            if targetChanged {
+                return .failed("Paste target changed before dispatch. Focus the intended editable field and try again.")
+            }
             return .failed("Paste shortcut could not be dispatched. Check the keyboard layout or configured paste shortcut.")
         }
 

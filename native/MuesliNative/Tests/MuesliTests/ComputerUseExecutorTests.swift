@@ -15,6 +15,7 @@ struct ComputerUseExecutorTests {
             "dictated", shortcut: .automatic, pasteboard: pasteboard,
             snapshotWorker: makeTestClipboardSnapshotWorker(),
             targetApplicationProvider: { nil },
+            isTargetStillFocused: { true },
             simulatePasteAction: { shortcut in
                 attempted = true
                 #expect(shortcut == .automatic)
@@ -36,10 +37,12 @@ struct ComputerUseExecutorTests {
         pasteboard.setString("original", forType: .string)
         let shortcut = PasteShortcut.custom(try #require(PasteKeyChord(keyCode: 9, modifiers: .maskControl)))
         var attempted = false
+        var focusChecks = 0
         let result = await ComputerUseToolExecutor.pasteText(
             "dictated", shortcut: shortcut, pasteboard: pasteboard,
             snapshotWorker: makeTestClipboardSnapshotWorker(),
             targetApplicationProvider: { hasAttribution ? NSRunningApplication.current : nil },
+            isTargetStillFocused: { focusChecks += 1; return true },
             simulatePasteAction: { received in
                 attempted = true
                 #expect(received == shortcut)
@@ -48,6 +51,7 @@ struct ComputerUseExecutorTests {
             }
         )
         #expect(attempted)
+        #expect(focusChecks == 2)
         #expect(result == .executed("Pasted text"))
         #expect(pasteboard.string(forType: .string) == "original")
     }
@@ -61,6 +65,7 @@ struct ComputerUseExecutorTests {
         let result = await ComputerUseToolExecutor.pasteText(
             "", shortcut: .automatic, pasteboard: pasteboard,
             snapshotWorker: makeTestClipboardSnapshotWorker(),
+            isTargetStillFocused: { true },
             simulatePasteAction: { _ in Issue.record("Empty input must not dispatch"); return true }
         )
         #expect(result.status == .failed)
@@ -78,6 +83,7 @@ struct ComputerUseExecutorTests {
             return await ComputerUseToolExecutor.pasteText(
                 "dictated", shortcut: .automatic, pasteboard: pasteboard,
                 snapshotWorker: makeTestClipboardSnapshotWorker(),
+                isTargetStillFocused: { true },
                 simulatePasteAction: { _ in Issue.record("Cancelled input must not dispatch"); return true }
             )
         }
@@ -100,9 +106,11 @@ struct ComputerUseExecutorTests {
             return .init(items: [])
         }
         var dispatches = 0
+        var focusChecks = 0
         let task = Task { @MainActor in
             await ComputerUseToolExecutor.pasteText(
                 "obsolete", shortcut: .automatic, pasteboard: pasteboard, snapshotWorker: worker,
+                isTargetStillFocused: { focusChecks += 1; return false },
                 simulatePasteAction: { _ in dispatches += 1; return true }
             )
         }
@@ -111,6 +119,7 @@ struct ComputerUseExecutorTests {
         gate.signal()
         #expect(await task.value.status == .cancelled)
         #expect(dispatches == 0)
+        #expect(focusChecks == 0) // Cancellation takes precedence over a lost target.
         #expect(pasteboard.string(forType: .string) == "original")
     }
 
@@ -133,11 +142,77 @@ struct ComputerUseExecutorTests {
                     cancel()
                     return nil
                 },
+                isTargetStillFocused: { true },
                 simulatePasteAction: { _ in dispatches += 1; return true }
             )
         }
         cancel = { task.cancel() }
         #expect(await task.value.status == .cancelled)
+        #expect(dispatches == 0)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("target changes during snapshot prevent staging and paste", arguments: ["app", "field"])
+    @MainActor
+    func pasteTargetChangesDuringSnapshot(changed: String) async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let gate = DispatchSemaphore(value: 0)
+        let (started, start) = AsyncStream<Void>.makeStream()
+        let worker = PasteController.ClipboardSnapshotWorker(timeout: 1) { _, _ in
+            start.yield(())
+            start.finish()
+            gate.wait()
+            return .init(items: [])
+        }
+        // Synthetic identities exercise the injected validation gate without
+        // querying the user's actual Accessibility focus or posting keystrokes.
+        var appID = 1
+        var fieldID = 1
+        var dispatches = 0
+        let task = Task { @MainActor in
+            await ComputerUseToolExecutor.pasteText(
+                "obsolete", shortcut: .automatic, pasteboard: pasteboard, snapshotWorker: worker,
+                isTargetStillFocused: { appID == 1 && fieldID == 1 },
+                simulatePasteAction: { _ in dispatches += 1; return true }
+            )
+        }
+        for await _ in started { break }
+        if changed == "app" { appID = 2 } else { fieldID = 2 }
+        gate.signal()
+        let result = await task.value
+        #expect(result.status == .failed)
+        #expect(result.message.contains("Paste target changed"))
+        #expect(dispatches == 0)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("target loss after staging restores original clipboard without pasting")
+    @MainActor
+    func pasteTargetLostBeforeDispatch() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let worker = PasteController.ClipboardSnapshotWorker { _, _ in
+            .init(items: [[(NSPasteboard.PasteboardType.string.rawValue, Data("original".utf8))]])
+        }
+        var targetMatches = true
+        var dispatches = 0
+        var focusChecks = 0
+        let result = await ComputerUseToolExecutor.pasteText(
+            "obsolete", shortcut: .automatic, pasteboard: pasteboard, snapshotWorker: worker,
+            targetApplicationProvider: {
+                #expect(pasteboard.string(forType: .string) == "obsolete")
+                targetMatches = false
+                return nil
+            },
+            isTargetStillFocused: { focusChecks += 1; return targetMatches },
+            simulatePasteAction: { _ in dispatches += 1; return true }
+        )
+        #expect(result.status == .failed)
+        #expect(result.message.contains("Paste target changed"))
+        #expect(focusChecks == 2)
         #expect(dispatches == 0)
         #expect(pasteboard.string(forType: .string) == "original")
     }
@@ -154,6 +229,7 @@ struct ComputerUseExecutorTests {
                 "dictated", shortcut: .automatic, pasteboard: pasteboard,
                 snapshotWorker: makeTestClipboardSnapshotWorker(),
                 targetApplicationProvider: { nil },
+                isTargetStillFocused: { true },
                 simulatePasteAction: { _ in
                     cancelPaste()
                     return true
