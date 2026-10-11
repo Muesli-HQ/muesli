@@ -798,7 +798,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard transition.completed else { return }
         // Close admission synchronously, without waiting for native teardown.
-        // Only already-accepted work may drain on the cleanup worker.
+        // Accepted work and timestamp-qualified native stop tails may drain on
+        // the cleanup worker; delivery clips the old child at the cutover.
         transition.old?.recorder.invalidateForTeardown()
         onHandoffOutcome?(.promoted)
         fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)

@@ -1,11 +1,119 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
+import os
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("native-held handoff tail respects capture, cutover and terminal boundaries",
+          arguments: [false, true], ["running", "beforeNativeStop", "beforeStart", "afterCut", "paused", "resumed", "stopped", "pausedStop", "discarded", "deadline", "untimed", "cancelled"])
+    func nativeHandoffTail(wrapped: Bool, ending: String) async throws {
+        let oldDriver = ContractQueueDriver(), nextDriver = ContractQueueDriver()
+        let oldQueue = AudioQueueInputRecorder(directoryName: "meeting-native-handoff-tests", native: oldDriver.operations)
+        let nextQueue = AudioQueueInputRecorder(directoryName: "meeting-native-handoff-tests", native: nextDriver.operations)
+        let old: StreamingDictationRecording = wrapped
+            ? FallbackStreamingDictationRecorder(primary: oldQueue, fallback: StreamingMicRecorder()) : oldQueue
+        let worker = DispatchQueue(label: "test.native-handoff.worker")
+        let route = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: StreamingMeetingMicRecorderAdapter(recorder: old, kind: .appScopedAudioQueue),
+            appScopedRecorder: StreamingMeetingMicRecorderAdapter(recorder: nextQueue, kind: .appScopedAudioQueue),
+            handoffWorkerQueue: worker, handoffTimeoutScheduler: { _, _ in })
+        let clock = OSAllocatedUnfairLock(initialState: Int64(100))
+        let capture = MeetingCaptureLifecycle(microphone: route, systemAudio: ContractSystemAudio(),
+            microphoneClock: { clock.withLock { $0 } })
+        let writer = try MeetingRecordingWriter()
+        let chunks = try PCMChunkRecorder(directoryName: "meeting-native-handoff-tests")
+        let sink = DispatchQueue(label: "test.native-handoff.sink")
+        var delivered: [MicrophoneCaptureAudio] = [] // Sink queue only.
+        route.onRawPCMSamples = { audio in
+            capture.enqueueMicrophoneSamples(audio, on: sink) {
+                delivered.append(audio)
+                writer.appendMic(audio.samples); chunks.append(audio.samples)
+            }
+        }
+        func emit(_ driver: ContractQueueDriver, _ values: [Int], at frame: Int64, timed: Bool = true) {
+            driver.emit(values.map { Float($0) / 16 },
+                host: AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000), timed: timed)
+        }
+        let retiring = ContractGate()
+        oldDriver.onStop = {
+            retiring.block()
+            // Old PCM is still held by HAL until AFTER invalidation. The last
+            // two samples overlap the replacement and must never reach sinks.
+            switch ending {
+            case "beforeNativeStop": emit(oldDriver, [3, 4, 9, 9], at: 102)
+            case "beforeStart": emit(oldDriver, [9, 9, 1, 2, 3, 4, 9, 9], at: 98)
+            case "afterCut": emit(oldDriver, [9, 9], at: 106)
+            default: emit(oldDriver, [1, 2, 3, 4, 9, 9], at: 100, timed: ending != "untimed")
+            }
+        }
+        route.onHandoffOutcome = { outcome in
+            if ending == "beforeNativeStop", outcome == .promoted {
+                emit(oldDriver, [1, 2], at: 100) // Invalidated, but native stop has not begun.
+            }
+        }
+        defer {
+            retiring.release.signal(); oldDriver.onStop = nil; nextDriver.onStop = nil
+            route.onRawPCMSamples = nil; writer.cancel(); chunks.cancel()
+        }
+        try await capture.start()
+        clock.withLock { $0 = 106 }
+        #expect(route.requestHealthRecovery(.init(reason: "native-tail", requiresNonZeroSamples: false)) == .initiated)
+        try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
+        emit(nextDriver, [5, 6], at: 104)
+        try await retiring.waitUntilEntered() // Promotion and old invalidation have completed.
+        // Replacement waits for old native drain, even if an old prefix arrived.
+        #expect(sink.sync { delivered.allSatisfy { $0.endFrame <= 104 } })
+
+        if ["paused", "pausedStop", "resumed"].contains(ending) { #expect(capture.setPaused(true)) }
+        if ending == "resumed" {
+            clock.withLock { $0 = 108 }
+            #expect(capture.setPaused(false)) // Must not reopen the pre-pause capture interval.
+        }
+        if ending == "discarded" { capture.finishMicrophoneDelivery() }
+        if ending == "cancelled" { route.cancel() }
+        var shutdown: Task<MeetingCaptureShutdown.Result, Never>?
+        if ["stopped", "pausedStop", "deadline"].contains(ending) {
+            // The replacement also has native-held PCM crossing Stop. Its
+            // prefix must survive, without admitting any post-stop samples.
+            clock.withLock { $0 = 108 }
+            nextDriver.onStop = { emit(nextDriver, [7, 8, 9, 9], at: 106) }
+            shutdown = capture.requestStop()
+            if ending == "deadline" { capture.finishMicrophoneDelivery() }
+        }
+        retiring.release.signal()
+        // Do not turn a live-handoff test into a meeting-stop test: wait for the
+        // retired graph and its ordered delivery before requesting final Stop.
+        try await MeetingCaptureLifecycle.onDriverQueue { route.waitForQuiescence() }
+        let result = await (shutdown ?? capture.requestStop()).value
+        #expect(!result.timedOut)
+        if let url = result.microphone { try? FileManager.default.removeItem(at: url) }
+        sink.sync { capture.finishMicrophoneDelivery() }
+        emit(oldDriver, [15], at: 102) // Neither disposed child can regain permission.
+        emit(nextDriver, [15], at: 106)
+        let values: [Int]
+        switch ending {
+        case "running", "beforeNativeStop", "beforeStart": values = Array(1...6)
+        case "stopped": values = Array(1...8)
+        case "discarded", "deadline", "cancelled": values = []
+        default: values = [5, 6] // Previously admitted replacement, no new paused/untimed/old-interval input.
+        }
+        let expected = values.map { Int16(Float($0) / 16 * 32767) }
+        let audio = sink.sync { delivered }
+        #expect(audio.flatMap(\.samples) == expected)
+        for pair in zip(audio, audio.dropFirst()) { #expect(pair.0.endFrame <= pair.1.startFrame) }
+        for url in [writer.stop(), chunks.stop()] {
+            if let url {
+                defer { try? FileManager.default.removeItem(at: url) }
+                let data = try Data(contentsOf: url)
+                let samples = data.dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+                #expect(samples == expected)
+            } else { #expect(expected.isEmpty) }
+        }
+    }
+
     @Test("native shutdown tail keeps only the recording interval in WAV and transcription",
           arguments: [false, true], ["before", "spanning", "after", "paused", "discarded", "resumed", "untimed", "repeat", "deadline"])
     func nativeStopTail(wrapped: Bool, ending: String) async throws {

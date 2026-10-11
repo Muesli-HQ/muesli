@@ -56,9 +56,21 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
             self?.state.withLock { !$0.microphoneDeliveryClosed && $0.phase.acceptsSamples } ?? false
         }
         microphone.setNativeStopDrainRange { [weak self] in
-            self?.state.withLock {
-                !$0.microphoneDeliveryClosed && $0.phase == .stopping ? $0.nativeStopDrainRange : nil
-            } ?? nil
+            guard let self else { return nil }
+            return self.state.withLock { state in
+                guard !state.microphoneDeliveryClosed else { return nil }
+                if state.phase.acceptsSamples {
+                    // A child also stops during live route/health handoff. Its
+                    // native-held PCM still belongs to this capture interval;
+                    // MeetingMicrophoneDelivery applies the old/new cutover.
+                    // Resume changes the lower bound, so it cannot reopen a
+                    // previous interval. Pause admits no new native buffers.
+                    let end = max(state.microphoneIntervalStart, self.microphoneClock())
+                    return state.microphoneIntervalStart..<end
+                }
+                // Stop uses the first request's frozen boundary, never "now".
+                return state.phase == .stopping ? state.nativeStopDrainRange : nil
+            }
         }
     }
 

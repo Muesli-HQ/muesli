@@ -328,10 +328,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             var firstFrame = startFrame
             var frameCount = byteCount / MemoryLayout<Float>.size
             if state.isPaused || state.invalidated || !(shouldAdmitSamples?() ?? true) {
-                // Stop can precede this callback even when its PCM was captured
-                // before Stop. Do not reopen general admission or re-enqueue.
-                // An untimed buffer cannot prove which side of Stop it belongs
-                // to, so keep the conservative rejection for that case.
+                // Native stop (meeting end OR retired route child) can precede
+                // delivery of already-captured PCM. The lifecycle supplies the
+                // allowed capture interval; route delivery additionally clips
+                // retiring audio at its cutover. Do not reopen general admission
+                // or re-enqueue. Untimed buffers cannot prove eligibility.
                 guard time.mFlags.contains(.hostTimeValid), let range = nativeStopDrainRange?() else {
                     return (requeue, false)
                 }
