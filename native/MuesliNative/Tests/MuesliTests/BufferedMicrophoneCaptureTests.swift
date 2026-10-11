@@ -82,6 +82,72 @@ struct BufferedMicrophoneCaptureTests {
 
 @Suite("StreamingMicRecorder buffered capture")
 struct StreamingMicRecorderBufferTests {
+    @Test("fractional hardware-rate batches retain their complete duration at stop", arguments: [48_000.0, 44_100.0], [1, 4096])
+    func fractionalConversionTail(sampleRate: Double, frames: Int) throws {
+        let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let input = try buffer(format, values: Array(repeating: 0.25, count: frames))
+        var floats: [Float] = []
+        var pcm: [Int16] = []
+        recorder.onAudioBuffer = { floats.append(contentsOf: $0) }
+        recorder.onPCMSamples = { pcm.append(contentsOf: $0) }
+        recorder.onRecordingFailed = { Issue.record("Conversion failed: \($0)") }
+        let tap = try recorder.testing_startWithTap(format: format)
+        for index in 0..<12 {
+            tap(input, AVAudioTime(sampleTime: Int64(index * frames), atRate: sampleRate))
+        }
+        let url = try #require(recorder.stop())
+        defer { try? FileManager.default.removeItem(at: url) }
+        let expected = Int((Double(12 * frames) * 16_000 / sampleRate).rounded())
+        #expect(abs(floats.count - expected) <= 1, "Expected ~\(expected), got \(floats.count)")
+        #expect(pcm.count == floats.count)
+        #expect(samples(try Data(contentsOf: url)) == pcm)
+        let countAfterStop = floats.count
+        tap(input, AVAudioTime(sampleTime: 0, atRate: sampleRate))
+        #expect(recorder.stop() == nil)
+        #expect(floats.count == countAfterStop)
+    }
+
+    @Test("conversion survives pause and rotation; reuse and cancel never flush an old stream", arguments: [48_000.0, 44_100.0])
+    func convertedPauseRotateReuse(sampleRate: Double) throws {
+        let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let input = try buffer(format, values: Array(repeating: 0.25, count: 4096))
+        let time = AVAudioTime(sampleTime: 0, atRate: sampleRate)
+        var delivered: [Int16] = []
+        recorder.onPCMSamples = { delivered.append(contentsOf: $0) }
+        let oldTap = try recorder.testing_startWithTap(format: format)
+        oldTap(input, time)
+        recorder.pause()
+        oldTap(input, time) // Must not enter the converter.
+        let first = try #require(recorder.rotateFile())
+        recorder.resume()
+        oldTap(input, time)
+        recorder.pause()
+        let second = try #require(recorder.stop()) // Pre-pause filter tail still belongs to the recording.
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let saved = samples(try Data(contentsOf: first)) + samples(try Data(contentsOf: second))
+        let expected = Int((8192 * 16_000 / sampleRate).rounded())
+        #expect(abs(saved.count - expected) <= 1)
+        #expect(saved == delivered)
+        let beforeReuse = delivered.count
+        _ = try recorder.testing_startWithTap(format: format)
+        oldTap(input, time)
+        #expect(recorder.stop() == nil) // Empty recordings are deliberately discarded.
+        #expect(delivered.count == beforeReuse)
+
+        let tap = try recorder.testing_startWithTap(format: format)
+        tap(input, time)
+        recorder.cancel()
+        let afterCancel = delivered.count
+        tap(input, time)
+        #expect(recorder.stop() == nil)
+        #expect(delivered.count == afterCancel)
+    }
+
     @Test("slow downstream work stays off tap; Stop flushes accepted buffers in order and fixes WAV header")
     func slowConsumerAndStop() throws {
         let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")

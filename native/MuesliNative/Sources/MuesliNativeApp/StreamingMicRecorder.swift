@@ -102,6 +102,9 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private var configurationChangeObserver: (any NSObjectProtocol)?
     private let configurationChangeQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-config-change")
     private let processingQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-processing", qos: .userInitiated)
+    // graphLock owns the closure; invoke only on processingQueue after closing
+    // admission. Cancel discards it, while Stop/graph replacement flush it once.
+    private var finishBufferedConversion: (() -> Void)?
     private let captureLock = OSAllocatedUnfairLock<BufferedMicrophoneCapture?>(initialState: nil)
     private var bufferedCapture: BufferedMicrophoneCapture? {
         get { captureLock.withLock { $0 } }
@@ -217,7 +220,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 bufferedCapture?.close()
                 stopEngineSafely()
                 removeTapIfNeeded()
-                processingQueue.sync {}
+                drainBufferedCapture(finishingConversion: false)
                 removeConfigurationChangeObserverIfNeeded()
                 clearFailureState()
                 let state = lock.withLock { state -> FileState in
@@ -238,8 +241,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             bufferedCapture?.close()
             stopEngineSafely()
             removeTapIfNeeded()
-            processingQueue.sync {}
-            bufferedCapture = nil
+            drainBufferedCapture(finishingConversion: false)
             removeConfigurationChangeObserverIfNeeded()
             clearFailureState()
             let state = lock.withLock { state -> FileState in
@@ -313,46 +315,10 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             throw Self.runtimeError(code: 11, message: "Invalid microphone sample rate")
         }
         let maximumFrames = AVAudioFrameCount(max(16_384, ceil(hwFormat.sampleRate / 4)))
-        let capture = try BufferedMicrophoneCapture(
-            format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
-            shouldAdmitSamples: shouldAdmitSamples ?? { true }
-        ) { [weak self] buffer in
+        let deliver: (AVAudioPCMBuffer) -> Void = { [weak self] monoBuffer in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
-
-            let monoBuffer: AVAudioPCMBuffer
-            if let converter {
-                let frameCapacity = AVAudioFrameCount(
-                    max(1, Double(buffer.frameLength) * Self.sampleRate / buffer.format.sampleRate)
-                )
-                guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
-                    self.reportRecordingFailure(
-                        Self.runtimeError(code: 4, message: "Could not allocate converted microphone buffer"),
-                        recordingID: recordingID
-                    )
-                    return
-                }
-                var error: NSError?
-                var didProvideInput = false
-                let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                    guard !didProvideInput else {
-                        outStatus.pointee = .noDataNow
-                        return nil
-                    }
-                    didProvideInput = true
-                    outStatus.pointee = .haveData
-                    return buffer
-                }
-                converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
-                if let error {
-                    self.reportRecordingFailure(error, recordingID: recordingID)
-                    return
-                }
-                monoBuffer = converted
-            } else {
-                monoBuffer = buffer
-            }
-
+            guard monoBuffer.frameLength > 0 else { return }
             guard let floatData = monoBuffer.floatChannelData?[0] else {
                 self.reportRecordingFailure(
                     Self.runtimeError(code: 5, message: "Microphone buffer did not contain float channel data"),
@@ -402,6 +368,24 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             let floats = Array(UnsafeBufferPointer(start: floatData, count: frameCount))
             self.onAudioBuffer?(floats)
         }
+        let convert: (AVAudioPCMBuffer?) -> Void = { [weak self] input in
+            guard let self, self.isCurrentRecording(recordingID) else { return }
+            guard let converter else {
+                if let input { deliver(input) }
+                return
+            }
+            do {
+                try Self.convert(input, using: converter, deliver: deliver)
+            } catch {
+                self.bufferedCapture?.close()
+                self.reportRecordingFailure(error, recordingID: recordingID)
+            }
+        }
+        let capture = try BufferedMicrophoneCapture(
+            format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
+            shouldAdmitSamples: shouldAdmitSamples ?? { true }
+        ) { convert($0) }
+        finishBufferedConversion = { convert(nil) }
         capture.setPaused(lock.withLock { $0.isPaused })
         bufferedCapture = capture
         return { [weak self, capture] buffer, _ in
@@ -419,6 +403,66 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 )
             }
         }
+    }
+
+    /// A nil input ends this tap's stream. Drain until the converter requests
+    /// more input (live capture) or acknowledges EOS (Stop/route replacement).
+    /// This also keeps pooled input alive until the converter has consumed it.
+    private static func convert(
+        _ input: AVAudioPCMBuffer?, using converter: AVAudioConverter,
+        deliver: (AVAudioPCMBuffer) -> Void
+    ) throws {
+        let capacity = input.map {
+            AVAudioFrameCount(max(1, ceil(Double($0.frameLength) * sampleRate / $0.format.sampleRate)))
+        } ?? bufferSize
+        guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
+            throw runtimeError(code: 4, message: "Could not allocate converted microphone buffer")
+        }
+        var suppliedInput = false
+        while true {
+            output.frameLength = 0
+            var error: NSError?
+            let status = converter.convert(to: output, error: &error) { _, status in
+                guard let input else {
+                    status.pointee = .endOfStream
+                    return nil
+                }
+                guard !suppliedInput else {
+                    status.pointee = .noDataNow
+                    return nil
+                }
+                suppliedInput = true
+                status.pointee = .haveData
+                return input
+            }
+            if let error { throw error }
+            guard status != .error else {
+                throw runtimeError(code: 4, message: "Microphone sample-rate conversion failed")
+            }
+            if output.frameLength > 0 { deliver(output) }
+            switch status {
+            case .endOfStream: return
+            case .inputRanDry:
+                guard input != nil else {
+                    throw runtimeError(code: 4, message: "Microphone converter did not finish its stream")
+                }
+                return
+            case .haveData:
+                guard output.frameLength > 0 else {
+                    throw runtimeError(code: 4, message: "Microphone converter made no progress")
+                }
+            default:
+                throw runtimeError(code: 4, message: "Unexpected microphone converter status")
+            }
+        }
+    }
+
+    private func drainBufferedCapture(finishingConversion: Bool) {
+        processingQueue.sync {
+            if finishingConversion { finishBufferedConversion?() }
+        }
+        finishBufferedConversion = nil
+        bufferedCapture = nil
     }
 
     private func beginRecordingFile() throws -> UUID {
@@ -518,8 +562,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         bufferedCapture?.close()
         stopEngineSafely()
         removeTapIfNeeded()
-        processingQueue.sync {}
-        bufferedCapture = nil
+        drainBufferedCapture(finishingConversion: true)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
 
@@ -537,8 +580,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             bufferedCapture?.close()
             stopEngineSafely()
             removeTapIfNeeded()
-            processingQueue.sync {}
-            bufferedCapture = nil
+            drainBufferedCapture(finishingConversion: true)
             removeConfigurationChangeObserverIfNeeded()
             runState.markConfigurationChangeRestartFailed()
             reportRecordingFailure(error, recordingID: recordingID)
@@ -591,8 +633,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         removeTapIfNeeded()
         // Flush every buffer accepted before Stop, including callback delivery,
         // before invalidating the generation or finalizing the WAV header.
-        processingQueue.sync {}
-        bufferedCapture = nil
+        drainBufferedCapture(finishingConversion: true)
         clearFailureState()
 
         let finalState = lock.withLock { state -> FileState in
@@ -642,8 +683,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         bufferedCapture?.close()
         stopEngineSafely()
         removeTapIfNeeded()
-        processingQueue.sync {}
-        bufferedCapture = nil
+        drainBufferedCapture(finishingConversion: false)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
         engineStorage = nil
