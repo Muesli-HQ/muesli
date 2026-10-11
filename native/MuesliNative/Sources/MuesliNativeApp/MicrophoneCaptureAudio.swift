@@ -25,6 +25,17 @@ struct MicrophoneCaptureAudio: Sendable {
 /// Meeting consumers use this path; dictation keeps its existing Float callback.
 protocol MicrophoneCaptureReporting: BufferedMicrophoneAdmissionControlling {
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)? { get set }
+    /// Installed before start. During meeting shutdown only, identifies the
+    /// captured interval a late native buffer may still deliver. Nil rejects it.
+    var nativeStopDrainRange: (() -> Range<Int64>?)? { get set }
+}
+
+extension MicrophoneCaptureReporting {
+    // Only backends with an explicit native final-buffer drain need this path.
+    var nativeStopDrainRange: (() -> Range<Int64>?)? {
+        get { nil }
+        set {}
+    }
 }
 
 /// Worker-owned mapping from a converter's continuous output to accepted input

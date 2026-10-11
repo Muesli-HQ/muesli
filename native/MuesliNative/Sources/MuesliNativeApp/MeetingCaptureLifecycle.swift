@@ -31,10 +31,13 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         var shutdown: Task<MeetingCaptureShutdown.Result, Never>?
         var drainsMicrophoneOnStop = false
         var microphoneDeliveryClosed = false
+        var microphoneIntervalStart: Int64 = 0
+        var nativeStopDrainRange: Range<Int64>?
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let microphone: MeetingMicRecording
     private let systemAudio: SystemAudioCapturing
+    private let microphoneClock: () -> Int64
     private let completion = OSAllocatedUnfairLock<() -> Void>(initialState: {})
     var onQuiesced: () -> Void {
         get { completion.withLock { $0 } }
@@ -42,12 +45,20 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     }
 
     init(microphone: MeetingMicRecording, systemAudio: SystemAudioCapturing,
+         microphoneClock: @escaping () -> Int64 = { MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) },
          onQuiesced: @escaping () -> Void = {}) {
         self.microphone = microphone
         self.systemAudio = systemAudio
+        self.microphoneClock = microphoneClock
         self.onQuiesced = onQuiesced
+        state.withLock { $0.microphoneIntervalStart = microphoneClock() }
         microphone.setSampleAdmissionCheck { [weak self] in
             self?.state.withLock { !$0.microphoneDeliveryClosed && $0.phase.acceptsSamples } ?? false
+        }
+        microphone.setNativeStopDrainRange { [weak self] in
+            self?.state.withLock {
+                !$0.microphoneDeliveryClosed && $0.phase == .stopping ? $0.nativeStopDrainRange : nil
+            } ?? nil
         }
     }
 
@@ -154,6 +165,7 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     func setPaused(_ paused: Bool) -> Bool {
         let changed = state.withLock { state in
             guard state.phase == (paused ? .capturing : .paused) else { return false }
+            if !paused { state.microphoneIntervalStart = microphoneClock() }
             state.phase = paused ? .paused : .capturing
             return true
         }
@@ -180,6 +192,12 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
+            if state.phase.acceptsSamples, !state.microphoneDeliveryClosed {
+                // Freeze once, before invalidating producers. This is capture
+                // time, not the later time at which a driver finishes stopping.
+                let end = max(state.microphoneIntervalStart, microphoneClock())
+                state.nativeStopDrainRange = state.microphoneIntervalStart..<end
+            }
             state.drainsMicrophoneOnStop = state.phase.acceptsSamples
             state.phase = .stopping
             let micStart = state.microphoneOperation

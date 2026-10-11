@@ -57,6 +57,7 @@ protocol MeetingMicRecording: AnyObject {
     /// Install once, before prepare/start. Buffered producers must check this
     /// before copying input, not when delivering it after a processing delay.
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool)
+    func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?)
     /// True only when callbacks represent buffers gated before asynchronous work.
     var hasBufferedSampleAdmission: Bool { get }
 
@@ -75,6 +76,7 @@ protocol MeetingMicRecording: AnyObject {
 
 extension MeetingMicRecording {
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
+    func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {}
     var hasBufferedSampleAdmission: Bool { false }
     func waitForQuiescence() {}
     func invalidateForTeardown() {}
@@ -175,6 +177,10 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
         (recorder as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = check
     }
+
+    func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {
+        (recorder as? MicrophoneCaptureReporting)?.nativeStopDrainRange = range
+    }
 }
 
 final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
@@ -264,6 +270,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var onRecordingFailedStorage: ((Error) -> Void)?
         var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
         var sampleAdmissionCheck: (() -> Bool)?
+        var nativeStopDrainRange: (() -> Range<Int64>?)?
     }
 
     private var preferredInputDeviceIDStorage: AudioObjectID? {
@@ -276,6 +283,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
         lock.withLock { $0.sampleAdmissionCheck = check }
+    }
+
+    func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {
+        lock.withLock { $0.nativeStopDrainRange = range }
     }
 
     var hasBufferedSampleAdmission: Bool {
@@ -662,6 +673,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         recorder.preferredInputDeviceID = deviceID
         if let check = lock.withLock({ $0.sampleAdmissionCheck }) {
             recorder.setSampleAdmissionCheck(check)
+        }
+        if let range = lock.withLock({ $0.nativeStopDrainRange }) {
+            recorder.setNativeStopDrainRange(range)
         }
         let child = Child(id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID)
         // The recorder owns these callbacks. Capturing Child would retain that

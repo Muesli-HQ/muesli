@@ -6,6 +6,96 @@ import Testing
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("native shutdown tail keeps only the recording interval in WAV and transcription",
+          arguments: [false, true], ["before", "spanning", "after", "paused", "discarded", "resumed", "untimed", "repeat", "deadline"])
+    func nativeStopTail(wrapped: Bool, ending: String) async throws {
+        let driver = ContractQueueDriver()
+        let queue = AudioQueueInputRecorder(directoryName: "meeting-native-tail-tests", native: driver.operations)
+        let source: StreamingDictationRecording = wrapped
+            ? FallbackStreamingDictationRecorder(primary: queue, fallback: StreamingMicRecorder()) : queue
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: source, kind: .appScopedAudioQueue))
+        var clock: Int64 = 100 // Mutated only before lifecycle transitions, never by callbacks.
+        let capture = MeetingCaptureLifecycle(microphone: route, systemAudio: ContractSystemAudio(), microphoneClock: { clock })
+        let writer = try MeetingRecordingWriter()
+        let chunks = try PCMChunkRecorder(directoryName: "meeting-native-tail-tests")
+        let sink = DispatchQueue(label: "test.native-tail.sink")
+        route.onRawPCMSamples = { audio in
+            capture.enqueueMicrophoneSamples(audio, on: sink) {
+                writer.appendMic(audio.samples); chunks.append(audio.samples)
+            }
+        }
+        defer { route.onRawPCMSamples = nil; writer.cancel(); chunks.cancel() }
+        try await capture.start()
+        func emit(_ values: [Int], at frame: Int64, timed: Bool = true) {
+            driver.emit(values.map { Float($0) / 16 },
+                host: AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000), timed: timed)
+        }
+        // Start with no submitted native buffer: all test audio is still in HAL.
+        // This is the boundary absent from the earlier worker-drain tests.
+        if ending == "paused" || ending == "resumed" {
+            clock = 101
+            #expect(capture.setPaused(true))
+        }
+        if ending == "resumed" {
+            clock = 102
+            #expect(capture.setPaused(false))
+        }
+        if ending == "discarded" { capture.finishMicrophoneDelivery() }
+        clock = 104
+        let stopEntered = ContractGate()
+        driver.onStop = {
+            stopEntered.block()
+            switch ending {
+            case "before": emit([1, 2], at: 102)
+            case "after": emit([9, 9], at: 104)
+            case "resumed": emit([9, 1, 2, 9], at: 101)
+            default: emit([1, 2, 9, 9], at: 102, timed: ending != "untimed")
+            }
+        }
+        defer { stopEntered.release.signal(); driver.onStop = nil }
+        let shutdown = capture.requestStop()
+        try await stopEntered.waitUntilEntered()
+        if ending == "deadline" { capture.finishMicrophoneDelivery() }
+        if ending == "repeat" {
+            clock = 200 // Repeated Stop must not extend the first boundary.
+            _ = capture.requestStop()
+        }
+        stopEntered.release.signal()
+        let result = await shutdown.value
+        #expect(!result.timedOut)
+        sink.sync { capture.finishMicrophoneDelivery() }
+        emit([9, 9], at: 102) // Stale callback after actual stop/dispose cannot revive the drain.
+        let urls = [result.microphone, writer.stop(), chunks.stop()]
+        let allowed = ["before", "spanning", "resumed", "repeat"].contains(ending)
+        let expected: [Int16] = allowed ? [2047, 4095] : []
+        for url in urls {
+            if let url {
+                defer { try? FileManager.default.removeItem(at: url) }
+                let data = try Data(contentsOf: url)
+                let samples = data.dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+                #expect(samples == expected)
+            } else { #expect(expected.isEmpty) }
+        }
+    }
+
+    @Test("native stop receipt also covers callbacks before the driver stop begins")
+    func nativeTailBeforeDriverStop() throws {
+        let driver = ContractQueueDriver()
+        let queue = AudioQueueInputRecorder(directoryName: "meeting-native-tail-tests", native: driver.operations)
+        queue.shouldAdmitSamples = { false }
+        queue.nativeStopDrainRange = { 100..<104 }
+        try queue.start()
+        queue.invalidateForTeardown()
+        let values: [Float] = [0.125, 0.25, 0.5, 0.75]
+        driver.emit(values, host: AVAudioTime.hostTime(forSeconds: 102.0 / 16_000))
+        let url = try #require(queue.stop())
+        defer { queue.cancel(); try? FileManager.default.removeItem(at: url) }
+        let data = try Data(contentsOf: url)
+        let samples = data.dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        #expect(samples == [4095, 8191])
+    }
+
     @Test("handoff delivers chronological, non-overlapping audio to saved WAV and transcription input",
           arguments: [false, true], ["running", "paused", "stopped", "discarded"])
     func captureToSinks(oldUsesQueue: Bool, ending: String) async throws {
@@ -253,6 +343,7 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
 }
 
 private final class ContractQueueDriver {
+    var onStop: (() -> Void)?
     private let queue = AudioQueueRef(bitPattern: 1)!
     private var callback: AudioQueueInputCallback?
     private var context: UnsafeMutableRawPointer?
@@ -268,14 +359,25 @@ private final class ContractQueueDriver {
             buffers.append(buffer); out.pointee = buffer; return noErr
         }
         result.enqueue = { _, _ in noErr }; result.start = { _ in noErr }
-        result.stop = { _, _ in noErr }; result.dispose = { _ in noErr }; result.isRunning = { _ in false }
+        result.stop = { [self] _, immediate in
+            if !immediate, let onStop {
+                // HAL may wait for a callback on a DIFFERENT thread. Running
+                // inline would hide callback/lifecycle lock inversion bugs.
+                let completed = DispatchSemaphore(value: 0)
+                Thread.detachNewThread { onStop(); completed.signal() }
+                #expect(completed.wait(timeout: .now() + 5) == .success)
+            }
+            return noErr
+        }
+        result.dispose = { _ in noErr }; result.isRunning = { _ in false }
         return result
     }
-    func emit(_ samples: [Float], host: UInt64) {
+    func emit(_ samples: [Float], host: UInt64, timed: Bool = true) {
         guard let buffer = buffers.first, let callback else { return }
         buffer.pointee.mAudioDataByteSize = UInt32(samples.count * 4)
         for (i, sample) in samples.enumerated() { buffer.pointee.mAudioData.storeBytes(of: sample, toByteOffset: i * 4, as: Float.self) }
-        var time = AudioTimeStamp(); time.mHostTime = host; time.mFlags = .hostTimeValid
+        var time = AudioTimeStamp(); time.mHostTime = host
+        if timed { time.mFlags = .hostTimeValid }
         callback(context, queue, buffer, &time, 0, nil)
     }
     deinit { for buffer in buffers { buffer.pointee.mAudioData.deallocate(); buffer.deinitialize(count: 1); buffer.deallocate() } }

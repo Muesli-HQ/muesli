@@ -7,6 +7,15 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         set { lock.withLock { capturedHandler = newValue } }
     }
     private var capturedHandler: ((MicrophoneCaptureAudio) -> Void)?
+    private var stopDrainRange: (() -> Range<Int64>?)?
+    var nativeStopDrainRange: (() -> Range<Int64>?)? {
+        get { lock.withLock { stopDrainRange } }
+        set {
+            lock.withLock { stopDrainRange = newValue }
+            (primary as? MicrophoneCaptureReporting)?.nativeStopDrainRange = newValue
+            (fallback as? MicrophoneCaptureReporting)?.nativeStopDrainRange = newValue
+        }
+    }
     var shouldAdmitSamples: (() -> Bool)? {
         get { lock.withLock { sampleAdmissionCheck } }
         set {

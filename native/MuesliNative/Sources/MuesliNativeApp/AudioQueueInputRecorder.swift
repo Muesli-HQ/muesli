@@ -5,6 +5,7 @@ import os
 
 final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
     var shouldAdmitSamples: (() -> Bool)?
+    var nativeStopDrainRange: (() -> Range<Int64>?)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -322,21 +323,38 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             : MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(byteCount / 4)
         let result = callbackState.withLock { state -> (requeue: Bool, overflow: Bool) in
             guard state.queue == queue, state.isRunning || state.isDraining else { return (false, false) }
-            let requeue = !state.isDraining && !state.invalidated && !state.overloaded
-            guard byteCount > 0, !state.isPaused, !state.invalidated, !state.overloaded,
-                  shouldAdmitSamples?() ?? true else { return (requeue, false) }
+            var requeue = !state.isDraining && !state.invalidated && !state.overloaded
+            guard byteCount > 0, !state.overloaded else { return (requeue, false) }
+            var firstFrame = startFrame
+            var frameCount = byteCount / MemoryLayout<Float>.size
+            if state.isPaused || state.invalidated || !(shouldAdmitSamples?() ?? true) {
+                // Stop can precede this callback even when its PCM was captured
+                // before Stop. Do not reopen general admission or re-enqueue.
+                // An untimed buffer cannot prove which side of Stop it belongs
+                // to, so keep the conservative rejection for that case.
+                guard time.mFlags.contains(.hostTimeValid), let range = nativeStopDrainRange?() else {
+                    return (requeue, false)
+                }
+                requeue = false
+                firstFrame = max(startFrame, range.lowerBound)
+                let end = min(startFrame + Int64(frameCount), range.upperBound)
+                guard end > firstFrame else { return (false, false) }
+                frameCount = Int(end - firstFrame)
+            }
             guard state.pendingBuffers < 64, byteCount <= 65_536 else {
                 state.overloaded = true
                 return (false, true)
             }
-            let data = Data(bytes: buffer.pointee.mAudioData, count: byteCount)
+            let offset = Int(firstFrame - startFrame) * MemoryLayout<Float>.size
+            let data = Data(bytes: buffer.pointee.mAudioData.advanced(by: offset),
+                            count: frameCount * MemoryLayout<Float>.size)
             let generation = state.generation
             state.pendingBuffers += 1
             // Queue submission and admission closure share this short lock.
             // Neither native commands nor arbitrary consumers run under it.
             processingQueue.async { [weak self] in
                 guard let self else { return }
-                self.processAudioData(data, generation: generation, startFrame: startFrame)
+                self.processAudioData(data, generation: generation, startFrame: firstFrame)
                 self.callbackState.withLock { $0.pendingBuffers -= 1 }
             }
             return (requeue, false)
