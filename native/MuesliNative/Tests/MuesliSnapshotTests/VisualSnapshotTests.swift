@@ -1,5 +1,4 @@
 import Foundation
-import SnapshotTesting
 import Testing
 @testable import MuesliNativeApp
 
@@ -23,67 +22,127 @@ struct VisualSnapshotTests {
 
         for scenario in manifest.scenarios {
             let capture = try VisualSnapshotCapture.capture(scenario: scenario)
-            let caseDirectory = paths.artifactDirectory.appendingPathComponent(scenario.id)
+            let caseDirectory = try paths.artifactDirectory(forScenarioID: scenario.id)
             try FileManager.default.createDirectory(at: caseDirectory, withIntermediateDirectories: true)
-            try capture.pngData.write(to: caseDirectory.appendingPathComponent("actual.png"), options: .atomic)
+            try capture.pngData.write(
+                to: try VisualFixturePaths.childURL(named: "actual.png", under: caseDirectory),
+                options: .atomic
+            )
 
             let result = try VisualSnapshotComparator.compare(
                 scenario: scenario,
                 actualPNG: capture.pngData,
-                baselineURL: baselineRoot.appendingPathComponent("\(scenario.id).png"),
+                baselineURL: try VisualFixturePaths.childURL(named: "\(scenario.id).png", under: baselineRoot),
                 actualPixelSize: capture.pixelSize
             )
             try encoder.encode(result).write(
-                to: caseDirectory.appendingPathComponent("result.json"),
+                to: try VisualFixturePaths.childURL(named: "result.json", under: caseDirectory),
                 options: .atomic
             )
+            var artifacts = ["actual": "cases/snapshot/\(scenario.id)/actual.png"]
+            if result.status == .matched || result.status == .changed {
+                let expectedURL = try VisualFixturePaths.childURL(named: "expected.png", under: caseDirectory)
+                try Data(contentsOf: try VisualFixturePaths.childURL(
+                    named: "\(scenario.id).png",
+                    under: baselineRoot
+                )).write(to: expectedURL, options: .atomic)
+                artifacts["expected"] = "cases/snapshot/\(scenario.id)/expected.png"
+            }
+            if result.status == .changed {
+                let diff = try VisualSnapshotComparator.differencePNG(
+                    actualPNG: capture.pngData,
+                    baselineURL: try VisualFixturePaths.childURL(named: "\(scenario.id).png", under: baselineRoot)
+                )
+                try diff.write(
+                    to: try VisualFixturePaths.childURL(named: "diff.png", under: caseDirectory),
+                    options: .atomic
+                )
+                artifacts["diff"] = "cases/snapshot/\(scenario.id)/diff.png"
+            }
             cases.append(.init(
                 id: scenario.id,
                 status: result.status.rawValue,
-                artifacts: ["actual": "cases/snapshot/\(scenario.id)/actual.png"]
+                artifacts: artifacts
             ))
-            // The checked-in SnapshotTesting dependency is deliberately scoped
-            // to this target. Its record mode is never enabled here: this test
-            // only emits proposed artifacts for the trusted baseline workflow.
             #expect(result.status != .incompatibleEnvironment)
         }
 
         if let resultPath = environment["MUESLI_UI_RENDERING_RESULT"] {
-            let suiteResult = VisualSnapshotSuiteResult(cases: cases)
-            try encoder.encode(suiteResult).write(
-                to: URL(fileURLWithPath: resultPath),
-                options: .atomic
+            try VisualSnapshotSuiteResult.write(
+                cases: cases,
+                environment: environment,
+                to: URL(fileURLWithPath: resultPath)
             )
         }
     }
 }
 
-private struct VisualSnapshotSuiteResult: Encodable {
+private enum VisualSnapshotSuiteResult {
     struct Case: Encodable {
         let id: String
         let status: String
         let artifacts: [String: String]
     }
 
-    let schemaVersion = 1
-    let suite = "snapshot"
-    let status = "completed"
-    let rendererProfile: [String: String] = [:]
-    let cases: [Case]
+    static func write(cases: [Case], environment: [String: String], to url: URL) throws {
+        let profile = try jsonObject(
+            environment["MUESLI_VISUAL_RENDERER_PROFILE_JSON"],
+            key: "MUESLI_VISUAL_RENDERER_PROFILE_JSON"
+        )
+        let provenance = try jsonObject(
+            environment["MUESLI_VISUAL_BASELINE_PROVENANCE_JSON"],
+            key: "MUESLI_VISUAL_BASELINE_PROVENANCE_JSON"
+        )
+        guard let expectedData = environment["MUESLI_VISUAL_EXPECTED_CASES_JSON"]?.data(using: .utf8),
+              let expectedCases = try JSONSerialization.jsonObject(with: expectedData) as? [String] else {
+            throw VisualSnapshotTestError.invalidResultContract("MUESLI_VISUAL_EXPECTED_CASES_JSON")
+        }
+        guard cases.map(\.id) == expectedCases else {
+            throw VisualSnapshotTestError.resultCasesDoNotMatchContract
+        }
 
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case suite
-        case status
-        case rendererProfile = "renderer_profile"
-        case cases
+        let encodedCases = try JSONEncoder().encode(cases)
+        guard let caseObjects = try JSONSerialization.jsonObject(with: encodedCases) as? [[String: Any]] else {
+            throw VisualSnapshotTestError.invalidResultContract("encoded cases")
+        }
+        let document: [String: Any] = [
+            "schema_version": 1,
+            "suite": "snapshot",
+            "status": "completed",
+            "renderer_profile": profile,
+            "baseline_provenance": provenance,
+            "expected_cases": expectedCases,
+            "cases": caseObjects,
+        ]
+        guard JSONSerialization.isValidJSONObject(document) else {
+            throw VisualSnapshotTestError.invalidResultContract("suite result")
+        }
+        try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
+    }
+
+    private static func jsonObject(_ value: String?, key: String) throws -> [String: Any] {
+        guard let data = value?.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw VisualSnapshotTestError.invalidResultContract(key)
+        }
+        return object
     }
 }
 
 enum VisualSnapshotTestError: LocalizedError {
     case missingBaselineDirectory
+    case invalidResultContract(String)
+    case resultCasesDoNotMatchContract
 
     var errorDescription: String? {
-        "MUESLI_VISUAL_BASELINE_DIR must be an absolute trusted baseline directory."
+        switch self {
+        case .missingBaselineDirectory:
+            "MUESLI_VISUAL_BASELINE_DIR must be an absolute trusted baseline directory."
+        case .invalidResultContract(let key):
+            "Visual snapshot result requires a valid \(key) contract value."
+        case .resultCasesDoNotMatchContract:
+            "Visual snapshot manifest cases do not match the runner's expected-case contract."
+        }
     }
 }

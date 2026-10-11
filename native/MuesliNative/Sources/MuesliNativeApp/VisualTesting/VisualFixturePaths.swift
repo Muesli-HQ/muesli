@@ -49,6 +49,23 @@ struct VisualFixturePaths: Equatable {
         dataDirectory.appendingPathComponent("muesli.sqlite")
     }
 
+    func artifactDirectory(forScenarioID scenarioID: String) throws -> URL {
+        try Self.childURL(named: scenarioID, under: artifactDirectory)
+    }
+
+    static func childURL(named name: String, under root: URL) throws -> URL {
+        guard !name.isEmpty, !name.contains("/") else {
+            throw VisualFixturePathError.invalidChildName(name)
+        }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let child = resolvedRoot.appendingPathComponent(name).standardizedFileURL.resolvingSymlinksInPath()
+        let rootPath = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
+        guard child.path.hasPrefix(rootPath) else {
+            throw VisualFixturePathError.childEscapesRoot(root: resolvedRoot.path, child: child.path)
+        }
+        return child
+    }
+
     private static func directory(
         named key: String,
         environment: [String: String],
@@ -89,6 +106,8 @@ enum VisualFixturePathError: LocalizedError, Equatable {
     case notExistingDirectory(String, String)
     case directoriesMustBeDistinct
     case productSupportDirectory(String, String)
+    case invalidChildName(String)
+    case childEscapesRoot(root: String, child: String)
 
     var errorDescription: String? {
         switch self {
@@ -102,6 +121,10 @@ enum VisualFixturePathError: LocalizedError, Equatable {
             "Visual-test fixture, data, and artifact directories must be distinct."
         case .productSupportDirectory(let key, let path):
             "Visual-test \(key) must not target a Muesli application-support directory, got \(path)."
+        case .invalidChildName(let name):
+            "Visual-test child path must be one plain path component, got \(name)."
+        case .childEscapesRoot(let root, let child):
+            "Visual-test child path \(child) escapes its root \(root)."
         }
     }
 }

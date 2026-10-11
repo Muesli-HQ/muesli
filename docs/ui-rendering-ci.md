@@ -67,20 +67,43 @@ with the head/base/merge-base and baseline revisions.
 On a verified disposable macOS host, the credential-free entry point is:
 
 ```sh
-scripts/run_ui_rendering_tests.sh --output visual-results
+scripts/run_ui_rendering_tests.sh --output visual-results \
+  --trusted-baseline-root /Volumes/vorflux-ui-baselines/muesli \
+  --trusted-baseline-revision <40-lowercase-hex-sha> \
+  --expected-cases /Volumes/vorflux-ui-contracts/muesli-cases.json
 ```
+
+The dispatcher supplies the baseline root, pinned target-branch revision, and
+case contract. The baseline root must be absolute, outside the PR checkout,
+mounted read-only to the worker, and never be copied from or read through the
+PR checkout. The runner records its resolved root, baseline profile ID, and
+pinned revision in every completed suite result and the summary.
+
+The dispatcher-owned case contract is strict and complete:
+
+```json
+{"schema_version":1,"suites":{"snapshot":["settings-dark"],"e2e":["recording-indicator-picker-dark"]}}
+```
+
+Its file must also be absolute and external to the PR checkout, so a pull
+request cannot omit a case it should render.
 
 It creates isolated fixture data and scratch directories, exports
 `MUESLI_VISUAL_TESTS=1`, and supplies `MUESLI_UI_RENDERING_RESULT` to each
-suite. It also sets an absolute trusted `MUESLI_VISUAL_BASELINE_DIR` from the
-verified profile's `baseline_id`, so PR code cannot choose its reference. The
+suite. It sets an absolute `MUESLI_VISUAL_BASELINE_DIR` below the dispatcher
+root and passes `MUESLI_VISUAL_BASELINE_ROOT`,
+`MUESLI_VISUAL_BASELINE_REVISION`, `MUESLI_VISUAL_BASELINE_PROVENANCE_JSON`,
+`MUESLI_VISUAL_RENDERER_PROFILE_JSON`, and the expected-case contract to both
+suites. PR code cannot choose the reference, profile, or case set. The
 E2E default scenario is `recording-indicator-picker-dark` with window
 identifier `window.visual-test`; a trusted operator may override those two
-environment variables for a known manifest case. It starts both suites in a
-separate session where available, kills an
-active suite process tree on exit, never invokes GitHub/Vorflux APIs, and never
-uploads artifacts or comments on a PR. It preserves suite exit failures and
-always attempts to produce `visual-results/summary.json` and `index.html`.
+environment variables for a known manifest case. It runs commands from the
+repository root, applies a 30-minute per-suite timeout by default (configurable
+between 60 and 7200 seconds), recursively terminates descendant processes on
+timeout or interruption without relying on `setsid`, never invokes
+GitHub/Vorflux APIs, and never uploads artifacts or comments on a PR. It
+preserves suite exit failures and always attempts to produce
+`visual-results/summary.json` and `index.html`.
 
 Before enabling the profile, verify repeated fresh-process captures for
 onboarding, settings, rich meeting content, compact layouts, and translucent
@@ -104,16 +127,23 @@ must write this versioned result at `MUESLI_UI_RENDERING_RESULT`:
   "schema_version": 1,
   "suite": "snapshot",
   "status": "completed",
-  "renderer_profile": {"macos_build": "observed-on-verified-host"},
-  "cases": [{"id": "settings-dark", "status": "changed"}]
+  "renderer_profile": {"architecture": "arm64", "macos_build": "observed-on-verified-host", "...": "all renderer keys"},
+  "baseline_provenance": {"root": "/external/read-only/root", "revision": "40-lowercase-hex-sha", "baseline_id": "verified-profile"},
+  "expected_cases": ["settings-dark"],
+  "cases": [{"id": "settings-dark", "status": "changed", "artifacts": {"expected": "cases/snapshot/settings-dark/expected.png", "actual": "cases/snapshot/settings-dark/actual.png"}}]
 }
 ```
 
 Case statuses are `matched`, `changed`, `missing_baseline`, and
-`incompatible_environment`. Artifact paths, when present, must be relative to
-the report directory and may only name `expected`, `actual`, or `diff`. The
-report generator rejects traversal or untrusted HTML. Suite `harness_error` or
-`skipped` results contain no cases and include a diagnostic `error` string.
+`incompatible_environment`. Completed results must name both suites, contain
+their non-empty expected case list, report every expected case exactly once,
+and carry a complete observed renderer profile. Artifact paths must be relative
+to the report directory, may only name `expected`, `actual`, or `diff`, and
+must exist before an advisory report is written; `matched` and `changed` cases
+must include an existing expected artifact. The report generator rejects
+traversal, missing artifacts, empty/incomplete profiles, and untrusted HTML.
+Suite `harness_error` or `skipped` results contain no cases and include a
+diagnostic `error` string.
 
 Generate a report from suite results directly with:
 
@@ -121,6 +151,10 @@ Generate a report from suite results directly with:
 python3 scripts/ui_rendering_report.py \
   --input visual-results/raw/snapshot.json \
   --input visual-results/raw/e2e.json \
+  --expected-renderer-profile /trusted/observed-renderer-profile.json \
+  --expected-cases /trusted/muesli-cases.json \
+  --trusted-baseline-root /trusted/muesli-baselines \
+  --trusted-baseline-revision <40-lowercase-hex-sha> \
   --output visual-results
 ```
 
@@ -135,9 +169,9 @@ databases, or unbounded logs.
 
 ## Baselines and exclusions
 
-Trusted target-branch references live under
-`native/VisualTesting/Baselines/<renderer-profile>/{snapshot,e2e}/`. A PR may
-propose, but cannot redefine, its expected image. Capture expected/actual/diff
+Trusted target-branch references are dispatcher-provided, read-only external
+directories keyed by the verified renderer profile and pinned revision. A PR
+may propose, but cannot redefine, its expected image. Capture expected/actual/diff
 PNGs and metadata per case. Keep stable IDs, fixture hashes, dimensions, scale,
 resource fingerprints, and justified tolerances in the scenario manifest.
 
@@ -153,6 +187,7 @@ The repository checks its Linux-compatible pieces without macOS UI tooling:
 ```sh
 python3 scripts/test_classify_ui_changes.py
 python3 scripts/test_ui_rendering_report.py
+python3 scripts/test_run_ui_rendering_tests.py
 ```
 
 On non-macOS or while the profile is disabled, the runner intentionally exits

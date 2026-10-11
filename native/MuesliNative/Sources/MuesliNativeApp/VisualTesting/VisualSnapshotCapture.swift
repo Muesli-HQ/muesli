@@ -11,7 +11,8 @@ struct VisualSnapshotCapture {
     /// Hosts SwiftUI in a real NSWindow and NSHostingView so AppKit-backed
     /// controls, materials, font fallback, and layout use the macOS renderer.
     static func capture(scenario: VisualScenario) throws -> Capture {
-        let size = NSSize(width: scenario.size.width, height: scenario.size.height)
+        AppFonts.registerForRenderingIfNeeded()
+        let size = NSSize(width: CGFloat(scenario.size.width), height: CGFloat(scenario.size.height))
         let appearance = NSAppearance(named: scenario.appearance == .dark ? .darkAqua : .aqua)
         let root = VisualScenarioViewFactory.view(for: scenario)
             .frame(width: size.width, height: size.height)
@@ -67,11 +68,17 @@ enum VisualScenarioViewFactory {
     static func view(for scenario: VisualScenario) -> AnyView {
         switch scenario.screen {
         case .notchInstructionPreview:
+            #if DEBUG
             AnyView(NotchInstructionPreview(
                 accent: .purple,
                 mode: "Computer use",
                 phase: "Needs approval"
             ))
+            #else
+            // Fixture mode is Debug-only. Keep the app module buildable in
+            // Release even though this preview source is Debug-only.
+            AnyView(EmptyView())
+            #endif
         case .liveInstruction:
             AnyView(NotchLiveInstructionView(
                 instruction: "Turn these notes into a concise project update.",

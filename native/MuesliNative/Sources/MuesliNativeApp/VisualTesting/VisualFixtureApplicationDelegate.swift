@@ -27,7 +27,8 @@ final class VisualFixtureApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let scenario = fixture.scenario
-        let size = NSSize(width: scenario.size.width, height: scenario.size.height)
+        AppFonts.registerForRenderingIfNeeded()
+        let size = NSSize(width: CGFloat(scenario.size.width), height: CGFloat(scenario.size.height))
         let appearance = NSAppearance(named: scenario.appearance == .dark ? .darkAqua : .aqua)
         let root = VisualScenarioViewFactory.view(for: scenario)
             .frame(width: size.width, height: size.height)

@@ -43,6 +43,7 @@ final class VisualE2ETests: XCTestCase {
         XCTAssertTrue(window.isHittable, "The identified visual-test window is not ready for capture.")
 
         let screenshot = window.screenshot()
+        let png = screenshot.pngRepresentation
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = "\(configuration.caseID)-\(configuration.windowIdentifier).png"
         attachment.lifetime = .keepAlways
@@ -50,12 +51,20 @@ final class VisualE2ETests: XCTestCase {
 
         let exporter = try VisualE2EArtifactExporter(directory: configuration.caseArtifactsDirectory)
         try exporter.export(
-            screenshot: screenshot,
+            png: png,
             caseID: configuration.caseID,
             scenarioID: configuration.scenarioID,
             windowIdentifier: configuration.windowIdentifier,
             windowFrame: window.frame
         )
-        try VisualE2EResultWriter.writeCaptureResult(configuration: configuration)
+        let comparison = try VisualE2EImageComparator.compare(
+            actualPNG: png,
+            baselineURL: configuration.baselineURL,
+            artifactDirectory: configuration.caseArtifactsDirectory
+        )
+        try VisualE2EResultWriter.writeCaptureResult(
+            configuration: configuration,
+            comparison: comparison
+        )
     }
 }

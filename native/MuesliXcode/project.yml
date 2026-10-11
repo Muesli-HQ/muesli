@@ -81,6 +81,8 @@ targets:
         PRODUCT_NAME: MuesliVisualTestHost
         PRODUCT_BUNDLE_IDENTIFIER: com.muesli.visual-test-host
         INFOPLIST_FILE: VisualTestHost/Info.plist
+        MARKETING_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.2"
         OTHER_SWIFT_FLAGS: -parse-as-library

@@ -5,6 +5,7 @@ enum VisualE2EConfigurationError: LocalizedError {
     case invalidAbsolutePath(String)
     case invalidArtifactDirectory(String)
     case invalidCaseIdentifier(String)
+    case invalidJSONEnvironment(String)
     case emptyScreenshot
     case unreadableScreenshot
 
@@ -17,7 +18,9 @@ enum VisualE2EConfigurationError: LocalizedError {
         case .invalidArtifactDirectory(let path):
             return "Visual E2E artifact directory must be an absolute file URL: \(path)."
         case .invalidCaseIdentifier(let identifier):
-            return "Visual E2E case identifiers may only contain letters, numbers, dots, underscores, and hyphens: \(identifier)."
+            return "Visual E2E case identifiers must start with an ASCII letter or number and may contain underscores or hyphens: \(identifier)."
+        case .invalidJSONEnvironment(let name):
+            return "\(name) must contain the trusted runner's JSON contract."
         case .emptyScreenshot:
             return "The identified window produced an empty screenshot."
         case .unreadableScreenshot:
@@ -34,6 +37,7 @@ struct VisualE2EConfiguration {
     let fixturesDirectory: URL
     let dataDirectory: URL
     let artifactsDirectory: URL
+    let baselineDirectory: URL
     let windowIdentifier: String
 
     var caseArtifactsDirectory: URL {
@@ -45,9 +49,16 @@ struct VisualE2EConfiguration {
         let fixturesDirectory = try absoluteDirectory("MUESLI_VISUAL_FIXTURE_DIR", environment: environment)
         let dataDirectory = try absoluteDirectory("MUESLI_VISUAL_DATA_DIR", environment: environment)
         let artifactsDirectory = try absoluteDirectory("MUESLI_VISUAL_ARTIFACT_DIR", environment: environment)
+        let baselineDirectory = try absoluteDirectory("MUESLI_VISUAL_BASELINE_DIR", environment: environment)
         let windowIdentifier = try required("MUESLI_VISUAL_WINDOW_ID", environment: environment)
 
-        guard scenarioID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-" }) else {
+        let bytes = scenarioID.utf8
+        let isAlphaNumeric: (UInt8) -> Bool = {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+        }
+        guard let first = bytes.first,
+              isAlphaNumeric(first),
+              bytes.allSatisfy({ isAlphaNumeric($0) || $0 == 45 || $0 == 95 }) else {
             throw VisualE2EConfigurationError.invalidCaseIdentifier(scenarioID)
         }
 
@@ -57,6 +68,7 @@ struct VisualE2EConfiguration {
             fixturesDirectory: fixturesDirectory,
             dataDirectory: dataDirectory,
             artifactsDirectory: artifactsDirectory,
+            baselineDirectory: baselineDirectory,
             windowIdentifier: windowIdentifier
         )
     }
@@ -69,6 +81,31 @@ struct VisualE2EConfiguration {
             "--visual-data-root", dataDirectory.path,
             "--visual-artifacts", artifactsDirectory.path,
         ]
+    }
+
+    var baselineURL: URL {
+        baselineDirectory.appendingPathComponent("\(caseID).png")
+    }
+
+    static func jsonObject(named name: String, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> [String: Any] {
+        guard let value = environment[name],
+              let data = value.data(using: .utf8),
+              let profile = try? JSONSerialization.jsonObject(with: data),
+              let object = profile as? [String: Any],
+              JSONSerialization.isValidJSONObject(object) else {
+            throw VisualE2EConfigurationError.invalidJSONEnvironment(name)
+        }
+        return object
+    }
+
+    static func stringArray(named name: String, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> [String] {
+        guard let value = environment[name],
+              let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let values = object as? [String] else {
+            throw VisualE2EConfigurationError.invalidJSONEnvironment(name)
+        }
+        return values
     }
 
     private static func required(_ name: String, environment: [String: String]) throws -> String {

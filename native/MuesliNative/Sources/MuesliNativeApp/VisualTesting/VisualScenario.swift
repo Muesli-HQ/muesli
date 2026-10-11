@@ -26,10 +26,32 @@ struct VisualScenarioManifest: Codable, Equatable {
             throw VisualScenarioError.emptyManifest
         }
         let identifiers = manifest.scenarios.map(\.id)
-        guard identifiers.allSatisfy({ !$0.isEmpty }), Set(identifiers).count == identifiers.count else {
+        guard identifiers.allSatisfy(Self.isSafeScenarioID), Set(identifiers).count == identifiers.count else {
             throw VisualScenarioError.invalidScenarioIdentifiers
         }
+        for scenario in manifest.scenarios {
+            guard scenario.size.width > 0,
+                  scenario.size.height > 0,
+                  scenario.scale > 0,
+                  scenario.tolerance.maximumDifferentPixelRatio.isFinite,
+                  (0...1).contains(scenario.tolerance.maximumDifferentPixelRatio),
+                  !scenario.size.width.multipliedReportingOverflow(by: scenario.scale).overflow,
+                  !scenario.size.height.multipliedReportingOverflow(by: scenario.scale).overflow else {
+                throw VisualScenarioError.invalidScenarioMetrics(scenario.id)
+            }
+        }
         return manifest
+    }
+
+    static func isSafeScenarioID(_ identifier: String) -> Bool {
+        guard let first = identifier.utf8.first, first.isASCIIAlphaNumeric else { return false }
+        return identifier.utf8.allSatisfy { $0.isASCIIAlphaNumeric || $0 == 45 || $0 == 95 }
+    }
+}
+
+private extension UInt8 {
+    var isASCIIAlphaNumeric: Bool {
+        (48...57).contains(self) || (65...90).contains(self) || (97...122).contains(self)
     }
 }
 
@@ -42,7 +64,10 @@ struct VisualScenario: Codable, Equatable, Hashable, Sendable {
     let tolerance: VisualTolerance
 
     var pixelSize: VisualPixelSize {
-        VisualPixelSize(width: size.width * scale, height: size.height * scale)
+        let (width, widthOverflow) = size.width.multipliedReportingOverflow(by: scale)
+        let (height, heightOverflow) = size.height.multipliedReportingOverflow(by: scale)
+        precondition(!widthOverflow && !heightOverflow, "Validated visual scenario dimensions must not overflow.")
+        return VisualPixelSize(width: width, height: height)
     }
 }
 
@@ -79,6 +104,7 @@ enum VisualScenarioError: LocalizedError, Equatable {
     case unsupportedManifestVersion(Int)
     case emptyManifest
     case invalidScenarioIdentifiers
+    case invalidScenarioMetrics(String)
     case unknownScenario(String)
 
     var errorDescription: String? {
@@ -88,7 +114,9 @@ enum VisualScenarioError: LocalizedError, Equatable {
         case .emptyManifest:
             "Visual fixture manifest contains no scenarios."
         case .invalidScenarioIdentifiers:
-            "Visual fixture scenario identifiers must be non-empty and unique."
+            "Visual fixture scenario identifiers must be unique ASCII letters, digits, hyphens, or underscores."
+        case .invalidScenarioMetrics(let id):
+            "Visual fixture scenario \(id) has invalid dimensions, scale, or tolerance."
         case .unknownScenario(let id):
             "Unknown visual fixture scenario \(id)."
         }
