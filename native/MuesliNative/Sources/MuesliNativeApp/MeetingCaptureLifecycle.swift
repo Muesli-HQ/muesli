@@ -29,15 +29,10 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         var waiter: CheckedContinuation<Void, Error>?
         var deadline: DispatchWorkItem?
         var shutdown: Task<MeetingCaptureShutdown.Result, Never>?
-        var drainsMicrophoneOnStop = false
-        var microphoneDeliveryClosed = false
-        var microphoneIntervalStart: Int64 = 0
-        var nativeStopDrainRange: Range<Int64>?
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let microphone: MeetingMicRecording
     private let systemAudio: SystemAudioCapturing
-    private let microphoneClock: () -> Int64
     private let completion = OSAllocatedUnfairLock<() -> Void>(initialState: {})
     var onQuiesced: () -> Void {
         get { completion.withLock { $0 } }
@@ -45,66 +40,14 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     }
 
     init(microphone: MeetingMicRecording, systemAudio: SystemAudioCapturing,
-         microphoneClock: @escaping () -> Int64 = { MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) },
          onQuiesced: @escaping () -> Void = {}) {
         self.microphone = microphone
         self.systemAudio = systemAudio
-        self.microphoneClock = microphoneClock
         self.onQuiesced = onQuiesced
-        state.withLock { $0.microphoneIntervalStart = microphoneClock() }
-        microphone.setSampleAdmissionCheck { [weak self] in
-            self?.state.withLock { !$0.microphoneDeliveryClosed && $0.phase.acceptsSamples } ?? false
-        }
-        microphone.setNativeStopDrainRange { [weak self] in
-            guard let self else { return nil }
-            return self.state.withLock { state in
-                guard !state.microphoneDeliveryClosed else { return nil }
-                if state.phase.acceptsSamples {
-                    // A child also stops during live route/health handoff. Its
-                    // native-held PCM still belongs to this capture interval;
-                    // MeetingMicrophoneDelivery applies the old/new cutover.
-                    // Resume changes the lower bound, so it cannot reopen a
-                    // previous interval. Pause admits no new native buffers.
-                    let end = max(state.microphoneIntervalStart, self.microphoneClock())
-                    return state.microphoneIntervalStart..<end
-                }
-                // Stop uses the first request's frozen boundary, never "now".
-                return state.phase == .stopping ? state.nativeStopDrainRange : nil
-            }
-        }
     }
 
     var phase: MeetingCapturePhase { state.withLock { $0.phase } }
     var isEnding: Bool { phase.isEnding }
-
-    /// Producers reject new paused input at admission, so delayed pre-pause
-    /// buffers retain delivery eligibility while paused and during stop.
-    /// Already accepted mic buffers can outlive native quiescence; the session
-    /// closes this window at its processing-queue barrier, or immediately on discard.
-    func acceptsMicrophoneSamples(_ audio: MicrophoneCaptureAudio? = nil) -> Bool {
-        return state.withLock {
-            !$0.microphoneDeliveryClosed
-                && (audio?.admitted == true || $0.phase.acceptsSamples || $0.drainsMicrophoneOnStop)
-        }
-    }
-
-    /// Shared by the session's AEC/chunk pipeline and capture-to-file tests.
-    /// Check the packet receipt on the destination queue, so pause/stop cannot
-    /// erase accepted input and discard still wins against queued delivery.
-    func enqueueMicrophoneSamples(_ audio: MicrophoneCaptureAudio, on queue: DispatchQueue,
-                                  consume: @escaping () -> Void) {
-        guard !audio.samples.isEmpty else { return }
-        queue.async { [weak self] in
-            guard self?.acceptsMicrophoneSamples(audio) == true else { return }
-            consume()
-        }
-    }
-
-    /// Permanently reject delivery on discard or after the session's final drain
-    /// barrier, even if a timed-out native stop is still retiring in the background.
-    func finishMicrophoneDelivery() {
-        state.withLock { $0.microphoneDeliveryClosed = true }
-    }
 
     func start(timeout: TimeInterval = 20) async throws {
         try await withTaskCancellationHandler {
@@ -177,7 +120,6 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     func setPaused(_ paused: Bool) -> Bool {
         let changed = state.withLock { state in
             guard state.phase == (paused ? .capturing : .paused) else { return false }
-            if !paused { state.microphoneIntervalStart = microphoneClock() }
             state.phase = paused ? .paused : .capturing
             return true
         }
@@ -204,13 +146,6 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     func requestStop(error: Error = CancellationError()) -> Task<MeetingCaptureShutdown.Result, Never> {
         let shutdown = state.withLock { state in
             if let shutdown = state.shutdown { return shutdown }
-            if state.phase.acceptsSamples, !state.microphoneDeliveryClosed {
-                // Freeze once, before invalidating producers. This is capture
-                // time, not the later time at which a driver finishes stopping.
-                let end = max(state.microphoneIntervalStart, microphoneClock())
-                state.nativeStopDrainRange = state.microphoneIntervalStart..<end
-            }
-            state.drainsMicrophoneOnStop = state.phase.acceptsSamples
             state.phase = .stopping
             let micStart = state.microphoneOperation
             let systemStart = state.systemOperation

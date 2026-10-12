@@ -38,17 +38,6 @@ protocol PausableStreamingDictationRecording: AnyObject {
     func resume()
 }
 
-/// Configure before starting capture. The producer checks this before accepting
-/// a buffer; delayed delivery retains that decision across pause and stop.
-protocol BufferedMicrophoneAdmissionControlling: AnyObject {
-    var shouldAdmitSamples: (() -> Bool)? { get set }
-    var hasBufferedSampleAdmission: Bool { get }
-}
-
-extension BufferedMicrophoneAdmissionControlling {
-    var hasBufferedSampleAdmission: Bool { true }
-}
-
 struct StreamingMicRecorderRunState: Equatable {
     private(set) var isRunning = false
 
@@ -65,9 +54,7 @@ struct StreamingMicRecorderRunState: Equatable {
     }
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
-    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
-    var shouldAdmitSamples: (() -> Bool)?
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -102,15 +89,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private var isGraphPrepared = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
     private let configurationChangeQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-config-change")
-    private let processingQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-processing", qos: .userInitiated)
-    // graphLock owns the closure; invoke only on processingQueue after closing
-    // admission. Cancel discards it, while Stop/graph replacement flush it once.
-    private var finishBufferedConversion: (() -> Void)?
-    private let captureLock = OSAllocatedUnfairLock<BufferedMicrophoneCapture?>(initialState: nil)
-    private var bufferedCapture: BufferedMicrophoneCapture? {
-        get { captureLock.withLock { $0 } }
-        set { captureLock.withLock { $0 = newValue } }
-    }
 
     private struct FailureState {
         var activeRecordingID: UUID?
@@ -209,7 +187,14 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         }
         guard !runState.isRunning else { return }
         try prepareLocked()
-        let recordingID = try beginRecordingFile()
+        let recordingID = UUID()
+        failureLock.withLock {
+            $0.activeRecordingID = recordingID
+            $0.hasReportedFailure = false
+        }
+
+        let fileState = try createNewFile()
+        lock.withLock { $0 = fileState }
 
         installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
         do {
@@ -218,10 +203,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // teardown may have landed during that window. Synchronously stop
             // what just started rather than letting capture outlive teardown.
             if isPermanentlyInvalidated {
-                bufferedCapture?.close()
                 stopEngineSafely()
                 removeTapIfNeeded()
-                drainBufferedCapture(finishingConversion: false)
                 removeConfigurationChangeObserverIfNeeded()
                 clearFailureState()
                 let state = lock.withLock { state -> FileState in
@@ -229,7 +212,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                     state = FileState()
                     return old
                 }
-                state.fileHandle?.closeFile()
                 if let url = state.fileURL {
                     try? FileManager.default.removeItem(at: url)
                 }
@@ -239,10 +221,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             }
             runState.markStarted()
         } catch {
-            bufferedCapture?.close()
             stopEngineSafely()
             removeTapIfNeeded()
-            drainBufferedCapture(finishingConversion: false)
             removeConfigurationChangeObserverIfNeeded()
             clearFailureState()
             let state = lock.withLock { state -> FileState in
@@ -250,7 +230,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 state = FileState()
                 return old
             }
-            state.fileHandle?.closeFile()
             if let url = state.fileURL {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -263,29 +242,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     /// restart path, so the tap keeps appending to the current file.
     private func startEngineWithTapLocked(recordingID: UUID) throws {
         let hwFormat = try inputFormatLocked()
-        let tapBlock = try makeBufferedTap(format: hwFormat, recordingID: recordingID)
-
-        emitLatency("app_scoped_tap_install_begin")
-        if recoversFromInputConfigurationChanges {
-            if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
-                throw tapError
-            }
-        } else {
-            engine.inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil, block: tapBlock)
-        }
-        tapInstalled = true
-        emitLatency("app_scoped_tap_install_end")
-
-        emitLatency("app_scoped_engine_start_begin")
-        if recoversFromInputConfigurationChanges {
-            if let error = MuesliAudioGraphStartEngine(engine) { throw error }
-        } else {
-            try engine.start()
-        }
-        emitLatency("app_scoped_engine_start_end")
-    }
-
-    private func makeBufferedTap(format hwFormat: AVAudioFormat, recordingID: UUID) throws -> AVAudioNodeTapBlock {
 
         // Target format: 16kHz mono Float32
         guard let targetFormat = AVAudioFormat(
@@ -301,26 +257,48 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
         // Install converter if sample rates differ
         let needsConversion = hwFormat.sampleRate != Self.sampleRate || hwFormat.channelCount != 1
-            || hwFormat.commonFormat != .pcmFormatFloat32
         let converter: AVAudioConverter? = needsConversion
             ? AVAudioConverter(from: hwFormat, to: targetFormat)
             : nil
-        guard !needsConversion || converter != nil else {
-            throw Self.runtimeError(code: 4, message: "Could not create microphone sample-rate converter")
-        }
 
-        // AVAudioEngine's requested tap size is a hint. Leave room for normal
-        // hardware-sized batches, including high-rate USB interfaces.
-        guard hwFormat.sampleRate.isFinite, hwFormat.sampleRate > 0,
-              hwFormat.sampleRate <= Double(UInt32.max) else {
-            throw Self.runtimeError(code: 11, message: "Invalid microphone sample rate")
-        }
-        let maximumFrames = AVAudioFrameCount(max(16_384, ceil(hwFormat.sampleRate / 4)))
-        let timeline = MicrophoneCaptureTimeline()
-        let deliver: (AVAudioPCMBuffer) -> Void = { [weak self] monoBuffer in
+        emitLatency("app_scoped_tap_install_begin")
+        let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, _ in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
-            guard monoBuffer.frameLength > 0 else { return }
+
+            let monoBuffer: AVAudioPCMBuffer
+            if let converter {
+                let frameCapacity = AVAudioFrameCount(
+                    Double(buffer.frameLength) * Self.sampleRate / buffer.format.sampleRate
+                )
+                guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
+                    self.reportRecordingFailure(
+                        Self.runtimeError(code: 4, message: "Could not allocate converted microphone buffer"),
+                        recordingID: recordingID
+                    )
+                    return
+                }
+                var error: NSError?
+                var didProvideInput = false
+                let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                    guard !didProvideInput else {
+                        outStatus.pointee = .noDataNow
+                        return nil
+                    }
+                    didProvideInput = true
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
+                converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
+                if let error {
+                    self.reportRecordingFailure(error, recordingID: recordingID)
+                    return
+                }
+                monoBuffer = converted
+            } else {
+                monoBuffer = buffer
+            }
+
             guard let floatData = monoBuffer.floatChannelData?[0] else {
                 self.reportRecordingFailure(
                     Self.runtimeError(code: 5, message: "Microphone buffer did not contain float channel data"),
@@ -349,147 +327,41 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 return max(-160, min(0, rawDB))
             }()
 
-            // File lifecycle is serialized on processingQueue. Snapshot the
-            // handle so currentPower()/pause() never wait behind disk I/O.
-            guard let handle = self.lock.withLock({ $0.fileHandle }) else { return }
-            do {
-                try handle.write(contentsOf: pcmData)
-            } catch {
-                self.bufferedCapture?.close()
-                self.reportRecordingFailure(error, recordingID: recordingID)
-                return
-            }
-            self.lock.withLock { state in
+            let shouldEmit = self.lock.withLock { state -> Bool in
+                guard !state.isPaused else {
+                    state.latestPowerDB = -160
+                    return false
+                }
+                state.fileHandle?.write(pcmData)
                 state.bytesWritten += pcmData.count
-                state.latestPowerDB = state.isPaused ? -160 : powerDB
+                state.latestPowerDB = powerDB
+                return true
             }
+            guard shouldEmit else { return }
 
             self.onPCMSamples?(int16Samples)
-            timeline.take(int16Samples) { self.onCapturedAudio?($0) }
 
             // Forward Float samples for VAD (in 4096-sample chunks)
             let floats = Array(UnsafeBufferPointer(start: floatData, count: frameCount))
             self.onAudioBuffer?(floats)
         }
-        let convert: (AVAudioPCMBuffer?) -> Void = { [weak self] input in
-            guard let self, self.isCurrentRecording(recordingID) else { return }
-            guard let converter else {
-                if let input { deliver(input) }
-                return
+        if recoversFromInputConfigurationChanges {
+            if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
+                throw tapError
             }
-            do {
-                try Self.convert(input, using: converter, deliver: deliver)
-            } catch {
-                self.bufferedCapture?.close()
-                self.reportRecordingFailure(error, recordingID: recordingID)
-            }
+        } else {
+            engine.inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil, block: tapBlock)
         }
-        let capture = try BufferedMicrophoneCapture(
-            format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
-            shouldAdmitSamples: shouldAdmitSamples ?? { true }
-        ) { buffer, start in
-            timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate, start: start)
-            convert(buffer)
-        }
-        finishBufferedConversion = { convert(nil) }
-        capture.setPaused(lock.withLock { $0.isPaused })
-        bufferedCapture = capture
-        return { [weak self, capture] buffer, time in
-            let start = time.isHostTimeValid ? MicrophoneCaptureAudio.frame(atHostTime: time.hostTime) : nil
-            switch capture.offer(buffer, startFrame: start) {
-            case .accepted, .ignored: break
-            case .overflow:
-                self?.reportRecordingFailure(
-                    Self.runtimeError(code: 10, message: "Microphone processing could not keep up with capture"),
-                    recordingID: recordingID
-                )
-            case .invalidBuffer:
-                self?.reportRecordingFailure(
-                    Self.runtimeError(code: 11, message: "Microphone callback format or size changed unexpectedly"),
-                    recordingID: recordingID
-                )
-            }
-        }
-    }
+        tapInstalled = true
+        emitLatency("app_scoped_tap_install_end")
 
-    /// A nil input ends this tap's stream. Drain until the converter requests
-    /// more input (live capture) or acknowledges EOS (Stop/route replacement).
-    /// This also keeps pooled input alive until the converter has consumed it.
-    private static func convert(
-        _ input: AVAudioPCMBuffer?, using converter: AVAudioConverter,
-        deliver: (AVAudioPCMBuffer) -> Void
-    ) throws {
-        let capacity = input.map {
-            AVAudioFrameCount(max(1, ceil(Double($0.frameLength) * sampleRate / $0.format.sampleRate)))
-        } ?? bufferSize
-        guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
-            throw runtimeError(code: 4, message: "Could not allocate converted microphone buffer")
+        emitLatency("app_scoped_engine_start_begin")
+        if recoversFromInputConfigurationChanges {
+            if let error = MuesliAudioGraphStartEngine(engine) { throw error }
+        } else {
+            try engine.start()
         }
-        var suppliedInput = false
-        while true {
-            output.frameLength = 0
-            var error: NSError?
-            let status = converter.convert(to: output, error: &error) { _, status in
-                guard let input else {
-                    status.pointee = .endOfStream
-                    return nil
-                }
-                guard !suppliedInput else {
-                    status.pointee = .noDataNow
-                    return nil
-                }
-                suppliedInput = true
-                status.pointee = .haveData
-                return input
-            }
-            if let error { throw error }
-            guard status != .error else {
-                throw runtimeError(code: 4, message: "Microphone sample-rate conversion failed")
-            }
-            if output.frameLength > 0 { deliver(output) }
-            switch status {
-            case .endOfStream: return
-            case .inputRanDry:
-                guard input != nil else {
-                    throw runtimeError(code: 4, message: "Microphone converter did not finish its stream")
-                }
-                return
-            case .haveData:
-                guard output.frameLength > 0 else {
-                    throw runtimeError(code: 4, message: "Microphone converter made no progress")
-                }
-            default:
-                throw runtimeError(code: 4, message: "Unexpected microphone converter status")
-            }
-        }
-    }
-
-    private func drainBufferedCapture(finishingConversion: Bool) {
-        processingQueue.sync {
-            if finishingConversion { finishBufferedConversion?() }
-        }
-        finishBufferedConversion = nil
-        bufferedCapture = nil
-    }
-
-    private func beginRecordingFile() throws -> UUID {
-        let fileState = try createNewFile()
-        lock.withLock { $0 = fileState }
-        let recordingID = UUID()
-        failureLock.withLock {
-            $0.activeRecordingID = recordingID
-            $0.hasReportedFailure = false
-        }
-        return recordingID
-    }
-
-    /// Exercises the real tap, conversion, writing and teardown without opening
-    /// hardware. Native engine installation/start are the only omitted boundary.
-    func testing_startWithTap(format: AVAudioFormat) throws -> AVAudioNodeTapBlock {
-        let id = try beginRecordingFile()
-        let tap = try makeBufferedTap(format: format, recordingID: id)
-        runState.markStarted()
-        return tap
+        emitLatency("app_scoped_engine_start_end")
     }
 
     private func inputFormatLocked() throws -> AVAudioFormat {
@@ -566,10 +438,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
         fputs("[streaming-mic] engine configuration changed; restarting input capture\n", stderr)
         emitLatency("engine_config_change_restart_begin")
-        bufferedCapture?.close()
         stopEngineSafely()
         removeTapIfNeeded()
-        drainBufferedCapture(finishingConversion: true)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
 
@@ -584,10 +454,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // tapInstalled stays consistent with the stopped engine. Remove the observer
             // too: once the failure is reported this recording must not silently resume
             // on a later configuration change.
-            bufferedCapture?.close()
             stopEngineSafely()
             removeTapIfNeeded()
-            drainBufferedCapture(finishingConversion: true)
             removeConfigurationChangeObserverIfNeeded()
             runState.markConfigurationChangeRestartFailed()
             reportRecordingFailure(error, recordingID: recordingID)
@@ -596,17 +464,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     /// Rotate to a new file. Returns the completed WAV URL. No audio gap.
     func rotateFile() -> URL? {
-        // Serialize with graph replacement/teardown before entering the worker.
-        // This can wait for an in-flight native restart; call off MainActor and
-        // never from a recorder delivery callback (which runs on processingQueue).
-        graphLock.lock()
-        defer { graphLock.unlock() }
         guard runState.isRunning else { return nil }
-
-        return processingQueue.sync { rotateFileOnProcessingQueue() }
-    }
-
-    private func rotateFileOnProcessingQueue() -> URL? {
 
         let newState: FileState
         do {
@@ -619,7 +477,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let completed = lock.withLock { state -> FileState in
             let old = state
             state = newState
-            state.isPaused = old.isPaused
             return old
         }
 
@@ -631,17 +488,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
-        guard runState.isRunning || lock.withLock({ $0.fileHandle != nil }) else { return nil }
+        guard runState.isRunning else { return nil }
         runState.markStopped()
+        clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
 
-        bufferedCapture?.close()
         stopEngineSafely()
         removeTapIfNeeded()
-        // Flush every buffer accepted before Stop, including callback delivery,
-        // before invalidating the generation or finalizing the WAV header.
-        drainBufferedCapture(finishingConversion: true)
-        clearFailureState()
 
         let finalState = lock.withLock { state -> FileState in
             let old = state
@@ -654,7 +507,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     func pause() {
         guard runState.isRunning else { return }
-        bufferedCapture?.setPaused(true)
         lock.withLock { state in
             state.isPaused = true
             state.latestPowerDB = -160
@@ -666,14 +518,12 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         lock.withLock { state in
             state.isPaused = false
         }
-        bufferedCapture?.setPaused(false)
     }
 
     /// Terminal and synchronous: this instance must never start capture again
     /// after meeting teardown. Distinct from cancel(), which permits reuse.
     func invalidateForTeardown() {
         teardownInvalidation.withLock { $0 = true }
-        bufferedCapture?.close()
     }
 
     private var isPermanentlyInvalidated: Bool {
@@ -687,16 +537,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         runState.markStopped()
         clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
-        bufferedCapture?.close()
         stopEngineSafely()
         removeTapIfNeeded()
-        drainBufferedCapture(finishingConversion: false)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
         engineStorage = nil
         onAudioBuffer = nil
         onPCMSamples = nil
-        onCapturedAudio = nil
         onRecordingFailed = nil
 
         let state = lock.withLock { state -> FileState in
@@ -704,7 +551,6 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             state = FileState()
             return old
         }
-        state.fileHandle?.closeFile()
         if let url = state.fileURL {
             try? FileManager.default.removeItem(at: url)
         }
