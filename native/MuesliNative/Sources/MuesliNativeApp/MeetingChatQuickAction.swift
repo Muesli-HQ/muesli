@@ -29,6 +29,12 @@ enum MeetingChatQuickAction: String, CaseIterable, Identifiable {
             var effective = scope
             effective.startDate = max(scope.startDate ?? lower, lower)
             effective.endDateExclusive = min(scope.endDateExclusive ?? upper, upper)
+            guard effective.startDate! < effective.endDateExclusive! else {
+                // Keep an empty intersection rather than widening the user's filter
+                // or describing a recap whose end precedes its beginning.
+                effective.endDateExclusive = effective.startDate
+                return .init(text: "The selected date range does not overlap the past seven days. Adjust the date filter to prepare a weekly recap.", scope: effective)
+            }
             let through = effective.endDateExclusive!.addingTimeInterval(-1)
             return .init(text: "Summarize meetings from \(effective.startDate!.formatted(date: .abbreviated, time: .omitted)) through \(through.formatted(date: .abbreviated, time: .omitted)). Include decisions, commitments, risks, and unresolved questions with citations. State when coverage is partial.", scope: effective)
         }

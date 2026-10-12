@@ -1171,7 +1171,8 @@ struct MeetingDetailView: View {
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
         Menu {
             Button {
-                MeetingExporter.export(meeting: meeting, content: currentContent)
+                MeetingExporter.export(meeting: meeting, content: currentContent,
+                    notesOverride: Self.notesExportOverride(for: meeting, citation: citationTarget(for: meeting)?.citation))
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
@@ -1817,6 +1818,12 @@ struct MeetingDetailView: View {
 
     private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
         meeting.status == .noteOnly || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
+    }
+
+    /// The notes action exports the same source the detail view displays. Other
+    /// export modes retain their normal transcript/full-meeting composition.
+    static func notesExportOverride(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String? {
+        usesManualNotes(for: meeting, citation: citation) ? meeting.manualNotes : nil
     }
 
     static func notesCopyContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {

@@ -16,6 +16,119 @@ struct MeetingChatRetrievalTests {
             rawTranscript: text, formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
     }
 
+    @Test func concurrentFTSSetupDoesNotDuplicateBackfill() async throws {
+        let store = try database()
+        _ = try insert(store, text: "sunflower launch")
+        let url = store.resolvedDatabaseURL
+        _ = try MeetingChatRetrieval(databaseURL: url, useFTS: false).prepareIndex()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { _ = try MeetingChatRetrieval(databaseURL: url).prepareIndex() }
+            }
+            try await group.waitForAll()
+        }
+        let evidence = try MeetingChatRetrieval(databaseURL: url).retrieve(question: "sunflower", scope: .init())
+        #expect(evidence.passages.count == 1)
+        let count = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(count == 1)
+    }
+
+    @Test func interruptedFTSSetupRepairsMissingTriggersAndBackfills() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_removed_v2", db: db)
+            try MeetingChatSQL.execute("DELETE FROM meeting_chat_fts", db: db)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.deleteMeeting(id: id)
+        let count = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(count == 0)
+    }
+
+    @Test func legacyPassageCacheMigratesAndRowIDsSurviveVacuum() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_inserted_v2", db: db)
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_removed_v2", db: db)
+            try MeetingChatSQL.execute("DROP TABLE meeting_chat_fts", db: db)
+            try MeetingChatSQL.execute("DROP TABLE meeting_chat_passages", db: db)
+            try MeetingChatSQL.execute("CREATE TABLE meeting_chat_passages (id TEXT PRIMARY KEY, meeting_id INTEGER, revision TEXT, text TEXT, body TEXT)", db: db)
+            try MeetingChatSQL.execute("CREATE VIRTUAL TABLE meeting_chat_fts USING fts5(id UNINDEXED,text)", db: db)
+            try MeetingChatSQL.migrate(db: db)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("VACUUM", db: db)
+            let trigger = try MeetingChatSQL.rows("SELECT sql FROM sqlite_master WHERE name='meeting_chat_passage_removed_v2'", db: db) { MeetingChatSQL.text($0, 0) }.first
+            #expect(trigger?.contains("WHERE rowid=OLD.seq") == true)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.deleteMeeting(id: id)
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.isEmpty)
+    }
+
+    @Test func folderMovePreservesContentHistoryAndGeneratedTitle() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let folder = try store.createFolder(name: "Planning")
+        let chat = MeetingChatStore(databaseURL: store.resolvedDatabaseURL)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let session = try chat.createSession(scope: scope, title: "New chat")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Launch?", scope: scope, provider: "test", model: "test")
+        #expect(turn.scopeLabel == "1 selected meeting")
+        let source = try #require(chat.sourceSnapshots(scope: scope).first)
+        let deps = [MeetingChatDependency(meetingID: id, revision: source.revision)]
+        try chat.attachEvidence(turnID: turn.id, dependencies: deps)
+        try store.moveMeeting(id: id, toFolder: folder)
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Sunflower launch", citations: [], dependencies: deps))
+        #expect(try chat.updateTitleIfAutomatic(turnID: turn.id, attemptID: #require(turn.attemptID), title: "Launch"))
+        try store.moveMeeting(id: id, toFolder: nil)
+        #expect(try chat.sessions().first?.title == "Launch")
+        try store.moveMeeting(id: id, toFolder: folder)
+        try store.deleteFolder(id: folder)
+        #expect(try chat.sessions().first?.title == "Launch")
+        let next = try chat.beginTurn(sessionID: session.id, question: "Explain", scope: scope, provider: "test", model: "test")
+        #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
+        #expect(try chat.sourceSnapshots(scope: scope).first?.revision == source.revision)
+        let scoped = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "sunflower", scope: .init(selection: .folder(folder)))
+        #expect(scoped.passages.isEmpty)
+    }
+
+    @Test func revisionMigrationPreservesCurrentEvidenceButNotStaleEvidence() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let folder = try store.createFolder(name: "Planning")
+        try store.moveMeeting(id: id, toFolder: folder)
+        let chat = MeetingChatStore(databaseURL: store.resolvedDatabaseURL)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let session = try chat.createSession(scope: scope, title: "New chat")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Launch?", scope: scope, provider: "test", model: "test")
+        let source = try #require(chat.sourceSnapshots(scope: scope).first)
+        let deps = [MeetingChatDependency(meetingID: id, revision: source.revision)]
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Sunflower", citations: [], dependencies: deps))
+        let stale = try chat.beginTurn(sessionID: session.id, question: "Earlier", scope: scope, provider: "test", model: "test")
+        #expect(try chat.finishTurn(turnID: stale.id, answer: "Old facts", citations: [], dependencies: deps))
+        try store.withChatDatabase { db in
+            let old = try #require(MeetingChatSQL.snapshots(scope: scope, db: db, includesFolderInRevision: true).first).revision
+            try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision=? WHERE turn_id=?", [.text(old), .text(turn.id.uuidString)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision='stale-content' WHERE turn_id=?", [.text(stale.id.uuidString)], db: db)
+            try MeetingChatSQL.execute("DELETE FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db)
+            try MeetingChatSQL.migrate(db: db)
+        }
+        let next = try chat.beginTurn(sessionID: session.id, question: "Explain", scope: scope, provider: "test", model: "test")
+        #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
+    }
+
     @Test func findsMeetingBeyondBrowserWindow() throws {
         let store = try database()
         let oldest = try insert(store, text: "[00:00:05] You: The launch codeword is sunflower.")

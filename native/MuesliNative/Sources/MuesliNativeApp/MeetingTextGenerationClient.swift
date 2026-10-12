@@ -121,8 +121,13 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         case .openAI:
             guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
             url = URL(string: "https://api.openai.com/v1/responses")!
-            body = ["model": model, "instructions": input.system, "input": input.user, "store": false, "max_output_tokens": input.maxOutputTokens]
-            if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: config.meetingSummaryReasoningEffort) { body["reasoning"] = ["effort": effort] }
+            let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: config.meetingSummaryReasoningEffort)
+            // Responses counts reasoning and visible text against the same limit.
+            // Reserve space for reasoning plus the complete structured answer.
+            // https://developers.openai.com/api/docs/guides/reasoning
+            let budget = effort != nil && effort != "none" ? max(input.maxOutputTokens, 32_768) : input.maxOutputTokens
+            body = ["model": model, "instructions": input.system, "input": input.user, "store": false, "max_output_tokens": budget]
+            if let effort { body["reasoning"] = ["effort": effort] }
         case .openRouter:
             guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
             url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
@@ -134,7 +139,10 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         case .ollama:
             guard let base = URL(string: config.ollamaURL.isEmpty ? "http://localhost:11434" : config.ollamaURL), ["http", "https"].contains(base.scheme ?? "") else { throw MeetingTextGenerationError.invalidEndpoint }
             url = base.appendingPathComponent("api/chat")
-            body.removeValue(forKey: "max_tokens"); body["stream"] = false; body["options"] = ["num_predict": input.maxOutputTokens]
+            body.removeValue(forKey: "max_tokens"); body["stream"] = false
+            // Local models may think by default without a request-level flag.
+            // Keep a bounded allowance for both thinking and the answer envelope.
+            body["options"] = ["num_predict": max(input.maxOutputTokens, 8_192)]
         case .lmStudio:
             guard let resolved = MeetingSummaryClient.resolveLMStudioURL(config: config) else { throw MeetingTextGenerationError.invalidEndpoint }
             url = resolved

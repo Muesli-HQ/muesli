@@ -52,6 +52,31 @@ struct MeetingChatNotesActionTests {
         #expect(saved.formattedNotes == "## Decision\nLaunch Friday.")
     }
 
+    @Test func manualCitationExportsDisplayedNotesWithoutChangingOtherExportModes() throws {
+        let (_, _, meeting) = try fixture()
+        let override = MeetingDetailView.notesExportOverride(for: meeting, citation: citation(for: meeting, kind: .manualNotes))
+        let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: .notes, notesOverride: override)
+        #expect(markdown.contains(manual))
+        #expect(!markdown.contains(generated))
+        #expect(!markdown.contains("## Raw Transcript"))
+        // PDF and Markdown exports share this composition; neither may switch
+        // the cited written notes back to generated notes.
+        let pdfText = MeetingExporter.buildAttributedString(from: markdown).string
+        #expect(pdfText.contains("My written reminder."))
+        #expect(!pdfText.contains("Launch Friday."))
+        for content in [MeetingExportContent.fullMeeting, .transcript] {
+            #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content, notesOverride: override)
+                == MeetingExporter.buildMarkdown(meeting: meeting, content: content))
+        }
+    }
+
+    @Test func unrelatedOrGeneratedCitationKeepsDefaultNotesExport() throws {
+        let (_, _, meeting) = try fixture()
+        for source in [citation(for: meeting, kind: .generatedNotes), citation(for: meeting, kind: .manualNotes, meetingID: meeting.id + 1)] {
+            #expect(MeetingDetailView.notesExportOverride(for: meeting, citation: source) == nil)
+        }
+    }
+
     @Test func unrelatedManualCitationDoesNotChangeNotesActions() throws {
         let (controller, _, meeting) = try fixture()
         let otherSource = citation(for: meeting, kind: .manualNotes, meetingID: meeting.id + 1)

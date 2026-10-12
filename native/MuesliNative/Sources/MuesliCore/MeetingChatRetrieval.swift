@@ -31,7 +31,7 @@ public struct MeetingChatRetrieval: Sendable {
                         ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id ORDER BY \(originalsFirst),p.id),s.start_time DESC,p.id LIMIT 257
                         """, scopeBindings, db: db)
                 } else if ftsAvailable, !tokens.isEmpty,
-                          let matched = try? readPassages("SELECT p.body FROM meeting_chat_fts f JOIN meeting_chat_passages p ON p.id=f.id \(baseJoin) WHERE \(scopeCondition) AND meeting_chat_fts MATCH ? ORDER BY bm25(meeting_chat_fts),\(originalsFirst) LIMIT 257", scopeBindings + [.text(tokens.map { "\"\($0)\"" }.joined(separator: " OR "))], db: db) {
+                          let matched = try? readPassages("SELECT p.body FROM meeting_chat_fts f JOIN meeting_chat_passages p ON p.seq=f.rowid \(baseJoin) WHERE \(scopeCondition) AND meeting_chat_fts MATCH ? ORDER BY bm25(meeting_chat_fts),\(originalsFirst) LIMIT 257", scopeBindings + [.text(tokens.map { "\"\($0)\"" }.joined(separator: " OR "))], db: db) {
                     candidates = matched
                 } else {
                     let terms = tokens.isEmpty ? [question.trimmingCharacters(in: .whitespacesAndNewlines)] : tokens
@@ -93,7 +93,7 @@ public struct MeetingChatRetrieval: Sendable {
                         if !passages.isEmpty {
                             for passage in passages {
                                 let searchable = source.title + " " + source.participantNames.joined(separator: " ") + " " + passage.excerpt
-                                try MeetingChatSQL.execute("INSERT INTO meeting_chat_passages VALUES(?,?,?,?,?)", [.text(passage.id), .integer(id), .text(passage.revision), .text(searchable), .text(try MeetingChatSQL.encode(passage))], db: db)
+                                try MeetingChatSQL.execute("INSERT INTO meeting_chat_passages(id,meeting_id,revision,text,body) VALUES(?,?,?,?,?)", [.text(passage.id), .integer(id), .text(passage.revision), .text(searchable), .text(try MeetingChatSQL.encode(passage))], db: db)
                             }
                             try MeetingChatSQL.execute("INSERT INTO meeting_chat_index_state VALUES(?,?,?,?)", [.integer(id), .text(source.revision), .real(source.startDate.timeIntervalSince1970), source.folderID.map { .integer($0) } ?? .null], db: db)
                         }
@@ -123,13 +123,26 @@ public struct MeetingChatRetrieval: Sendable {
     }
     private func prepareFTS(db: OpaquePointer?) -> Bool {
         do {
-            let existed = try MeetingChatSQL.rows("SELECT name FROM sqlite_master WHERE name='meeting_chat_fts'", db: db) { MeetingChatSQL.text($0, 0) }.first != nil
-            if existed { return true }
-            try MeetingChatSQL.execute("CREATE VIRTUAL TABLE IF NOT EXISTS meeting_chat_fts USING fts5(id UNINDEXED,text)", db: db)
-            try MeetingChatSQL.execute("CREATE TRIGGER IF NOT EXISTS meeting_chat_passage_inserted AFTER INSERT ON meeting_chat_passages BEGIN INSERT INTO meeting_chat_fts(id,text) VALUES(NEW.id,NEW.text); END", db: db)
-            try MeetingChatSQL.execute("CREATE TRIGGER IF NOT EXISTS meeting_chat_passage_removed AFTER DELETE ON meeting_chat_passages BEGIN DELETE FROM meeting_chat_fts WHERE id=OLD.id; END", db: db)
-            if !existed { try MeetingChatSQL.execute("INSERT INTO meeting_chat_fts(id,text) SELECT id,text FROM meeting_chat_passages", db: db) }
-            return true
+            // Keep warm searches read-only. Setup is complete only when the current
+            // table and both triggers exist; interrupted/legacy setup is rebuilt.
+            func isReady() throws -> Bool {
+                let names = try MeetingChatSQL.rows("SELECT name FROM sqlite_master WHERE name IN ('meeting_chat_fts','meeting_chat_passage_inserted_v2','meeting_chat_passage_removed_v2')", db: db) { MeetingChatSQL.text($0, 0) }
+                return names.count == 3
+            }
+            if try isReady() { return true }
+            return try MeetingChatSQL.transaction(db: db) {
+                // Another connection may have finished setup while we waited.
+                if try isReady() { return true }
+                for name in ["meeting_chat_passage_inserted", "meeting_chat_passage_removed", "meeting_chat_passage_inserted_v2", "meeting_chat_passage_removed_v2"] {
+                    try MeetingChatSQL.execute("DROP TRIGGER IF EXISTS \(name)", db: db)
+                }
+                try MeetingChatSQL.execute("DROP TABLE IF EXISTS meeting_chat_fts", db: db)
+                try MeetingChatSQL.execute("CREATE VIRTUAL TABLE meeting_chat_fts USING fts5(text)", db: db)
+                try MeetingChatSQL.execute("CREATE TRIGGER meeting_chat_passage_inserted_v2 AFTER INSERT ON meeting_chat_passages BEGIN INSERT INTO meeting_chat_fts(rowid,text) VALUES(NEW.seq,NEW.text); END", db: db)
+                try MeetingChatSQL.execute("CREATE TRIGGER meeting_chat_passage_removed_v2 AFTER DELETE ON meeting_chat_passages BEGIN DELETE FROM meeting_chat_fts WHERE rowid=OLD.seq; END", db: db)
+                try MeetingChatSQL.execute("INSERT INTO meeting_chat_fts(rowid,text) SELECT seq,text FROM meeting_chat_passages", db: db)
+                return true
+            }
         } catch { return false }
     }
 }

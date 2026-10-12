@@ -229,7 +229,7 @@ public struct MeetingChatStore: Sendable {
         case .folder(let id):
             let name = try MeetingChatSQL.rows("SELECT name FROM meeting_folders WHERE id=?", [.integer(id)], db: db) { MeetingChatSQL.text($0, 0) }.first ?? "Folder"
             label = name + " · This folder only"
-        case .meetings(let ids): label = "\(ids.count) selected meetings"
+        case .meetings(let ids): label = ids.count == 1 ? "1 selected meeting" : "\(ids.count) selected meetings"
         }
         if let start = scope.startDate { label += " · From " + start.formatted(date: .abbreviated, time: .omitted) }
         if let end = scope.endDateExclusive { label += " through " + end.addingTimeInterval(-0.001).formatted(date: .abbreviated, time: .omitted) }

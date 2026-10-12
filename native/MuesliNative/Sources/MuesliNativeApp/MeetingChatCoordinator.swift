@@ -360,10 +360,7 @@ final class MeetingChatCoordinator {
                 submittedDraftKey = id
                 // An implicit first send turns the untitled composer into this chat.
                 // Move its latest text, including edits or a Stop during registration.
-                if composerDrafts[id] == nil {
-                    composerDrafts[id] = composerDrafts[nil]
-                    composerDrafts[nil] = nil
-                }
+                adoptUntitledComposerDraft(sessionID: id)
             }
         }
         guard activeRequestID == requestID, !Task.isCancelled, let id = requestSessionID else { return }
@@ -389,6 +386,13 @@ final class MeetingChatCoordinator {
             activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
             errorMessage = error.localizedDescription; reload()
         }
+    }
+    /// Registration may finish after refresh invalidated its selection ownership.
+    /// Only the session actually showing the composer may take its unsent text.
+    func adoptUntitledComposerDraft(sessionID: UUID) {
+        guard selectedSessionID == sessionID, composerDrafts[sessionID] == nil else { return }
+        composerDrafts[sessionID] = composerDrafts[nil]
+        composerDrafts[nil] = nil
     }
     func retry(turnID: UUID, config: AppConfig) async {
         guard !isBusy, !isUpdatingChat else { return }

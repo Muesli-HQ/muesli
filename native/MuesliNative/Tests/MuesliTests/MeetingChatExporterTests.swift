@@ -42,6 +42,18 @@ struct MeetingChatExporterTests {
         let narrowed = MeetingChatQuickAction.weeklyRecap.prepare(scope: .init(startDate: later), now: now, calendar: calendar, userDisplayName: nil)
         #expect(narrowed.scope.startDate == later)
     }
+    @Test(arguments: [-30, 30]) func weeklyRecapDoesNotInvertDisjointDateFilters(dayOffset: Int) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 3, day: 10, hour: 12))!
+        let start = calendar.date(byAdding: .day, value: dayOffset, to: now)!
+        let end = calendar.date(byAdding: .day, value: 1, to: start)!
+        let prepared = MeetingChatQuickAction.weeklyRecap.prepare(scope: .init(selection: .meetings([42]), startDate: start, endDateExclusive: end), now: now, calendar: calendar, userDisplayName: nil)
+        #expect(prepared.scope.startDate == prepared.scope.endDateExclusive)
+        #expect(prepared.scope.selection == .meetings([42]))
+        #expect(prepared.text.contains("does not overlap"))
+        #expect(!prepared.text.contains(" through "))
+    }
     @Test @MainActor func pdfPaginationIncludesSourceReferences() throws {
         var value = turn(); value.originalAnswer = (0..<120).map { "Decision \($0): launch Friday [[S1]]." }.joined(separator: "\n\n")
         let markdown = MeetingChatExporter.markdown(turn: value, session: session(), useEditedDraft: false)

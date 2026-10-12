@@ -435,6 +435,35 @@ struct MeetingChatClientTests {
         #expect(request.httpMethod == "POST")
         if backend == "openai" { #expect(body["store"] as? Bool == false) }
     }
+    @Test(arguments: [ReasoningEffort.off, .low, .high])
+    func openAIReasoningBudgetIncludesVisibleAnswer(effort: ReasoningEffort) throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"
+        config.openAIModel = "gpt-5.4-mini"; config.meetingSummaryReasoningEffort = effort
+        let request = try MeetingTextGenerationClient.makeRequest(.init(system: "System", user: "User", config: config), credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(body["max_output_tokens"] as? Int == (effort == .off ? 1_500 : 32_768))
+        #expect((body["reasoning"] as? [String: String])?["effort"] == effort.rawValue)
+    }
+
+    @Test func nonReasoningOpenAIPreservesRequestedBudget() throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"; config.openAIModel = "gpt-4o"
+        let request = try MeetingTextGenerationClient.makeRequest(.init(system: "System", user: "User", config: config, maxOutputTokens: 2_048), credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(body["max_output_tokens"] as? Int == 2_048)
+        #expect(body["reasoning"] == nil)
+    }
+
+    @Test(arguments: [1_500, 40_000]) func ollamaBudgetAccommodatesThinking(requested: Int) throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "ollama"; config.ollamaModel = "qwen3.5"
+        let request = try MeetingTextGenerationClient.makeRequest(.init(system: "System", user: "User", config: config, maxOutputTokens: requested), credential: "")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((body["options"] as? [String: Int])?["num_predict"] == max(requested, 8_192))
+        #expect(body["reasoning"] == nil)
+    }
+
     @Test func buildsAnthropicFormatAndRejectsMissingCredentials() throws {
         var config = AppConfig(); config.meetingSummaryBackend = "custom_llm"; config.customLLMFormat = "anthropic"
         config.customLLMModel = "test"; config.customLLMURL = "http://localhost:1234"

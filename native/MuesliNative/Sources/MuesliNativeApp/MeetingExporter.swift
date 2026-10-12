@@ -51,9 +51,9 @@ struct MeetingExporter {
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(meeting: MeetingRecord, content: MeetingExportContent) {
+    static func export(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) {
         DispatchQueue.main.async {
-            let markdown = buildMarkdown(meeting: meeting, content: content)
+            let markdown = buildMarkdown(meeting: meeting, content: content, notesOverride: notesOverride)
             let filename = suggestedFilename(meeting: meeting, content: content)
 
             let panel = NSSavePanel()
@@ -97,12 +97,14 @@ struct MeetingExporter {
         return parts.joined(separator: "\n")
     }
 
-    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) -> String {
         var parts: [String] = [metadataHeader(for: meeting)]
 
         switch content {
         case .notes:
-            if meeting.notesState == .structuredNotes {
+            if let notesOverride {
+                parts.append(notesOverride)
+            } else if meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available. Raw transcript included below.*")

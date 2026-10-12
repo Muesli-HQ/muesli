@@ -201,6 +201,22 @@ struct MeetingChatReviewTests {
         #expect(coordinator.composerDraft == "My newer question")
     }
 
+    @Test func invalidatedRegistrationCannotTakeTheUntitledDraft() async throws {
+        let (store, coordinator) = try fixture()
+        await coordinator.waitForIdle()
+        coordinator.composerDraft = "Keep my unsent question"
+        // Reproduce the state after a worker committed registration, but before
+        // its continuation resumes: the new session has not won selection yet.
+        let registered = try coordinator.store.createSession(scope: .init(), title: "New chat")
+        _ = try store.insertMeeting(title: "Source changed", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "Updated", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        coordinator.refreshForSourceChanges()
+        coordinator.adoptUntitledComposerDraft(sessionID: registered.id)
+        #expect(coordinator.selectedSessionID == nil)
+        #expect(coordinator.composerDraft == "Keep my unsent question")
+        coordinator.selectChat(id: registered.id)
+        #expect(coordinator.composerDraft.isEmpty)
+    }
+
     @Test func queuedImplicitCreationCannotRecreateWipedHistory() async throws {
         let probe = ReviewReplyProbe()
         let (store, coordinator) = try fixture(generator: probe)

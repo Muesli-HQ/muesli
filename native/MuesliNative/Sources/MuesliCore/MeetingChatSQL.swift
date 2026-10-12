@@ -65,7 +65,7 @@ enum MeetingChatSQL {
             "CREATE TABLE IF NOT EXISTS meeting_chat_turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES meeting_chat_sessions(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(session_id, ordinal))",
             "CREATE TABLE IF NOT EXISTS meeting_chat_dependencies (turn_id TEXT NOT NULL REFERENCES meeting_chat_turns(id) ON DELETE CASCADE, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, PRIMARY KEY(turn_id,meeting_id))",
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_dependencies_source ON meeting_chat_dependencies(meeting_id)",
-            "CREATE TABLE IF NOT EXISTS meeting_chat_passages (id TEXT PRIMARY KEY, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, text TEXT NOT NULL, body TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS meeting_chat_passages (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, text TEXT NOT NULL, body TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_passages_source ON meeting_chat_passages(meeting_id)",
             "CREATE TABLE IF NOT EXISTS meeting_chat_dirty_sources (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE)",
             "CREATE TABLE IF NOT EXISTS meeting_chat_index_state (meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, start_time REAL NOT NULL, folder_id INTEGER)",
@@ -118,6 +118,22 @@ enum MeetingChatSQL {
             """
         ]
         for sql in statements { try execute(sql, db: db) }
+        // Passages are a rebuildable cache. Explicit integer keys survive VACUUM
+        // and let FTS deletion use a rowid lookup rather than scanning all text.
+        try transaction(db: db) {
+            let columns = try rows("PRAGMA table_info(meeting_chat_passages)", db: db) { text($0, 1) }
+            if !columns.contains("seq") {
+                for name in ["meeting_chat_passage_inserted", "meeting_chat_passage_removed"] {
+                    try execute("DROP TRIGGER IF EXISTS \(name)", db: db)
+                }
+                try execute("DROP TABLE IF EXISTS meeting_chat_fts", db: db)
+                try execute("DROP TABLE meeting_chat_passages", db: db)
+                try execute("CREATE TABLE meeting_chat_passages (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, text TEXT NOT NULL, body TEXT NOT NULL)", db: db)
+                try execute("CREATE INDEX idx_meeting_chat_passages_source ON meeting_chat_passages(meeting_id)", db: db)
+                try execute("DELETE FROM meeting_chat_index_state", db: db)
+                try execute("INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM meetings WHERE deleted_at IS NULL", db: db)
+            }
+        }
         try execute("""
             CREATE TRIGGER IF NOT EXISTS meeting_chat_unlink_deleted_source AFTER UPDATE OF deleted_at ON meetings
             WHEN NEW.deleted_at IS NOT NULL BEGIN
@@ -143,11 +159,19 @@ enum MeetingChatSQL {
                 try execute("INSERT INTO local_migrations VALUES('meeting_chat_session_meetings_v1',strftime('%s','now'))", db: db)
             }
         }
-        try execute("""
-            CREATE TRIGGER IF NOT EXISTS meeting_chat_generated_title_source_changed
-            AFTER UPDATE OF deleted_at,title,start_time,folder_id,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
-            BEGIN \(invalidateGeneratedTitlesSQL(sourceExpression: "NEW.id")); END
-            """, db: db)
+        // Replace the old folder-sensitive trigger once, under the writer lock,
+        // so concurrent source edits can never slip between DROP and CREATE.
+        try transaction(db: db) {
+            if (try rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_title_content_trigger_v2'", db: db) { _ in true }).isEmpty {
+                try execute("DROP TRIGGER IF EXISTS meeting_chat_generated_title_source_changed", db: db)
+                try execute("""
+                    CREATE TRIGGER meeting_chat_generated_title_source_changed
+                    AFTER UPDATE OF deleted_at,title,start_time,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
+                    BEGIN \(invalidateGeneratedTitlesSQL(sourceExpression: "NEW.id")); END
+                    """, db: db)
+                try execute("INSERT INTO local_migrations VALUES('meeting_chat_title_content_trigger_v2',strftime('%s','now'))", db: db)
+            }
+        }
         try execute("""
             CREATE TRIGGER IF NOT EXISTS meeting_chat_generated_title_source_purged BEFORE DELETE ON meetings
             BEGIN \(invalidateGeneratedTitlesSQL(sourceExpression: "OLD.id")); END
@@ -186,6 +210,38 @@ enum MeetingChatSQL {
             WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_incremental_index_v1')
             """, db: db)
         try execute("INSERT OR IGNORE INTO local_migrations VALUES('meeting_chat_incremental_index_v1',strftime('%s','now'))", db: db)
+        try migrateContentRevisions(db: db)
+    }
+
+    /// Upgrade only revisions that still match the source exactly. Stale or
+    /// deleted evidence must never become valid just because the hash changed.
+    private static func migrateContentRevisions(db: OpaquePointer?) throws {
+        try transaction(db: db) {
+            if !(try rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db) { _ in true }).isEmpty { return }
+            var afterID: Int64 = 0
+            while true {
+                let current = try snapshots(scope: .init(), db: db, afterID: afterID)
+                guard let last = current.last else { break }
+                let legacy = try snapshots(scope: .init(), db: db, afterID: afterID, includesFolderInRevision: true)
+                let oldRevisions = Dictionary(uniqueKeysWithValues: legacy.map { ($0.meetingID, $0.revision) })
+                for source in current {
+                    guard let old = oldRevisions[source.meetingID], old != source.revision else { continue }
+                    let turns = try rows("SELECT body FROM meeting_chat_turns WHERE id IN (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=? AND revision=?)", [.integer(source.meetingID), .text(old)], db: db) {
+                        try decode(MeetingChatTurn.self, text($0, 0))
+                    }
+                    for var turn in turns {
+                        for index in turn.citations.indices where turn.citations[index].meetingID == source.meetingID && turn.citations[index].revision == old {
+                            turn.citations[index].revision = source.revision
+                        }
+                        try execute("UPDATE meeting_chat_turns SET body=? WHERE id=?", [.text(try encode(turn)), .text(turn.id.uuidString)], db: db)
+                    }
+                    try execute("UPDATE meeting_chat_dependencies SET revision=? WHERE meeting_id=? AND revision=?", [.text(source.revision), .integer(source.meetingID), .text(old)], db: db)
+                }
+                afterID = last.meetingID
+            }
+            try execute("INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM meetings WHERE deleted_at IS NULL", db: db)
+            try execute("INSERT INTO local_migrations VALUES('meeting_chat_content_revision_v2',strftime('%s','now'))", db: db)
+        }
     }
 
     private static func invalidateGeneratedTitlesSQL(sourceExpression: String) -> String {
@@ -219,7 +275,7 @@ enum MeetingChatSQL {
         try execute("DELETE FROM meeting_chat_dirty_sources", db: db)
     }
 
-    static func snapshots(scope: MeetingChatScope, db: OpaquePointer?, afterID: Int64 = 0, limit: Int = 200) throws -> [MeetingChatSourceSnapshot] {
+    static func snapshots(scope: MeetingChatScope, db: OpaquePointer?, afterID: Int64 = 0, limit: Int = 200, includesFolderInRevision: Bool = false) throws -> [MeetingChatSourceSnapshot] {
         var clause = "m.deleted_at IS NULL AND m.meeting_status NOT IN ('recording','processing') AND m.id>?"
         var bindings: [Value] = [.integer(afterID)]
         switch scope.selection {
@@ -241,7 +297,10 @@ enum MeetingChatSQL {
             let date = parseDate(fields[1]) ?? .distantPast
             let transcript = fields[3]
             let notes = fields[5].hasPrefix("## Summary failed") || fields[5].hasPrefix("## Raw Transcript") ? "" : fields[5]
-            let revisionData = try JSONEncoder().encode(fields)
+            // Folder membership changes retrieval scope, never source content.
+            var contentFields = fields
+            if !includesFolderInRevision { contentFields[2] = "" }
+            let revisionData = try JSONEncoder().encode(contentFields)
             let revision = SHA256.hash(data: revisionData).map { String(format: "%02x", $0) }.joined()
             return MeetingChatSourceSnapshot(meetingID: sqlite3_column_int64(s, 0), title: fields[0], startDate: date,
                 folderID: sqlite3_column_type(s, 3) == SQLITE_NULL ? nil : sqlite3_column_int64(s, 3), transcript: transcript,
