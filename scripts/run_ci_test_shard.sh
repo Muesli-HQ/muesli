@@ -151,6 +151,17 @@ case "${shard}" in
       CustomLLMRequestHeadersTests
       SettingsModelFieldTests
       MeetingSummaryClientTests
+      MeetingChatStoreTests
+      MeetingChatRetrievalTests
+      MeetingChatClientTests
+      MeetingChatContextBudgetTests
+      MeetingChatNativeBudgetTests
+      MeetingChatNavigationTests
+      MeetingChatExporterTests
+      MeetingChatNotesActionTests
+      MeetingChatReviewTests
+      MeetingChatPresentationTests
+      MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests

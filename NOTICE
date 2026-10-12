@@ -9,3 +9,9 @@ A copy of the Apache License, Version 2.0 is included alongside those
 sources in LICENSE-Apache-2.0. The files were copied from FluidAudio
 v0.15.1 (ASR/Qwen3/) and renamed with a MuesliQwen3 prefix; this
 distribution preserves that origin and license.
+
+Muesli includes AI Elements Swift (native/AIElementsSwift), an independent
+SwiftUI adaptation of Vercel AI Elements concepts, licensed under Apache-2.0.
+It includes Lucide icons under ISC/MIT. Attribution, pinned revisions, and
+complete license notices are retained in native/AIElementsSwift/NOTICE and
+native/AIElementsSwift/Licenses/.

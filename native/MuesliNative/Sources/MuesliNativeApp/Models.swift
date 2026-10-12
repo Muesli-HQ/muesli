@@ -1097,6 +1097,7 @@ enum ReasoningEffortPolicy {
 struct SummaryModelPreset {
     let id: String
     let label: String
+    var contextWindowTokens: Int? = nil
 
     static let openAIModels: [SummaryModelPreset] = [
         SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
@@ -1284,7 +1285,7 @@ enum OpenRouterModelCatalogFilter {
                 }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel) }
+            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel, contextWindowTokens: $0.contextLength) }
     }
 
     static func transcriptionPresets(from models: [OpenRouterModel]) -> [SummaryModelPreset] {

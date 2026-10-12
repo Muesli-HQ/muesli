@@ -1,0 +1,15 @@
+AI Elements Swift
+Copyright 2026 Muesli contributors
+
+An independent SwiftUI adaptation of composition and interaction patterns from
+Vercel AI Elements (https://github.com/vercel/ai-elements).
+Copyright 2023 Vercel, Inc. Licensed under Apache License 2.0.
+Reference revision: 6a9d5b1822ffb10bba4bd97175f01edd7d8651cd.
+The implementation is rewritten for SwiftUI; React/DOM code is not executed.
+This library is not affiliated with or endorsed by Vercel.
+
+Contains modified (SVG-to-SwiftUI converted) Lucide icon artwork.
+Copyright (c) 2026 Lucide Icons and Contributors, ISC License.
+Feather-derived artwork: Copyright (c) 2013-present Cole Bemis, MIT License.
+Full terms and original notices: Licenses/Lucide-LICENSE.
+Reference revision: 70562c1ee1c4fdcf736fe97bc893fb8511927934.
