@@ -5,9 +5,9 @@ public enum AIReasoningState: Equatable, Sendable {
 
     public var label: String {
         switch self {
-        case .waiting: "Waiting for summary"
-        case .streaming: "Preparing answer"
-        case .completed: "Summary complete"
+        case .waiting: "Thinking…"
+        case .streaming: "Thinking…"
+        case .completed: "Reasoning"
         }
     }
 }
@@ -47,17 +47,14 @@ public struct AIReasoning: View {
             }
         } label: {
             HStack(spacing: 8) {
-                AIIcon(.cpu, size: 14).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Reasoning summary").font(.system(size: 12, weight: .medium))
-                    Group {
-                        if state == .completed {
-                            Text(state.label)
-                        } else {
-                            AIShimmer(state.label)
-                        }
-                    }.font(.system(size: 11)).foregroundStyle(theme.muted)
-                }
+                AIIcon(.brain, size: 16).accessibilityHidden(true)
+                Group {
+                    if state == .completed {
+                        Text(state.label)
+                    } else {
+                        AIShimmer(state.label)
+                    }
+                }.font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
                 if let duration = Self.durationLabel(elapsedSeconds) {
                     Text(duration).font(.system(size: 11).monospacedDigit())
@@ -67,10 +64,8 @@ public struct AIReasoning: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .tint(theme.muted)
-        .padding(12)
-        .background(theme.surface, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.border, lineWidth: 1))
+        .foregroundStyle(theme.muted)
+        .disclosureGroupStyle(AIElementsDisclosureStyle())
     }
 
     // Reasoning is explanatory content, not a source of executable links/actions.

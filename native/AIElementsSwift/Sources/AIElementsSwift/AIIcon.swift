@@ -4,20 +4,42 @@ import SwiftUI
 
 public enum AIIconName: String, CaseIterable, Sendable {
     case archive
+    case arrowDown
+    case arrowLeft
+    case arrowRight
     case arrowUpRight
     case arrowUp
     case atSign
     case bookOpen
+    case book
+    case bookmark
+    case brain
     case check
     case chevronDown
+    case chevronLeft
+    case chevronRight
+    case chevronUp
+    case chevronsUpDown
     case circleAlert
+    case circleCheckBig
+    case circleX
+    case circle
+    case clock
     case copy
+    case cornerDownLeft
     case cpu
+    case dot
     case download
     case ellipsis
     case fileText
+    case globe
+    case image
+    case loaderCircle
     case loader
+    case monitor
+    case music2
     case panelLeft
+    case paperclip
     case plus
     case rotateCcw
     case search
@@ -25,6 +47,8 @@ public enum AIIconName: String, CaseIterable, Sendable {
     case squarePen
     case square
     case trash
+    case video
+    case wrench
     case x
 }
 
@@ -60,6 +84,24 @@ struct LucideShape: Shape {
             p.addLine(to: CGPoint(x: 20.00000000, y: 8.00000000))
             p.move(to: CGPoint(x: 10.00000000, y: 12.00000000))
             p.addLine(to: CGPoint(x: 14.00000000, y: 12.00000000))
+        case .arrowDown:
+            p.move(to: CGPoint(x: 12.00000000, y: 5.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 19.00000000))
+            p.move(to: CGPoint(x: 19.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 19.00000000))
+            p.addLine(to: CGPoint(x: 5.00000000, y: 12.00000000))
+        case .arrowLeft:
+            p.move(to: CGPoint(x: 12.00000000, y: 19.00000000))
+            p.addLine(to: CGPoint(x: 5.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 5.00000000))
+            p.move(to: CGPoint(x: 19.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 5.00000000, y: 12.00000000))
+        case .arrowRight:
+            p.move(to: CGPoint(x: 5.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 19.00000000, y: 12.00000000))
+            p.move(to: CGPoint(x: 12.00000000, y: 5.00000000))
+            p.addLine(to: CGPoint(x: 19.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 19.00000000))
         case .arrowUpRight:
             p.move(to: CGPoint(x: 7.00000000, y: 7.00000000))
             p.addLine(to: CGPoint(x: 17.00000000, y: 7.00000000))
@@ -101,6 +143,64 @@ struct LucideShape: Shape {
             p.addCurve(to: CGPoint(x: 12.00000000, y: 21.00000000), control1: CGPoint(x: 9.57378652, y: 19.00000000), control2: CGPoint(x: 11.05572809, y: 19.74097079))
             p.addCurve(to: CGPoint(x: 16.00000000, y: 19.00000000), control1: CGPoint(x: 12.94427191, y: 19.74097079), control2: CGPoint(x: 14.42621348, y: 19.00000000))
             p.closeSubpath()
+        case .book:
+            p.move(to: CGPoint(x: 4.00000000, y: 19.50000000))
+            p.addLine(to: CGPoint(x: 4.00000000, y: 4.50000000))
+            p.addCurve(to: CGPoint(x: 6.50000000, y: 2.00000000), control1: CGPoint(x: 4.00000000, y: 3.11928813), control2: CGPoint(x: 5.11928813, y: 2.00000000))
+            p.addLine(to: CGPoint(x: 19.00000000, y: 2.00000000))
+            p.addCurve(to: CGPoint(x: 20.00000000, y: 3.00000000), control1: CGPoint(x: 19.55228475, y: 2.00000000), control2: CGPoint(x: 20.00000000, y: 2.44771525))
+            p.addLine(to: CGPoint(x: 20.00000000, y: 21.00000000))
+            p.addCurve(to: CGPoint(x: 19.00000000, y: 22.00000000), control1: CGPoint(x: 20.00000000, y: 21.55228475), control2: CGPoint(x: 19.55228475, y: 22.00000000))
+            p.addLine(to: CGPoint(x: 6.50000000, y: 22.00000000))
+            p.addCurve(to: CGPoint(x: 4.00000000, y: 19.50000000), control1: CGPoint(x: 5.11928813, y: 22.00000000), control2: CGPoint(x: 4.00000000, y: 20.88071187))
+            p.addCurve(to: CGPoint(x: 6.50000000, y: 17.00000000), control1: CGPoint(x: 4.00000000, y: 18.11928813), control2: CGPoint(x: 5.11928813, y: 17.00000000))
+            p.addLine(to: CGPoint(x: 20.00000000, y: 17.00000000))
+        case .bookmark:
+            p.move(to: CGPoint(x: 17.00000000, y: 3.00000000))
+            p.addCurve(to: CGPoint(x: 19.00000000, y: 5.00000000), control1: CGPoint(x: 18.10456950, y: 3.00000000), control2: CGPoint(x: 19.00000000, y: 3.89543050))
+            p.addLine(to: CGPoint(x: 19.00000000, y: 20.00000000))
+            p.addCurve(to: CGPoint(x: 18.50185658, y: 20.86462839), control1: CGPoint(x: 18.99988507, y: 20.35638414), control2: CGPoint(x: 18.81011138, y: 20.68577467))
+            p.addCurve(to: CGPoint(x: 17.50400000, y: 20.86800000), control1: CGPoint(x: 18.19360178, y: 21.04348211), control2: CGPoint(x: 17.81345638, y: 21.04476656))
+            p.addLine(to: CGPoint(x: 12.99200000, y: 18.29000000))
+            p.addCurve(to: CGPoint(x: 11.00800000, y: 18.29000000), control1: CGPoint(x: 12.37727677, y: 17.93886006), control2: CGPoint(x: 11.62272323, y: 17.93886006))
+            p.addLine(to: CGPoint(x: 6.49600000, y: 20.86800000))
+            p.addCurve(to: CGPoint(x: 5.49814342, y: 20.86462839), control1: CGPoint(x: 6.18654362, y: 21.04476656), control2: CGPoint(x: 5.80639822, y: 21.04348211))
+            p.addCurve(to: CGPoint(x: 5.00000000, y: 20.00000000), control1: CGPoint(x: 5.18988862, y: 20.68577467), control2: CGPoint(x: 5.00011493, y: 20.35638414))
+            p.addLine(to: CGPoint(x: 5.00000000, y: 5.00000000))
+            p.addCurve(to: CGPoint(x: 7.00000000, y: 3.00000000), control1: CGPoint(x: 5.00000000, y: 3.89543050), control2: CGPoint(x: 5.89543050, y: 3.00000000))
+            p.closeSubpath()
+        case .brain:
+            p.move(to: CGPoint(x: 12.00000000, y: 18.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 5.00000000))
+            p.move(to: CGPoint(x: 15.00000000, y: 13.00000000))
+            p.addCurve(to: CGPoint(x: 12.00000000, y: 9.00000000), control1: CGPoint(x: 13.22288825, y: 12.48051975), control2: CGPoint(x: 12.00110975, y: 10.85148175))
+            p.addCurve(to: CGPoint(x: 9.00000000, y: 13.00000000), control1: CGPoint(x: 11.99889025, y: 10.85148175), control2: CGPoint(x: 10.77711175, y: 12.48051975))
+            p.move(to: CGPoint(x: 17.59800000, y: 6.50000000))
+            p.addCurve(to: CGPoint(x: 17.29817036, y: 3.07154931), control1: CGPoint(x: 18.22867044, y: 5.40777491), control2: CGPoint(x: 18.10885475, y: 4.03772304))
+            p.addCurve(to: CGPoint(x: 13.97390462, y: 2.18080287), control1: CGPoint(x: 16.48748596, y: 2.10537559), control2: CGPoint(x: 15.15906770, y: 1.74942215))
+            p.addCurve(to: CGPoint(x: 12.00000000, y: 5.00000000), control1: CGPoint(x: 12.78874154, y: 2.61218359), control2: CGPoint(x: 11.99994451, y: 3.73877010))
+            p.addCurve(to: CGPoint(x: 10.02609538, y: 2.18080287), control1: CGPoint(x: 12.00005549, y: 3.73877010), control2: CGPoint(x: 11.21125846, y: 2.61218359))
+            p.addCurve(to: CGPoint(x: 6.70182964, y: 3.07154931), control1: CGPoint(x: 8.84093230, y: 1.74942215), control2: CGPoint(x: 7.51251404, y: 2.10537559))
+            p.addCurve(to: CGPoint(x: 6.40200000, y: 6.50000000), control1: CGPoint(x: 5.89114525, y: 4.03772304), control2: CGPoint(x: 5.77132956, y: 5.40777491))
+            p.move(to: CGPoint(x: 17.99700000, y: 5.12500000))
+            p.addCurve(to: CGPoint(x: 20.66515640, y: 7.39484834), control1: CGPoint(x: 19.18802076, y: 5.43123945), control2: CGPoint(x: 20.17197860, y: 6.26830997))
+            p.addCurve(to: CGPoint(x: 20.52300000, y: 10.89500000), control1: CGPoint(x: 21.15833421, y: 8.52138671), control2: CGPoint(x: 21.10591003, y: 9.81216624))
+            p.move(to: CGPoint(x: 18.00000000, y: 18.00000000))
+            p.addCurve(to: CGPoint(x: 21.86352380, y: 15.03528933), control1: CGPoint(x: 19.81035223, y: 17.99992035), control2: CGPoint(x: 21.39496421, y: 16.78395372))
+            p.addCurve(to: CGPoint(x: 20.00000000, y: 10.53600000), control1: CGPoint(x: 22.33208338, y: 13.28662495), control2: CGPoint(x: 21.56776503, y: 11.44125576))
+            p.move(to: CGPoint(x: 19.96700000, y: 17.48300000))
+            p.addCurve(to: CGPoint(x: 18.29030497, y: 21.27513517), control1: CGPoint(x: 20.15798691, y: 18.96066709), control2: CGPoint(x: 19.51184897, y: 20.42201954))
+            p.addCurve(to: CGPoint(x: 14.15273272, y: 21.54363333), control1: CGPoint(x: 17.06876097, y: 22.12825080), control2: CGPoint(x: 15.47428949, y: 22.23172033))
+            p.addCurve(to: CGPoint(x: 12.00000000, y: 18.00000000), control1: CGPoint(x: 12.83117595, y: 20.85554634), control2: CGPoint(x: 12.00159021, y: 19.48995754))
+            p.addCurve(to: CGPoint(x: 9.84726728, y: 21.54363333), control1: CGPoint(x: 11.99840979, y: 19.48995754), control2: CGPoint(x: 11.16882405, y: 20.85554634))
+            p.addCurve(to: CGPoint(x: 5.70969503, y: 21.27513517), control1: CGPoint(x: 8.52571051, y: 22.23172033), control2: CGPoint(x: 6.93123903, y: 22.12825080))
+            p.addCurve(to: CGPoint(x: 4.03300000, y: 17.48300000), control1: CGPoint(x: 4.48815103, y: 20.42201954), control2: CGPoint(x: 3.84201309, y: 18.96066709))
+            p.move(to: CGPoint(x: 6.00000000, y: 18.00000000))
+            p.addCurve(to: CGPoint(x: 2.13647620, y: 15.03528933), control1: CGPoint(x: 4.18964777, y: 17.99992035), control2: CGPoint(x: 2.60503579, y: 16.78395372))
+            p.addCurve(to: CGPoint(x: 4.00000000, y: 10.53600000), control1: CGPoint(x: 1.66791662, y: 13.28662495), control2: CGPoint(x: 2.43223497, y: 11.44125576))
+            p.move(to: CGPoint(x: 6.00300000, y: 5.12500000))
+            p.addCurve(to: CGPoint(x: 3.33484360, y: 7.39484834), control1: CGPoint(x: 4.81197924, y: 5.43123945), control2: CGPoint(x: 3.82802140, y: 6.26830997))
+            p.addCurve(to: CGPoint(x: 3.47700000, y: 10.89500000), control1: CGPoint(x: 2.84166579, y: 8.52138671), control2: CGPoint(x: 2.89408997, y: 9.81216624))
         case .check:
             p.move(to: CGPoint(x: 20.00000000, y: 6.00000000))
             p.addLine(to: CGPoint(x: 9.00000000, y: 17.00000000))
@@ -109,12 +209,53 @@ struct LucideShape: Shape {
             p.move(to: CGPoint(x: 6.00000000, y: 9.00000000))
             p.addLine(to: CGPoint(x: 12.00000000, y: 15.00000000))
             p.addLine(to: CGPoint(x: 18.00000000, y: 9.00000000))
+        case .chevronLeft:
+            p.move(to: CGPoint(x: 15.00000000, y: 18.00000000))
+            p.addLine(to: CGPoint(x: 9.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 15.00000000, y: 6.00000000))
+        case .chevronRight:
+            p.move(to: CGPoint(x: 9.00000000, y: 18.00000000))
+            p.addLine(to: CGPoint(x: 15.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 9.00000000, y: 6.00000000))
+        case .chevronUp:
+            p.move(to: CGPoint(x: 18.00000000, y: 15.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 9.00000000))
+            p.addLine(to: CGPoint(x: 6.00000000, y: 15.00000000))
+        case .chevronsUpDown:
+            p.move(to: CGPoint(x: 7.00000000, y: 15.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 20.00000000))
+            p.addLine(to: CGPoint(x: 17.00000000, y: 15.00000000))
+            p.move(to: CGPoint(x: 7.00000000, y: 9.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 4.00000000))
+            p.addLine(to: CGPoint(x: 17.00000000, y: 9.00000000))
         case .circleAlert:
             p.addEllipse(in: CGRect(x: 2.0, y: 2.0, width: 20.0, height: 20.0))
             p.move(to: CGPoint(x: 12.00000000, y: 8.00000000))
             p.addLine(to: CGPoint(x: 12.00000000, y: 12.00000000))
             p.move(to: CGPoint(x: 12.00000000, y: 16.00000000))
             p.addLine(to: CGPoint(x: 12.01000000, y: 16.00000000))
+        case .circleCheckBig:
+            p.move(to: CGPoint(x: 21.80100000, y: 10.00000000))
+            p.addCurve(to: CGPoint(x: 16.01251451, y: 21.15731861), control1: CGPoint(x: 22.74208714, y: 14.61851981), control2: CGPoint(x: 20.33034522, y: 19.26715771))
+            p.addCurve(to: CGPoint(x: 3.88827649, y: 17.84142124), control1: CGPoint(x: 11.69468380, y: 23.04747950), control2: CGPoint(x: 6.64318402, y: 21.66592836))
+            p.addCurve(to: CGPoint(x: 4.58365122, y: 5.29117117), control1: CGPoint(x: 1.13336896, y: 14.01691412), control2: CGPoint(x: 1.42309317, y: 8.78791867))
+            p.addCurve(to: CGPoint(x: 17.00000000, y: 3.33500000), control1: CGPoint(x: 7.74420926, y: 1.79442367), control2: CGPoint(x: 12.91741545, y: 0.97939528))
+            p.move(to: CGPoint(x: 9.00000000, y: 11.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 14.00000000))
+            p.addLine(to: CGPoint(x: 22.00000000, y: 4.00000000))
+        case .circleX:
+            p.addEllipse(in: CGRect(x: 2.0, y: 2.0, width: 20.0, height: 20.0))
+            p.move(to: CGPoint(x: 15.00000000, y: 9.00000000))
+            p.addLine(to: CGPoint(x: 9.00000000, y: 15.00000000))
+            p.move(to: CGPoint(x: 9.00000000, y: 9.00000000))
+            p.addLine(to: CGPoint(x: 15.00000000, y: 15.00000000))
+        case .circle:
+            p.addEllipse(in: CGRect(x: 2.0, y: 2.0, width: 20.0, height: 20.0))
+        case .clock:
+            p.addEllipse(in: CGRect(x: 2.0, y: 2.0, width: 20.0, height: 20.0))
+            p.move(to: CGPoint(x: 12.00000000, y: 6.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 16.00000000, y: 14.00000000))
         case .copy:
             p.addRoundedRect(in: CGRect(x: 8.0, y: 8.0, width: 14.0, height: 14.0), cornerSize: CGSize(width: 2.0, height: 2.0))
             p.move(to: CGPoint(x: 4.00000000, y: 16.00000000))
@@ -123,6 +264,14 @@ struct LucideShape: Shape {
             p.addCurve(to: CGPoint(x: 4.00000000, y: 2.00000000), control1: CGPoint(x: 2.00000000, y: 2.90000000), control2: CGPoint(x: 2.90000000, y: 2.00000000))
             p.addLine(to: CGPoint(x: 14.00000000, y: 2.00000000))
             p.addCurve(to: CGPoint(x: 16.00000000, y: 4.00000000), control1: CGPoint(x: 15.10000000, y: 2.00000000), control2: CGPoint(x: 16.00000000, y: 2.90000000))
+        case .cornerDownLeft:
+            p.move(to: CGPoint(x: 20.00000000, y: 4.00000000))
+            p.addLine(to: CGPoint(x: 20.00000000, y: 11.00000000))
+            p.addCurve(to: CGPoint(x: 16.00000000, y: 15.00000000), control1: CGPoint(x: 20.00000000, y: 13.20913900), control2: CGPoint(x: 18.20913900, y: 15.00000000))
+            p.addLine(to: CGPoint(x: 4.00000000, y: 15.00000000))
+            p.move(to: CGPoint(x: 9.00000000, y: 10.00000000))
+            p.addLine(to: CGPoint(x: 4.00000000, y: 15.00000000))
+            p.addLine(to: CGPoint(x: 9.00000000, y: 20.00000000))
         case .cpu:
             p.move(to: CGPoint(x: 12.00000000, y: 20.00000000))
             p.addLine(to: CGPoint(x: 12.00000000, y: 22.00000000))
@@ -150,6 +299,8 @@ struct LucideShape: Shape {
             p.addLine(to: CGPoint(x: 7.00000000, y: 4.00000000))
             p.addRoundedRect(in: CGRect(x: 4.0, y: 4.0, width: 16.0, height: 16.0), cornerSize: CGSize(width: 2.0, height: 2.0))
             p.addRoundedRect(in: CGRect(x: 8.0, y: 8.0, width: 8.0, height: 8.0), cornerSize: CGSize(width: 1.0, height: 1.0))
+        case .dot:
+            p.addEllipse(in: CGRect(x: 11.0, y: 11.0, width: 2.0, height: 2.0))
         case .download:
             p.move(to: CGPoint(x: 12.00000000, y: 15.00000000))
             p.addLine(to: CGPoint(x: 12.00000000, y: 3.00000000))
@@ -188,6 +339,26 @@ struct LucideShape: Shape {
             p.addLine(to: CGPoint(x: 8.00000000, y: 13.00000000))
             p.move(to: CGPoint(x: 16.00000000, y: 17.00000000))
             p.addLine(to: CGPoint(x: 8.00000000, y: 17.00000000))
+        case .globe:
+            p.addEllipse(in: CGRect(x: 2.0, y: 2.0, width: 20.0, height: 20.0))
+            p.move(to: CGPoint(x: 12.00000000, y: 2.00000000))
+            p.addCurve(to: CGPoint(x: 12.00000000, y: 22.00000000), control1: CGPoint(x: 6.66666667, y: 7.60000000), control2: CGPoint(x: 6.66666667, y: 16.40000000))
+            p.addCurve(to: CGPoint(x: 12.00000000, y: 2.00000000), control1: CGPoint(x: 17.33333333, y: 16.40000000), control2: CGPoint(x: 17.33333333, y: 7.60000000))
+            p.move(to: CGPoint(x: 2.00000000, y: 12.00000000))
+            p.addLine(to: CGPoint(x: 22.00000000, y: 12.00000000))
+        case .image:
+            p.addRoundedRect(in: CGRect(x: 3.0, y: 3.0, width: 18.0, height: 18.0), cornerSize: CGSize(width: 2.0, height: 2.0))
+            p.addEllipse(in: CGRect(x: 7.0, y: 7.0, width: 4.0, height: 4.0))
+            p.move(to: CGPoint(x: 21.00000000, y: 15.00000000))
+            p.addLine(to: CGPoint(x: 17.91400000, y: 11.91400000))
+            p.addCurve(to: CGPoint(x: 15.08600000, y: 11.91400000), control1: CGPoint(x: 17.13300030, y: 11.13323612), control2: CGPoint(x: 15.86699970, y: 11.13323612))
+            p.addLine(to: CGPoint(x: 6.00000000, y: 21.00000000))
+        case .loaderCircle:
+            p.move(to: CGPoint(x: 21.00000000, y: 12.00000000))
+            p.addCurve(to: CGPoint(x: 14.78087617, y: 20.55915692), control1: CGPoint(x: 20.99980867, y: 15.89898084), control2: CGPoint(x: 18.48906627, y: 19.35442549))
+            p.addCurve(to: CGPoint(x: 4.71876453, y: 17.28951202), control1: CGPoint(x: 11.07268607, y: 21.76388835), control2: CGPoint(x: 7.01047876, y: 20.44388954))
+            p.addCurve(to: CGPoint(x: 4.71884106, y: 6.70949933), control1: CGPoint(x: 2.42705030, y: 14.13513450), control2: CGPoint(x: 2.42708120, y: 9.86384370))
+            p.addCurve(to: CGPoint(x: 14.78100000, y: 3.44000000), control1: CGPoint(x: 7.01060092, y: 3.55515497), control2: CGPoint(x: 11.07282733, y: 2.23521492))
         case .loader:
             p.move(to: CGPoint(x: 12.00000000, y: 2.00000000))
             p.addLine(to: CGPoint(x: 12.00000000, y: 6.00000000))
@@ -205,10 +376,34 @@ struct LucideShape: Shape {
             p.addLine(to: CGPoint(x: 6.00000000, y: 12.00000000))
             p.move(to: CGPoint(x: 4.90000000, y: 4.90000000))
             p.addLine(to: CGPoint(x: 7.80000000, y: 7.80000000))
+        case .monitor:
+            p.addRoundedRect(in: CGRect(x: 2.0, y: 3.0, width: 20.0, height: 14.0), cornerSize: CGSize(width: 2.0, height: 2.0))
+            p.move(to: CGPoint(x: 8.00000000, y: 21.00000000))
+            p.addLine(to: CGPoint(x: 16.00000000, y: 21.00000000))
+            p.move(to: CGPoint(x: 12.00000000, y: 17.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 21.00000000))
+        case .music2:
+            p.addEllipse(in: CGRect(x: 4.0, y: 14.0, width: 8.0, height: 8.0))
+            p.move(to: CGPoint(x: 12.00000000, y: 18.00000000))
+            p.addLine(to: CGPoint(x: 12.00000000, y: 2.00000000))
+            p.addLine(to: CGPoint(x: 19.00000000, y: 6.00000000))
         case .panelLeft:
             p.addRoundedRect(in: CGRect(x: 3.0, y: 3.0, width: 18.0, height: 18.0), cornerSize: CGSize(width: 2.0, height: 2.0))
             p.move(to: CGPoint(x: 9.00000000, y: 3.00000000))
             p.addLine(to: CGPoint(x: 9.00000000, y: 21.00000000))
+        case .paperclip:
+            p.move(to: CGPoint(x: 16.00000000, y: 6.00000000))
+            p.addLine(to: CGPoint(x: 7.58600000, y: 14.58600000))
+            p.addCurve(to: CGPoint(x: 7.58600000, y: 17.41500000), control1: CGPoint(x: 6.80479322, y: 15.36720678), control2: CGPoint(x: 6.80479322, y: 16.63379322))
+            p.addCurve(to: CGPoint(x: 10.41500000, y: 17.41500000), control1: CGPoint(x: 8.36720678, y: 18.19620678), control2: CGPoint(x: 9.63379322, y: 18.19620678))
+            p.addLine(to: CGPoint(x: 18.82900000, y: 8.82900000))
+            p.addCurve(to: CGPoint(x: 18.82900000, y: 3.17200000), control1: CGPoint(x: 20.39113741, y: 7.26686259), control2: CGPoint(x: 20.39113741, y: 4.73413741))
+            p.addCurve(to: CGPoint(x: 13.17200000, y: 3.17200000), control1: CGPoint(x: 17.26686259, y: 1.60986259), control2: CGPoint(x: 14.73413741, y: 1.60986259))
+            p.addLine(to: CGPoint(x: 4.79300000, y: 11.72300000))
+            p.addCurve(to: CGPoint(x: 3.20120019, y: 17.53722671), control1: CGPoint(x: 3.25665792, y: 13.23452045), control2: CGPoint(x: 2.64903741, y: 15.45392229))
+            p.addCurve(to: CGPoint(x: 7.46377329, y: 21.79979981), control1: CGPoint(x: 3.75336297, y: 19.62053113), control2: CGPoint(x: 5.38046887, y: 21.24763703))
+            p.addCurve(to: CGPoint(x: 13.27800000, y: 20.20800000), control1: CGPoint(x: 9.54707771, y: 22.35196259), control2: CGPoint(x: 11.76647955, y: 21.74434208))
+            p.addLine(to: CGPoint(x: 21.65700000, y: 11.65700000))
         case .plus:
             p.move(to: CGPoint(x: 5.00000000, y: 12.00000000))
             p.addLine(to: CGPoint(x: 19.00000000, y: 12.00000000))
@@ -288,6 +483,33 @@ struct LucideShape: Shape {
             p.addLine(to: CGPoint(x: 14.00000000, y: 2.00000000))
             p.addCurve(to: CGPoint(x: 16.00000000, y: 4.00000000), control1: CGPoint(x: 15.10456950, y: 2.00000000), control2: CGPoint(x: 16.00000000, y: 2.89543050))
             p.addLine(to: CGPoint(x: 16.00000000, y: 6.00000000))
+        case .video:
+            p.move(to: CGPoint(x: 16.00000000, y: 13.00000000))
+            p.addLine(to: CGPoint(x: 21.22300000, y: 16.48200000))
+            p.addCurve(to: CGPoint(x: 21.73600056, y: 16.50654072), control1: CGPoint(x: 21.37641272, y: 16.58408886), control2: CGPoint(x: 21.57354332, y: 16.59351912))
+            p.addCurve(to: CGPoint(x: 22.00000000, y: 16.06600000), control1: CGPoint(x: 21.89845781, y: 16.41956232), control2: CGPoint(x: 21.99990481, y: 16.25027586))
+            p.addLine(to: CGPoint(x: 22.00000000, y: 7.87000000))
+            p.addCurve(to: CGPoint(x: 21.74906225, y: 7.43629904), control1: CGPoint(x: 22.00005307, y: 7.69092758), control2: CGPoint(x: 21.90433695, y: 7.52549940))
+            p.addCurve(to: CGPoint(x: 21.24800000, y: 7.43800000), control1: CGPoint(x: 21.59378756, y: 7.34709868), control2: CGPoint(x: 21.40266551, y: 7.34774749))
+            p.addLine(to: CGPoint(x: 16.00000000, y: 10.50000000))
+            p.addRoundedRect(in: CGRect(x: 2.0, y: 6.0, width: 14.0, height: 12.0), cornerSize: CGSize(width: 2.0, height: 2.0))
+        case .wrench:
+            p.move(to: CGPoint(x: 14.70000000, y: 6.30000000))
+            p.addCurve(to: CGPoint(x: 14.70000000, y: 7.70000000), control1: CGPoint(x: 14.31885712, y: 6.68884351), control2: CGPoint(x: 14.31885712, y: 7.31115649))
+            p.addLine(to: CGPoint(x: 16.30000000, y: 9.30000000))
+            p.addCurve(to: CGPoint(x: 17.70000000, y: 9.30000000), control1: CGPoint(x: 16.68884351, y: 9.68114288), control2: CGPoint(x: 17.31115649, y: 9.68114288))
+            p.addLine(to: CGPoint(x: 20.80600000, y: 6.19500000))
+            p.addCurve(to: CGPoint(x: 21.78900000, y: 6.41300000), control1: CGPoint(x: 21.12600000, y: 5.87300000), control2: CGPoint(x: 21.66900000, y: 5.97500000))
+            p.addCurve(to: CGPoint(x: 19.90138494, y: 12.56523923), control1: CGPoint(x: 22.40578446, y: 8.65627240), control2: CGPoint(x: 21.67015149, y: 11.05389578))
+            p.addCurve(to: CGPoint(x: 13.53000000, y: 13.47000000), control1: CGPoint(x: 18.13261839, y: 14.07658267), control2: CGPoint(x: 15.64959052, y: 14.42918203))
+            p.addLine(to: CGPoint(x: 5.62000000, y: 21.38000000))
+            p.addCurve(to: CGPoint(x: 2.62050001, y: 21.37949999), control1: CGPoint(x: 4.79157287, y: 22.20815097), control2: CGPoint(x: 3.44865099, y: 22.20792711))
+            p.addCurve(to: CGPoint(x: 2.62100000, y: 18.38000000), control1: CGPoint(x: 1.79234904, y: 20.55107287), control2: CGPoint(x: 1.79257289, y: 19.20815098))
+            p.addLine(to: CGPoint(x: 10.53100000, y: 10.47000000))
+            p.addCurve(to: CGPoint(x: 11.43576077, y: 4.09861506), control1: CGPoint(x: 9.57181797, y: 8.35040948), control2: CGPoint(x: 9.92441733, y: 5.86738161))
+            p.addCurve(to: CGPoint(x: 17.58800000, y: 2.21100000), control1: CGPoint(x: 12.94710422, y: 2.32984851), control2: CGPoint(x: 15.34472760, y: 1.59421554))
+            p.addCurve(to: CGPoint(x: 17.80700000, y: 3.19500000), control1: CGPoint(x: 18.02600000, y: 2.33100000), control2: CGPoint(x: 18.12800000, y: 2.87300000))
+            p.closeSubpath()
         case .x:
             p.move(to: CGPoint(x: 18.00000000, y: 6.00000000))
             p.addLine(to: CGPoint(x: 6.00000000, y: 18.00000000))

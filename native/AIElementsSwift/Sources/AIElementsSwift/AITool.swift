@@ -54,14 +54,17 @@ public struct AITool: View {
             .padding(.top, 10)
         } label: {
             HStack(spacing: 8) {
-                AIExecutionIndicator(state: state).accessibilityHidden(true)
+                AIIcon(.wrench, size: 14).foregroundStyle(theme.muted)
                 Text(title).font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
-                Text(state.label).font(.system(size: 11)).foregroundStyle(theme.muted)
+                HStack(spacing: 4) {
+                    AIExecutionIndicator(state: state).accessibilityHidden(true)
+                    Text(state.label).font(.system(size: 11)).foregroundStyle(theme.muted)
+                }
             }
             .accessibilityElement(children: .combine)
         }
-        .tint(theme.muted)
+        .disclosureGroupStyle(AIElementsDisclosureStyle())
         .padding(12)
         .background(theme.surface, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.border, lineWidth: 1))
@@ -82,22 +85,16 @@ public struct AITool: View {
 /// Shared visual treatment, without a timer or inferred progress.
 struct AIExecutionIndicator: View {
     let state: AIToolState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.aiElementsTheme) private var theme
 
     var body: some View {
         Group {
             switch state {
-            case .pending: AIIcon(.ellipsis, size: 14).foregroundStyle(theme.muted)
-            case .running:
-                if reduceMotion {
-                    AIIcon(.loader, size: 14).foregroundStyle(theme.accent)
-                } else {
-                    ProgressView().controlSize(.small).tint(theme.accent)
-                }
-            case .completed: AIIcon(.check, size: 14).foregroundStyle(theme.muted)
-            case .failed: AIIcon(.circleAlert, size: 14).foregroundStyle(.red)
-            case .cancelled: AIIcon(.square, size: 14).foregroundStyle(theme.muted)
+            case .pending: AIIcon(.circle, size: 14).foregroundStyle(theme.muted)
+            case .running: AIIcon(.clock, size: 14).foregroundStyle(theme.accent)
+            case .completed: AIIcon(.circleCheckBig, size: 14).foregroundStyle(theme.muted)
+            case .failed: AIIcon(.circleX, size: 14).foregroundStyle(.red)
+            case .cancelled: AIIcon(.circleX, size: 14).foregroundStyle(theme.muted)
             }
         }.frame(width: 16, height: 16)
     }

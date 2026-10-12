@@ -46,10 +46,10 @@ public struct AIActivityRow: View {
 
     @ViewBuilder private var stateIndicator: some View {
         switch state {
-        case .pending: AIIcon(.ellipsis, size: 14).foregroundStyle(theme.muted)
-        case .running: ProgressView().controlSize(.small).tint(theme.accent)
-        case .completed: AIIcon(.check, size: 14).foregroundStyle(theme.muted)
-        case .failed: AIIcon(.circleAlert, size: 14).foregroundStyle(.red)
+        case .pending: AIExecutionIndicator(state: .pending)
+        case .running: AIExecutionIndicator(state: .running)
+        case .completed: AIExecutionIndicator(state: .completed)
+        case .failed: AIExecutionIndicator(state: .failed)
         }
     }
 }

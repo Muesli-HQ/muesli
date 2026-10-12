@@ -18,3 +18,29 @@ final class IconGeometryTests: XCTestCase {
         }
     }
 }
+
+extension IconGeometryTests {
+    func testAuditedChatImportsHaveNativeArtwork() throws {
+        struct Coverage: Decodable {
+            struct Source: Decodable {
+                struct Icon: Decodable { let swift: String; let svg: String }
+                let icons: [Icon]
+            }
+            let chatbotComponents: [String]
+            let files: [Source]
+        }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Upstream/chat-icon-coverage.json"))
+        let coverage = try JSONDecoder().decode(Coverage.self, from: data)
+        XCTAssertEqual(coverage.chatbotComponents.count, 19)
+        XCTAssertEqual(coverage.files.count, 40)
+        let imported = coverage.files.flatMap(\.icons)
+        XCTAssertEqual(Set(imported.map(\.svg)).count, 33)
+        for icon in imported {
+            XCTAssertNotNil(AIIconName(rawValue: icon.swift), icon.svg)
+            XCTAssertTrue(FileManager.default.fileExists(atPath:
+                root.appendingPathComponent("Upstream/Lucide/\(icon.svg).svg").path), icon.svg)
+        }
+    }
+}

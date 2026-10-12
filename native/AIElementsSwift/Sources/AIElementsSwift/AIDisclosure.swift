@@ -30,6 +30,30 @@ public struct AIDisclosure<Content: View>: View {
                 Text(title).font(.system(size: 12, weight: .medium))
             }.foregroundStyle(theme.muted)
         }
-        .tint(theme.muted)
+        .disclosureGroupStyle(AIElementsDisclosureStyle())
+    }
+}
+
+/// Shared Lucide trigger matching the upstream trailing-chevron disclosures.
+struct AIElementsDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.aiElementsTheme) private var theme
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    configuration.label
+                    AIIcon(.chevronDown, size: 14)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 180 : 0))
+                        .foregroundStyle(theme.muted)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            if configuration.isExpanded { configuration.content }
+        }
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AIElementsSwift
 import MuesliCore
 
 struct MeetingChatDraftView: View {
@@ -12,7 +13,7 @@ struct MeetingChatDraftView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Edit draft", systemImage: "square.and.pencil").font(MuesliTheme.title2())
+            Label { Text("Edit draft") } icon: { AIIcon(.squarePen) }.font(MuesliTheme.title2())
             Text("The original answer and its source references are preserved.").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $text).font(MuesliTheme.reading()).scrollContentBackground(.hidden)
                 .padding(12).frame(minHeight: 320).background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))

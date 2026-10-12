@@ -13,7 +13,7 @@ This is an initial SwiftUI adaptation, not full behavioral or API parity.
 | Sources / inline citations | AISourcePassage + AIDisclosure | Citation parsing, inline badges/popovers and grouped source container |
 | Tool / task activity | AIActivityRow + AIDisclosure | AITool now provides stateful input/output/error cards; typed rich results remain |
 | Reasoning / chain of thought | AIDisclosure + activity primitives | AIReasoning now provides request states, optional host duration and preserved manual expansion; controlled expansion remains |
-| Theme / icons | AIElementsTheme + 23 Lucide icons | Expanded icon subset and typography/density tokens |
+| Theme / icons | AIElementsTheme + 47 Lucide icons (33 verified Chatbot/dependency imports) | Other component categories and typography/density tokens |
 
 Generic primitives support these patterns but do not constitute dedicated ports of each upstream component.
 

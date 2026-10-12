@@ -564,10 +564,8 @@ public final class MuesliController: NSObject {
     private var nemotron35StreamingSessionID: UUID?
     private var previousStreamText = ""
     private var openWindowCount = 0
-    private var lastExternalApp: NSRunningApplication?
     private var capturedDictationContext: DictationContext?
     private var capturedDictationCorrectionTargetApp: DictationCorrectionTargetApp?
-    private var workspaceObserver: NSObjectProtocol?
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -774,6 +772,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
         hotkeyMonitor.combinationToggleRequiresHold = false
         hotkeyMonitor.registersCombinationGlobally = true
+        hotkeyMonitor.allowsStartsWhileEditingText = true
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -878,20 +877,6 @@ public final class MuesliController: NSObject {
             self?.updateConfig {
                 $0.indicatorAnchor = .custom
                 $0.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
-            }
-        }
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard
-                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                app != NSRunningApplication.current
-            else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.lastExternalApp = app
             }
         }
         dataDidChangeObserver = DistributedNotificationCenter.default().addObserver(
@@ -1059,10 +1044,6 @@ public final class MuesliController: NSObject {
     func shutdown() async {
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
-        if let workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
-            self.workspaceObserver = nil
-        }
         if let dataDidChangeObserver {
             DistributedNotificationCenter.default().removeObserver(dataDidChangeObserver)
             self.dataDidChangeObserver = nil
@@ -11157,18 +11138,16 @@ public final class MuesliController: NSObject {
         capturedDictationCorrectionTargetApp = nil
     }
 
-    private func externalDictationTargetApp(
+    private func dictationTargetApp(
         from frontmostApplication: NSRunningApplication?
     ) -> DictationCorrectionTargetApp? {
-        return DictationCorrectionTargetApp(
-            app: frontmostApplication == NSRunningApplication.current
-                ? lastExternalApp
-                : frontmostApplication
-        )
+        // Own-app text fields are valid dictation targets. Attribute the actual
+        // recipient instead of substituting an unrelated previously active app.
+        DictationCorrectionTargetApp(app: frontmostApplication)
     }
 
-    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
-        externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
+    private func currentDictationTargetApp() -> DictationCorrectionTargetApp? {
+        dictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
     /// Snapshots the hosted provider configuration before microphone capture and,
@@ -11249,7 +11228,7 @@ public final class MuesliController: NSObject {
     #endif
 
     private func captureDictationCorrectionTargetApp() {
-        capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
+        capturedDictationCorrectionTargetApp = currentDictationTargetApp()
     }
 
     private func handleStart() {
@@ -11679,7 +11658,7 @@ public final class MuesliController: NSObject {
         )
         // If focus moved during streaming, attribute the completed session to the app active at stop.
         let targetApp = shouldPersistTargetApp
-            ? currentExternalDictationTargetApp() ?? capturedDictationCorrectionTargetApp
+            ? currentDictationTargetApp() ?? capturedDictationCorrectionTargetApp
             : nil
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
@@ -11957,7 +11936,7 @@ public final class MuesliController: NSObject {
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
-                                let targetApp = self.externalDictationTargetApp(from: targetApplication)
+                                let targetApp = self.dictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
                                 if didDispatchPaste { self.indicator.showDictationCompletion() }

@@ -249,7 +249,7 @@ struct MeetingChatView: View {
                     .padding(.horizontal, 4).padding(.bottom, 3)
             }
             AIPromptInput(isFocused: composerFocused, header: {
-                if let ids = attachedMeetingIDs { attachmentChips(ids) }
+                if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
             }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
@@ -300,14 +300,9 @@ struct MeetingChatView: View {
                     }
                 }
             })
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Text("Check the sources for important details.")
-                    Spacer()
-                    Text("↵ Send · ⇧↵ New line")
-                }
-                Text("↵ Send · ⇧↵ New line · Check the sources")
-            }.font(.system(size: 10)).foregroundStyle(.secondary)
+            Text("↵ Send · ⇧↵ New line")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }.frame(maxWidth: 704).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
     }
@@ -331,12 +326,7 @@ struct MeetingChatView: View {
                     }
                 }
             }
-            if ids.isEmpty {
-                Text(coordinator.turns.contains(where: { $0.state == .completed && $0.originalAnswer != nil })
-                     ? "No meetings selected for new searches. Follow-ups use available conversation context; type @ to look up new details."
-                     : "No meetings selected for new searches. Type @ to add meetings, or change context above.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+
         }
     }
 
@@ -491,8 +481,8 @@ struct MeetingChatView: View {
                         if !turn.citations.isEmpty {
                             MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
                         }
-                        if let coverage = turn.coverage, coverage.eligibleMeetingCount > 0 {
-                            Text("\(coverage.isPartialRecap ? "Partial recap · " : "")\(coverage.eligibleMeetingCount) meeting\(coverage.eligibleMeetingCount == 1 ? "" : "s") in scope")
+                        if let coverage = turn.coverage, coverage.isPartialRecap {
+                            Text("Partial recap · \(coverage.eligibleMeetingCount) meeting\(coverage.eligibleMeetingCount == 1 ? "" : "s") in scope")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         answerActions(turn)
