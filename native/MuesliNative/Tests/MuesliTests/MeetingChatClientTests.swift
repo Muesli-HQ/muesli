@@ -14,6 +14,67 @@ struct MeetingChatClientTests {
                      coverage: .init(eligibleMeetingCount: 1, evidenceMeetingCount: 1, isPartialRecap: false))
     }
 
+    @Test func rollingMemoryIsPortableContextAndLongRecentAnswersAreNotClipped() throws {
+        let longAnswer = String(repeating: "A useful detail. ", count: 330) + "KEEP THE LAST DETAIL"
+        let turn = MeetingChatTurn(id: UUID(), sessionID: UUID(), ordinal: 0, question: "Explain the plan",
+            scope: .init(), state: .completed, originalAnswer: longAnswer, citations: [], provider: "Old provider", model: "Old model")
+        var config = AppConfig(); config.meetingSummaryBackend = "chatgpt"
+        let budget = MeetingChatContextBudget(config: config)
+        let prompt = try MeetingChatClient.makePrompt(question: "What remains?", evidence: evidence(), history: [turn],
+            rollingSummary: "Earlier we agreed to compare options, not commit to a deadline.", budget: budget)
+        #expect(prompt.user.contains("KEEP THE LAST DETAIL"))
+        #expect(prompt.user.contains("Earlier we agreed to compare options"))
+        #expect(!prompt.user.contains("[truncated]"))
+        let response = try MeetingChatClient.validateResponse(#"{"status":"conversation","markdown":"The comparison remains open."}"#,
+            evidence: evidence(), history: [], rollingSummary: "Earlier we agreed to compare options.")
+        #expect(response.markdown == "The comparison remains open.")
+    }
+
+    @Test @MainActor func nativeCallsUseRegisteredToolsAndReplayOutputsWithReasoning() async throws {
+        let probe = NativeHarnessProbe()
+        var initial = evidence()
+        initial.coverage.isPartialRecap = true
+        var executed: [MeetingChatToolCall] = []
+        let (answer, final) = try await MeetingChatClient.run(question: "Read the entire meeting", evidence: initial, history: [], config: AppConfig(), sessionID: UUID(), generator: probe,
+            execute: { call, current in
+                executed.append(call)
+                var result = current
+                var passage = current.passages[0]; passage.id = "p2"; passage.sourceKey = "S2"; passage.excerpt = "Full meeting detail."
+                result.passages.append(passage)
+                return .init(evidence: result, matchedPassageCount: 1)
+            }, activity: { _, _ in })
+        #expect(executed == [.readMeeting(1, 0)])
+        #expect(answer.citations.map(\.sourceKey) == ["S2"])
+        #expect(final.passages.count == 2)
+        #expect(!answer.coverage.isPartialRecap)
+        let requests = await probe.requests
+        #expect(requests.count == 2)
+        let definitions = try #require(JSONSerialization.jsonObject(with: requests[0].tools) as? [[String: Any]])
+        #expect(Set(definitions.compactMap { $0["name"] as? String }) == ["search_meeting_sources", "browse_meeting_sources", "read_meeting_source", "read_full_meeting"])
+        let replay = try #require(JSONSerialization.jsonObject(with: requests[1].inputItems) as? [[String: Any]])
+        #expect(replay.contains { $0["type"] as? String == "reasoning" && $0["encrypted_content"] as? String == "opaque-test-state" })
+        let result = try #require(replay.first { $0["type"] as? String == "function_call_output" })
+        #expect(result["call_id"] as? String == "native-call-1")
+        #expect((result["output"] as? String)?.contains("Full meeting detail.") == true)
+        #expect(!requests[0].base.system.contains("returning exactly {\"tool\""))
+    }
+
+    @Test func nativeFullReadRejectsForgedArguments() throws {
+        #expect(try MeetingChatNativeHarness.call(name: "read_full_meeting", arguments: #"{"meeting_id":4,"page":0}"#) == .readMeeting(4, 0))
+        for bad in [#"{"meeting_id":true,"page":0}"#, #"{"meeting_id":4,"page":-1}"#, #"{"meeting_id":4,"page":10000}"#, #"{"meeting_id":4,"page":0,"scope":"all"}"#] {
+            #expect(throws: (any Error).self) { try MeetingChatNativeHarness.call(name: "read_full_meeting", arguments: bad) }
+        }
+    }
+
+    @Test func nativeCapabilityFollowsProviderNotModelSubstring() {
+        let client = MeetingTextGenerationClient()
+        var config = AppConfig()
+        for backend in ["chatgpt", "openai", "ollama", "custom_llm", "openrouter", "anthropic"] {
+            config.meetingSummaryBackend = backend
+            #expect(client.supportsNativeTools(config: config) == ["chatgpt", "openai"].contains(backend))
+        }
+    }
+
     @Test(arguments: ["chatgpt", "openai"])
     @MainActor func sendsAndRetriesWithSelectedModelAndEffortUnchanged(backend: String) async throws {
         let probe = ChatPromptProbe()
@@ -292,6 +353,10 @@ struct MeetingChatClientTests {
         #expect(requests.allSatisfy { $0.sessionID == sessionID })
         #expect(requests[1].user.contains("Ship Friday"))
         #expect(requests[1].user.contains("QUOTED TOOL HISTORY"))
+        #expect(requests[0].system.contains("For a final answer, return exactly two keys"))
+        #expect(requests[0].system.contains("The final-answer schema does not apply to tool requests"))
+        #expect(requests[0].system.contains("never status or markdown"))
+        #expect(!requests[0].system.contains("Return only JSON with exactly two keys"))
     }
 
     @Test @MainActor func toolLoopCannotExceedBudget() async throws {
@@ -357,6 +422,28 @@ struct MeetingChatClientTests {
             execute: { _, current in Issue.record("Unexpected tool execution"); return .init(evidence: current) }, activity: { _, _ in })
         #expect(answer.citations.count == 1)
         #expect(await generator.requests.count == 2)
+    }
+
+    @Test(arguments: [
+        ("not JSON", "Formatting answer"),
+        (#"{"status":"answered","markdown":"Friday"}"#, "Checking source references"),
+        (#"{"status":"answered","markdown":"Friday [[S999]]"}"#, "Checking source references"),
+        (#"{"status":"conversation","markdown":"As discussed earlier"}"#, "Checking conversation context"),
+        (#"{"tool":"unavailable_tool"}"#, "Preparing final answer"),
+        (String(repeating: "x", count: 64_001), "Shortening answer")
+    ]) @MainActor func repairProgressDescribesTheActualValidationIssue(raw: String, expected: String) async throws {
+        let generator = ChatScriptedReplies(replies: [raw, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        var progress: [String] = []
+        let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in Issue.record("Unexpected tool execution"); return .init(evidence: current) }, activity: { _, _ in }, progress: { progress.append($0) })
+        #expect(answer.citations.count == 1)
+        #expect(progress.first == "Preparing answer")
+        // Successful final validation adds the last source-check event; the
+        // preceding event describes the specific reason for the repair request.
+        #expect(progress.dropLast().last == expected)
+        #expect(!progress.contains("Retrying answer format"))
+        #expect(await generator.requests.count == 2)
+        #expect(await generator.requests.last?.system.contains("Do not request a tool") == true)
     }
 
     @Test @MainActor func repeatedInvalidCitationsHavePrecisePrivateDiagnostic() async throws {
@@ -700,4 +787,22 @@ private actor ChatTitleGate: MeetingTextGenerating {
         for _ in 0..<500 where titleRequest == nil { try? await Task.sleep(for: .milliseconds(10)) }
     }
     func finish() { continuation?.resume(returning: #"{"title":"Launch Timing and Decisions"}"#); continuation = nil }
+}
+
+private actor NativeHarnessProbe: MeetingTextGenerating {
+    private(set) var requests: [MeetingNativeToolRequest] = []
+    nonisolated func supportsNativeTools(config: AppConfig) -> Bool { true }
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        Issue.record("Native-capable provider must not use JSON-in-text tool requests")
+        return ""
+    }
+    func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        requests.append(request)
+        if requests.count == 1 {
+            let output: [[String: Any]] = [["type": "reasoning", "encrypted_content": "opaque-test-state"],
+                ["type": "function_call", "name": "read_full_meeting", "call_id": "native-call-1", "arguments": #"{"meeting_id":1,"page":0}"#]]
+            return .init(outputItems: try JSONSerialization.data(withJSONObject: output), calls: [.init(id: "native-call-1", name: "read_full_meeting", arguments: #"{"meeting_id":1,"page":0}"#)], text: "")
+        }
+        return .init(outputItems: Data("[]".utf8), calls: [], text: #"{"status":"answered","markdown":"Full meeting detail [[S2]]"}"#)
+    }
 }

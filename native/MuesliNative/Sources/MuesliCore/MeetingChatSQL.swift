@@ -195,6 +195,28 @@ enum MeetingChatSQL {
                 try execute("INSERT INTO local_migrations VALUES('meeting_chat_automatic_titles_v1',strftime('%s','now'))", db: db)
             }
         }
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_summary_source_changed
+            AFTER UPDATE OF deleted_at,title,start_time,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
+            BEGIN \(invalidateRollingSummariesSQL(sourceExpression: "NEW.id")); END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_summary_source_purged BEFORE DELETE ON meetings
+            BEGIN \(invalidateRollingSummariesSQL(sourceExpression: "OLD.id")); END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_summary_turn_changed AFTER UPDATE OF state,body ON meeting_chat_turns
+            WHEN OLD.state IS NOT NEW.state OR json_extract(OLD.body,'$.question') IS NOT json_extract(NEW.body,'$.question')
+              OR json_extract(OLD.body,'$.originalAnswer') IS NOT json_extract(NEW.body,'$.originalAnswer')
+              OR json_extract(OLD.body,'$.attemptID') IS NOT json_extract(NEW.body,'$.attemptID')
+            BEGIN UPDATE meeting_chat_sessions SET body=json_remove(body,'$.rollingSummary') WHERE EXISTS
+              (SELECT 1 FROM json_each(body,'$.rollingSummary.coveredTurnFingerprints') WHERE key=NEW.id); END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_summary_turn_removed BEFORE DELETE ON meeting_chat_turns
+            BEGIN UPDATE meeting_chat_sessions SET body=json_remove(body,'$.rollingSummary') WHERE EXISTS
+              (SELECT 1 FROM json_each(body,'$.rollingSummary.coveredTurnFingerprints') WHERE key=OLD.id); END
+            """, db: db)
         for (name, event, owner) in [("inserted", "INSERT", "NEW"), ("edited", "UPDATE", "NEW"), ("removed", "DELETE", "OLD")] {
             try execute("""
                 CREATE TRIGGER IF NOT EXISTS meeting_chat_participant_\(name) AFTER \(event) ON meeting_participants
@@ -205,6 +227,19 @@ enum MeetingChatSQL {
                   \(invalidateGeneratedTitlesSQL(sourceExpression: "\(owner).meeting_id")); END
                 """, db: db)
         }
+        // Separate names install summary invalidation even on databases that already
+        // have participant/index triggers. A reassignment invalidates both meetings.
+        for (name, event, owner) in [("inserted", "INSERT", "NEW"), ("removed", "DELETE", "OLD")] {
+            try execute("""
+                CREATE TRIGGER IF NOT EXISTS meeting_chat_rolling_summary_participant_\(name) AFTER \(event) ON meeting_participants
+                BEGIN \(invalidateRollingSummariesSQL(sourceExpression: "\(owner).meeting_id")); END
+                """, db: db)
+        }
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_rolling_summary_participant_edited AFTER UPDATE ON meeting_participants
+            BEGIN \(invalidateRollingSummariesSQL(sourceExpression: "OLD.meeting_id"));
+              \(invalidateRollingSummariesSQL(sourceExpression: "NEW.meeting_id")); END
+            """, db: db)
         try execute("""
             INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM meetings
             WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_incremental_index_v1')
@@ -251,6 +286,14 @@ enum MeetingChatSQL {
         }
     }
 
+    private static func invalidateRollingSummariesSQL(sourceExpression: String) -> String {
+        """
+        UPDATE meeting_chat_sessions SET body=json_remove(body,'$.rollingSummary') WHERE EXISTS
+          (SELECT 1 FROM json_each(body,'$.rollingSummary.dependencies')
+           WHERE json_extract(value,'$.meetingID')=\(sourceExpression))
+        """
+    }
+
     private static func invalidateGeneratedTitlesSQL(sourceExpression: String) -> String {
         """
         UPDATE meeting_chat_sessions SET body=json_set(body,'$.title','New chat','$.generatedTitleTurnID',NULL)
@@ -267,6 +310,7 @@ enum MeetingChatSQL {
     static func invalidateSources(meetingIDs: [Int64], db: OpaquePointer?) throws {
         for id in meetingIDs {
             try execute(invalidateGeneratedTitlesSQL(sourceExpression: "?"), [.integer(id)], db: db)
+            try execute(invalidateRollingSummariesSQL(sourceExpression: "?"), [.integer(id)], db: db)
             try execute("DELETE FROM meeting_chat_session_meetings WHERE meeting_id=?", [.integer(id)], db: db)
             try execute("UPDATE meeting_chat_turns SET state='sourceDeleted', body=json_set(body,'$.state','sourceDeleted','$.originalAnswer',NULL,'$.editableDraft',NULL,'$.citations',json('[]'),'$.error',NULL) WHERE id IN (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=?)", [.integer(id)], db: db)
             try execute("DELETE FROM meeting_chat_passages WHERE meeting_id=?", [.integer(id)], db: db)

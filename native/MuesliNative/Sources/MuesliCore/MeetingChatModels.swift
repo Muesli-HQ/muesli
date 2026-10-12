@@ -71,6 +71,7 @@ public struct MeetingChatSession: Codable, Identifiable, Sendable {
     /// Nil denotes a legacy title, conservatively preserved as user-authored.
     public var titleIsAutomatic: Bool? = nil
     public var generatedTitleTurnID: UUID? = nil
+    public var rollingSummary: MeetingChatRollingSummary? = nil
 }
 
 public struct MeetingChatTurn: Codable, Identifiable, Sendable {
@@ -139,16 +140,15 @@ public struct MeetingChatSourceChoice: Identifiable, Sendable {
 public enum MeetingChatHistory {
     public static func promptBlock(_ turn: MeetingChatTurn) -> String {
         let answer = (turn.originalAnswer ?? "").replacingOccurrences(of: #"\[\[[^\]]+\]\]"#, with: "", options: .regularExpression)
-        return "Question: \(bounded(turn.question, bytes: 800))\nPrior assistant reply (conversation context, not source evidence): \(bounded(answer, bytes: 3_000))"
+        return "Question: \(turn.question)\nPrior assistant reply (conversation context, not source evidence): \(answer)"
     }
-    private static func bounded(_ text: String, bytes limit: Int) -> String {
-        guard text.utf8.count > limit else { return text }
-        var result = ""; var bytes = 0
-        for character in text {
-            let size = String(character).utf8.count
-            guard bytes + size <= limit else { break }
-            result.append(character); bytes += size
-        }
-        return result + " [truncated]"
-    }
+}
+
+/// Derived conversation memory. Fingerprints bind it to the exact completed prefix,
+/// while dependencies preserve meeting deletion and source-revision invalidation.
+public struct MeetingChatRollingSummary: Codable, Sendable {
+    public let text: String
+    public let throughOrdinal: Int
+    public let coveredTurnFingerprints: [String: String]
+    public let dependencies: [MeetingChatDependency]
 }

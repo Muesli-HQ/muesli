@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import MuesliCore
 
-private actor MeetingChatWorker {
+actor MeetingChatWorker {
     let store: MeetingChatStore
     let retrieval: MeetingChatRetrieval
     private var summaryValidation: (turnID: UUID, sourceVersion: Int64)?
@@ -26,6 +26,12 @@ private actor MeetingChatWorker {
     func warmIndex() throws { try retrieval.prepareIndex() }
     func choices() throws -> [MeetingChatSourceChoice] { try store.sourceChoices() }
     func source(_ id: Int64) throws -> MeetingChatSourceSnapshot? { try store.sourceSnapshots(scope: .init(selection: .meetings([id]))).first }
+    func rollingSummary(for turn: MeetingChatTurn) throws -> MeetingChatRollingSummary? {
+        try store.rollingSummary(before: turn)
+    }
+    func saveRollingSummary(_ text: String, coveredTurns: [MeetingChatTurn], turn: MeetingChatTurn) throws -> Bool {
+        try store.saveRollingSummary(text: text, coveredTurns: coveredTurns, for: turn)
+    }
     func evidence(for turn: MeetingChatTurn) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
         try Task.checkCancellation()
         let context = try store.historyContext(before: turn)
@@ -52,8 +58,10 @@ private actor MeetingChatWorker {
         }
         let broadIntent = ["recap", "summar", "decisions", "decide", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
         // Every question gets lexical relevance first. Broad vocabulary never disables a topic match.
-        var evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question))
-        if broadIntent {
+        let attachedContext: Bool
+        if case .meetings(let ids) = turn.scope.selection { attachedContext = !ids.isEmpty } else { attachedContext = false }
+        var evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question), includeScopeContext: attachedContext)
+        if broadIntent && !attachedContext {
             let representative = try retrieval.retrieve(question: turn.question, scope: turn.scope, broadRecap: true)
             var selected: [MeetingChatPassage] = []; var seen = Set<String>(); var bytes = 0; var packetBytes = 0
             for var passage in evidence.passages where bytes + passage.excerpt.utf8.count <= 6_000 {
@@ -83,11 +91,12 @@ private actor MeetingChatWorker {
         try store.attachEvidence(turnID: turn.id, dependencies: evidence.dependencies, attemptID: turn.attemptID)
         return (evidence, history)
     }
-    func execute(_ call: MeetingChatToolCall, turn: MeetingChatTurn, evidence: MeetingChatEvidence, nextSourceKey: Int) throws -> (MeetingChatEvidence, Int, Int) {
+    func execute(_ call: MeetingChatToolCall, turn: MeetingChatTurn, evidence: MeetingChatEvidence, nextSourceKey: Int, native: Bool = false) throws -> (MeetingChatEvidence, Int, Int, Int?) {
         try Task.checkCancellation()
         guard try store.dependenciesAreCurrent(evidence.dependencies) else { throw MeetingChatError.sourceChanged }
         let incoming: [MeetingChatPassage]
         var incomingIsPartialRecap = false
+        var nextPage: Int?
         switch call {
         case .search(let query):
             let retrieved = try retrieval.retrieve(question: query, scope: turn.scope)
@@ -99,11 +108,18 @@ private actor MeetingChatWorker {
             incomingIsPartialRecap = retrieved.coverage.isPartialRecap
         case .read(let key):
             guard let passage = evidence.passages.first(where: { $0.sourceKey == key }),
-                let snapshot = try source(passage.meetingID), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
+                let snapshot = try scopedSource(passage.meetingID, scope: turn.scope), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
             // The capability is an issued source marker, never a model-supplied meeting ID.
             let sameKind = MeetingChatPassages.extract(from: snapshot).filter { $0.kind == passage.kind }
             guard let index = sameKind.firstIndex(where: { $0.id == passage.id }) else { throw MeetingChatError.sourceChanged }
             incoming = Array(sameKind[max(0, index - 2)...min(sameKind.count - 1, index + 2)])
+        case .readMeeting(let meetingID, let page):
+            guard native else { throw MeetingChatError.invalidResponse }
+            guard let snapshot = try scopedSource(meetingID, scope: turn.scope) else { throw MeetingChatError.sourceChanged }
+            let pageResult = try Self.meetingPage(snapshot, page: page)
+            incoming = pageResult.passages
+            nextPage = pageResult.nextPage
+            incomingIsPartialRecap = nextPage != nil || page > 0
         }
         var result = evidence
         var selected: [MeetingChatPassage] = []
@@ -115,7 +131,12 @@ private actor MeetingChatWorker {
             guard seen.insert(passage.id).inserted else { continue }
             passage.sourceKey = evidence.passages.first(where: { $0.id == passage.id })?.sourceKey ?? "S\(nextKey)"
             let size = MeetingChatPassages.promptByteCount(passage)
-            guard bytes + size <= 10_000 else { omittedForBudget = true; continue }
+            guard bytes + size <= (native ? 200_000 : 10_000) else {
+                // A native tool result must never quietly discard earlier pages
+                // or claim to have read a full page that the model cannot see.
+                if native { throw MeetingChatError.promptTooLarge }
+                omittedForBudget = true; continue
+            }
             if !evidence.passages.contains(where: { $0.id == passage.id }) { nextKey += 1 }
             bytes += size; selected.append(passage)
         }
@@ -127,7 +148,36 @@ private actor MeetingChatWorker {
         result.coverage.isPartialRecap = evidence.coverage.isPartialRecap || incomingIsPartialRecap || omittedForBudget
         // Attach before the next network call so deletion invalidates every source already disclosed.
         try store.attachEvidence(turnID: turn.id, dependencies: result.dependencies, attemptID: turn.attemptID)
-        return (result, nextKey, incoming.count)
+        return (result, nextKey, incoming.count, nextPage)
+    }
+    private func scopedSource(_ id: Int64, scope: MeetingChatScope) throws -> MeetingChatSourceSnapshot? {
+        if case .meetings(let ids) = scope.selection, !ids.contains(id) { return nil }
+        let selected = MeetingChatScope(selection: .meetings([id]), startDate: scope.startDate, endDateExclusive: scope.endDateExclusive)
+        guard let snapshot = try store.sourceSnapshots(scope: selected).first else { return nil }
+        if case .folder(let folderID) = scope.selection, snapshot.folderID != folderID { return nil }
+        return snapshot
+    }
+    /// Stable pages cover every source kind in original order with exact ranges.
+    /// Page boundaries reserve room for issued source markers before serialization.
+    static func meetingPage(_ source: MeetingChatSourceSnapshot, page: Int) throws -> (passages: [MeetingChatPassage], nextPage: Int?) {
+        guard (0..<10_000).contains(page) else { throw MeetingChatError.invalidResponse }
+        var currentPage = 0
+        var selected: [MeetingChatPassage] = []
+        var bytes = 0
+        for passage in MeetingChatPassages.extract(from: source) {
+            try Task.checkCancellation()
+            let size = MeetingChatPassages.promptByteCount(passage) + 16
+            guard size <= 40_000 else { throw MeetingChatError.promptTooLarge }
+            if bytes + size > 40_000 {
+                if currentPage == page { return (selected, page + 1) }
+                currentPage += 1
+                bytes = 0
+            }
+            if currentPage == page { selected.append(passage) }
+            bytes += size
+        }
+        guard currentPage == page else { throw MeetingChatError.invalidResponse }
+        return (selected, nil)
     }
     func canPublishSummary(turn: MeetingChatTurn) throws -> Bool {
         guard let current = try store.turns(sessionID: turn.sessionID).first(where: { $0.id == turn.id }),
@@ -328,7 +378,7 @@ final class MeetingChatCoordinator {
         cancelTitle(sessionID: id)
         do { try await worker.updateSession(id: id, title: title); reload() } catch { errorMessage = error.localizedDescription }
     }
-    func send(question: String, config: AppConfig, isDraft: Bool = false) async {
+    func send(question: String, config: AppConfig, isDraft: Bool = false, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
@@ -378,7 +428,7 @@ final class MeetingChatCoordinator {
                 reload(); return
             }
             if composerDrafts[submittedDraftKey] == submittedDraft, submittedDraft.trimmingCharacters(in: .whitespacesAndNewlines) == question { composerDrafts[submittedDraftKey] = nil }
-            errorMessage = nil; reload(); launch(turn, config: requestConfig, isDraft: isDraft)
+            errorMessage = nil; reload(); launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens)
         } catch {
             guard activeRequestID == requestID else { return }
             if let turnID = activeTurnID { try? await worker.setTurnState(id: turnID, state: .failed, error: error.localizedDescription, attemptID: requestID) }
@@ -394,7 +444,7 @@ final class MeetingChatCoordinator {
         composerDrafts[sessionID] = composerDrafts[nil]
         composerDrafts[nil] = nil
     }
-    func retry(turnID: UUID, config: AppConfig) async {
+    func retry(turnID: UUID, config: AppConfig, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
         if let previous = turns.first(where: { $0.id == turnID }), case .meetings(let ids) = previous.scope.selection, ids.isEmpty,
            !turns.contains(where: { $0.ordinal < previous.ordinal && $0.state == .completed && $0.originalAnswer != nil }) {
@@ -416,12 +466,12 @@ final class MeetingChatCoordinator {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: turn.attemptID)
                 reload(); return
             }
-            reload(); launch(turn, config: requestConfig, isDraft: turn.isDraft)
+            reload(); launch(turn, config: requestConfig, isDraft: turn.isDraft, contextWindowTokens: contextWindowTokens)
         } catch {
             if activeRequestID == reservation { activeRequestID = nil; phase = ""; errorMessage = error.localizedDescription }
         }
     }
-    private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool) {
+    private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool, contextWindowTokens: Int? = nil) {
         cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
         activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id
@@ -434,20 +484,36 @@ final class MeetingChatCoordinator {
             }
             do {
                 let (evidence, history) = try await worker.evidence(for: turn)
+                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
+                let savedSummary = try await worker.rollingSummary(for: turn)
+                let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
+                var rollingSummary = savedSummary?.text
+                if !plan.olderTurns.isEmpty || rollingSummary.map({ MeetingChatContextBudget.estimateTokens($0) > budget.summaryTokens }) == true {
+                    phase = "Updating conversation memory"
+                    rollingSummary = try await budget.summarize(olderTurns: plan.olderTurns, previousSummary: rollingSummary,
+                        config: config, sessionID: turn.sessionID, generator: generator, validateContext: {
+                            guard try await worker.canPublishSummary(turn: turn) else { throw MeetingChatError.sourceChanged }
+                        })
+                    try Task.checkCancellation()
+                    guard activeRequestID == requestID, let summary = rollingSummary else { return }
+                    let through = plan.olderTurns.last?.ordinal ?? savedSummary?.throughOrdinal ?? -1
+                    let covered = history.filter { $0.ordinal <= through }
+                    guard try await worker.saveRollingSummary(summary, coveredTurns: covered, turn: turn) else { throw MeetingChatError.sourceChanged }
+                }
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
                 phase = "Writing answer"
                 var nextSourceKey = (evidence.passages.compactMap { Int($0.sourceKey.dropFirst()) }.max() ?? 0) + 1
                 let (answer, finalEvidence) = try await MeetingChatClient.run(question: turn.question,
-                    evidence: evidence, history: history, config: config, sessionID: turn.sessionID, generator: generator,
+                    evidence: evidence, history: plan.recentTurns, config: config, sessionID: turn.sessionID, generator: generator,
                     execute: { call, current in
                         try Task.checkCancellation()
-                        let (result, next, count) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey)
+                        let (result, next, count, nextPage) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey, native: generator.supportsNativeTools(config: config))
                         nextSourceKey = next
                         if self.activeRequestID == requestID, let index = self.activities.indices.last {
                             self.activities[index].output = "\(count) passages returned · \(result.coverage.evidenceMeetingCount) meetings in the current source packet"
                         }
-                        return MeetingChatToolResult(evidence: result, matchedPassageCount: count)
+                        return MeetingChatToolResult(evidence: result, matchedPassageCount: count, nextPage: nextPage)
                     }, activity: { call, completed in
                         guard self.activeRequestID == requestID else { return }
                         self.reasoningIsStreaming = false
@@ -462,7 +528,7 @@ final class MeetingChatCoordinator {
                         guard self.activeRequestID == requestID else { return }
                         self.reasoningIsStreaming = false
                         self.phase = phase
-                    }, reasoningSummary: { [weak self] iteration, summary in
+                    }, rollingSummary: rollingSummary, contextBudget: budget, reasoningSummary: { [weak self] iteration, summary in
                         guard let self, self.activeRequestID == requestID, !Task.isCancelled else { return }
                         // Summaries contain meeting data too. Check persisted invalidation before
                         // displaying a delta, even when the UI has not yet refreshed after deletion.
@@ -524,7 +590,8 @@ final class MeetingChatCoordinator {
     func waitForTitles() async { while let task = titleTasks.values.first { await task.value } }
 
     static func failureMessage(_ error: Error) -> String {
-        if error is MeetingChatError || error is MeetingChatHarnessError || error is MeetingTextGenerationError { return error.localizedDescription }
+        if error is MeetingChatError || error is MeetingChatHarnessError || error is MeetingTextGenerationError || error is MeetingNativeToolTransportError { return error.localizedDescription }
+        if error is MeetingChatContextBudget.SummaryError { return "Could not fit conversation memory into this model’s context budget. Try again or choose a model with a larger context window. Your conversation is still saved." }
         if error is ChatGPTAuthError { return "Your ChatGPT connection needs attention. Sign in again in AI Settings, then retry." }
         if case let ChatGPTResponsesError.backendFailed(status, _) = error {
             switch status {

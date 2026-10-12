@@ -31,12 +31,12 @@ public struct AIModelSelector: View {
 
     public var body: some View {
         ScrollView {
-            LazyVStack(spacing: 2) {
+            LazyVStack(spacing: 0) {
                 if !choices.contains(where: { $0.id == selectedID }) {
                     VStack(alignment: .leading, spacing: 4) {
                         row(title: currentTitle ?? selectedID, selected: true)
                         Text("Current custom model").font(.system(size: 11)).foregroundStyle(theme.muted)
-                            .padding(.horizontal, 16).padding(.bottom, 8)
+                            .padding(.horizontal, 12).padding(.bottom, 6)
                     }
                 }
                 ForEach(choices) { choice in
@@ -52,16 +52,16 @@ public struct AIModelSelector: View {
                     .accessibilityAddTraits(choice.id == selectedID ? .isSelected : [])
                 }
             }
-        }.frame(maxHeight: 280)
+        }.frame(height: min(220, CGFloat(choices.count) * 32 + (choices.contains(where: { $0.id == selectedID }) ? 0 : 52)))
     }
 
     private func row(title: String, selected: Bool) -> some View {
         HStack {
-            Text(title).font(.system(size: 13))
+            Text(title).font(.system(size: 12)).lineLimit(1)
             Spacer()
             if selected { AIIcon(.check, size: 12).accessibilityHidden(true) }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10).contentShape(Rectangle())
+        .padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
         .background(selected ? theme.surface : Color.clear)
     }
 }

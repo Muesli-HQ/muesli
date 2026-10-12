@@ -13,9 +13,15 @@ struct MeetingTextGenerationRequest {
 protocol MeetingTextGenerating: Sendable {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String
     func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String?
+    func supportsNativeTools(config: AppConfig) -> Bool
+    func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse
 }
 
 extension MeetingTextGenerating {
+    func supportsNativeTools(config: AppConfig) -> Bool { false }
+    func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        throw MeetingTextGenerationError.invalidEndpoint
+    }
     // Test/custom generators can opt out of background metadata generation.
     func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String? { nil }
 }
@@ -48,6 +54,34 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ClaudeCodeSummarizer.run(instructions: request.system, input: request.user,
             model: request.config.claudeCodeModel, executablePath: request.config.claudeCodeExecutablePath)
+    }
+
+    func supportsNativeTools(config: AppConfig) -> Bool {
+        let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
+        if provider == .chatGPT || provider == .openAI { return true }
+        guard provider == .openRouter else { return false }
+        let model = Self.model(config).lowercased()
+        if model.hasPrefix("openai/gpt-") { return true }
+        return ["openai/o1", "openai/o3", "openai/o4"].contains { family in
+            model == family || model.hasPrefix(family + "-") || model.hasPrefix(family + ":")
+        }
+    }
+
+    func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        try Task.checkCancellation()
+        let provider = MeetingSummaryBackendOption.resolved(request.base.config.meetingSummaryBackend)
+        if provider == .chatGPT { return try await ChatGPTResponsesClient.respondNative(request) }
+        guard supportsNativeTools(config: request.base.config) else { throw MeetingTextGenerationError.invalidEndpoint }
+        let credential = try await credentialResolver(request.base.config)
+        try Task.checkCancellation()
+        var urlRequest = try Self.makeRequest(request.base, credential: credential)
+        if provider == .openRouter { urlRequest.url = URL(string: "https://openrouter.ai/api/v1/responses")! }
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: MeetingNativeToolTransport.requestBody(request, stream: false))
+        let (data, response) = try await load(urlRequest)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
+        guard (200..<300).contains(http.statusCode) else { throw MeetingTextGenerationError.failed(http.statusCode) }
+        return try MeetingNativeToolTransport.parseResponse(data)
     }
 
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {

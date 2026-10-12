@@ -362,7 +362,7 @@ struct MeetingChatStoreTests {
         #expect(context.dependencies.isEmpty)
     }
 
-    @Test func longLatestHistoryIsBoundedInsteadOfSilentlyDropped() throws {
+    @Test func longLatestHistoryIsCompleteForCallerManagedCompaction() throws {
         let (_, chat, id) = try fixture()
         let (session, first, deps) = try pending(chat, id)
         #expect(try chat.finishTurn(turnID: first.id, answer: String(repeating: "🌻", count: 2_000) + " [[S999]]", citations: [], dependencies: deps))
@@ -370,9 +370,99 @@ struct MeetingChatStoreTests {
         let context = try chat.historyContext(before: next)
         #expect(context.turns.map(\.id) == [first.id])
         let block = MeetingChatHistory.promptBlock(context.turns[0])
-        #expect(block.utf8.count <= 4_000)
-        #expect(block.contains("[truncated]"))
+        #expect(block.utf8.count > 4_000)
+        #expect(!block.contains("[truncated]"))
         #expect(!block.contains("[[S999]]"))
+    }
+
+    @Test func rollingSummaryRoundTripsAndValidatesExactCoveredPrefix() throws {
+        let (_, chat, id) = try fixture()
+        let (session, first, deps) = try pending(chat, id)
+        #expect(try chat.finishTurn(turnID: first.id, answer: "Launch Friday", citations: [], dependencies: deps))
+        let request = try chat.beginTurn(sessionID: session.id, question: "Continue", scope: .init(), provider: "test", model: "test")
+        let context = try chat.historyContext(before: request)
+        #expect(try chat.saveRollingSummary(text: "Launch is planned for Friday.", coveredTurns: context.turns, for: request))
+        let saved = try chat.rollingSummary(before: request)
+        let summary = try #require(saved)
+        #expect(summary.throughOrdinal == first.ordinal)
+        #expect(summary.dependencies == deps)
+        #expect(summary.text == "Launch is planned for Friday.")
+        _ = try chat.restartTurn(id: first.id, provider: "test", model: "test")
+        #expect(try chat.rollingSummary(before: request) == nil)
+        #expect(try chat.sessions().first?.rollingSummary == nil)
+        #expect(try chat.saveRollingSummary(text: "Late old summary", coveredTurns: context.turns, for: request) == false)
+    }
+
+    @Test func rollingSummaryCannotCommitAfterStopOrPartialPrefix() throws {
+        let (_, chat, id) = try fixture()
+        let (session, first, deps) = try pending(chat, id)
+        #expect(try chat.finishTurn(turnID: first.id, answer: "Friday", citations: [], dependencies: deps))
+        let second = try chat.beginTurn(sessionID: session.id, question: "Greeting", scope: .init(), provider: "test", model: "test")
+        #expect(try chat.finishTurn(turnID: second.id, answer: "Hello", citations: [], dependencies: []))
+        let request = try chat.beginTurn(sessionID: session.id, question: "Next", scope: .init(), provider: "test", model: "test")
+        let context = try chat.historyContext(before: request)
+        #expect(try chat.saveRollingSummary(text: "Skipped first turn", coveredTurns: Array(context.turns.suffix(1)), for: request) == false)
+        try chat.setTurnState(id: request.id, state: .stopped)
+        #expect(try chat.saveRollingSummary(text: "Late summary", coveredTurns: context.turns, for: request) == false)
+    }
+
+    @Test func sourceDeletionAndEditScrubPersistedRollingSummary() throws {
+        for operation in ["soft", "hard", "edit"] {
+            let (meetings, chat, id) = try fixture()
+            let (session, first, deps) = try pending(chat, id)
+            #expect(try chat.finishTurn(turnID: first.id, answer: "Secret Friday launch", citations: [], dependencies: deps))
+            let request = try chat.beginTurn(sessionID: session.id, question: "Next", scope: .init(), provider: "test", model: "test")
+            let context = try chat.historyContext(before: request)
+            #expect(try chat.saveRollingSummary(text: "Private launch recap", coveredTurns: context.turns, for: request))
+            if operation == "soft" { try meetings.deleteMeeting(id: id) }
+            else if operation == "edit" { try meetings.updateMeetingNotes(id: id, formattedNotes: "Changed decision") }
+            else { try meetings.withChatDatabase { db in try MeetingChatSQL.execute("DELETE FROM meetings WHERE id=?", [.integer(id)], db: db) } }
+            // Inspect persisted storage directly: validation alone must not leave private derived text behind.
+            #expect(try chat.sessions().first?.rollingSummary == nil)
+            #expect(try chat.rollingSummary(before: request) == nil)
+            #expect(try chat.saveRollingSummary(text: "Late private recap", coveredTurns: context.turns, for: request) == false)
+        }
+    }
+
+    @Test func historyIncludesMoreThanFiftyFullExchangesByDefault() throws {
+        let (_, chat, _) = try fixture()
+        let session = try chat.createSession(scope: .init(), title: "Long discussion")
+        for index in 0..<55 {
+            let turn = try chat.beginTurn(sessionID: session.id, question: "Question \(index)", scope: .init(), provider: "test", model: "test")
+            #expect(try chat.finishTurn(turnID: turn.id, answer: String(repeating: "Detail ", count: 100), citations: [], dependencies: []))
+        }
+        let request = try chat.beginTurn(sessionID: session.id, question: "Recap", scope: .init(), provider: "test", model: "test")
+        let context = try chat.historyContext(before: request)
+        #expect(context.turns.count == 55)
+        #expect(context.turns.first?.ordinal == 0)
+        #expect(context.turns.reduce(0) { $0 + MeetingChatHistory.promptBlock($1).utf8.count } > 4_000)
+    }
+
+    @Test func summaryParticipantTriggersUpgradeAndInvalidateBothSidesOfReassignment() throws {
+        let (meetings, chat, firstID) = try fixture()
+        let secondID = try meetings.insertMeeting(title: "Review", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Review Friday", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        try meetings.withChatDatabase { db in
+            try MeetingChatSQL.execute("INSERT INTO meeting_participants(meeting_id,participant_identifier,display_name,insertion_order) VALUES(?,'person','Taylor',0)", [.integer(firstID)], db: db)
+        }
+        for id in [firstID, secondID] {
+            let (session, first, deps) = try pending(chat, id)
+            #expect(try chat.finishTurn(turnID: first.id, answer: "Discussion", citations: [], dependencies: deps))
+            let request = try chat.beginTurn(sessionID: session.id, question: "Next", scope: .init(), provider: "test", model: "test")
+            let context = try chat.historyContext(before: request)
+            #expect(try chat.saveRollingSummary(text: "Participant discussion", coveredTurns: context.turns, for: request))
+        }
+        try meetings.withChatDatabase { db in
+            // Simulate an installed schema with the old participant triggers but
+            // without the newly introduced, independently named summary triggers.
+            for suffix in ["inserted", "edited", "removed"] {
+                try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_rolling_summary_participant_\(suffix)", db: db)
+            }
+            try MeetingChatSQL.migrate(db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET meeting_id=? WHERE meeting_id=? AND participant_identifier='person'", [.integer(secondID), .integer(firstID)], db: db)
+        }
+        #expect(try chat.sessions().count == 2)
+        #expect(try chat.sessions().allSatisfy { $0.rollingSummary == nil })
     }
 
 }

@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import CryptoKit
 
 /// Opens the explicitly supplied app database per operation; no shared mutable connection.
 public struct MeetingChatStore: Sendable {
@@ -58,9 +59,11 @@ public struct MeetingChatStore: Sendable {
     /// Changing retrieval scope does not erase conversation. Only current, completed
     /// exchanges are reusable, and their inherited dependencies remain deletion-tracked.
     /// Historical citations/excerpts are deliberately not returned as fresh evidence.
-    public func historyContext(before turn: MeetingChatTurn, byteLimit: Int = 4_000) throws -> (turns: [MeetingChatTurn], dependencies: [MeetingChatDependency]) {
-        try connection { db in
-            let candidates = try MeetingChatSQL.rows("SELECT body FROM meeting_chat_turns WHERE session_id=? AND ordinal<? AND state='completed' ORDER BY ordinal DESC LIMIT 50",
+    public func historyContext(before turn: MeetingChatTurn, byteLimit: Int? = nil) throws -> (turns: [MeetingChatTurn], dependencies: [MeetingChatDependency]) {
+        try connection { db in try historyContext(before: turn, byteLimit: byteLimit, db: db) }
+    }
+    private func historyContext(before turn: MeetingChatTurn, byteLimit: Int?, db: OpaquePointer?) throws -> (turns: [MeetingChatTurn], dependencies: [MeetingChatDependency]) {
+            let candidates = try MeetingChatSQL.rows("SELECT body FROM meeting_chat_turns WHERE session_id=? AND ordinal<? AND state='completed' ORDER BY ordinal DESC",
                 [.text(turn.sessionID.uuidString), .integer(Int64(turn.ordinal))], db: db) {
                 try MeetingChatSQL.decode(MeetingChatTurn.self, MeetingChatSQL.text($0, 0))
             }
@@ -82,14 +85,71 @@ public struct MeetingChatStore: Sendable {
                 }
                 guard current, previous.originalAnswer != nil else { continue }
                 let block = MeetingChatHistory.promptBlock(previous)
-                guard bytes + block.utf8.count <= byteLimit else { continue }
+                if let byteLimit, bytes + block.utf8.count > byteLimit { continue }
                 bytes += block.utf8.count
                 previous.citations = []; previous.editableDraft = nil
                 selected.insert(previous, at: 0); dependencies.formUnion(inherited)
             }
             return (selected, Array(dependencies))
-        }
     }
+    public func rollingSummary(before turn: MeetingChatTurn) throws -> MeetingChatRollingSummary? {
+        try connection { db in try MeetingChatSQL.transaction(db: db) {
+            var session = try session(turn.sessionID, db: db)
+            guard let summary = session.rollingSummary, summary.throughOrdinal < turn.ordinal else { return nil }
+            let prefix = try historyContext(before: turn, byteLimit: nil, db: db).turns.filter { $0.ordinal <= summary.throughOrdinal }
+            guard try fingerprints(prefix) == summary.coveredTurnFingerprints,
+                  try dependencies(for: prefix, db: db) == Set(summary.dependencies),
+                  try sourcesMatch(summary.dependencies, db: db) else {
+                session.rollingSummary = nil; try saveSession(session, db: db)
+                return nil
+            }
+            return summary
+        } }
+    }
+
+    /// Snapshot/commit guard: callers provide exactly the raw exchanges summarized,
+    /// including the earlier prefix when extending an existing summary.
+    @discardableResult
+    public func saveRollingSummary(text: String, coveredTurns: [MeetingChatTurn], for request: MeetingChatTurn) throws -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 128_000,
+              let through = coveredTurns.map(\.ordinal).max(), through < request.ordinal,
+              coveredTurns.allSatisfy({ $0.sessionID == request.sessionID && $0.state == .completed }) else { return false }
+        return try connection { db in try MeetingChatSQL.transaction(db: db) {
+            guard let current = try turn(request.id, db: db), current.state.isPending,
+                  current.attemptID == request.attemptID else { return false }
+            var session = try session(request.sessionID, db: db)
+            let prefix = try historyContext(before: request, byteLimit: nil, db: db).turns.filter { $0.ordinal <= through }
+            let expected = try fingerprints(coveredTurns)
+            guard expected.count == coveredTurns.count, try fingerprints(prefix) == expected else { return false }
+            // A slower earlier compaction must never replace a newer prefix.
+            if let existing = session.rollingSummary, existing.throughOrdinal > through { return false }
+            let dependencies = try dependencies(for: prefix, db: db)
+            guard try sourcesMatch(Array(dependencies), db: db) else { return false }
+            session.rollingSummary = .init(text: text, throughOrdinal: through, coveredTurnFingerprints: expected, dependencies: Array(dependencies))
+            try saveSession(session, db: db)
+            return true
+        } }
+    }
+    private func dependencies(for turns: [MeetingChatTurn], db: OpaquePointer?) throws -> Set<MeetingChatDependency> {
+        var result = Set<MeetingChatDependency>()
+        for turn in turns {
+            let inherited = try MeetingChatSQL.rows("SELECT meeting_id,revision FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turn.id.uuidString)], db: db) {
+                MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
+            }
+            result.formUnion(inherited)
+        }
+        return result
+    }
+    private func fingerprints(_ turns: [MeetingChatTurn]) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for turn in turns {
+            let payload = try JSONEncoder().encode([turn.id.uuidString, String(turn.ordinal), turn.attemptID?.uuidString ?? "", turn.question, turn.originalAnswer ?? ""])
+            result[turn.id.uuidString] = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        }
+        return result
+    }
+
     public func updateSession(id: UUID, title: String?, scope: MeetingChatScope?) throws {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             var session = try session(id, db: db)

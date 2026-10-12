@@ -7,7 +7,7 @@ public struct MeetingChatRetrieval: Sendable {
     private let useFTS: Bool
     public init(databaseURL: URL, useFTS: Bool = true) { self.databaseURL = databaseURL; self.useFTS = useFTS }
 
-    public func retrieve(question: String, scope: MeetingChatScope, priorQuestions: [String] = [], broadRecap: Bool = false) throws -> MeetingChatEvidence {
+    public func retrieve(question: String, scope: MeetingChatScope, priorQuestions: [String] = [], broadRecap: Bool = false, includeScopeContext: Bool = false) throws -> MeetingChatEvidence {
         try DictationStore(databaseURL: databaseURL).withChatDatabase { db in
             let ftsAvailable = useFTS && prepareFTS(db: db)
             var metrics = try reconcileIndex(db: db)
@@ -28,7 +28,7 @@ public struct MeetingChatRetrieval: Sendable {
                 if broadRecap {
                     candidates = try readPassages("""
                         SELECT p.body FROM meeting_chat_passages p \(baseJoin) WHERE \(scopeCondition)
-                        ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id ORDER BY \(originalsFirst),p.id),s.start_time DESC,p.id LIMIT 257
+                        ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id,json_extract(p.body,'$.kind') ORDER BY CAST(json_extract(p.body,'$.range.location') AS INTEGER)),s.start_time DESC,\(originalsFirst),p.id LIMIT 257
                         """, scopeBindings, db: db)
                 } else if ftsAvailable, !tokens.isEmpty,
                           let matched = try? readPassages("SELECT p.body FROM meeting_chat_fts f JOIN meeting_chat_passages p ON p.seq=f.rowid \(baseJoin) WHERE \(scopeCondition) AND meeting_chat_fts MATCH ? ORDER BY bm25(meeting_chat_fts),\(originalsFirst) LIMIT 257", scopeBindings + [.text(tokens.map { "\"\($0)\"" }.joined(separator: " OR "))], db: db) {
@@ -44,15 +44,34 @@ public struct MeetingChatRetrieval: Sendable {
                     candidates = try readPassages("SELECT p.body FROM meeting_chat_passages p \(baseJoin) WHERE \(scopeCondition) AND (\(condition)) ORDER BY \(originalsFirst),s.start_time DESC,p.id LIMIT 257", scopeBindings + bindings, db: db)
                 }
                 metrics.decodedCandidateCount = candidates.count
-                let candidateLimited = candidates.count > 256
-                candidates = Array(candidates.prefix(256))
+                var candidateLimited = candidates.count > 256
+                candidates = Array(candidates.prefix(256)).filter(Self.isContentPassage)
+                let supplyingContext: Bool
+                if case .meetings(let ids) = scope.selection { supplyingContext = includeScopeContext && !ids.isEmpty } else { supplyingContext = false }
+                if supplyingContext {
+                    // An explicit attachment supplies context even when the question's
+                    // vocabulary never occurs in the meeting. Keep each source kind
+                    // represented, then prioritize lexical matches within a finite budget.
+                    let context = try readPassages("""
+                        SELECT p.body FROM meeting_chat_passages p \(baseJoin) WHERE \(scopeCondition)
+                        ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id,json_extract(p.body,'$.kind') ORDER BY CAST(json_extract(p.body,'$.range.location') AS INTEGER)),s.start_time DESC,\(originalsFirst),p.id LIMIT 257
+                        """, scopeBindings, db: db)
+                    metrics.decodedCandidateCount += context.count
+                    candidateLimited = candidateLimited || context.count > 256
+                    let content = Array(context.prefix(256)).filter(Self.isContentPassage)
+                    var representedKinds = Set<String>()
+                    let representatives = content.filter { representedKinds.insert("\($0.meetingID):\($0.kind.rawValue)").inserted }
+                    var seen = Set<String>()
+                    candidates = (representatives + candidates + content).filter { seen.insert($0.id).inserted }
+                }
+                let packetLimit = supplyingContext ? 14_000 : 10_000
                 var selected: [MeetingChatPassage] = []; var usedBytes = 0; var packetBytes = 0
                 for var passage in candidates {
                     try Task.checkCancellation()
                     guard usedBytes + passage.excerpt.utf8.count <= 12_000 else { continue }
                     passage.sourceKey = "S\(selected.count + 1)"
                     let footprint = MeetingChatPassages.promptByteCount(passage)
-                    guard packetBytes + footprint <= 10_000 else { continue }
+                    guard packetBytes + footprint <= packetLimit else { continue }
                     packetBytes += footprint
                     usedBytes += passage.excerpt.utf8.count
                     passage.sourceKey = "S\(selected.count + 1)"; selected.append(passage)
@@ -61,7 +80,7 @@ public struct MeetingChatRetrieval: Sendable {
                 return MeetingChatEvidence(scope: scope, passages: selected,
                     dependencies: represented.sorted().map { .init(meetingID: $0, revision: eligible[$0]!) },
                     coverage: .init(eligibleMeetingCount: eligible.count, evidenceMeetingCount: represented.count,
-                        isPartialRecap: broadRecap && (candidateLimited || selected.count < candidates.count || represented.count < eligible.count)), metrics: metrics)
+                        isPartialRecap: (broadRecap || supplyingContext) && (candidateLimited || selected.count < candidates.count || represented.count < eligible.count)), metrics: metrics)
         }
     }
 
@@ -116,6 +135,14 @@ public struct MeetingChatRetrieval: Sendable {
         if let start = scope.startDate { conditions.append("s.start_time>=?"); bindings.append(.real(start.timeIntervalSince1970)) }
         if let end = scope.endDateExclusive { conditions.append("s.start_time<?"); bindings.append(.real(end.timeIntervalSince1970)) }
         return (conditions.isEmpty ? "1" : conditions.joined(separator: " AND "), bindings)
+    }
+
+    private static func isContentPassage(_ passage: MeetingChatPassage) -> Bool {
+        guard passage.kind != .transcript else { return true }
+        // A Markdown section heading is navigation, not sufficient source evidence.
+        // Filter at retrieval time so existing caches receive the same behavior.
+        let text = passage.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.range(of: #"^#{1,6}\s+[^\r\n]+$"#, options: .regularExpression) == nil
     }
 
     private func readPassages(_ sql: String, _ values: [MeetingChatSQL.Value], db: OpaquePointer?) throws -> [MeetingChatPassage] {

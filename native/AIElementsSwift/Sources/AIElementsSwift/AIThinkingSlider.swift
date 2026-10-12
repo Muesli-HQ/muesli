@@ -20,6 +20,7 @@ public struct AIThinkingSlider: View {
     private let selectedID: String
     private let onSelect: (String) -> Void
     @Environment(\.aiElementsTheme) private var theme
+    @State private var drag = AIThinkingDragState()
 
     public init(title: String = "Thinking level", choices: [AIThinkingChoice], selectedID: String,
                 onSelect: @escaping (String) -> Void) {
@@ -32,7 +33,8 @@ public struct AIThinkingSlider: View {
     private var available: [AIThinkingChoice] { AIThinkingScale.available(choices) }
     private var selectedIndex: Int? { available.firstIndex { $0.id == selectedID } }
     private var valueLabel: String {
-        choices.first { $0.id == selectedID }?.title ?? (selectedID.isEmpty ? "Unavailable" : selectedID)
+        if let position = drag.position, let choice = AIThinkingScale.choice(at: position, in: available) { return choice.title }
+        return choices.first { $0.id == selectedID }?.title ?? (selectedID.isEmpty ? "Unavailable" : selectedID)
     }
 
     public var body: some View {
@@ -42,22 +44,18 @@ public struct AIThinkingSlider: View {
                 Spacer()
                 Text(valueLabel).font(.system(size: 12, weight: .medium)).foregroundStyle(theme.muted)
             }
-            Slider(value: Binding(get: { Double(selectedIndex ?? 0) }, set: { value in
-                guard selectedIndex != nil,
-                      let choice = AIThinkingScale.choice(at: value, in: available), choice.id != selectedID else { return }
-                onSelect(choice.id)
-            }), in: 0...Double(max(available.count - 1, 1)), step: 1)
+            Slider(value: Binding(get: { drag.position ?? Double(selectedIndex ?? 0) }, set: { value in
+                guard selectedIndex != nil else { return }
+                if let value = drag.update(value, choices: available, selectedID: selectedID) { onSelect(value) }
+            }), in: 0...Double(max(available.count - 1, 1)), step: 1, onEditingChanged: { editing in
+                if editing { drag.begin(at: Double(selectedIndex ?? 0)) }
+                else if let value = drag.finish(choices: available, selectedID: selectedID) { onSelect(value) }
+            })
                 .tint(theme.accent)
                 .disabled(available.count < 2 || selectedIndex == nil)
                 .accessibilityLabel(title)
                 .accessibilityValue(valueLabel)
             if available.count > 1 {
-                HStack(spacing: 0) {
-                    ForEach(Array(available.enumerated()), id: \.element.id) { index, _ in
-                        if index > 0 { Spacer(minLength: 0) }
-                        Rectangle().fill(theme.border).frame(width: 1, height: 4)
-                    }
-                }.padding(.horizontal, 8).accessibilityHidden(true)
                 HStack {
                     Text(available.first?.title ?? "")
                     Spacer()
@@ -68,6 +66,38 @@ public struct AIThinkingSlider: View {
                 Text(reason).font(.system(size: 11)).foregroundStyle(theme.muted)
             }
         }
+        .onChange(of: choices) { _, _ in drag.cancel() }
+        .onChange(of: selectedID) { _, _ in if !drag.isEditing { drag.cancel() } }
+    }
+}
+
+/// Interaction state deliberately keeps drag updates out of persistence callbacks.
+/// Keyboard/accessibility steps, which need not start a drag, commit individually.
+struct AIThinkingDragState {
+    private(set) var isEditing = false
+    private(set) var position: Double?
+
+    mutating func begin(at position: Double) {
+        isEditing = true
+        self.position = position
+    }
+
+    mutating func update(_ position: Double, choices: [AIThinkingChoice], selectedID: String) -> String? {
+        guard let choice = AIThinkingScale.choice(at: position, in: choices) else { return nil }
+        if isEditing { self.position = position; return nil }
+        return choice.id == selectedID ? nil : choice.id
+    }
+
+    mutating func finish(choices: [AIThinkingChoice], selectedID: String) -> String? {
+        defer { cancel() }
+        guard isEditing, let position,
+              let choice = AIThinkingScale.choice(at: position, in: choices), choice.id != selectedID else { return nil }
+        return choice.id
+    }
+
+    mutating func cancel() {
+        isEditing = false
+        position = nil
     }
 }
 

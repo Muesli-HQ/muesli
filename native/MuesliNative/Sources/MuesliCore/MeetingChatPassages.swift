@@ -48,7 +48,7 @@ public enum MeetingChatPassages {
             guard count + size <= 300 else { break }
             title.append(character); count += size
         }
-        let source = ["id": passage.sourceKey, "title": title, "date": passage.startDate.ISO8601Format(),
+        let source = ["id": passage.sourceKey, "meeting_id": String(passage.meetingID), "title": title, "date": passage.startDate.ISO8601Format(),
                       "kind": passage.kind.label, "timestamp": passage.timestamp ?? "", "excerpt": passage.excerpt]
         return ((try? JSONSerialization.data(withJSONObject: source, options: [.sortedKeys]).count) ?? Int.max / 2) + 8
     }

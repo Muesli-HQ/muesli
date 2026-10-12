@@ -427,6 +427,11 @@ struct MeetingChatView: View {
         return false
     }
 
+    private var modelContextWindow: Int? {
+        guard MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend) == .openRouter else { return nil }
+        return appState.openRouterSummaryModels.first { $0.id == appState.config.openRouterModel }?.contextWindowTokens
+    }
+
     private func send() {
         guard !coordinator.isBusy, !coordinator.isUpdatingChat else { return }
         guard controller.canUseSummaryProvider(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend)) else {
@@ -435,7 +440,7 @@ struct MeetingChatView: View {
         let question = coordinator.composerDraft; let config = appState.config; let draft = preparedIsDraft; let sessionID = coordinator.selectedSessionID
         Task {
             guard coordinator.selectedSessionID == sessionID else { return }
-            await coordinator.send(question: question, config: config, isDraft: draft)
+            await coordinator.send(question: question, config: config, isDraft: draft, contextWindowTokens: modelContextWindow)
             if coordinator.selectedSessionID == sessionID { scrollAnchor.wrappedValue = coordinator.turns.last?.id }
             else if let turnID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == turnID }) { scrollAnchor.wrappedValue = turnID }
         }
@@ -482,10 +487,6 @@ struct MeetingChatView: View {
                         if !turn.citations.isEmpty {
                             MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
                         }
-                        if let coverage = turn.coverage, coverage.isPartialRecap {
-                            Text("Partial recap · \(coverage.eligibleMeetingCount) meeting\(coverage.eligibleMeetingCount == 1 ? "" : "s") in scope")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
                         answerActions(turn)
                     } else if turn.state == .sourceDeleted {
                         Label { Text("Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
@@ -494,7 +495,7 @@ struct MeetingChatView: View {
                         Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }
                             .font(.callout).foregroundStyle(.secondary)
                         Button {
-                            let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config) }
+                            let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config, contextWindowTokens: modelContextWindow) }
                         } label: { Label { Text("Try again") } icon: { AIIcon(.rotateCcw) } }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                     }
                 }

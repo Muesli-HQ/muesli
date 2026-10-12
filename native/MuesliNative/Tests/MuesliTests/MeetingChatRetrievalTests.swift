@@ -156,6 +156,36 @@ struct MeetingChatRetrievalTests {
         #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
     }
 
+    @Test(arguments: [true, false]) func attachedContextIncludesTranscriptAndSummaryWithoutLexicalMatches(fts: Bool) throws {
+        let store = try database()
+        let transcript = String(repeating: "We compared Solaris and Stalker, their lighting and framing. ", count: 110)
+        let notes = "## Meeting Summary\n\n" + String(repeating: "Solaris uses different lighting from Stalker. ", count: 35)
+        let id = try store.insertMeeting(title: "Cinematography", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: transcript, formattedNotes: notes, micAudioPath: nil, systemAudioPath: nil)
+        _ = try insert(store, text: "Private unrelated discussion")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: fts)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let evidence = try retrieval.retrieve(question: "which movies was this meeting about?", scope: scope, includeScopeContext: true)
+        #expect(Set(evidence.passages.map(\.kind)) == [.transcript, .generatedNotes])
+        #expect(Set(evidence.passages.map(\.meetingID)) == [id])
+        #expect(!evidence.passages.contains { $0.excerpt == "## Meeting Summary" })
+        #expect(evidence.passages.filter { $0.kind == .transcript }.reduce(0) { $0 + $1.range.length } == transcript.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count)
+        #expect(!evidence.coverage.isPartialRecap)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 14_000)
+        // Search tools stay lexical; an unmatched query is not reported as a match.
+        #expect(try retrieval.retrieve(question: "nonexistentword", scope: scope).passages.isEmpty)
+        try store.deleteMeeting(id: id)
+        #expect(try retrieval.retrieve(question: "movies", scope: scope, includeScopeContext: true).passages.isEmpty)
+    }
+
+    @Test func attachedContextIsBoundedAndReportsOmissions() throws {
+        let store = try database()
+        let id = try insert(store, text: String(repeating: "A long discussion. ", count: 3000))
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Which films?", scope: .init(selection: .meetings([id])), includeScopeContext: true)
+        #expect(!evidence.passages.isEmpty)
+        #expect(evidence.coverage.isPartialRecap)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 14_000)
+    }
+
     @Test func findsMeetingBeyondBrowserWindow() throws {
         let store = try database()
         let oldest = try insert(store, text: "[00:00:05] You: The launch codeword is sunflower.")

@@ -7,6 +7,119 @@ import Testing
 @MainActor
 @Suite("Meeting chat review regressions", .serialized)
 struct MeetingChatReviewTests {
+    private func fullReadFixture(text: String = "[00:00:01] You: Launch Friday.") throws -> (DictationStore, MeetingChatStore, MeetingChatWorker, Int64) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("chat-full-read-\(UUID()).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let id = try store.insertMeeting(title: "Launch", calendarEventID: nil, startTime: Date(timeIntervalSince1970: 1_000), endTime: Date(timeIntervalSince1970: 1_100), rawTranscript: text, formattedNotes: "Generated decision.", micAudioPath: nil, systemAudioPath: nil)
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Written reminder.")
+        return (store, MeetingChatStore(databaseURL: url), MeetingChatWorker(databaseURL: url), id)
+    }
+    private func fullReadTurn(_ chat: MeetingChatStore, scope: MeetingChatScope) throws -> MeetingChatTurn {
+        let session = try chat.createSession(scope: scope, title: "New chat")
+        return try chat.beginTurn(sessionID: session.id, question: "Read everything", scope: scope, provider: "test", model: "test")
+    }
+    private func emptyReadEvidence(_ scope: MeetingChatScope) -> MeetingChatEvidence {
+        .init(scope: scope, passages: [], dependencies: [], coverage: .init(eligibleMeetingCount: 1, evidenceMeetingCount: 0, isPartialRecap: false))
+    }
+
+    @Test func nativeFullReadIncludesAllKindsAndExactCitations() async throws {
+        let (_, chat, worker, id) = try fullReadFixture()
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let turn = try fullReadTurn(chat, scope: scope)
+        let (result, _, count, nextPage) = try await worker.execute(.readMeeting(id, 0), turn: turn, evidence: emptyReadEvidence(scope), nextSourceKey: 1, native: true)
+        #expect(count == 3)
+        #expect(nextPage == nil)
+        #expect(Set(result.passages.map(\.kind)) == Set([.transcript, .manualNotes, .generatedNotes]))
+        let snapshot = try #require(chat.sourceSnapshots(scope: scope).first)
+        for passage in result.passages {
+            let text: String
+            switch passage.kind { case .transcript: text = snapshot.transcript; case .manualNotes: text = snapshot.manualNotes; case .generatedNotes: text = snapshot.generatedNotes }
+            #expect((text as NSString).substring(with: passage.range.nsRange) == passage.excerpt)
+            #expect(!passage.sourceKey.isEmpty)
+        }
+        #expect(try chat.dependencies(turnID: turn.id).map(\.meetingID) == [id])
+    }
+
+    @Test func nativeFullReadRejectsOutOfScopeDatesFoldersAndRemovedSources() async throws {
+        let (store, chat, worker, id) = try fullReadFixture()
+        let folder = try store.createFolder(name: "Other")
+        let scopes: [MeetingChatScope] = [
+            .init(selection: .meetings([])), .init(selection: .folder(folder)),
+            .init(startDate: Date(timeIntervalSince1970: 1_001)),
+            .init(endDateExclusive: Date(timeIntervalSince1970: 1_000))
+        ]
+        for scope in scopes {
+            let turn = try fullReadTurn(chat, scope: scope)
+            await #expect(throws: MeetingChatError.self) {
+                _ = try await worker.execute(.readMeeting(id, 0), turn: turn, evidence: emptyReadEvidence(scope), nextSourceKey: 1, native: true)
+            }
+            #expect(try chat.dependencies(turnID: turn.id).isEmpty)
+        }
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let turn = try fullReadTurn(chat, scope: scope)
+        let (evidence, next, _, _) = try await worker.execute(.readMeeting(id, 0), turn: turn, evidence: emptyReadEvidence(scope), nextSourceKey: 1, native: true)
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Changed after first read")
+        await #expect(throws: MeetingChatError.self) {
+            _ = try await worker.execute(.readMeeting(id, 0), turn: turn, evidence: evidence, nextSourceKey: next, native: true)
+        }
+        try store.deleteMeeting(id: id)
+        await #expect(throws: MeetingChatError.self) {
+            _ = try await worker.execute(.readMeeting(id, 0), turn: turn, evidence: emptyReadEvidence(scope), nextSourceKey: 1, native: true)
+        }
+    }
+
+    @Test func nativeFullReadPagesRetainLateContentAndEarlierMarkers() async throws {
+        let text = (0..<90).map { "[00:00:01] You: Passage \($0) " + String(repeating: "discussion ", count: 70) }.joined(separator: "\n") + "\n[00:59:59] You: Final sunflower decision."
+        let (_, chat, worker, id) = try fullReadFixture(text: text)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let turn = try fullReadTurn(chat, scope: scope)
+        var evidence = emptyReadEvidence(scope)
+        var key = 1
+        var page = 0
+        var firstMarker: String?
+        while true {
+            let (result, nextKey, _, nextPage) = try await worker.execute(.readMeeting(id, page), turn: turn, evidence: evidence, nextSourceKey: key, native: true)
+            firstMarker = firstMarker ?? result.passages.first?.sourceKey
+            evidence = result
+            key = nextKey
+            guard let nextPage else { break }
+            #expect(nextPage == page + 1)
+            page = nextPage
+        }
+        #expect(page > 0)
+        #expect(evidence.passages.contains { $0.excerpt.contains("Final sunflower decision") })
+        #expect(evidence.passages.contains { $0.sourceKey == firstMarker && $0.excerpt.contains("Passage 0 ") })
+        let source = try #require(chat.sourceSnapshots(scope: scope).first)
+        #expect(Set(evidence.passages.map(\.id)) == Set(MeetingChatPassages.extract(from: source).map(\.id)))
+        for invalidPage in [-1, page + 1, 10_000] {
+            await #expect(throws: MeetingChatError.self) {
+                _ = try await worker.execute(.readMeeting(id, invalidPage), turn: turn, evidence: evidence, nextSourceKey: key, native: true)
+            }
+        }
+    }
+
+    @Test func nativeFullReadFailsAtBudgetInsteadOfSilentlyDroppingPages() async throws {
+        let text = (0..<400).map { "[00:00:01] You: Passage \($0) " + String(repeating: "discussion ", count: 100) }.joined(separator: "\n")
+        let (_, chat, worker, id) = try fullReadFixture(text: text)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let turn = try fullReadTurn(chat, scope: scope)
+        var evidence = emptyReadEvidence(scope)
+        var key = 1
+        var failedForBudget = false
+        for page in 0..<10 {
+            do {
+                let (result, nextKey, _, nextPage) = try await worker.execute(.readMeeting(id, page), turn: turn, evidence: evidence, nextSourceKey: key, native: true)
+                #expect(Set(evidence.passages.map(\.id)).isSubset(of: Set(result.passages.map(\.id))))
+                evidence = result; key = nextKey
+                if nextPage == nil { break }
+            } catch MeetingChatError.promptTooLarge {
+                failedForBudget = true; break
+            }
+        }
+        #expect(failedForBudget)
+    }
+
     @Test func providerFailuresGiveSafeActionableGuidance() {
         let rejected = MeetingChatCoordinator.failureMessage(ChatGPTResponsesError.backendFailed(statusCode: 400, message: "private server details"))
         #expect(rejected.contains("selected model"))
@@ -299,6 +412,49 @@ struct MeetingChatReviewTests {
         }
     }
 
+    @Test func rollingMemorySurvivesProviderSwitchAndIsScrubbedOnDeletion() async throws {
+        let probe = RollingMemoryProbe()
+        let (meetings, coordinator) = try fixture(generator: probe)
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        let session = try #require(coordinator.selectedSessionID)
+        let source = try #require(coordinator.store.sourceSnapshots(scope: .init()).first)
+        let first = try coordinator.store.beginTurn(sessionID: session, question: "Remember the launch", scope: .init(), provider: "old", model: "old")
+        let deps = [MeetingChatDependency(meetingID: source.meetingID, revision: source.revision)]
+        try coordinator.store.attachEvidence(turnID: first.id, dependencies: deps)
+        #expect(try coordinator.store.finishTurn(turnID: first.id, answer: String(repeating: "Launch discussion. ", count: 2000) + "Unique promise: Friday.", citations: [], dependencies: deps))
+        var config = AppConfig(); config.meetingSummaryBackend = MeetingSummaryBackendOption.chatGPT.backend
+        await coordinator.send(question: "Make it short", config: config)
+        await coordinator.waitForIdle()
+        #expect(try coordinator.store.turns(sessionID: session).last?.state == .completed)
+        #expect(try coordinator.store.sessions().first(where: { $0.id == session })?.rollingSummary != nil)
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
+        await coordinator.send(question: "What promise did we discuss?", config: config)
+        await coordinator.waitForIdle()
+        #expect(try coordinator.store.turns(sessionID: session).last?.state == .completed)
+        #expect(await probe.answerPrompts.count == 2)
+        #expect(await probe.answerPrompts.allSatisfy { $0.contains("Unique promise: Friday") })
+        #expect(await probe.answerProviders.last == MeetingSummaryBackendOption.anthropic.backend)
+        try meetings.deleteMeeting(id: source.meetingID)
+        #expect(try coordinator.store.sessions().first(where: { $0.id == session })?.rollingSummary == nil)
+        #expect(try coordinator.store.turns(sessionID: session).last?.state == .sourceDeleted)
+    }
+
+    @Test func attachedMeetingContentsReachFirstModelRequest() async throws {
+        let probe = AttachedContextProbe()
+        let (store, coordinator) = try fixture(generator: probe)
+        let id = try store.insertMeeting(title: "Cinematography", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "Solaris and Stalker have distinctive cinematography.", formattedNotes: "## Meeting Summary\n\nDiscussed framing and lighting in Solaris.", micAudioPath: nil, systemAudioPath: nil)
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init(selection: .meetings([id])))
+        await coordinator.send(question: "which movies was this meeting about?", config: AppConfig())
+        await coordinator.waitForIdle()
+        let prompt = try #require(await probe.user)
+        #expect(prompt.contains("Solaris and Stalker have distinctive cinematography."))
+        #expect(prompt.contains("Discussed framing and lighting in Solaris."))
+        #expect(!prompt.contains("## Meeting Summary"))
+        #expect(await probe.calls == 1)
+    }
+
     @Test func toolCardsExposeResultsAndReasoningStopsStreamingAfterCompletion() async throws {
         let (_, coordinator) = try fixture(generator: ToolPresentationProbe())
         await coordinator.waitForIdle()
@@ -339,5 +495,25 @@ private actor ToolPresentationProbe: MeetingTextGenerating {
         await request.onReasoningSummary?("Checking the supplied launch context.")
         if calls == 1 { return #"{"tool":"browse_meeting_sources"}"# }
         return #"{"status":"answered","markdown":"Launch Friday [[S1]]"}"#
+    }
+}
+
+private actor AttachedContextProbe: MeetingTextGenerating {
+    private(set) var user: String?
+    private(set) var calls = 0
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        calls += 1; user = request.user
+        return #"{"status":"answered","markdown":"Solaris and Stalker [[S1]]"}"#
+    }
+}
+
+private actor RollingMemoryProbe: MeetingTextGenerating {
+    private(set) var answerPrompts: [String] = []
+    private(set) var answerProviders: [String] = []
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if request.system.contains("Compress conversation history") { return "Unique promise: Friday. This is a prior conversation claim, not fresh evidence." }
+        answerPrompts.append(request.user)
+        answerProviders.append(request.config.meetingSummaryBackend)
+        return #"{"status":"conversation","markdown":"We discussed a Friday promise."}"#
     }
 }

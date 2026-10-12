@@ -238,6 +238,39 @@ enum ChatGPTResponsesClient {
         return trimmed
     }
 
+    static func respondNative(_ input: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        try Task.checkCancellation()
+        let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+        try Task.checkCancellation()
+        let body = try MeetingNativeToolTransport.requestBody(input, stream: true)
+        let request = try ChatGPTResponsesTransport.makeRequest(body: body, token: token,
+            accountId: accountId, sessionID: input.base.sessionID)
+        let session = URLSession(configuration: ChatGPTResponsesTransport.sessionConfiguration())
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw MeetingTextGenerationError.failed(status) }
+        var summary = ChatGPTReasoningSummaryAccumulator()
+        var output = MeetingNativeResponseAccumulator()
+        var received = 0
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            received += line.utf8.count
+            guard received <= 8_388_608, line.utf8.count <= MeetingNativeToolTransport.maximumResponseBytes else {
+                throw MeetingTextGenerationError.emptyResponse
+            }
+            guard line.hasPrefix("data:") else { continue }
+            let raw = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            if raw == "[DONE]" { break }
+            guard let payload = try decodeStreamPayload(raw, httpStatus: status) else { continue }
+            if summary.apply(payload) { await input.base.onReasoningSummary?(summary.text) }
+            try Task.checkCancellation()
+            if let completed = try output.apply(payload) { return completed }
+        }
+        // Partial deltas are never a completed native tool call or final answer.
+        throw MeetingTextGenerationError.emptyResponse
+    }
+
     static func requestBody(
         systemPrompt: String,
         userPrompt: String,
@@ -308,6 +341,9 @@ enum ChatGPTResponsesClient {
     }
 
     static func extractOutputText(from payload: [String: Any]) -> String? {
+        // Codex may emit commentary before its terminal answer. Prefer the
+        // declared final assistant message over convenience text that joins both.
+        if let finalAnswer = extractFinalAssistantAnswer(from: payload) { return finalAnswer }
         if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
             return outputText
         }
@@ -333,6 +369,24 @@ enum ChatGPTResponsesClient {
             return nil
         }
         return delta
+    }
+
+    private static func extractFinalAssistantAnswer(from payload: [String: Any]) -> String? {
+        if let response = payload["response"] as? [String: Any],
+           let answer = extractFinalAssistantAnswer(from: response) { return answer }
+        let items: [[String: Any]]
+        if let output = payload["output"] as? [[String: Any]] { items = output }
+        else if let output = payload["output"] as? [String: Any] { items = [output] }
+        else { return nil }
+        // `phase` is optional in the Codex Responses protocol. When absent,
+        // extractOutputText retains the existing legacy response handling.
+        guard let item = items.last(where: {
+            $0["type"] as? String == "message" &&
+            $0["role"] as? String == "assistant" &&
+            $0["phase"] as? String == "final_answer"
+        }) else { return nil }
+        let text = extractText(fromContent: item["content"]) ?? (item["text"] as? String)
+        return text.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static func extractText(fromOutput output: Any?) -> String? {

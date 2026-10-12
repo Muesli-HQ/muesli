@@ -7,8 +7,6 @@ struct MeetingChatModelPicker: View {
     let controller: MuesliController
     @Environment(\.muesliSettingDefinitions) private var definitions
     @Environment(\.dismiss) private var dismiss
-    @State private var applying = false
-    @State private var errorMessage: String?
 
     private var modelSettingID: String? {
         let backend = appState.config.meetingSummaryBackend
@@ -25,11 +23,29 @@ struct MeetingChatModelPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Model").font(MuesliTheme.headline())
-                Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend).label)
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(16)
+            HStack {
+                Text("Model").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if let providers = snapshot("summary_source") {
+                    Menu {
+                        ForEach(providers.choices.filter { choice in
+                            choice.id == providers.current || controller.canUseSummaryProvider(.resolved(choice.id))
+                        }, id: \.id) { choice in
+                            Button { apply("summary_source", value: choice.id) } label: {
+                                if choice.id == providers.current { Label { Text(choice.label) } icon: { AIIcon(.check, size: 12) } }
+                                else { Text(choice.label) }
+                            }.disabled(providers.unavailable[choice.id] != nil)
+                        }
+                        Divider()
+                        Button("Connect a provider…") { openSettings() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend).label)
+                            AIIcon(.chevronDown, size: 10)
+                        }.font(.caption)
+                    }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Meeting AI provider")
+                }
+            }.padding(12)
             if let id = modelSettingID, let state = snapshot(id) {
                 AIModelSelector(
                     choices: state.choices.map { .init(id: $0.id, title: $0.label, disabledReason: state.unavailable[$0.id]) },
@@ -45,28 +61,28 @@ struct MeetingChatModelPicker: View {
                     choices: thinking.choices.map { .init(id: $0.id, title: $0.label, disabledReason: thinking.unavailable[$0.id]) },
                     selectedID: thinking.current
                 ) { value in apply("summary_thinking", value: value) }
-                    .padding(16)
+                    .id(appState.config.meetingSummaryBackend + ":" + MeetingTextGenerationClient.model(appState.config))
+                    .padding(12)
             }
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Shared with meeting summaries. Changes apply to your next question.")
-                    .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Shared with meeting summaries")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 Button {
-                    dismiss(); appState.selectedSettingsPane = .meetings; appState.selectedTab = .settings
+                    openSettings()
                 } label: { Label { Text("AI Settings…") } icon: { AIIcon(.slidersHorizontal) } }.buttonStyle(.borderless).font(.caption)
-            }.padding(16)
-        }.frame(width: 310).disabled(applying)
-            .alert("Setting could not be changed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-                Button("OK") { errorMessage = nil }
-            } message: { Text(errorMessage ?? "") }
+            }.padding(12)
+        }.frame(width: 280)
+    }
+
+    private func openSettings() {
+        dismiss()
+        appState.selectedSettingsPane = .meetings
+        appState.selectedTab = .settings
     }
 
     private func apply(_ id: String, value: String) {
-        applying = true
-        Task { @MainActor in
-            defer { applying = false }
-            do { try await controller.applySetting(id, value: value) }
-            catch { errorMessage = error.localizedDescription }
-        }
+        guard snapshot(id)?.current != value else { return }
+        controller.setSettingFromUI(id, value: value)
     }
 }
