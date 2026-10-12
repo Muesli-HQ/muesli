@@ -411,7 +411,7 @@ struct ShortcutsView: View {
             compactChangeButton(for: .dictation)
             Spacer(minLength: MuesliTheme.spacing16)
             if isPushToTalkEnabled,
-                (!isDictationCombinationToggle || !appState.config.dictationHotkey.isCombination)
+                (!isDictationCombinationToggle || appState.config.dictationHotkeys.contains { !$0.isCombination })
             {
                 thresholdInput(
                     value: appState.config.hotkeyTriggerThresholdMS
