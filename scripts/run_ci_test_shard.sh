@@ -130,6 +130,7 @@ case "${shard}" in
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
+      CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
