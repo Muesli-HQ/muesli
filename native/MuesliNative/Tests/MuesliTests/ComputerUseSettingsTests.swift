@@ -196,7 +196,7 @@ struct ComputerUseSettingsTests {
         #expect(h.applies == 0)
     }
 
-    @Test("planning budget spans requests and rejects a late write")
+    @Test("planning budget spans requests and rejects a late write", .timeLimit(.minutes(1)))
     func cumulativePlanning() async {
         let h = Harness()
         // Exercise the injected cumulative clock without racing the real per-call
