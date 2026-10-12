@@ -321,6 +321,17 @@ enum DiagnosticErrorCatalog {
     ]
 
     private static let exactMeanings: [String: [String: DiagnosticErrorMeaning]] = [
+        "MuesliClaudeCode": [
+            "1": .init(summary: "Claude Code executable was not found", area: "meeting_summary_configuration"),
+            "2": .init(summary: "Claude Code summary input exceeded its size limit", area: "meeting_summary_input"),
+            "3": .init(summary: "Claude Code summary instructions exceeded their size limit", area: "meeting_summary_input"),
+            "4": .init(summary: "Claude Code summary request timed out", area: "meeting_summary_request"),
+            "5": .init(summary: "Claude Code reported a summary generation error", area: "meeting_summary_request"),
+            "6": .init(summary: "Claude Code returned no meeting notes", area: "meeting_summary_response"),
+            "7": .init(summary: "Claude Code returned an unexpected response format", area: "meeting_summary_response"),
+            "8": .init(summary: "Claude Code exited unsuccessfully", area: "meeting_summary_process"),
+            "9": .init(summary: "Claude Code process could not start", area: "meeting_summary_process"),
+        ],
         "MuesliTranscriptionRuntime": [
             "1": .init(summary: "Nemotron 3.5 requires a newer macOS version", area: "transcription_runtime"),
             "2": .init(summary: "Qwen3 ASR requires a newer macOS version", area: "transcription_runtime"),

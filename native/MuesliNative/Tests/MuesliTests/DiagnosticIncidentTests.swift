@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("DiagnosticIncident")
@@ -82,6 +83,32 @@ struct DiagnosticIncidentTests {
         #expect(incident.telemetryParameters["diagnostic.error_summary"] == nil)
         #expect(incident.issueBody.contains("Error meaning: Preferred microphone input could not be selected"))
         #expect(incident.errorDisplayIdentifier == "MicrophoneRecorder 3")
+    }
+
+    @Test("Claude Code errors keep stable support codes without exporting CLI output")
+    func claudeCodeErrorCodesArePrivacySafe() {
+        let cases: [(ClaudeCodeSummaryError, Int)] = [
+            (.unavailable, 1), (.inputTooLarge, 2), (.instructionsTooLarge, 3), (.timedOut, 4),
+            (.failed("private CLI error text"), 5), (.emptyResponse, 6),
+            (.invalidResponse(exitCode: 0, details: "private CLI error text"), 7),
+            (.processFailed(exitCode: 2, details: "private CLI error text"), 8),
+            (.launchFailed("private CLI error text"), 9),
+        ]
+        for (error, code) in cases {
+            let incident = DiagnosticIncident(
+                kind: .meetingProcessingFailed,
+                stage: .meetingStopProcessing,
+                error: error,
+                metadata: metadata
+            )
+            #expect(error.diagnosticCode == "CLAUDE_CODE_\(code)")
+            #expect(error.localizedDescription.contains(error.diagnosticCode))
+            #expect(incident.errorDomain == "MuesliClaudeCode")
+            #expect(incident.errorCode == String(code))
+            #expect(incident.errorFingerprint.isKnown)
+            #expect(!incident.issueBody.contains("private CLI error text"))
+            #expect(!incident.telemetryParameters.values.joined().contains("private CLI error text"))
+        }
     }
 
     @Test("signature tokens collapse adjacent separators deterministically")
