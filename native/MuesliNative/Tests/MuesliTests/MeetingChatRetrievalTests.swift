@@ -391,6 +391,22 @@ struct MeetingChatRetrievalTests {
         #expect(turn.coverage?.evidenceMeetingCount == 1)
         #expect(turn.coverage?.isPartialRecap == true)
     }
+    @Test func explicitAttachmentsPrioritizeMatchesOverOpeningPassages() throws {
+        let store = try database()
+        var ids: [Int64] = []
+        for index in 0..<12 {
+            let opening = String(repeating: "Routine opening discussion ", count: 60)
+            let detail = index == 0 ? "Unique quasar decision: launch Monday." : "General closing discussion."
+            ids.append(try insert(store, text: opening + "\n" + detail))
+        }
+        for useFTS in [true, false] {
+            let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: useFTS)
+                .retrieve(question: "quasar", scope: .init(selection: .meetings(ids)))
+            #expect(evidence.passages.first?.excerpt.contains("quasar") == true)
+            #expect(evidence.passages.contains { $0.excerpt.contains("launch Monday") })
+        }
+    }
+
 }
 
 private actor CoverageToolProbe: MeetingTextGenerating {

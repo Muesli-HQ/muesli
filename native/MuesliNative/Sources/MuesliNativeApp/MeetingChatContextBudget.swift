@@ -23,7 +23,7 @@ struct MeetingChatContextBudget {
         let native = MeetingTextGenerationClient().supportsNativeTools(config: config)
         // Native tool turns reserve 32K for output/reasoning. 64K is an
         // operational default, not catalog metadata; explicit metadata wins.
-        let fallback = native ? 65_536 : (provider == .customLLM || provider == .ollama ? 8_192 : 32_768)
+        let fallback = native ? 65_536 : (provider == .customLLM || provider == .ollama || provider == .lmStudio ? 8_192 : 32_768)
         let context = max(1, contextWindowTokens ?? fallback)
         let outputReserve = min(native ? 32_768 : 4_096, max(1, context / 2))
         maximumOutputTokens = outputReserve

@@ -50,8 +50,8 @@ public struct MeetingChatRetrieval: Sendable {
                 if case .meetings(let ids) = scope.selection { supplyingContext = includeScopeContext && !ids.isEmpty } else { supplyingContext = false }
                 if supplyingContext {
                     // An explicit attachment supplies context even when the question's
-                    // vocabulary never occurs in the meeting. Keep each source kind
-                    // represented, then prioritize lexical matches within a finite budget.
+                    // vocabulary never occurs in the meeting. Prioritize lexical matches
+                    // before filling remaining space with representative source context.
                     let context = try readPassages("""
                         SELECT p.body FROM meeting_chat_passages p \(baseJoin) WHERE \(scopeCondition)
                         ORDER BY ROW_NUMBER() OVER (PARTITION BY p.meeting_id,json_extract(p.body,'$.kind') ORDER BY CAST(json_extract(p.body,'$.range.location') AS INTEGER)),s.start_time DESC,\(originalsFirst),p.id LIMIT 257
@@ -62,7 +62,7 @@ public struct MeetingChatRetrieval: Sendable {
                     var representedKinds = Set<String>()
                     let representatives = content.filter { representedKinds.insert("\($0.meetingID):\($0.kind.rawValue)").inserted }
                     var seen = Set<String>()
-                    candidates = (representatives + candidates + content).filter { seen.insert($0.id).inserted }
+                    candidates = (candidates + representatives + content).filter { seen.insert($0.id).inserted }
                 }
                 let packetLimit = supplyingContext ? 14_000 : 10_000
                 var selected: [MeetingChatPassage] = []; var usedBytes = 0; var packetBytes = 0

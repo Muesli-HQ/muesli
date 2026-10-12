@@ -67,7 +67,7 @@ public struct AIThinkingSlider: View {
             }
         }
         .onChange(of: choices) { _, _ in drag.cancel() }
-        .onChange(of: selectedID) { _, _ in if !drag.isEditing { drag.cancel() } }
+        .onChange(of: selectedID) { _, _ in drag.cancel() }
     }
 }
 

@@ -115,6 +115,43 @@ struct MeetingChatContextBudgetTests {
         #expect(MeetingTextGenerationClient.model(requests[0].config) == MeetingTextGenerationClient.model(config))
         #expect(requests[0].config.meetingSummaryReasoningEffort == config.meetingSummaryReasoningEffort)
     }
+    @Test @MainActor func localCompatibilityPacketsFitWithToolsAndUnicodeAcrossIterations() async throws {
+        for provider in [MeetingSummaryBackendOption.ollama, .customLLM, .lmStudio] {
+            for unicode in [false, true] {
+                var config = AppConfig(); config.meetingSummaryBackend = provider.backend
+                let budget = MeetingChatContextBudget(config: config)
+                #expect(budget.maximumInputTokens == 4_096)
+                #expect(budget.maximumOutputTokens == 4_096)
+                let excerpt = String(repeating: unicode ? "計画🌻" : "plan ", count: 250)
+                let passages = (1...9).map { index in
+                    MeetingChatPassage(id: "p\(index)", sourceKey: "S\(index)", meetingID: 1, title: "Planning",
+                        startDate: Date(timeIntervalSince1970: 1_000), kind: .transcript, excerpt: excerpt,
+                        range: .init(location: index * 10_000, length: excerpt.utf16.count), revision: "r1")
+                }
+                let evidence = MeetingChatEvidence(scope: .init(selection: .meetings([1])), passages: passages,
+                    dependencies: [.init(meetingID: 1, revision: "r1")],
+                    coverage: .init(eligibleMeetingCount: 1, evidenceMeetingCount: 1, isPartialRecap: false))
+                let probe = SmallContextCompatibilityProbe()
+                let (_, fitted) = try await MeetingChatClient.run(question: "What is the plan?", evidence: evidence, history: [],
+                    config: config, sessionID: UUID(), generator: probe,
+                    execute: { _, _ in .init(evidence: evidence, matchedPassageCount: passages.count) }, activity: { _, _ in })
+                let requests = await probe.requests
+                #expect(requests.count == 2)
+                for request in requests {
+                    #expect(MeetingChatContextBudget.estimateTokens(request.system + request.user) <= budget.maximumInputTokens)
+                    #expect(request.outputTokenLimit == 4_096)
+                }
+                #expect(!fitted.passages.isEmpty)
+                #expect(fitted.coverage.isPartialRecap)
+                #expect(fitted.dependencies == evidence.dependencies)
+                for passage in fitted.passages {
+                    #expect(excerpt.hasPrefix(passage.excerpt))
+                    #expect(passage.range.length == passage.excerpt.utf16.count)
+                }
+            }
+        }
+    }
+
 }
 
 private actor SummaryBudgetProbe: MeetingTextGenerating {
@@ -133,5 +170,14 @@ private actor SummaryContextValidationProbe {
     func validate() throws {
         calls += 1
         if calls > 1 { throw Invalidated.changed }
+    }
+}
+
+private actor SmallContextCompatibilityProbe: MeetingTextGenerating {
+    private(set) var requests: [MeetingTextGenerationRequest] = []
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        requests.append(request)
+        if requests.count == 1 { return #"{"tool":"browse_meeting_sources"}"# }
+        return #"{"status":"answered","markdown":"The plan is recorded [[S1]]."}"#
     }
 }
