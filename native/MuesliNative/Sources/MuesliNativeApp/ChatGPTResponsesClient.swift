@@ -35,7 +35,19 @@ enum ChatGPTResponsesTransport {
 
     static let environmentKey = "MUESLI_CHATGPT_TRANSPORT"
     static let requestTimeout: TimeInterval = 120
+    static let resourceTimeout: TimeInterval = 180
     static let originator = "muesli"
+
+    static func sessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = requestTimeout
+        // Request timeout alone resets as bytes arrive: SSE heartbeats can otherwise
+        // hold a chat open for the system default resource timeout of seven days.
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.urlCache = nil
+        configuration.waitsForConnectivity = false
+        return configuration
+    }
 
     static func selectedBackend(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -79,6 +91,78 @@ enum ChatGPTResponsesTransport {
     }
 }
 
+/// Collect only provider-designated reasoning summaries. Raw reasoning text,
+/// encrypted reasoning, and unrelated output events never enter this display channel.
+struct ChatGPTReasoningSummaryAccumulator {
+    private struct Key: Hashable {
+        let itemID: String
+        let summaryIndex: Int
+    }
+    private struct Part {
+        let outputIndex: Int
+        var text: String
+        var isDone: Bool
+    }
+    private var parts: [Key: Part] = [:]
+    private var completedItems: Set<String> = []
+    private(set) var text = ""
+
+    mutating func apply(_ payload: [String: Any]) -> Bool {
+        guard let type = payload["type"] as? String,
+              let outputIndex = payload["output_index"] as? Int, outputIndex >= 0 else { return false }
+        if type == "response.output_item.done" {
+            guard let item = payload["item"] as? [String: Any], item["type"] as? String == "reasoning",
+                  let itemID = item["id"] as? String, !itemID.isEmpty,
+                  let summary = item["summary"] as? [[String: Any]],
+                  completedItems.contains(itemID) || completedItems.count < 32 else { return false }
+            // The final item contains only public summary_text parts here. Never
+            // consult content (raw reasoning) or encrypted_content.
+            parts = parts.filter { $0.key.itemID != itemID }
+            for (index, entry) in summary.prefix(32).enumerated() {
+                guard entry["type"] as? String == "summary_text", let fragment = entry["text"] as? String else { continue }
+                store(itemID: itemID, index: index, outputIndex: outputIndex, fragment: fragment, isDelta: false)
+            }
+            completedItems.insert(itemID)
+        } else {
+            guard let itemID = payload["item_id"] as? String, !itemID.isEmpty,
+                  let index = payload["summary_index"] as? Int, (0..<32).contains(index),
+                  !completedItems.contains(itemID) else { return false }
+            let fragment: String
+            let isDelta = type == "response.reasoning_summary_text.delta"
+            switch type {
+            case "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done":
+                guard let value = payload[isDelta ? "delta" : "text"] as? String else { return false }
+                fragment = value
+            case "response.reasoning_summary_part.done":
+                guard let part = payload["part"] as? [String: Any], part["type"] as? String == "summary_text",
+                      let value = part["text"] as? String else { return false }
+                fragment = value
+            default: return false
+            }
+            store(itemID: itemID, index: index, outputIndex: outputIndex, fragment: fragment, isDelta: isDelta)
+        }
+        let updated = String(parts.sorted {
+            if $0.value.outputIndex != $1.value.outputIndex { return $0.value.outputIndex < $1.value.outputIndex }
+            if $0.key.summaryIndex != $1.key.summaryIndex { return $0.key.summaryIndex < $1.key.summaryIndex }
+            return $0.key.itemID < $1.key.itemID
+        }.map { $0.value.text }.filter { !$0.isEmpty }.joined(separator: "\n\n").prefix(6_000))
+        guard updated != text else { return false }
+        text = updated
+        return true
+    }
+
+    private mutating func store(itemID: String, index: Int, outputIndex: Int, fragment: String, isDelta: Bool) {
+        let key = Key(itemID: itemID, summaryIndex: index)
+        let previous = parts[key]
+        guard previous != nil || parts.count < 32,
+              previous == nil || previous?.outputIndex == outputIndex,
+              !isDelta || previous?.isDone != true else { return }
+        let bounded = String(fragment.prefix(6_000))
+        let content = isDelta ? String(((previous?.text ?? "") + bounded).prefix(6_000)) : bounded
+        parts[key] = Part(outputIndex: outputIndex, text: content, isDone: !isDelta)
+    }
+}
+
 enum ChatGPTResponsesClient {
     static func respond(
         systemPrompt: String,
@@ -86,28 +170,40 @@ enum ChatGPTResponsesClient {
         model: String,
         maxOutputTokens: Int? = nil,
         reasoningEffort: ReasoningEffort? = nil,
+        sessionID: UUID = UUID(),
+        onReasoningSummary: (@Sendable (String) async -> Void)? = nil,
         logCategory: String
     ) async throws -> String {
+        try Task.checkCancellation()
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+        try Task.checkCancellation()
         let body = requestBody(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             model: model,
             maxOutputTokens: maxOutputTokens,
-            reasoningEffort: reasoningEffort
+            reasoningEffort: reasoningEffort,
+            includeReasoningSummary: onReasoningSummary != nil
         )
 
         let request = try ChatGPTResponsesTransport.makeRequest(
             body: body,
             token: token,
-            accountId: accountId
+            accountId: accountId,
+            sessionID: sessionID
         )
 
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let session = URLSession(configuration: ChatGPTResponsesTransport.sessionConfiguration())
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
         let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard httpStatus == 200 else {
             var errorData = Data()
-            for try await byte in bytes { errorData.append(byte) }
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard errorData.count < 8_192 else { break }
+                errorData.append(byte)
+            }
             let message = extractErrorMessage(from: errorData)
                 ?? String(data: errorData, encoding: .utf8)
                 ?? "(unknown)"
@@ -117,19 +213,62 @@ enum ChatGPTResponsesClient {
 
         var deltaText = ""
         var finalText = ""
+        var reasoningSummary = ChatGPTReasoningSummaryAccumulator()
         for try await line in bytes.lines {
+            try Task.checkCancellation()
             guard line.hasPrefix("data: ") else { continue }
             let jsonString = String(line.dropFirst(6))
             if jsonString == "[DONE]" { break }
             guard let json = try decodeStreamPayload(jsonString, httpStatus: httpStatus) else { continue }
 
+            try Task.checkCancellation()
+            if reasoningSummary.apply(json) {
+                await onReasoningSummary?(reasoningSummary.text)
+            }
             applyStreamPayload(json, deltaText: &deltaText, finalText: &finalText)
+            guard deltaText.utf8.count <= 256_000, finalText.utf8.count <= 256_000 else {
+                throw ChatGPTResponsesError.backendFailed(statusCode: httpStatus, message: "ChatGPT response exceeded the supported size.")
+            }
         }
 
+        try Task.checkCancellation()
         let fullText = accumulatedOutputText(deltaText: deltaText, finalText: finalText)
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT Responses: collected \(trimmed.count) chars\n", stderr)
         return trimmed
+    }
+
+    static func respondNative(_ input: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        try Task.checkCancellation()
+        let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+        try Task.checkCancellation()
+        let body = try MeetingNativeToolTransport.requestBody(input, stream: true)
+        let request = try ChatGPTResponsesTransport.makeRequest(body: body, token: token,
+            accountId: accountId, sessionID: input.base.sessionID)
+        let session = URLSession(configuration: ChatGPTResponsesTransport.sessionConfiguration())
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw MeetingTextGenerationError.failed(status) }
+        var summary = ChatGPTReasoningSummaryAccumulator()
+        var output = MeetingNativeResponseAccumulator()
+        var received = 0
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            received += line.utf8.count
+            guard received <= 8_388_608, line.utf8.count <= MeetingNativeToolTransport.maximumResponseBytes else {
+                throw MeetingTextGenerationError.emptyResponse
+            }
+            guard line.hasPrefix("data:") else { continue }
+            let raw = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            if raw == "[DONE]" { break }
+            guard let payload = try decodeStreamPayload(raw, httpStatus: status) else { continue }
+            if summary.apply(payload) { await input.base.onReasoningSummary?(summary.text) }
+            try Task.checkCancellation()
+            if let completed = try output.apply(payload) { return completed }
+        }
+        // Partial deltas are never a completed native tool call or final answer.
+        throw MeetingTextGenerationError.emptyResponse
     }
 
     static func requestBody(
@@ -137,7 +276,8 @@ enum ChatGPTResponsesClient {
         userPrompt: String,
         model: String,
         maxOutputTokens: Int? = nil,
-        reasoningEffort: ReasoningEffort? = nil
+        reasoningEffort: ReasoningEffort? = nil,
+        includeReasoningSummary: Bool = false
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -150,7 +290,9 @@ enum ChatGPTResponsesClient {
             ] as [String: Any]],
         ]
         if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {
-            body["reasoning"] = ["effort": effort]
+            var reasoning = ["effort": effort]
+            if includeReasoningSummary, effort != "none" { reasoning["summary"] = "auto" }
+            body["reasoning"] = reasoning
         }
         if let maxOutputTokens, maxOutputTokens > 0 {
             body["max_output_tokens"] = maxOutputTokens
@@ -199,6 +341,9 @@ enum ChatGPTResponsesClient {
     }
 
     static func extractOutputText(from payload: [String: Any]) -> String? {
+        // Codex may emit commentary before its terminal answer. Prefer the
+        // declared final assistant message over convenience text that joins both.
+        if let finalAnswer = extractFinalAssistantAnswer(from: payload) { return finalAnswer }
         if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
             return outputText
         }
@@ -226,17 +371,37 @@ enum ChatGPTResponsesClient {
         return delta
     }
 
+    private static func extractFinalAssistantAnswer(from payload: [String: Any]) -> String? {
+        if let response = payload["response"] as? [String: Any],
+           let answer = extractFinalAssistantAnswer(from: response) { return answer }
+        let items: [[String: Any]]
+        if let output = payload["output"] as? [[String: Any]] { items = output }
+        else if let output = payload["output"] as? [String: Any] { items = [output] }
+        else { return nil }
+        // `phase` is optional in the Codex Responses protocol. When absent,
+        // extractOutputText retains the existing legacy response handling.
+        guard let item = items.last(where: {
+            $0["type"] as? String == "message" &&
+            $0["role"] as? String == "assistant" &&
+            $0["phase"] as? String == "final_answer"
+        }) else { return nil }
+        let text = extractText(fromContent: item["content"]) ?? (item["text"] as? String)
+        return text.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     private static func extractText(fromOutput output: Any?) -> String? {
         guard let output else { return nil }
         if let outputText = output as? String, !outputText.isEmpty {
             return outputText
         }
         if let item = output as? [String: Any] {
+            guard item["type"] as? String != "reasoning" else { return nil }
             return extractText(fromContent: item["content"]) ?? (item["text"] as? String)
         }
         if let items = output as? [[String: Any]] {
             let parts = items.compactMap { item -> String? in
-                extractText(fromContent: item["content"]) ?? (item["text"] as? String)
+                guard item["type"] as? String != "reasoning" else { return nil }
+                return extractText(fromContent: item["content"]) ?? (item["text"] as? String)
             }
             let joined = parts.joined(separator: "")
             return joined.isEmpty ? nil : joined

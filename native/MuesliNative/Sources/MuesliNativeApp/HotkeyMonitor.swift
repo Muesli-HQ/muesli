@@ -82,6 +82,9 @@ final class HotkeyMonitor {
     /// Meeting shortcuts retain their hold guard; dictation opts into press-to-toggle.
     var combinationToggleRequiresHold = true
     var registersCombinationGlobally = false
+    /// Dictation must work in our own editors, just as it does in other apps.
+    /// Other command monitors retain their text-editing shortcut protection.
+    var allowsStartsWhileEditingText = false
 
     // Combination mode (e.g. Cmd+Shift+R)
     var combinationModifiers: NSEvent.ModifierFlags?
@@ -613,7 +616,7 @@ final class HotkeyMonitor {
         firstResponder: NSResponder?
     ) -> Bool {
         let isTextEditing = firstResponder is NSTextView || firstResponder is NSTextField
-        guard isTextEditing else { return true }
+        guard isTextEditing, !allowsStartsWhileEditingText else { return true }
 
         // Text editing owns fresh hotkey starts, but an already-armed hotkey
         // session must still receive key-up/Escape cleanup events.
