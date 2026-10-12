@@ -236,7 +236,7 @@ enum PasteController {
                     busy = false
                     resultDelivery {
                         let expired = result.0?.verificationDeadline.map { DispatchTime.now() >= $0 } ?? false
-                        request.finish(expired ? nil : result.0, timedOut: result.1 || expired)
+                        request.finish(result.0, timedOut: result.1 || expired)
                     }
                     startNext()
                 }
@@ -430,15 +430,29 @@ enum PasteController {
         }
         onLifecycleEvent(.clipboardSnapshotBegun)
         var verificationDeadline: DispatchTime?
+        var confirmedCopy: (snapshot: ClipboardSnapshot, changeCount: Int)?
+        let restoreConfirmedCopy: @MainActor () -> Void = {
+            // A newer pending request has not written the clipboard yet. Restoring
+            // this confirmed generation safely makes its captured generation stale.
+            guard let confirmedCopy,
+                  pasteboard.changeCount == confirmedCopy.changeCount else { return }
+            let savedItems = confirmedCopy.snapshot.items.map {
+                $0.map { (NSPasteboard.PasteboardType($0.0), $0.1) }
+            }
+            restoreClipboard(pasteboard, from: savedItems)
+            onLifecycleEvent(.clipboardRestored)
+        }
         let stage: @MainActor (ClipboardSnapshot?, Int) -> Void = { snapshot, expectedChangeCount in
             guard pendingPastes[name] == requestID, shouldDispatchPaste() else {
                 onLifecycleEvent(.pasteDispatchCancelled)
+                restoreConfirmedCopy()
                 onPasteFinished(nil)
                 settle()
                 return
             }
             if let verificationDeadline, DispatchTime.now() >= verificationDeadline {
                 onLifecycleEvent(.selectionVerificationTimedOut)
+                restoreConfirmedCopy()
                 onPasteFinished(nil)
                 settle()
                 return
@@ -595,16 +609,31 @@ enum PasteController {
                 completion: { selection, timedOut in
                     guard didCopy, let selection, selection.plainText == expectedSelection,
                           let copiedChangeCount = selection.changeCount,
-                          copiedChangeCount == pasteboard.changeCount,
-                          pendingPastes[name] == requestID, shouldDispatchPaste() else {
+                          copiedChangeCount == pasteboard.changeCount else {
                         onLifecycleEvent(timedOut ? .selectionVerificationTimedOut : .selectionVerificationFailed)
                         // An uncertain generation may belong to another application.
-                        // Preserve it; the original backup is only restored after a stage we own.
+                        // A matching returned generation alone does not prove that Copy
+                        // produced it; mismatched text may be an external clipboard write.
                         onPasteFinished(nil)
                         settle()
                         return
                     }
+                    confirmedCopy = (snapshot, copiedChangeCount)
                     verificationDeadline = selection.verificationDeadline
+                    guard !timedOut else {
+                        onLifecycleEvent(.selectionVerificationTimedOut)
+                        restoreConfirmedCopy()
+                        onPasteFinished(nil)
+                        settle()
+                        return
+                    }
+                    guard pendingPastes[name] == requestID, shouldDispatchPaste() else {
+                        onLifecycleEvent(.pasteDispatchCancelled)
+                        restoreConfirmedCopy()
+                        onPasteFinished(nil)
+                        settle()
+                        return
+                    }
                     onLifecycleEvent(.selectionVerificationCompleted)
                     stage(snapshot, copiedChangeCount)
                 }

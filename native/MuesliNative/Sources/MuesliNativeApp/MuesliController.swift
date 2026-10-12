@@ -9862,7 +9862,9 @@ public final class MuesliController: NSObject {
                                 deliveryMessage = "Selection could not be verified for automatic paste"
                                 deliveryTraceBody = retainedForManualPaste
                                     ? "Selection verification expired before dispatch; generated text was retained on the clipboard"
-                                    : "Late selection verification failed or timed out; the current clipboard was preserved"
+                                    : (pasteLifecycleEvents.contains(.clipboardRestored)
+                                        ? "Selection verification expired before dispatch; the original clipboard was restored"
+                                        : "Late selection verification failed or timed out; the current clipboard was preserved")
                                 userMessage = retainedForManualPaste
                                     ? "Selection could not be verified — generated text is on the clipboard"
                                     : "Selection could not be verified; output saved in history"

@@ -1052,7 +1052,96 @@ struct PasteControllerTests {
         }
         #expect(pastes == 0)
         #expect(!staged)
-        #expect(pasteboard.string(forType: .string) == (inputChanges ? "selected" : "external copy"))
+        #expect(pasteboard.string(forType: .string) == (inputChanges ? "original" : "external copy"))
+    }
+
+    @Test("cancellation at the second selection gate restores the confirmed Copy")
+    func lateBrowserCancellationBeforeStage() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var allowed = true
+        var copies = 0
+        var pastes = 0
+        var events: [PasteController.LifecycleEvent] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "replacement", pasteboard: pasteboard, snapshotWorker: makeTestClipboardSnapshotWorker(),
+                requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+                simulateCopyAction: {
+                    copies += 1
+                    pasteboard.clearContents()
+                    pasteboard.setString("selected", forType: .string)
+                    return true
+                },
+                shouldDispatchPaste: { allowed },
+                simulatePasteAction: { _ in pastes += 1; return true },
+                onClipboardSettled: { continuation.resume() },
+                onLifecycleEvent: {
+                    events.append($0)
+                    if $0 == .selectionVerificationCompleted { allowed = false }
+                }
+            )
+        }
+        #expect(copies == 1)
+        #expect(pastes == 0)
+        #expect(!events.contains(.clipboardStaged))
+        #expect(events.contains(.clipboardRestored))
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("superseded confirmed Copy restores original before a newer pending request can stage")
+    func lateBrowserSupersessionRestoresOriginal() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var deliveries = 0
+        var heldResult: (@MainActor () -> Void)?
+        let worker = PasteController.ClipboardSnapshotWorker(helperURL: testClipboardHelperURL(),
+            resultDelivery: { deliver in
+                deliveries += 1
+                if deliveries == 1 { deliver() } else { heldResult = deliver }
+            })
+        var firstFinished = false
+        var firstRestored = false
+        var pastes = 0
+        var copies = 0
+        PasteController.paste(
+            text: "first", pasteboard: pasteboard, snapshotWorker: worker,
+            requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+            simulateCopyAction: {
+                copies += 1
+                pasteboard.clearContents()
+                pasteboard.setString("selected", forType: .string)
+                return true
+            },
+            simulatePasteAction: { _ in pastes += 1; return true },
+            onPasteFinished: { _ in firstFinished = true },
+            onLifecycleEvent: { if $0 == .clipboardRestored { firstRestored = true } }
+        )
+        for _ in 0..<300 where heldResult == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let replay = try #require(heldResult)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let newerWorker = PasteController.ClipboardSnapshotWorker(timeout: 2, reader: { _, _ in
+            release.wait()
+            return .init(items: [[(NSPasteboard.PasteboardType.string.rawValue, Data("selected".utf8))]])
+        })
+        var newerFinished = false
+        PasteController.paste(
+            text: "newer", pasteboard: pasteboard, snapshotWorker: newerWorker,
+            shouldDispatchPaste: { false },
+            simulatePasteAction: { _ in pastes += 1; return true },
+            onPasteFinished: { _ in newerFinished = true }
+        )
+        replay()
+        #expect(firstFinished)
+        #expect(firstRestored)
+        #expect(pasteboard.string(forType: .string) == "original")
+        release.signal()
+        for _ in 0..<200 where !newerFinished { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(newerFinished)
+        #expect(copies == 1)
+        #expect(pastes == 0)
+        #expect(pasteboard.string(forType: .string) == "original")
     }
 
     @Test("native selection gate catches same-field caret and text changes")
@@ -1122,8 +1211,8 @@ struct PasteControllerTests {
         #expect(copies == 0)
     }
 
-    @Test("successful copied result delivered after expiry never stages or pastes")
-    func selectionHelperExpiredResult() async throws {
+    @Test("expired confirmed Copy restores only its own current clipboard generation", arguments: [false, true])
+    func selectionHelperExpiredResult(newerClipboardWrite: Bool) async throws {
         let pasteboard = makePasteboard()
         pasteboard.setString("original", forType: .string)
         var deliveries = 0
@@ -1156,13 +1245,18 @@ struct PasteControllerTests {
         #expect(!completed)
         // Only the injected delivery is held; other MainActor work stays runnable.
         try await Task.sleep(for: .seconds(1))
+        if newerClipboardWrite {
+            pasteboard.clearContents()
+            pasteboard.setString("newer clipboard", forType: .string)
+        }
         replay()
         #expect(completed)
         #expect(copies == 1)
         #expect(pastes == 0)
         #expect(!events.contains(.clipboardStaged))
         #expect(events.contains(.selectionVerificationTimedOut))
-        #expect(pasteboard.string(forType: .string) == "selected")
+        #expect(pasteboard.string(forType: .string) == (newerClipboardWrite ? "newer clipboard" : "original"))
+        #expect(events.contains(.clipboardRestored) == !newerClipboardWrite)
     }
 
     @Test("pending input guard fails closed when its source cannot be installed")
