@@ -323,7 +323,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             : MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(byteCount / 4)
         let result = callbackState.withLock { state -> (requeue: Bool, overflow: Bool) in
             guard state.queue == queue, state.isRunning || state.isDraining else { return (false, false) }
-            var requeue = !state.isDraining && !state.invalidated && !state.overloaded
+            // Native buffer ownership is independent of PCM admission. A live
+            // queue must recycle even rejected/trimmed/paused input, including
+            // the gap between logical Resume and the queued native resume.
+            // Only teardown or overload retires its buffers.
+            let requeue = !state.isDraining && !state.invalidated && !state.overloaded
             guard byteCount > 0, !state.overloaded else { return (requeue, false) }
             var firstFrame = startFrame
             var frameCount = byteCount / MemoryLayout<Float>.size
@@ -331,15 +335,14 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
                 // Native stop (meeting end OR retired route child) can precede
                 // delivery of already-captured PCM. The lifecycle supplies the
                 // allowed capture interval; route delivery additionally clips
-                // retiring audio at its cutover. Do not reopen general admission
-                // or re-enqueue. Untimed buffers cannot prove eligibility.
+                // retiring audio at its cutover. This does not change native
+                // buffer ownership. Untimed buffers cannot prove eligibility.
                 guard time.mFlags.contains(.hostTimeValid), let range = nativeStopDrainRange?() else {
                     return (requeue, false)
                 }
-                requeue = false
                 firstFrame = max(startFrame, range.lowerBound)
                 let end = min(startFrame + Int64(frameCount), range.upperBound)
-                guard end > firstFrame else { return (false, false) }
+                guard end > firstFrame else { return (requeue, false) }
                 frameCount = Int(end - firstFrame)
             }
             guard state.pendingBuffers < 64, byteCount <= 65_536 else {

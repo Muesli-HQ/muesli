@@ -7,6 +7,153 @@ import Testing
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("delayed native resume recycles every active buffer without admitting paused audio",
+          arguments: [false, true], ["before", "crossing", "after", "future", "untimed", "empty"])
+    func resumeRecyclesBuffers(wrapped: Bool, timing: String) async throws {
+        let producer = ContractProducer(useQueue: true, wrapped: wrapped)
+        let driver = try #require(producer.driver)
+        let resumeGate = ContractGate()
+        let resumed = DispatchSemaphore(value: 0)
+        producer.beforeResume = { resumeGate.block() }
+        producer.afterResume = { resumed.signal() }
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .appScopedAudioQueue))
+        let clock = OSAllocatedUnfairLock(initialState: Int64(100))
+        let capture = MeetingCaptureLifecycle(microphone: route, systemAudio: ContractSystemAudio(),
+            microphoneClock: { clock.withLock { $0 } })
+        let writer = try MeetingRecordingWriter()
+        let chunks = try PCMChunkRecorder(directoryName: "meeting-resume-recycling-tests")
+        let sink = DispatchQueue(label: "test.resume-recycling.sink")
+        route.onRawPCMSamples = { audio in
+            capture.enqueueMicrophoneSamples(audio, on: sink) {
+                writer.appendMic(audio.samples); chunks.append(audio.samples)
+            }
+        }
+        defer {
+            resumeGate.release.signal(); driver.onStop = nil
+            route.onRawPCMSamples = nil; writer.cancel(); chunks.cancel()
+        }
+        func emit(_ values: [Int], at frame: Int64, timed: Bool = true) -> Bool {
+            driver.emit(values.map { Float($0) / 16 },
+                host: AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000), timed: timed)
+        }
+        try await capture.start()
+        #expect(driver.queuedBufferCount == 3)
+        var expectedValues: [Int] = []
+        for cycle in 0..<3 {
+            let resumeFrame = Int64(110 + cycle * 40)
+            clock.withLock { $0 = resumeFrame - 2 }
+            #expect(capture.setPaused(true))
+            #expect(emit([15, 15], at: resumeFrame - 2)) // Logical pause wins even before driver pause.
+            #expect(driver.queuedBufferCount == 3)
+            clock.withLock { $0 = resumeFrame }
+            #expect(capture.setPaused(false))
+            try await resumeGate.waitUntilEntered() // Actual AudioQueue is still paused.
+            for index in 0..<5 { // More callbacks than the entire native pool.
+                let frame = resumeFrame + Int64(index * 3)
+                clock.withLock { $0 = frame + 2 }
+                let emitted: Bool
+                switch timing {
+                case "before": emitted = emit([15, 15], at: resumeFrame - 2)
+                case "crossing":
+                    emitted = emit([9, 1, 2], at: frame - 1)
+                    expectedValues += index == 0 ? [1, 2] : [9, 1, 2]
+                case "after":
+                    emitted = emit([1, 2], at: frame)
+                    expectedValues += [1, 2]
+                case "future": emitted = emit([15, 15], at: frame + 10)
+                case "untimed": emitted = emit([15, 15], at: frame, timed: false)
+                default: emitted = emit([], at: frame)
+                }
+                #expect(emitted)
+                #expect(driver.queuedBufferCount == 3)
+            }
+            resumeGate.release.signal()
+            let didResume = try await MeetingCaptureLifecycle.onDriverQueue { resumed.wait(timeout: .now() + 5) }
+            #expect(didResume == .success)
+            clock.withLock { $0 = resumeFrame + 22 }
+            #expect(emit([3, 4], at: resumeFrame + 20)) // Capture must actually continue, not just report resumed.
+            #expect(driver.queuedBufferCount == 3)
+            expectedValues += [3, 4]
+        }
+        clock.withLock { $0 = 240 }
+        driver.onStop = {
+            #expect(emit([5, 6, 15, 15], at: 238))
+            #expect(driver.queuedBufferCount == 2) // Native stop consumes; it must NOT recycle.
+        }
+        let result = await capture.requestStop().value
+        #expect(!result.timedOut)
+        sink.sync { capture.finishMicrophoneDelivery() }
+        expectedValues += [5, 6] // Only the prefix before the first Stop boundary.
+        #expect(driver.queuedBufferCount == 0)
+        #expect(!emit([15], at: 239)) // A disposed pool cannot produce another real callback.
+        driver.emitLate([0.9], host: AVAudioTime.hostTime(forSeconds: 239.0 / 16_000))
+        let expected = expectedValues.map { Int16(Float($0) / 16 * 32767) }
+        for url in [result.microphone, writer.stop(), chunks.stop()] {
+            let url = try #require(url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let data = try Data(contentsOf: url)
+            let samples = data.dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+            #expect(samples == expected)
+        }
+    }
+
+    @Test("Stop or discard during blocked native Resume never revives queue ownership",
+          arguments: [false, true], [false, true])
+    func stopDuringResume(wrapped: Bool, discard: Bool) async throws {
+        let producer = ContractProducer(useQueue: true, wrapped: wrapped)
+        let driver = try #require(producer.driver)
+        let resumeGate = ContractGate()
+        producer.beforeResume = { resumeGate.block() }
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .appScopedAudioQueue))
+        let clock = OSAllocatedUnfairLock(initialState: Int64(100))
+        let capture = MeetingCaptureLifecycle(microphone: route, systemAudio: ContractSystemAudio(),
+            microphoneClock: { clock.withLock { $0 } })
+        let sink = DispatchQueue(label: "test.stop-during-resume.sink")
+        let writer = try MeetingRecordingWriter()
+        let chunks = try PCMChunkRecorder(directoryName: "meeting-stop-during-resume-tests")
+        route.onRawPCMSamples = { audio in
+            capture.enqueueMicrophoneSamples(audio, on: sink) {
+                writer.appendMic(audio.samples); chunks.append(audio.samples)
+            }
+        }
+        defer { resumeGate.release.signal(); route.onRawPCMSamples = nil; writer.cancel(); chunks.cancel() }
+        try await capture.start()
+        clock.withLock { $0 = 102 }
+        #expect(capture.setPaused(true))
+        clock.withLock { $0 = 104 }
+        #expect(capture.setPaused(false))
+        try await resumeGate.waitUntilEntered()
+        clock.withLock { $0 = 106 }
+        if discard { capture.finishMicrophoneDelivery() }
+        let shutdown = capture.requestStop() // Invalidates native ownership BEFORE Resume is released.
+        clock.withLock { $0 = 120 }
+        _ = capture.requestStop() // Neither late callbacks nor repeated Stop move the boundary.
+        #expect(driver.emit([0.125, 0.25, 0.9, 0.9],
+            host: AVAudioTime.hostTime(forSeconds: 104.0 / 16_000)))
+        #expect(driver.queuedBufferCount == 2)
+        #expect(driver.emit([0.9], host: AVAudioTime.hostTime(forSeconds: 106.0 / 16_000)))
+        #expect(driver.queuedBufferCount == 1)
+        #expect(driver.emit([0.9], host: AVAudioTime.hostTime(forSeconds: 108.0 / 16_000)))
+        #expect(driver.queuedBufferCount == 0)
+        resumeGate.release.signal()
+        let result = await shutdown.value
+        #expect(!result.timedOut)
+        sink.sync { capture.finishMicrophoneDelivery() }
+        #expect(driver.queuedBufferCount == 0)
+        #expect(!driver.emit([0.9], host: AVAudioTime.hostTime(forSeconds: 110.0 / 16_000)))
+        let expected: [Int16] = discard ? [] : [4095, 8191]
+        for url in [result.microphone, writer.stop(), chunks.stop()] {
+            if let url {
+                defer { try? FileManager.default.removeItem(at: url) }
+                let data = try Data(contentsOf: url)
+                let samples = data.dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+                #expect(samples == expected)
+            } else { #expect(expected.isEmpty) }
+        }
+    }
+
     @Test("native-held handoff tail respects capture, cutover and terminal boundaries",
           arguments: [false, true], ["running", "beforeNativeStop", "beforeStart", "afterCut", "paused", "resumed", "stopped", "pausedStop", "discarded", "deadline", "untimed", "cancelled"])
     func nativeHandoffTail(wrapped: Bool, ending: String) async throws {
@@ -40,6 +187,7 @@ struct MeetingMicrophoneDeliveryTests {
         let retiring = ContractGate()
         oldDriver.onStop = {
             retiring.block()
+            let queuedBeforeTail = oldDriver.queuedBufferCount
             // Old PCM is still held by HAL until AFTER invalidation. The last
             // two samples overlap the replacement and must never reach sinks.
             switch ending {
@@ -48,6 +196,7 @@ struct MeetingMicrophoneDeliveryTests {
             case "afterCut": emit(oldDriver, [9, 9], at: 106)
             default: emit(oldDriver, [1, 2, 3, 4, 9, 9], at: 100, timed: ending != "untimed")
             }
+            #expect(oldDriver.queuedBufferCount == queuedBeforeTail - 1) // Retired native buffers never recycle.
         }
         route.onHandoffOutcome = { outcome in
             if ending == "beforeNativeStop", outcome == .promoted {
@@ -91,8 +240,8 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(!result.timedOut)
         if let url = result.microphone { try? FileManager.default.removeItem(at: url) }
         sink.sync { capture.finishMicrophoneDelivery() }
-        emit(oldDriver, [15], at: 102) // Neither disposed child can regain permission.
-        emit(nextDriver, [15], at: 106)
+        oldDriver.emitLate([0.9], host: AVAudioTime.hostTime(forSeconds: 102.0 / 16_000))
+        nextDriver.emitLate([0.9], host: AVAudioTime.hostTime(forSeconds: 106.0 / 16_000))
         let values: [Int]
         switch ending {
         case "running", "beforeNativeStop", "beforeStart": values = Array(1...6)
@@ -173,7 +322,7 @@ struct MeetingMicrophoneDeliveryTests {
         let result = await shutdown.value
         #expect(!result.timedOut)
         sink.sync { capture.finishMicrophoneDelivery() }
-        emit([9, 9], at: 102) // Stale callback after actual stop/dispose cannot revive the drain.
+        driver.emitLate([0.5, 0.5], host: AVAudioTime.hostTime(forSeconds: 102.0 / 16_000))
         let urls = [result.microphone, writer.stop(), chunks.stop()]
         let allowed = ["before", "spanning", "resumed", "repeat"].contains(ending)
         let expected: [Int16] = allowed ? [2047, 4095] : []
@@ -262,8 +411,8 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(!result.timedOut)
         if let url = result.microphone { try? FileManager.default.removeItem(at: url) }
         sink.sync { capture.finishMicrophoneDelivery() }
-        try old.emit([15], at: 110)
-        try next.emit([15], at: 110)
+        try old.emit([15], at: 110, stale: true)
+        try next.emit([15], at: 110, stale: true)
         let audio = sink.sync { delivered }
         let expected: [Int16] = ending == "discarded" ? [] : (1...8).map { Int16(Float($0) / 16 * 32767) }
         #expect(audio.flatMap(\.samples) == expected)
@@ -328,6 +477,7 @@ struct MeetingMicrophoneDeliveryTests {
         try producer.emit([1], at: 0)
         try await delayed.waitUntilEntered()
         for frame in 1...70 { try producer.emit([1], at: Int64(frame)) }
+        #expect(producer.driver?.queuedBufferCount == 0) // Overflow retires the entire native pool.
         let failed = try await MeetingCaptureLifecycle.onDriverQueue { failure.wait(timeout: .now() + 5) }
         #expect(failed == .success)
         delayed.release.signal()
@@ -393,13 +543,15 @@ private final class ContractGate {
 /// Real producer, adapter and lifecycle; only the native device is
 /// replaced. Every output block goes through production admission and queues.
 private final class ContractProducer: StreamingDictationRecording, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
-    private let driver: ContractQueueDriver?
+    let driver: ContractQueueDriver?
     private let streaming: StreamingMicRecorder?
     private let child: StreamingDictationRecording & MicrophoneCaptureReporting
     private var tap: AVAudioNodeTapBlock?
     private var first = true
     var beforeFirstDelivery: (() -> Void)?
     var beforePause: (() -> Void)?
+    var beforeResume: (() -> Void)?
+    var afterResume: (() -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -408,11 +560,16 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         get { child.shouldAdmitSamples }
         set { child.shouldAdmitSamples = newValue }
     }
-    init(useQueue: Bool) {
+    var nativeStopDrainRange: (() -> Range<Int64>?)? {
+        get { child.nativeStopDrainRange }
+        set { child.nativeStopDrainRange = newValue }
+    }
+    init(useQueue: Bool, wrapped: Bool = false) {
         if useQueue {
             let driver = ContractQueueDriver()
             self.driver = driver; streaming = nil
-            child = AudioQueueInputRecorder(directoryName: "meeting-delivery-contract-tests", native: driver.operations)
+            let queue = AudioQueueInputRecorder(directoryName: "meeting-delivery-contract-tests", native: driver.operations)
+            child = wrapped ? FallbackStreamingDictationRecorder(primary: queue, fallback: StreamingMicRecorder()) : queue
         } else {
             driver = nil
             let stream = StreamingMicRecorder(directoryName: "meeting-delivery-contract-tests")
@@ -430,10 +587,13 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         if let streaming { tap = try streaming.testing_startWithTap(format: AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!) }
         else { try child.start() }
     }
-    func emit(_ values: [Int], at frame: Int64) throws {
+    func emit(_ values: [Int], at frame: Int64, stale: Bool = false) throws {
         let samples = values.map { Float($0) / 16 }
         let host = AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000)
-        if let driver { driver.emit(samples, host: host) }
+        if let driver {
+            if stale { driver.emitLate(samples, host: host) }
+            else { driver.emit(samples, host: host) }
+        }
         else {
             let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
             let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)))
@@ -443,7 +603,11 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         }
     }
     func pause() { beforePause?(); (child as? PausableStreamingDictationRecording)?.pause() }
-    func resume() { (child as? PausableStreamingDictationRecording)?.resume() }
+    func resume() {
+        beforeResume?()
+        (child as? PausableStreamingDictationRecording)?.resume()
+        afterResume?()
+    }
     func stop() -> URL? { child.stop() }
     func cancel() { child.cancel() }
     func invalidateForTeardown() { child.invalidateForTeardown() }
@@ -456,6 +620,9 @@ private final class ContractQueueDriver {
     private var callback: AudioQueueInputCallback?
     private var context: UnsafeMutableRawPointer?
     private var buffers: [AudioQueueBufferRef] = []
+    private let bufferLock = NSLock()
+    private var queued: [AudioQueueBufferRef] = []
+    var queuedBufferCount: Int { bufferLock.withLock { queued.count } }
     var operations: AudioQueueInputRecorder.NativeOperations {
         var result = AudioQueueInputRecorder.NativeOperations()
         result.create = { [self] _, callback, context, out in self.callback = callback; self.context = context; out.pointee = queue; return noErr }
@@ -466,7 +633,14 @@ private final class ContractQueueDriver {
                 mAudioDataByteSize: 0, mUserData: nil, mPacketDescriptionCapacity: 0, mPacketDescriptions: nil, mPacketDescriptionCount: 0))
             buffers.append(buffer); out.pointee = buffer; return noErr
         }
-        result.enqueue = { _, _ in noErr }; result.start = { _ in noErr }
+        result.enqueue = { [self] _, buffer in
+            bufferLock.withLock {
+                #expect(!queued.contains(buffer)) // Double enqueue is also an ownership violation.
+                queued.append(buffer)
+            }
+            return noErr
+        }
+        result.start = { _ in noErr }
         result.stop = { [self] _, immediate in
             if !immediate, let onStop {
                 // HAL may wait for a callback on a DIFFERENT thread. Running
@@ -477,11 +651,26 @@ private final class ContractQueueDriver {
             }
             return noErr
         }
-        result.dispose = { _ in noErr }; result.isRunning = { _ in false }
+        result.dispose = { [self] _ in bufferLock.withLock { queued.removeAll() }; return noErr }
+        result.isRunning = { _ in false }
         return result
     }
-    func emit(_ samples: [Float], host: UInt64, timed: Bool = true) {
-        guard let buffer = buffers.first, let callback else { return }
+    /// A callback consumes a native-owned buffer. Only enqueue returns it;
+    /// exhaustion prevents further callbacks instead of hiding starvation.
+    @discardableResult
+    func emit(_ samples: [Float], host: UInt64, timed: Bool = true) -> Bool {
+        guard let buffer = bufferLock.withLock({ queued.isEmpty ? nil : queued.removeFirst() }) else { return false }
+        invoke(buffer, samples, host: host, timed: timed)
+        return true
+    }
+    /// Explicitly inject a stale callback, bypassing native ownership, to test
+    /// production identity/generation rejection after disposal.
+    func emitLate(_ samples: [Float], host: UInt64) {
+        guard let buffer = buffers.first else { return }
+        invoke(buffer, samples, host: host, timed: true)
+    }
+    private func invoke(_ buffer: AudioQueueBufferRef, _ samples: [Float], host: UInt64, timed: Bool) {
+        guard let callback else { return }
         buffer.pointee.mAudioDataByteSize = UInt32(samples.count * 4)
         for (i, sample) in samples.enumerated() { buffer.pointee.mAudioData.storeBytes(of: sample, toByteOffset: i * 4, as: Float.self) }
         var time = AudioTimeStamp(); time.mHostTime = host
