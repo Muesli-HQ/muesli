@@ -21,8 +21,8 @@ extension MuesliController {
                 if let busy = self.dictationActivationUnavailableReason { return busy }
                 switch Mode(rawValue: selection) {
                 case .toggle:
-                    let candidate = capturedShortcut ?? self.config.dictationHotkey
-                    return candidate.isCombination ? nil : "Choose a modifier + key before enabling Press to toggle."
+                    return capturedShortcut?.isCombination == true || self.config.hasDictationCombination
+                        ? nil : "Choose a modifier + key before enabling Press to toggle."
                 case .pushToTalk: return nil
                 case nil: return "Unknown dictation recording mode."
                 }
@@ -35,7 +35,7 @@ extension MuesliController {
             })
         definition.shortcutCapturePreparation = { selection in
             if Mode(rawValue: selection) == .toggle && self.dictationActivationUnavailableReason == nil {
-                return self.config.dictationHotkey.isCombination ? nil : .dictation
+                return self.config.hasDictationCombination ? nil : .dictation
             }
             return nil
         }
