@@ -12,10 +12,12 @@ struct MeetingChatDraftView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Edit draft").font(.title2)
+            Label("Edit draft", systemImage: "square.and.pencil").font(MuesliTheme.title2())
             Text("The original answer and its source references are preserved.").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $text).font(MuesliTheme.body()).frame(minHeight: 320)
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save draft") { onSave(text); dismiss() }.buttonStyle(.borderedProminent) }
+            TextEditor(text: $text).font(MuesliTheme.reading()).scrollContentBackground(.hidden)
+                .padding(12).frame(minHeight: 320).background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel("Editable answer draft")
+            HStack { Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button("Save draft") { onSave(text); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command) }
         }.padding(24).frame(width: 650)
     }
 }

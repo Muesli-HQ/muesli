@@ -5,6 +5,7 @@ import MuesliCore
 private actor MeetingChatWorker {
     let store: MeetingChatStore
     let retrieval: MeetingChatRetrieval
+    private var summaryValidation: (turnID: UUID, sourceVersion: Int64)?
     init(databaseURL: URL) { store = .init(databaseURL: databaseURL); retrieval = .init(databaseURL: databaseURL) }
     func interruptPendingTurns() throws { try store.interruptPendingTurns() }
     func createChat(scope: MeetingChatScope) throws -> MeetingChatSession { try store.createSession(scope: scope, title: "New chat") }
@@ -23,12 +24,31 @@ private actor MeetingChatWorker {
     func deleteChat(id: UUID) throws { try store.deleteSession(id: id) }
     func saveDraft(turnID: UUID, text: String) throws { try store.saveDraft(turnID: turnID, text: text) }
     func warmIndex() throws { try retrieval.prepareIndex() }
-    func choices() throws -> [MeetingChatSourceChoice] { try warmIndex(); return try store.sourceChoices() }
+    func choices() throws -> [MeetingChatSourceChoice] { try store.sourceChoices() }
     func source(_ id: Int64) throws -> MeetingChatSourceSnapshot? { try store.sourceSnapshots(scope: .init(selection: .meetings([id]))).first }
     func evidence(for turn: MeetingChatTurn) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
-        let session = try store.sessions().first { $0.id == turn.sessionID }
-        let history = try store.turns(sessionID: turn.sessionID).filter {
-            $0.ordinal < turn.ordinal && $0.ordinal >= (session?.contextStartOrdinal ?? 0) && $0.scope == turn.scope && $0.state == .completed
+        try Task.checkCancellation()
+        let context = try store.historyContext(before: turn)
+        let history = context.turns
+        // Prior conversation can be transformed without re-reading meetings. Start with
+        // no source packet and let the model explicitly search the current scope if it
+        // needs new facts. Removing a meeting affects retrieval, not validated history.
+        let explicitlyEmpty: Bool
+        if case .meetings(let ids) = turn.scope.selection { explicitlyEmpty = ids.isEmpty } else { explicitlyEmpty = false }
+        if !history.isEmpty || explicitlyEmpty {
+            let eligible = explicitlyEmpty ? [] : try store.sourceChoices().filter { source in
+                switch turn.scope.selection {
+                case .all: break
+                case .folder(let id): if source.folderID != id { return false }
+                case .meetings(let ids): if !ids.contains(source.id) { return false }
+                }
+                return (turn.scope.startDate == nil || source.startDate >= turn.scope.startDate!) &&
+                    (turn.scope.endDateExclusive == nil || source.startDate < turn.scope.endDateExclusive!)
+            }
+            let evidence = MeetingChatEvidence(scope: turn.scope, passages: [], dependencies: context.dependencies,
+                coverage: .init(eligibleMeetingCount: eligible.count, evidenceMeetingCount: 0, isPartialRecap: false))
+            try store.attachEvidence(turnID: turn.id, dependencies: context.dependencies, attemptID: turn.attemptID)
+            return (evidence, history)
         }
         let broadIntent = ["recap", "summar", "decisions", "decide", "next steps", "action items", "follow-up"].contains { turn.question.localizedCaseInsensitiveContains($0) }
         // Every question gets lexical relevance first. Broad vocabulary never disables a topic match.
@@ -60,19 +80,70 @@ private actor MeetingChatWorker {
                     reindexedMeetingCount: evidence.metrics.reindexedMeetingCount + representative.metrics.reindexedMeetingCount,
                     decodedCandidateCount: evidence.metrics.decodedCandidateCount + representative.metrics.decodedCandidateCount))
         }
-        // Include exactly the history that fits the same budget used by prompt construction.
-        var selected: [MeetingChatTurn] = []; var bytes = 0
-        for previous in history.reversed() {
-            let inherited = try store.dependencies(turnID: previous.id)
-            guard try store.dependenciesAreCurrent(inherited) else { continue }
-            let block = "Question: \(previous.question)\nHistorical answer (not evidence): \(previous.originalAnswer ?? "")"
-            guard bytes + block.utf8.count <= 4_000 else { continue }
-            bytes += block.utf8.count; selected.insert(previous, at: 0)
-            evidence.dependencies += inherited
-        }
-        evidence.dependencies = Array(Set(evidence.dependencies))
         try store.attachEvidence(turnID: turn.id, dependencies: evidence.dependencies, attemptID: turn.attemptID)
-        return (evidence, selected)
+        return (evidence, history)
+    }
+    func execute(_ call: MeetingChatToolCall, turn: MeetingChatTurn, evidence: MeetingChatEvidence, nextSourceKey: Int) throws -> (MeetingChatEvidence, Int, Int) {
+        try Task.checkCancellation()
+        guard try store.dependenciesAreCurrent(evidence.dependencies) else { throw MeetingChatError.sourceChanged }
+        let incoming: [MeetingChatPassage]
+        switch call {
+        case .search(let query):
+            incoming = try retrieval.retrieve(question: query, scope: turn.scope).passages
+        case .browse:
+            incoming = try retrieval.retrieve(question: turn.question, scope: turn.scope, broadRecap: true).passages
+        case .read(let key):
+            guard let passage = evidence.passages.first(where: { $0.sourceKey == key }),
+                let snapshot = try source(passage.meetingID), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
+            // The capability is an issued source marker, never a model-supplied meeting ID.
+            let sameKind = MeetingChatPassages.extract(from: snapshot).filter { $0.kind == passage.kind }
+            guard let index = sameKind.firstIndex(where: { $0.id == passage.id }) else { throw MeetingChatError.sourceChanged }
+            incoming = Array(sameKind[max(0, index - 2)...min(sameKind.count - 1, index + 2)])
+        }
+        var result = evidence
+        var selected: [MeetingChatPassage] = []
+        var seen = Set<String>(); var bytes = 0
+        var nextKey = nextSourceKey
+        // An empty refinement does not erase evidence already gathered.
+        for var passage in incoming + evidence.passages {
+            guard seen.insert(passage.id).inserted else { continue }
+            passage.sourceKey = evidence.passages.first(where: { $0.id == passage.id })?.sourceKey ?? "S\(nextKey)"
+            let size = MeetingChatPassages.promptByteCount(passage)
+            guard bytes + size <= 10_000 else { continue }
+            if !evidence.passages.contains(where: { $0.id == passage.id }) { nextKey += 1 }
+            bytes += size; selected.append(passage)
+        }
+        result.passages = selected
+        result.dependencies = Array(Set(evidence.dependencies + selected.map { .init(meetingID: $0.meetingID, revision: $0.revision) }))
+        result.coverage.evidenceMeetingCount = Set(selected.map(\.meetingID)).count
+        result.coverage.isPartialRecap = evidence.coverage.isPartialRecap || incoming.count > selected.count || result.coverage.evidenceMeetingCount < result.coverage.eligibleMeetingCount
+        if case .browse = call { result.coverage.isPartialRecap = true }
+        // Attach before the next network call so deletion invalidates every source already disclosed.
+        try store.attachEvidence(turnID: turn.id, dependencies: result.dependencies, attemptID: turn.attemptID)
+        return (result, nextKey, incoming.count)
+    }
+    func canPublishSummary(turn: MeetingChatTurn) throws -> Bool {
+        guard let current = try store.turns(sessionID: turn.sessionID).first(where: { $0.id == turn.id }),
+              current.state.isPending, current.attemptID == turn.attemptID else { return false }
+        let version = try store.sourceMutationVersion()
+        if summaryValidation?.turnID == turn.id, summaryValidation?.sourceVersion == version { return true }
+        guard try store.dependenciesAreCurrent(store.dependencies(turnID: turn.id)) else { return false }
+        summaryValidation = (turn.id, version)
+        return true
+    }
+    func titleContext(turn: MeetingChatTurn) throws -> (question: String, answer: String)? {
+        guard let session = try store.sessions().first(where: { $0.id == turn.sessionID }),
+              session.titleIsAutomatic == true, session.generatedTitleTurnID == nil,
+              session.scope == turn.scope, turn.ordinal >= session.contextStartOrdinal,
+              let latest = try store.turns(sessionID: turn.sessionID).last,
+              latest.id == turn.id, latest.attemptID == turn.attemptID, latest.state == .completed,
+              let answer = latest.originalAnswer,
+              try store.dependenciesAreCurrent(store.dependencies(turnID: turn.id)) else { return nil }
+        return (latest.question, answer)
+    }
+    func saveTitle(turn: MeetingChatTurn, title: String) throws -> Bool {
+        guard let attemptID = turn.attemptID else { return false }
+        return try store.updateTitleIfAutomatic(turnID: turn.id, attemptID: attemptID, title: title)
     }
     func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool) throws -> Bool {
         try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID)
@@ -85,6 +156,8 @@ final class MeetingChatCoordinator {
     @ObservationIgnored private let worker: MeetingChatWorker
     @ObservationIgnored private let generator: any MeetingTextGenerating
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var titleTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var titleAttempts: [UUID: UUID] = [:]
     @ObservationIgnored private var initialization: Task<Void, Never>?
     private var selectionVersion = UUID()
     private(set) var sessions: [MeetingChatSession] = []
@@ -95,13 +168,15 @@ final class MeetingChatCoordinator {
     private(set) var activeTurnID: UUID?
     private var activeSessionID: UUID?
     private(set) var phase = ""
+    private(set) var activities: [MeetingChatActivity] = []
+    private(set) var reasoningSummaries: [String] = []
+    private(set) var activityTurnID: UUID?
     private var composerDrafts: [UUID?: String] = [:]
     var composerDraft: String {
         get { composerDrafts[selectedSessionID] ?? "" }
         set { composerDrafts[selectedSessionID] = newValue }
     }
     var errorMessage: String?
-    var fastAnswers = true
     var scrollAnchors: [UUID: UUID] = [:]
     private(set) var sourceMutationVersion: Int64 = 0
     private(set) var sourceChoices: [MeetingChatSourceChoice] = []
@@ -158,6 +233,62 @@ final class MeetingChatCoordinator {
         do { try await worker.updateSession(id: id, scope: newScope); reload(); return id }
         catch { errorMessage = error.localizedDescription; return nil }
     }
+    /// Composer attachments are an explicit scope, never a hint that can widen retrieval.
+    @discardableResult
+    func addMeetingToScope(id: Int64) async -> Bool {
+        await updateMeetingAttachment(id: id, adding: true)
+    }
+    @discardableResult
+    func removeMeetingFromScope(id: Int64) async -> Bool {
+        await updateMeetingAttachment(id: id, adding: false)
+    }
+    private func updateMeetingAttachment(id: Int64, adding: Bool) async -> Bool {
+        guard !isBusy, !isUpdatingChat else { return false }
+        let target = selectedSessionID
+        let version = selectionVersion
+        var attached: [Int64] = []
+        if case .meetings(let ids) = scope.selection { attached = ids }
+        if !adding && !attached.contains(id) { return false }
+        var newScope = scope
+        if adding {
+            if !attached.contains(id) { attached.append(id) }
+            // A chosen meeting must not remain hidden behind an old date filter.
+            newScope.startDate = nil; newScope.endDateExclusive = nil
+        } else { attached.removeAll { $0 == id } }
+        newScope.selection = .meetings(attached)
+        isUpdatingChat = true
+        defer { isUpdatingChat = false }
+        await initialization?.value
+        guard selectionVersion == version, !Task.isCancelled else { return false }
+        do {
+            if adding {
+                guard let source = try await worker.source(id),
+                      !(source.transcript + source.manualNotes + source.generatedNotes).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    errorMessage = "This meeting is no longer available for chat."
+                    return false
+                }
+            }
+            guard selectionVersion == version, !Task.isCancelled else { return false }
+            if let target {
+                try await worker.updateSession(id: target, scope: newScope)
+            } else {
+                let session = try await worker.createChat(scope: newScope)
+                // Preserve the untitled composer's latest edits while registration awaits.
+                if selectionVersion == version {
+                    composerDrafts[session.id] = composerDrafts[nil]
+                    composerDrafts[nil] = nil
+                    selectedSessionID = session.id
+                }
+            }
+            reload()
+            guard selectionVersion == version, !Task.isCancelled else { return false }
+            errorMessage = nil
+            return true
+        } catch {
+            if selectionVersion == version { errorMessage = error.localizedDescription }
+            return false
+        }
+    }
     func applyPreparedPrompt(_ prompt: MeetingChatPreparedPrompt) async -> Bool {
         let target: UUID?
         if prompt.scope != scope {
@@ -169,6 +300,7 @@ final class MeetingChatCoordinator {
         return true
     }
     func renameChat(id: UUID, title: String) async {
+        cancelTitle(sessionID: id)
         do { try await worker.updateSession(id: id, title: title); reload() } catch { errorMessage = error.localizedDescription }
     }
     func send(question: String, config: AppConfig, isDraft: Bool = false) async {
@@ -176,11 +308,17 @@ final class MeetingChatCoordinator {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
         guard question.count <= 2_000 else { errorMessage = MeetingChatError.questionTooLong.localizedDescription; return }
+        if case .meetings(let ids) = scope.selection, ids.isEmpty,
+           !turns.contains(where: { $0.state == .completed && $0.originalAnswer != nil }) {
+            errorMessage = "Attach a meeting or choose All saved meetings before sending. Your question is still in the composer."
+            return
+        }
         let requestID = UUID()
         activeRequestID = requestID; phase = "Saving question"
+        reasoningSummaries = []; activityTurnID = nil
         let draftKey = selectedSessionID; let submittedDraft = composerDraft
         activeSessionID = draftKey
-        let requestScope = scope; let isFirstQuestion = turns.isEmpty
+        let requestScope = scope
         defer {
             if activeRequestID == requestID, tasks[requestID] == nil {
                 activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
@@ -206,14 +344,13 @@ final class MeetingChatCoordinator {
         guard activeRequestID == requestID, !Task.isCancelled, let id = requestSessionID else { return }
         activeSessionID = id
         do {
-            let requestConfig = fastAnswers ? MeetingTextGenerationClient.fastConfiguration(config) : config
+            let requestConfig = config
             let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
                 reload(); return
             }
             activeTurnID = turn.id
-            if isFirstQuestion { try await worker.updateSession(id: id, title: String(question.prefix(64))) }
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
                 reload(); return
@@ -230,13 +367,19 @@ final class MeetingChatCoordinator {
     }
     func retry(turnID: UUID, config: AppConfig) async {
         guard !isBusy, !isUpdatingChat else { return }
+        if let previous = turns.first(where: { $0.id == turnID }), case .meetings(let ids) = previous.scope.selection, ids.isEmpty,
+           !turns.contains(where: { $0.ordinal < previous.ordinal && $0.state == .completed && $0.originalAnswer != nil }) {
+            errorMessage = "This question had no meetings attached. Attach a meeting or choose All saved meetings, then send the question again."
+            return
+        }
         let reservation = UUID(); activeRequestID = reservation; phase = "Saving question"
+        reasoningSummaries = []; activityTurnID = nil
         activeSessionID = turns.first(where: { $0.id == turnID })?.sessionID
         defer {
             if activeRequestID == reservation { activeRequestID = nil; activeSessionID = nil; phase = "" }
         }
         do {
-            let requestConfig = fastAnswers ? MeetingTextGenerationClient.fastConfiguration(config) : config
+            let requestConfig = config
             guard let turn = try await worker.restartTurn(id: turnID, config: requestConfig) else {
                 if activeRequestID == reservation { activeRequestID = nil; phase = "" }; return
             }
@@ -250,7 +393,9 @@ final class MeetingChatCoordinator {
         }
     }
     private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool) {
+        cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
+        activities = []; reasoningSummaries = []; activityTurnID = turn.id
         let worker = worker; let generator = generator
         tasks[requestID] = Task {
             defer {
@@ -263,22 +408,101 @@ final class MeetingChatCoordinator {
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
                 phase = "Writing answer"
-                let answer: MeetingChatAnswer
-                if evidence.passages.isEmpty {
-                    answer = .init(markdown: "I couldn’t find supporting information in the selected saved meetings. Try a meeting title, specific term, or a narrower scope.", citations: [], insufficientEvidence: true, coverage: evidence.coverage)
-                } else { answer = try await MeetingChatClient.answer(question: turn.question, evidence: evidence, history: history, config: config, generator: generator) }
+                var nextSourceKey = (evidence.passages.compactMap { Int($0.sourceKey.dropFirst()) }.max() ?? 0) + 1
+                let (answer, finalEvidence) = try await MeetingChatClient.run(question: turn.question,
+                    evidence: evidence, history: history, config: config, sessionID: turn.sessionID, generator: generator,
+                    execute: { call, current in
+                        try Task.checkCancellation()
+                        let (result, next, count) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey)
+                        nextSourceKey = next
+                        return MeetingChatToolResult(evidence: result, matchedPassageCount: count)
+                    }, activity: { call, completed in
+                        guard self.activeRequestID == requestID else { return }
+                        if completed {
+                            if let index = self.activities.indices.last { self.activities[index].state = .completed }
+                            self.phase = "Writing answer"
+                        } else {
+                            self.activities.append(.init(title: call.title, detail: call.detail, state: .running))
+                            self.phase = call.title
+                        }
+                    }, progress: { phase in
+                        guard self.activeRequestID == requestID else { return }
+                        self.phase = phase
+                    }, reasoningSummary: { [weak self] iteration, summary in
+                        guard let self, self.activeRequestID == requestID, !Task.isCancelled else { return }
+                        // Summaries contain meeting data too. Check persisted invalidation before
+                        // displaying a delta, even when the UI has not yet refreshed after deletion.
+                        let valid = (try? await worker.canPublishSummary(turn: turn)) == true
+                        guard self.activeRequestID == requestID, !Task.isCancelled else { return }
+                        guard valid else { self.reasoningSummaries = []; self.stop(); return }
+                        while self.reasoningSummaries.count <= iteration { self.reasoningSummaries.append("") }
+                        self.reasoningSummaries[iteration] = summary
+                        self.phase = "Preparing answer"
+                    })
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
-                guard try await worker.finish(turn: turn, answer: answer, dependencies: evidence.dependencies, isDraft: isDraft) else { throw MeetingChatError.sourceChanged }
+                guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft) else { throw MeetingChatError.sourceChanged }
+                guard activeRequestID == requestID, !Task.isCancelled else { return }
+                if !answer.insufficientEvidence { scheduleTitle(turn: turn, config: config) }
             } catch {
                 guard activeRequestID == requestID else { return }
                 let stopped = Task.isCancelled || error is CancellationError
-                let message = stopped ? nil : (error is MeetingChatError || error is MeetingTextGenerationError ? error.localizedDescription : "Meeting AI request failed. Please retry or check your connection settings.")
+                let message = stopped ? nil : Self.failureMessage(error)
                 try? await worker.setTurnState(id: turn.id, state: stopped ? .stopped : .failed, error: message, attemptID: turn.attemptID)
             }
         }
     }
+    private func cancelTitle(sessionID: UUID) {
+        titleTasks.removeValue(forKey: sessionID)?.cancel()
+        titleAttempts.removeValue(forKey: sessionID)
+    }
+    private func scheduleTitle(turn: MeetingChatTurn, config: AppConfig) {
+        cancelTitle(sessionID: turn.sessionID)
+        let token = UUID(); titleAttempts[turn.sessionID] = token
+        let worker = worker; let generator = generator
+        titleTasks[turn.sessionID] = Task { [weak self] in
+            defer {
+                if let self, self.titleAttempts[turn.sessionID] == token {
+                    self.titleTasks.removeValue(forKey: turn.sessionID)
+                    self.titleAttempts.removeValue(forKey: turn.sessionID)
+                }
+            }
+            do {
+                guard let exchange = try await worker.titleContext(turn: turn) else { return }
+                try Task.checkCancellation()
+                let request = try MeetingChatClient.conversationTitleRequest(question: exchange.question, answer: exchange.answer, config: config, sessionID: turn.sessionID)
+                guard let raw = try await generator.generateConversationTitle(request),
+                      let title = MeetingChatClient.validatedConversationTitle(raw) else { return }
+                try Task.checkCancellation()
+                guard let self, self.titleAttempts[turn.sessionID] == token else { return }
+                if try await worker.saveTitle(turn: turn, title: title) { self.reload() }
+            } catch {
+                // A title is optional metadata. Keep the provisional title and completed answer.
+            }
+        }
+    }
+    func waitForTitles() async { while let task = titleTasks.values.first { await task.value } }
+
+    static func failureMessage(_ error: Error) -> String {
+        if error is MeetingChatError || error is MeetingChatHarnessError || error is MeetingTextGenerationError { return error.localizedDescription }
+        if error is ChatGPTAuthError { return "Your ChatGPT connection needs attention. Sign in again in AI Settings, then retry." }
+        if case let ChatGPTResponsesError.backendFailed(status, _) = error {
+            switch status {
+            case 401, 403: return "ChatGPT could not authorize this request. Sign in again in AI Settings, then retry."
+            case 429: return "ChatGPT has reached a usage or rate limit. Wait and retry, or choose another provider in AI Settings."
+            case 400, 404, 422: return "ChatGPT rejected this request. Check the selected model and reasoning level in AI Settings, then retry."
+            case 500...599: return "ChatGPT is temporarily unavailable. Please retry shortly."
+            default: return "ChatGPT could not complete this request (HTTP \(status)). Please retry or check AI Settings."
+            }
+        }
+        if let network = error as? URLError {
+            if network.code == .timedOut { return "The meeting AI connection timed out. Please retry." }
+            return "Could not connect to meeting AI. Check your internet connection and retry."
+        }
+        return "Meeting AI request failed. Please retry or check your connection settings."
+    }
     func stop() {
+        reasoningSummaries = []; activityTurnID = nil
         guard let id = activeRequestID else { return }
         tasks[id]?.cancel()
         if let turnID = activeTurnID {
@@ -292,6 +516,10 @@ final class MeetingChatCoordinator {
         activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
     }
     func deleteChat(id: UUID) async {
+        cancelTitle(sessionID: id)
+        if let activityTurnID, (try? store.turns(sessionID: id).contains(where: { $0.id == activityTurnID })) == true {
+            reasoningSummaries = []; self.activityTurnID = nil
+        }
         if activeSessionID == id { stop() }
         do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; reload() } catch { errorMessage = error.localizedDescription }
     }
@@ -304,6 +532,8 @@ final class MeetingChatCoordinator {
     func refreshForSourceChanges() {
         guard let version = try? store.sourceMutationVersion(), version != sourceMutationVersion else { return }
         sourceMutationVersion = version
+        for sessionID in Array(titleTasks.keys) { cancelTitle(sessionID: sessionID) }
+        reasoningSummaries = []; activityTurnID = nil
         if let sessionID = activeSessionID, let turnID = activeTurnID {
             let current = try? store.turns(sessionID: sessionID).first { $0.id == turnID }
             if current == nil || current?.state == .sourceDeleted { stop() }

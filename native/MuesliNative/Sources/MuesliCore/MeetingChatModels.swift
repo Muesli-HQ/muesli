@@ -65,6 +65,12 @@ public struct MeetingChatSession: Codable, Identifiable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var contextStartOrdinal: Int
+    /// The meeting this thread originated from; independent of its current retrieval scope.
+    /// Hydrated from normalized membership so deletion never leaves a dangling anchor.
+    public var anchorMeetingID: Int64? = nil
+    /// Nil denotes a legacy title, conservatively preserved as user-authored.
+    public var titleIsAutomatic: Bool? = nil
+    public var generatedTitleTurnID: UUID? = nil
 }
 
 public struct MeetingChatTurn: Codable, Identifiable, Sendable {
@@ -126,4 +132,23 @@ public struct MeetingChatSourceChoice: Identifiable, Sendable {
     public let title: String
     public let startDate: Date
     public let folderID: Int64?
+}
+
+/// A shared history representation keeps selection and provider budgets identical.
+/// Historical source markers are intentionally removed; they are not current evidence.
+public enum MeetingChatHistory {
+    public static func promptBlock(_ turn: MeetingChatTurn) -> String {
+        let answer = (turn.originalAnswer ?? "").replacingOccurrences(of: #"\[\[[^\]]+\]\]"#, with: "", options: .regularExpression)
+        return "Question: \(bounded(turn.question, bytes: 800))\nPrior assistant reply (conversation context, not source evidence): \(bounded(answer, bytes: 3_000))"
+    }
+    private static func bounded(_ text: String, bytes limit: Int) -> String {
+        guard text.utf8.count > limit else { return text }
+        var result = ""; var bytes = 0
+        for character in text {
+            let size = String(character).utf8.count
+            guard bytes + size <= limit else { break }
+            result.append(character); bytes += size
+        }
+        return result + " [truncated]"
+    }
 }

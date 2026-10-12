@@ -5639,7 +5639,20 @@ public final class MuesliController: NSObject {
     @discardableResult
     func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
         appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
-        if let id = meetingID { return Task { await meetingChatCoordinator.createChat(scope: .init(selection: .meetings([id]))) } }
+        if let id = meetingID {
+            let coordinator = meetingChatCoordinator
+            // Resume the latest conversation started from this meeting. Broader
+            // archive chats that merely cited it remain separate conversations.
+            if let session = coordinator.sessions.first(where: { session in
+                guard session.anchorMeetingID == id,
+                      case .meetings(let ids) = session.scope.selection else { return false }
+                return ids.contains(id)
+            }) {
+                coordinator.selectChat(id: session.id)
+                return nil
+            }
+            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+        }
         return nil
     }
     func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {

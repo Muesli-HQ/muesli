@@ -6,10 +6,18 @@ struct MeetingTextGenerationRequest {
     let user: String
     let config: AppConfig
     var maxOutputTokens: Int = 1_500
+    var sessionID: UUID = UUID()
+    var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
 }
 
 protocol MeetingTextGenerating: Sendable {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String
+    func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String?
+}
+
+extension MeetingTextGenerating {
+    // Test/custom generators can opt out of background metadata generation.
+    func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String? { nil }
 }
 
 enum MeetingTextGenerationError: Error, LocalizedError {
@@ -35,7 +43,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     var chatGPT: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ChatGPTResponsesClient.respond(systemPrompt: request.system, userPrompt: request.user,
             model: Self.model(request.config), maxOutputTokens: request.maxOutputTokens,
-            reasoningEffort: request.config.meetingSummaryReasoningEffort, logCategory: "meeting-chat")
+            reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, logCategory: "meeting-chat")
     }
     var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ClaudeCodeSummarizer.run(instructions: request.system, input: request.user,
@@ -72,6 +80,10 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         return text
     }
 
+    func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String? {
+        try await generate(request)
+    }
+
     static func model(_ config: AppConfig) -> String {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let configured = config[keyPath: provider.modelKeyPath].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,15 +97,6 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         case .ollama: return "qwen3.5"
         default: return ""
         }
-    }
-    static func fastConfiguration(_ original: AppConfig) -> AppConfig {
-        var config = original
-        let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
-        if provider == .chatGPT || provider == .openAI {
-            config[keyPath: provider.modelKeyPath] = "gpt-5.4-mini"
-            config.meetingSummaryReasoningEffort = .off
-        }
-        return config
     }
     private static func credential(_ config: AppConfig) -> String {
         switch MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) {

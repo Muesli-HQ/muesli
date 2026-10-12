@@ -16,7 +16,9 @@ struct MeetingChatScopePicker: View {
     @State private var end = Date()
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose meeting context").font(.title2)
+            Label("Meeting context", systemImage: "rectangle.stack").font(MuesliTheme.title2())
+            Text("Choose the meetings this conversation can search. Earlier answers keep their original sources.")
+                .font(.callout).foregroundStyle(.secondary)
             Picker("Search", selection: $mode) {
                 Text("All saved meetings").tag(0); Text("Folder").tag(1); Text("Specific meetings").tag(2)
             }.pickerStyle(.segmented)
@@ -28,23 +30,25 @@ struct MeetingChatScopePicker: View {
                 Text("This folder only; subfolders are excluded.").font(.caption).foregroundStyle(.secondary)
             }
             if mode == 2 {
-                TextField("Find meetings by title", text: $query)
+                HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Find meetings by title", text: $query).textFieldStyle(.plain) }
+                    .padding(10).background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
+                Text("\(selected.count) selected").font(.caption).foregroundStyle(.secondary)
                 List(meetings.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }) { meeting in
                     Toggle(isOn: Binding(get: { selected.contains(meeting.id) }, set: { if $0 { selected.insert(meeting.id) } else { selected.remove(meeting.id) } })) {
-                        VStack(alignment: .leading) { Text(meeting.title); Text(meeting.startDate.formatted()).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading) { Text(meeting.title); Text(meeting.startDate.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
                     }.toggleStyle(.checkbox)
                 }.frame(height: 240)
             }
             Toggle("Date range", isOn: $datesEnabled)
             if datesEnabled { HStack { DatePicker("From", selection: $start, displayedComponents: .date); DatePicker("Through", selection: $end, displayedComponents: .date) } }
             HStack {
-                Spacer(); Button("Cancel") { dismiss() }
+                Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Apply") {
                     let selection: MeetingChatSelection = mode == 1 ? .folder(folderID!) : mode == 2 ? .meetings(selected.sorted()) : .all
                     onChange(.init(selection: selection, startDate: datesEnabled ? Calendar.current.startOfDay(for: start) : nil,
                         endDateExclusive: datesEnabled ? Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: end)) : nil))
                     dismiss()
-                }.buttonStyle(.borderedProminent).disabled((mode == 1 && folderID == nil) || (mode == 2 && selected.isEmpty) || (datesEnabled && end < start))
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled((mode == 1 && folderID == nil) || (mode == 2 && selected.isEmpty) || (datesEnabled && end < start))
             }
         }
         .padding(24).frame(width: 580)

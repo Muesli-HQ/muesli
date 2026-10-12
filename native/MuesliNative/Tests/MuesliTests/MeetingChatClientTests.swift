@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SQLite3
 @testable import MuesliCore
 @testable import MuesliNativeApp
 
@@ -11,6 +12,340 @@ struct MeetingChatClientTests {
             range: .init(location: 0, length: 34), timestamp: "00:00:05", revision: "r1")
         return .init(scope: .init(), passages: [passage], dependencies: [.init(meetingID: 1, revision: "r1")],
                      coverage: .init(eligibleMeetingCount: 1, evidenceMeetingCount: 1, isPartialRecap: false))
+    }
+
+    @Test(arguments: ["chatgpt", "openai"])
+    @MainActor func sendsAndRetriesWithSelectedModelAndEffortUnchanged(backend: String) async throws {
+        let probe = ChatPromptProbe()
+        let (_, coordinator, _) = try coordinatorFixture(generator: probe)
+        var config = AppConfig(); config.meetingSummaryBackend = backend
+        let provider = MeetingSummaryBackendOption.resolved(backend)
+        config[keyPath: provider.modelKeyPath] = "my-selected-catalog-model"
+        config.meetingSummaryReasoningEffort = .high
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "launch", config: config); await coordinator.waitForIdle()
+        let turnID = try #require(coordinator.turns.first?.id)
+        await coordinator.retry(turnID: turnID, config: config); await coordinator.waitForIdle()
+        let requests = await probe.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.config[keyPath: provider.modelKeyPath] == "my-selected-catalog-model" && $0.config.meetingSummaryReasoningEffort == .high })
+    }
+
+    @Test func conversationTitlesAreBoundedPlainMetadata() throws {
+        let request = try MeetingChatClient.conversationTitleRequest(question: String(repeating: "🌻", count: 5_000), answer: String(repeating: "Source fact ", count: 2_000), config: AppConfig(), sessionID: UUID())
+        #expect(request.system.utf8.count + request.user.utf8.count < 4_000)
+        #expect(request.maxOutputTokens == 2_048)
+        #expect(MeetingChatClient.validatedConversationTitle(#"{"title":"Launch Timing and Decisions"}"#) == "Launch Timing and Decisions")
+        #expect(MeetingChatClient.validatedConversationTitle(#"{"title":"Fact [[S1]]"}"#) == nil)
+        #expect(MeetingChatClient.validatedConversationTitle(#"{"title":"Title","action":"delete"}"#) == nil)
+    }
+
+    @Test @MainActor func backgroundTitleUsesSelectedModelWithoutBlockingAnswerOrManualRename() async throws {
+        let gate = ChatTitleGate()
+        let (_, coordinator, _) = try coordinatorFixture(generator: gate)
+        var config = AppConfig(); config.meetingSummaryBackend = "chatgpt"; config.chatGPTModel = "my-selected-model"; config.meetingSummaryReasoningEffort = .high
+        await coordinator.createChat(scope: .init()); let sessionID = try #require(coordinator.selectedSessionID)
+        await coordinator.send(question: "launch", config: config)
+        await coordinator.waitForIdle(); await gate.waitUntilStarted()
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.turns.first?.state == .completed)
+        let request = try #require(await gate.titleRequest)
+        #expect(request.config.chatGPTModel == "my-selected-model")
+        #expect(request.config.meetingSummaryReasoningEffort == .high)
+        await coordinator.renameChat(id: sessionID, title: "My chosen title")
+        await gate.finish()
+        await coordinator.waitForTitles()
+        #expect(coordinator.sessions.first?.title == "My chosen title")
+    }
+
+    @Test @MainActor func successfulTitleUpdatesOriginalChatOnce() async throws {
+        let gate = ChatTitleGate()
+        let (_, coordinator, _) = try coordinatorFixture(generator: gate)
+        await coordinator.createChat(scope: .init()); let sessionID = try #require(coordinator.selectedSessionID)
+        await coordinator.send(question: "launch", config: AppConfig()); await coordinator.waitForIdle(); await gate.waitUntilStarted()
+        await coordinator.createChat(scope: .init())
+        await gate.finish(); await coordinator.waitForTitles()
+        #expect(coordinator.sessions.first(where: { $0.id == sessionID })?.title == "Launch Timing and Decisions")
+        #expect(coordinator.selectedSessionID != sessionID)
+        #expect(coordinator.turns.isEmpty)
+    }
+
+    @Test @MainActor func generatedTitleBelongsToOriginalChatAndInvalidatedSourcesCannotRename() async throws {
+        let gate = ChatTitleGate()
+        let (store, coordinator, id) = try coordinatorFixture(generator: gate)
+        await coordinator.createChat(scope: .init()); let sessionID = try #require(coordinator.selectedSessionID)
+        await coordinator.send(question: "launch", config: AppConfig()); await coordinator.waitForIdle(); await gate.waitUntilStarted()
+        await coordinator.createChat(scope: .init())
+        try store.deleteMeeting(id: id)
+        await gate.finish(); await coordinator.waitForTitles()
+        #expect(coordinator.sessions.first(where: { $0.id == sessionID })?.title != "Launch Timing and Decisions")
+        #expect(coordinator.selectedSessionID != sessionID)
+    }
+
+    @Test @MainActor func explicitEmptyFollowupUsesConversationWithoutNewRetrieval() async throws {
+        let probe = ChatPromptProbe()
+        let (_, coordinator, id) = try coordinatorFixture(generator: probe)
+        await coordinator.createChat(scope: .init(selection: .meetings([id])))
+        await coordinator.send(question: "launch", config: AppConfig()); await coordinator.waitForIdle()
+        await coordinator.setScope(.init(selection: .meetings([])))
+        coordinator.composerDraft = "Next steps?"
+        await coordinator.send(question: coordinator.composerDraft, config: AppConfig()); await coordinator.waitForIdle()
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.composerDraft.isEmpty)
+        #expect(coordinator.turns.count == 2)
+        #expect(coordinator.turns.last?.state == .completed)
+        #expect(coordinator.turns.last?.citations.isEmpty == true)
+        let requests = await probe.requests
+        #expect(requests.count == 2)
+        #expect(requests.last?.user.contains("HISTORICAL_ANSWER") == true)
+        #expect(requests.last?.user.contains("QUOTED SOURCES (JSON):\n[]") == true)
+    }
+
+    @Test @MainActor func emptyScopeDoesNotReserveBusyStateWhenWorkerStorageIsBlocked() async throws {
+        let probe = ChatPromptProbe()
+        let (store, coordinator, _) = try coordinatorFixture(generator: probe)
+        await coordinator.createChat(scope: .init(selection: .meetings([])))
+        let sessionID = try #require(coordinator.selectedSessionID)
+        var db: OpaquePointer?
+        let opened = sqlite3_open(store.resolvedDatabaseURL.path, &db)
+        #expect(opened == SQLITE_OK)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        let blockedWriter = Task { await coordinator.renameChat(id: sessionID, title: "Test chat") }
+        await Task.yield()
+        coordinator.composerDraft = "Next steps?"
+        let clock = ContinuousClock(); let start = clock.now
+        await coordinator.send(question: coordinator.composerDraft, config: AppConfig())
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.composerDraft == "Next steps?")
+        #expect(coordinator.turns.isEmpty)
+        #expect(await probe.requests.isEmpty)
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        await blockedWriter.value
+    }
+
+    @Test func chatGPTStreamHasAbsoluteResourceDeadline() {
+        let configuration = ChatGPTResponsesTransport.sessionConfiguration()
+        #expect(configuration.timeoutIntervalForResource == 180)
+        #expect(configuration.timeoutIntervalForRequest == 120)
+        #expect(!configuration.waitsForConnectivity)
+        #expect(configuration.urlCache == nil)
+    }
+
+    @Test func reasoningSummariesUseOnlyExplicitSummaryEvents() {
+        var accumulator = ChatGPTReasoningSummaryAccumulator()
+        let ignoredRawReasoning = accumulator.apply(["type": "response.reasoning_text.delta", "item_id": "r1", "summary_index": 0, "delta": "HIDDEN_REASONING"])
+        #expect(!ignoredRawReasoning)
+        let firstDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": "Checking "])
+        #expect(firstDeltaChanged)
+        let secondDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": "meeting sources."])
+        #expect(secondDeltaChanged)
+        let completedChanged = accumulator.apply(["type": "response.reasoning_summary_text.done", "item_id": "r1", "summary_index": 0, "text": "Checking meeting sources."])
+        #expect(!completedChanged)
+        #expect(accumulator.text == "Checking meeting sources.")
+        #expect(!accumulator.text.contains("HIDDEN_REASONING"))
+        let payload: [String: Any] = ["output": [["type": "reasoning", "content": [["text": "HIDDEN_REASONING"]]], ["type": "message", "content": [["text": "Final answer"]]]]]
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Final answer")
+    }
+
+    @Test func reasoningSummaryRequestsAreOptInAndRespectModelCapabilities() {
+        let summary = ChatGPTResponsesClient.requestBody(systemPrompt: "S", userPrompt: "U", model: "gpt-6.1-sol", reasoningEffort: .low, includeReasoningSummary: true)
+        #expect((summary["reasoning"] as? [String: String])?["summary"] == "auto")
+        let off = ChatGPTResponsesClient.requestBody(systemPrompt: "S", userPrompt: "U", model: "gpt-6-luna", reasoningEffort: .off, includeReasoningSummary: true)
+        #expect((off["reasoning"] as? [String: String])?["summary"] == nil)
+        let normal = ChatGPTResponsesClient.requestBody(systemPrompt: "S", userPrompt: "U", model: "gpt-6.1-sol", reasoningEffort: .low)
+        #expect((normal["reasoning"] as? [String: String])?["summary"] == nil)
+        var accumulator = ChatGPTReasoningSummaryAccumulator()
+        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": String(repeating: "a", count: 8_000)])
+        #expect(accumulator.text.count == 6_000)
+    }
+
+    @Test @MainActor func sourceDeletionScrubsLateReasoningSummaryBeforeUIRefresh() async throws {
+        let gate = ChatSummaryGate()
+        let (store, coordinator, id) = try coordinatorFixture(generator: gate)
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "launch", config: AppConfig())
+        await gate.waitUntilStarted()
+        #expect(coordinator.reasoningSummaries == ["Provider summary"])
+        try store.deleteMeeting(id: id)
+        await gate.finish(); await coordinator.waitForIdle()
+        #expect(coordinator.reasoningSummaries.isEmpty)
+        #expect(coordinator.activityTurnID == nil)
+        #expect(coordinator.turns.first?.state == .sourceDeleted)
+    }
+
+    private func priorExchange() -> MeetingChatTurn {
+        .init(id: UUID(), sessionID: UUID(), ordinal: 0, question: "Summarize launch",
+            scope: .init(selection: .meetings([1])), state: .completed,
+            originalAnswer: "The launch is Friday [[S1]].", citations: [], provider: "test", model: "test")
+    }
+
+    @Test func conversationalRepliesNeedUsableHistoryButNoNewCitations() throws {
+        var empty = evidence(); empty.passages = []
+        let raw = #"{"status":"conversation","markdown":"Suggestion: confirm the launch checklist."}"#
+        let answer = try MeetingChatClient.validateResponse(raw, evidence: empty, history: [priorExchange()])
+        #expect(!answer.insufficientEvidence)
+        #expect(answer.citations.isEmpty)
+        #expect(throws: MeetingChatError.self) { try MeetingChatClient.validateResponse(raw, evidence: empty) }
+        var deleted = priorExchange(); deleted.state = .sourceDeleted
+        #expect(throws: MeetingChatError.self) { try MeetingChatClient.validateResponse(raw, evidence: empty, history: [deleted]) }
+        #expect(throws: MeetingChatError.self) {
+            try MeetingChatClient.validateResponse(#"{"status":"answered","markdown":"Friday [[S1]]"}"#, evidence: empty, history: [priorExchange()])
+        }
+    }
+
+    @Test @MainActor func historyOnlyTransformationDoesNotRunRetrieval() async throws {
+        var empty = evidence(); empty.passages = []; empty.coverage.eligibleMeetingCount = 0
+        empty.coverage.evidenceMeetingCount = 0
+        let generator = ChatScriptedReplies(replies: [#"{"status":"conversation","markdown":"Suggestion: review the launch checklist."}"#])
+        let (answer, _) = try await MeetingChatClient.run(question: "Next steps?", evidence: empty, history: [priorExchange()], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in Issue.record("Conversation-only followup must not retrieve"); return .init(evidence: current) }, activity: { _, _ in })
+        #expect(!answer.insufficientEvidence)
+        let requests = await generator.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].user.contains("The launch is Friday"))
+        #expect(!requests[0].user.contains("[[S1]]"))
+        #expect(requests[0].system.contains("Retrieval tools are unavailable"))
+    }
+
+    @Test @MainActor func newMeetingFactsCanRetrieveLazilyFromSafeConversation() async throws {
+        var empty = evidence(); empty.passages = []
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch owner"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        var calls: [MeetingChatToolCall] = []
+        let (answer, _) = try await MeetingChatClient.run(question: "What did we agree in the meeting?", evidence: empty, history: [priorExchange()], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { call, _ in calls.append(call); return .init(evidence: evidence()) }, activity: { _, _ in })
+        #expect(calls == [.search("launch owner")])
+        #expect(answer.citations.map(\.sourceKey) == ["S1"])
+    }
+
+    @Test @MainActor func removedScopeCannotRetrieveNewFactsThroughConversationMode() async throws {
+        var empty = evidence(); empty.passages = []; empty.coverage.eligibleMeetingCount = 0
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch owner"}"#, #"{"status":"insufficient_evidence","markdown":"Attach a meeting to check who was assigned."}"#])
+        let (answer, _) = try await MeetingChatClient.run(question: "Who was assigned?", evidence: empty, history: [priorExchange()], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in Issue.record("Empty search scope must not retrieve"); return .init(evidence: current) }, activity: { _, _ in })
+        #expect(answer.insufficientEvidence)
+        #expect(await generator.requests.count == 2)
+    }
+
+    @Test func validatesRetrievalToolArguments() throws {
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"search_meeting_sources","query":" release date "}"#) == .search("release date"))
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"read_meeting_source","source":"S2"}"#) == .read("S2"))
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"browse_meeting_sources"}"#) == .browse)
+        for invalid in [#"{"tool":"shell","query":"ls"}"#, #"{"tool":"search_meeting_sources","query":"","scope":"all"}"#, #"{"tool":"read_meeting_source","source":"../secret"}"#] {
+            #expect(throws: MeetingChatError.self) { try MeetingChatClient.parseToolCall(invalid) }
+        }
+    }
+
+    @Test @MainActor func toolLoopFeedsResultsBackAndKeepsSessionIdentity() async throws {
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch"}"#, #"{"status":"answered","markdown":"Ship Friday [[S1]]"}"#])
+        var empty = evidence(); empty.passages = []; empty.dependencies = []
+        let sessionID = UUID()
+        var calls: [MeetingChatToolCall] = []
+        let (answer, _) = try await MeetingChatClient.run(question: "When is it?", evidence: empty, history: [], config: AppConfig(), sessionID: sessionID, generator: generator,
+            execute: { call, _ in calls.append(call); return .init(evidence: evidence()) }, activity: { _, _ in })
+        #expect(calls == [.search("launch")])
+        #expect(answer.citations.count == 1)
+        let requests = await generator.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.sessionID == sessionID })
+        #expect(requests[1].user.contains("Ship Friday"))
+        #expect(requests[1].user.contains("QUOTED TOOL HISTORY"))
+    }
+
+    @Test @MainActor func toolLoopCannotExceedBudget() async throws {
+        let generator = ChatScriptedReplies(replies: (1...5).map { "{\"tool\":\"search_meeting_sources\",\"query\":\"query \($0)\"}" })
+        var calls = 0
+        do {
+            _ = try await MeetingChatClient.run(question: "Find it", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+                execute: { _, current in calls += 1; return .init(evidence: current) }, activity: { _, _ in })
+            Issue.record("Expected budget rejection")
+        } catch { #expect(error is MeetingChatHarnessError) }
+        #expect(calls == 3)
+        #expect(await generator.requests.count == 5)
+    }
+
+    @Test @MainActor func exhaustedToolBudgetGetsOneFinalizationPass() async throws {
+        let tools = (1...4).map { "{\"tool\":\"search_meeting_sources\",\"query\":\"query \($0)\"}" }
+        let generator = ChatScriptedReplies(replies: tools + [#"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        var executions = 0
+        let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in executions += 1; return .init(evidence: current) }, activity: { _, _ in })
+        #expect(executions == 3)
+        #expect(await generator.requests.count == 5)
+        #expect(answer.citations.count == 1)
+    }
+
+    @Test @MainActor func sourceReadUsesAdjacentPassagesAndPreservesScope() async throws {
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"read_meeting_source","source":"S1"}"#, #"{"status":"answered","markdown":"Launch Monday [[S2]]"}"#])
+        let (store, coordinator, id) = try coordinatorFixture(generator: generator)
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Launch Friday\nActually Monday is agreed.")
+        await coordinator.createChat(scope: .init(selection: .meetings([id])))
+        await coordinator.send(question: "Friday", config: AppConfig()); await coordinator.waitForIdle()
+        let requests = await generator.requests
+        #expect(requests.count == 2)
+        #expect(requests.last?.user.contains("Actually Monday is agreed") == true)
+        #expect(coordinator.turns.first?.state == .completed)
+        #expect(coordinator.turns.first?.citations.first?.meetingID == id)
+    }
+
+    @Test @MainActor func emptyScopeDoesNotContactProvider() async throws {
+        let generator = ChatScriptedReplies(replies: [])
+        var empty = evidence(); empty.passages = []; empty.dependencies = []
+        empty.coverage.eligibleMeetingCount = 0
+        let (answer, _) = try await MeetingChatClient.run(question: "Anything?", evidence: empty, history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in Issue.record("Unexpected tool execution"); return .init(evidence: current) }, activity: { _, _ in })
+        #expect(answer.insufficientEvidence)
+        #expect(await generator.requests.isEmpty)
+    }
+
+    @Test @MainActor func repeatedCallFinalizesWithoutExecutingAgain() async throws {
+        let repeated = #"{"tool":"search_meeting_sources","query":"launch"}"#
+        let generator = ChatScriptedReplies(replies: [repeated, repeated, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        var executions = 0
+        let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in executions += 1; return .init(evidence: current) }, activity: { _, _ in })
+        #expect(executions == 1)
+        #expect(answer.citations.count == 1)
+        #expect(await generator.requests.last?.system.contains("Retrieval tools are unavailable") == true)
+    }
+
+    @Test @MainActor func malformedAnswerGetsOneFormatRepair() async throws {
+        let generator = ChatScriptedReplies(replies: ["Friday", #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+            execute: { _, current in Issue.record("Unexpected tool execution"); return .init(evidence: current) }, activity: { _, _ in })
+        #expect(answer.citations.count == 1)
+        #expect(await generator.requests.count == 2)
+    }
+
+    @Test @MainActor func repeatedInvalidCitationsHavePrecisePrivateDiagnostic() async throws {
+        let raw = #"{"status":"answered","markdown":"PRIVATE_MODEL_OUTPUT [[S999]]"}"#
+        let generator = ChatScriptedReplies(replies: [raw, raw])
+        do {
+            _ = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
+                execute: { _, current in Issue.record("Unexpected tool execution"); return .init(evidence: current) }, activity: { _, _ in })
+            Issue.record("Expected invalid citation failure")
+        } catch {
+            #expect(error is MeetingChatHarnessError)
+            #expect(error.localizedDescription.contains("outside the retrieved context"))
+            #expect(!error.localizedDescription.contains("PRIVATE_MODEL_OUTPUT"))
+        }
+        #expect(await generator.requests.count == 2)
+        #expect(await generator.requests.last?.user.contains("PRIVATE_MODEL_OUTPUT") == false)
+    }
+
+    @Test @MainActor func emptySearchPreservesEvidenceAndReportsZeroMatches() async throws {
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"zznomatch"}"#, #"{"tool":"search_meeting_sources","query":"launch"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        let (_, coordinator, id) = try coordinatorFixture(generator: generator)
+        await coordinator.createChat(scope: .init(selection: .meetings([id])))
+        await coordinator.send(question: "launch", config: AppConfig()); await coordinator.waitForIdle()
+        let requests = await generator.requests
+        #expect(requests.count == 3)
+        #expect(requests[1].user.contains("Tool returned 0 matching passages"))
+        #expect(requests[1].user.contains("Launch Friday"))
+        #expect(requests[2].user.contains("\"id\":\"S1\""))
+        #expect(requests.allSatisfy { $0.system.utf8.count + $0.user.utf8.count <= 28_000 })
+        #expect(coordinator.turns.first?.state == .completed)
     }
 
     @Test func resolvesOnlySuppliedSourceMarkers() throws {
@@ -150,7 +485,7 @@ struct MeetingChatClientTests {
         #expect(try MeetingChatStore(databaseURL: store.resolvedDatabaseURL).turns(sessionID: original).first?.state == .completed)
     }
 
-    @Test @MainActor func retryReusesQuestionAndScopeChangesExcludeOldHistory() async throws {
+    @Test @MainActor func retryReusesQuestionAndScopeChangesKeepValidConversation() async throws {
         let probe = ChatPromptProbe()
         let (store, coordinator, id) = try coordinatorFixture(generator: probe)
         await coordinator.createChat(scope: .init()); await coordinator.send(question: "launch", config: AppConfig())
@@ -162,7 +497,7 @@ struct MeetingChatClientTests {
         await coordinator.setScope(.init())
         await coordinator.send(question: "launch follow-up", config: AppConfig()); await coordinator.waitForIdle()
         let requests = await probe.requests
-        #expect(!requests.last!.user.contains("HISTORICAL_ANSWER"))
+        #expect(requests.last!.user.contains("HISTORICAL_ANSWER"))
         #expect(try MeetingChatStore(databaseURL: store.resolvedDatabaseURL).turns(sessionID: coordinator.selectedSessionID!).count == 2)
     }
 
@@ -247,6 +582,52 @@ private actor ChatPromptProbe: MeetingTextGenerating {
     var requests: [MeetingTextGenerationRequest] = []
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         requests.append(request)
+        if request.user.contains("QUOTED SOURCES (JSON):\n[]"), request.user.contains("HISTORICAL_ANSWER") {
+            return #"{"status":"conversation","markdown":"Suggestion: confirm the launch plan with the team."}"#
+        }
         return #"{"status":"answered","markdown":"HISTORICAL_ANSWER Friday [[S1]]"}"#
     }
+}
+
+private actor ChatScriptedReplies: MeetingTextGenerating {
+    var replies: [String]
+    var requests: [MeetingTextGenerationRequest] = []
+    init(replies: [String]) { self.replies = replies }
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        requests.append(request)
+        guard !replies.isEmpty else { throw MeetingChatError.invalidResponse }
+        return replies.removeFirst()
+    }
+}
+
+private actor ChatSummaryGate: MeetingTextGenerating {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        await request.onReasoningSummary?("Provider summary")
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+        await request.onReasoningSummary?("Late provider summary")
+        return #"{"status":"answered","markdown":"Friday [[S1]]"}"#
+    }
+    func waitUntilStarted() async {
+        for _ in 0..<500 where !started { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+    func finish() { continuation?.resume(); continuation = nil }
+}
+
+private actor ChatTitleGate: MeetingTextGenerating {
+    var titleRequest: MeetingTextGenerationRequest?
+    private var continuation: CheckedContinuation<String?, Never>?
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        #"{"status":"answered","markdown":"Friday [[S1]]"}"#
+    }
+    func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String? {
+        titleRequest = request
+        return await withCheckedContinuation { continuation = $0 }
+    }
+    func waitUntilStarted() async {
+        for _ in 0..<500 where titleRequest == nil { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+    func finish() { continuation?.resume(returning: #"{"title":"Launch Timing and Decisions"}"#); continuation = nil }
 }

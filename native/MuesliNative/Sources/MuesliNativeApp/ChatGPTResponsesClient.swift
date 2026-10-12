@@ -35,7 +35,19 @@ enum ChatGPTResponsesTransport {
 
     static let environmentKey = "MUESLI_CHATGPT_TRANSPORT"
     static let requestTimeout: TimeInterval = 120
+    static let resourceTimeout: TimeInterval = 180
     static let originator = "muesli"
+
+    static func sessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = requestTimeout
+        // Request timeout alone resets as bytes arrive: SSE heartbeats can otherwise
+        // hold a chat open for the system default resource timeout of seven days.
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.urlCache = nil
+        configuration.waitsForConnectivity = false
+        return configuration
+    }
 
     static func selectedBackend(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -79,6 +91,34 @@ enum ChatGPTResponsesTransport {
     }
 }
 
+/// Collect only provider-designated reasoning summaries. Raw reasoning text,
+/// encrypted reasoning, and unrelated output events never enter this display channel.
+struct ChatGPTReasoningSummaryAccumulator {
+    private var parts: [String: String] = [:]
+    private var order: [String] = []
+    private(set) var text = ""
+
+    mutating func apply(_ payload: [String: Any]) -> Bool {
+        let type = payload["type"] as? String
+        guard type == "response.reasoning_summary_text.delta" || type == "response.reasoning_summary_text.done",
+              let itemID = payload["item_id"] as? String,
+              let index = payload["summary_index"] as? Int,
+              let fragment = payload[type == "response.reasoning_summary_text.delta" ? "delta" : "text"] as? String else { return false }
+        let key = "\(itemID):\(index)"
+        guard parts[key] != nil || order.count < 32 else { return false }
+        if parts[key] == nil { order.append(key) }
+        if type == "response.reasoning_summary_text.delta" {
+            parts[key] = String(((parts[key] ?? "") + fragment).prefix(6_000))
+        } else {
+            parts[key] = String(fragment.prefix(6_000))
+        }
+        let updated = String(order.compactMap { parts[$0] }.joined(separator: "\n\n").prefix(6_000))
+        guard updated != text else { return false }
+        text = updated
+        return true
+    }
+}
+
 enum ChatGPTResponsesClient {
     static func respond(
         systemPrompt: String,
@@ -86,28 +126,40 @@ enum ChatGPTResponsesClient {
         model: String,
         maxOutputTokens: Int? = nil,
         reasoningEffort: ReasoningEffort? = nil,
+        sessionID: UUID = UUID(),
+        onReasoningSummary: (@Sendable (String) async -> Void)? = nil,
         logCategory: String
     ) async throws -> String {
+        try Task.checkCancellation()
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+        try Task.checkCancellation()
         let body = requestBody(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             model: model,
             maxOutputTokens: maxOutputTokens,
-            reasoningEffort: reasoningEffort
+            reasoningEffort: reasoningEffort,
+            includeReasoningSummary: onReasoningSummary != nil
         )
 
         let request = try ChatGPTResponsesTransport.makeRequest(
             body: body,
             token: token,
-            accountId: accountId
+            accountId: accountId,
+            sessionID: sessionID
         )
 
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let session = URLSession(configuration: ChatGPTResponsesTransport.sessionConfiguration())
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
         let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard httpStatus == 200 else {
             var errorData = Data()
-            for try await byte in bytes { errorData.append(byte) }
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard errorData.count < 8_192 else { break }
+                errorData.append(byte)
+            }
             let message = extractErrorMessage(from: errorData)
                 ?? String(data: errorData, encoding: .utf8)
                 ?? "(unknown)"
@@ -117,15 +169,25 @@ enum ChatGPTResponsesClient {
 
         var deltaText = ""
         var finalText = ""
+        var reasoningSummary = ChatGPTReasoningSummaryAccumulator()
         for try await line in bytes.lines {
+            try Task.checkCancellation()
             guard line.hasPrefix("data: ") else { continue }
             let jsonString = String(line.dropFirst(6))
             if jsonString == "[DONE]" { break }
             guard let json = try decodeStreamPayload(jsonString, httpStatus: httpStatus) else { continue }
 
+            try Task.checkCancellation()
+            if reasoningSummary.apply(json) {
+                await onReasoningSummary?(reasoningSummary.text)
+            }
             applyStreamPayload(json, deltaText: &deltaText, finalText: &finalText)
+            guard deltaText.utf8.count <= 256_000, finalText.utf8.count <= 256_000 else {
+                throw ChatGPTResponsesError.backendFailed(statusCode: httpStatus, message: "ChatGPT response exceeded the supported size.")
+            }
         }
 
+        try Task.checkCancellation()
         let fullText = accumulatedOutputText(deltaText: deltaText, finalText: finalText)
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT Responses: collected \(trimmed.count) chars\n", stderr)
@@ -137,7 +199,8 @@ enum ChatGPTResponsesClient {
         userPrompt: String,
         model: String,
         maxOutputTokens: Int? = nil,
-        reasoningEffort: ReasoningEffort? = nil
+        reasoningEffort: ReasoningEffort? = nil,
+        includeReasoningSummary: Bool = false
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -150,7 +213,9 @@ enum ChatGPTResponsesClient {
             ] as [String: Any]],
         ]
         if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {
-            body["reasoning"] = ["effort": effort]
+            var reasoning = ["effort": effort]
+            if includeReasoningSummary, effort != "none" { reasoning["summary"] = "auto" }
+            body["reasoning"] = reasoning
         }
         if let maxOutputTokens, maxOutputTokens > 0 {
             body["max_output_tokens"] = maxOutputTokens
@@ -232,11 +297,13 @@ enum ChatGPTResponsesClient {
             return outputText
         }
         if let item = output as? [String: Any] {
+            guard item["type"] as? String != "reasoning" else { return nil }
             return extractText(fromContent: item["content"]) ?? (item["text"] as? String)
         }
         if let items = output as? [[String: Any]] {
             let parts = items.compactMap { item -> String? in
-                extractText(fromContent: item["content"]) ?? (item["text"] as? String)
+                guard item["type"] as? String != "reasoning" else { return nil }
+                return extractText(fromContent: item["content"]) ?? (item["text"] as? String)
             }
             let joined = parts.joined(separator: "")
             return joined.isEmpty ? nil : joined

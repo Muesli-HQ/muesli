@@ -59,6 +59,9 @@ enum MeetingChatSQL {
         }
         let statements = [
             "CREATE TABLE IF NOT EXISTS meeting_chat_sessions (id TEXT PRIMARY KEY, body TEXT NOT NULL, updated_at REAL NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS meeting_chat_session_meetings (session_id TEXT NOT NULL REFERENCES meeting_chat_sessions(id) ON DELETE CASCADE, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('anchor','selected')), PRIMARY KEY(session_id,meeting_id,role))",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_chat_session_meetings_source ON meeting_chat_session_meetings(meeting_id,session_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_meeting_chat_single_anchor ON meeting_chat_session_meetings(session_id) WHERE role='anchor'",
             "CREATE TABLE IF NOT EXISTS meeting_chat_turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES meeting_chat_sessions(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(session_id, ordinal))",
             "CREATE TABLE IF NOT EXISTS meeting_chat_dependencies (turn_id TEXT NOT NULL REFERENCES meeting_chat_turns(id) ON DELETE CASCADE, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, revision TEXT NOT NULL, PRIMARY KEY(turn_id,meeting_id))",
             "CREATE INDEX IF NOT EXISTS idx_meeting_chat_dependencies_source ON meeting_chat_dependencies(meeting_id)",
@@ -115,13 +118,67 @@ enum MeetingChatSQL {
             """
         ]
         for sql in statements { try execute(sql, db: db) }
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_unlink_deleted_source AFTER UPDATE OF deleted_at ON meetings
+            WHEN NEW.deleted_at IS NOT NULL BEGIN
+              DELETE FROM meeting_chat_session_meetings WHERE meeting_id=NEW.id;
+            END
+            """, db: db)
+        // Backfill once, preserving old scope snapshots and keeping deleted sources detached.
+        if try rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_session_meetings_v1'", db: db, map: { _ in true }).isEmpty {
+            try transaction(db: db) {
+                let sessions = try rows("SELECT body FROM meeting_chat_sessions", db: db) {
+                    try decode(MeetingChatSession.self, text($0, 0))
+                }
+                for session in sessions {
+                    if case .meetings(let ids) = session.scope.selection {
+                        for id in Set(ids) {
+                            try linkSession(session.id, meetingID: id, role: "selected", db: db)
+                        }
+                        if Set(ids).count == 1, let id = ids.first {
+                            try linkSession(session.id, meetingID: id, role: "anchor", db: db)
+                        }
+                    }
+                }
+                try execute("INSERT INTO local_migrations VALUES('meeting_chat_session_meetings_v1',strftime('%s','now'))", db: db)
+            }
+        }
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_generated_title_source_changed
+            AFTER UPDATE OF deleted_at,title,start_time,folder_id,raw_transcript,manual_notes,formatted_notes,meeting_status,source ON meetings
+            BEGIN \(invalidateGeneratedTitlesSQL(sourceExpression: "NEW.id")); END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_generated_title_source_purged BEFORE DELETE ON meetings
+            BEGIN \(invalidateGeneratedTitlesSQL(sourceExpression: "OLD.id")); END
+            """, db: db)
+        if try rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_automatic_titles_v1'", db: db, map: { _ in true }).isEmpty {
+            try transaction(db: db) {
+                let sessions = try rows("SELECT body FROM meeting_chat_sessions", db: db) {
+                    try decode(MeetingChatSession.self, text($0, 0))
+                }
+                for var session in sessions where session.titleIsAutomatic == nil {
+                    let firstQuestion = try rows("SELECT body FROM meeting_chat_turns WHERE session_id=? ORDER BY ordinal LIMIT 1", [.text(session.id.uuidString)], db: db) {
+                        try decode(MeetingChatTurn.self, text($0, 0)).question
+                    }.first
+                    // These were the old automatic defaults. All other legacy titles
+                    // remain protected; legacy storage did not record manual renames.
+                    if session.title == "New chat" || firstQuestion.map({ String($0.prefix(64)) == session.title }) == true {
+                        session.titleIsAutomatic = true
+                        try execute("UPDATE meeting_chat_sessions SET body=? WHERE id=?", [.text(try encode(session)), .text(session.id.uuidString)], db: db)
+                    }
+                }
+                try execute("INSERT INTO local_migrations VALUES('meeting_chat_automatic_titles_v1',strftime('%s','now'))", db: db)
+            }
+        }
         for (name, event, owner) in [("inserted", "INSERT", "NEW"), ("edited", "UPDATE", "NEW"), ("removed", "DELETE", "OLD")] {
             try execute("""
                 CREATE TRIGGER IF NOT EXISTS meeting_chat_participant_\(name) AFTER \(event) ON meeting_participants
                 BEGIN INSERT INTO meeting_chat_dirty_sources
                   SELECT id FROM meetings WHERE id=\(owner).meeting_id AND deleted_at IS NULL
                     AND NOT EXISTS (SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=\(owner).meeting_id);
-                  UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1; END
+                  UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1;
+                  \(invalidateGeneratedTitlesSQL(sourceExpression: "\(owner).meeting_id")); END
                 """, db: db)
         }
         try execute("""
@@ -131,8 +188,23 @@ enum MeetingChatSQL {
         try execute("INSERT OR IGNORE INTO local_migrations VALUES('meeting_chat_incremental_index_v1',strftime('%s','now'))", db: db)
     }
 
+    private static func invalidateGeneratedTitlesSQL(sourceExpression: String) -> String {
+        """
+        UPDATE meeting_chat_sessions SET body=json_set(body,'$.title','New chat','$.generatedTitleTurnID',NULL)
+        WHERE json_extract(body,'$.titleIsAutomatic')=1 AND json_extract(body,'$.generatedTitleTurnID') IN
+          (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=\(sourceExpression))
+        """
+    }
+
+    static func linkSession(_ sessionID: UUID, meetingID: Int64, role: String, db: OpaquePointer?) throws {
+        try execute("INSERT OR IGNORE INTO meeting_chat_session_meetings SELECT ?,id,? FROM meetings WHERE id=? AND deleted_at IS NULL",
+                    [.text(sessionID.uuidString), .text(role), .integer(meetingID)], db: db)
+    }
+
     static func invalidateSources(meetingIDs: [Int64], db: OpaquePointer?) throws {
         for id in meetingIDs {
+            try execute(invalidateGeneratedTitlesSQL(sourceExpression: "?"), [.integer(id)], db: db)
+            try execute("DELETE FROM meeting_chat_session_meetings WHERE meeting_id=?", [.integer(id)], db: db)
             try execute("UPDATE meeting_chat_turns SET state='sourceDeleted', body=json_set(body,'$.state','sourceDeleted','$.originalAnswer',NULL,'$.editableDraft',NULL,'$.citations',json('[]'),'$.error',NULL) WHERE id IN (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=?)", [.integer(id)], db: db)
             try execute("DELETE FROM meeting_chat_passages WHERE meeting_id=?", [.integer(id)], db: db)
             try execute("DELETE FROM meeting_chat_index_state WHERE meeting_id=?", [.integer(id)], db: db)

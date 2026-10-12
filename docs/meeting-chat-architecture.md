@@ -1,0 +1,70 @@
+# Meeting chat architecture
+
+## Retrieval harness
+
+Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Follow-ups with usable history start without fresh retrieval; the model can then request up to three read-only tools before returning a validated answer:
+
+- `search_meeting_sources(query)`: searches transcripts, written notes, and generated notes inside the immutable scope captured on the turn. Queries are limited to 300 characters.
+- `browse_meeting_sources()`: requests bounded representative passages for broad recaps without inventing a lexical query; partial coverage remains explicit.
+- `read_meeting_source(source)`: reads up to two neighboring passages on either side of an issued source marker, restricted to the same meeting, revision, and source kind.
+
+The application validates tool names and arguments, dispatches local operations, accumulates source dependencies before subsequent provider calls, and never executes repeated calls. Source markers are not recycled when context is evicted. Empty lexical searches can be retried with different terms and preserve previously gathered evidence; the tool transcript explicitly records the zero-match result. An explicit empty meeting selection with no conversation still rejects Send/Retry without reserving busy state. With usable conversation, follow-ups begin with history only and no fresh source packet. The model can transform or explain existing content without retrieval; new meeting-based facts require read-only retrieval inside the current scope and current citations. Empty-scope follow-ups can return conversational answers or explain that new research needs a meeting. Cancellation and request-attempt checks prevent stopped or superseded work from publishing an answer.
+
+Each inference includes the user question, bounded prior conversation, the current evidence packet, and the tool transcript. Historical answers are labeled as untrusted conversation, never evidence for new meeting claims. Old citation markers are removed before sending history so they cannot collide with fresh source IDs. Responses distinguish conversation, answered (new cited meeting facts), and insufficient_evidence; conversation mode requires usable supplied history. The full request, including tool descriptions and history, is capped at 28 KB of UTF-8. A run makes at most five inference calls, including at most one final-only repair after a tool-loop, formatting, or citation failure. Tool schemas are omitted during finalization. Returned citations must resolve to the current evidence packet; citations are never invented or attached automatically to repair a response. Citation validation establishes source identity, not factual entailment.
+
+The loop deliberately uses a strict JSON protocol over existing provider transports. It is not provider-native function calling or the Codex app-server. This preserves Muesli's ChatGPT, OpenAI, Anthropic, Claude Code, OpenRouter, and local/custom provider configurations. ChatGPT reuses `ChatGPTAuthManager`, `ChatGPTResponsesClient`, and a stable session UUID. No new credential store, shell, arbitrary file reader, or web tool is required to answer questions over the local meeting archive. ChatGPT streams use an ephemeral session with a 120-second inactivity timeout and an absolute 180-second resource deadline; cancellation and bounded response accumulation also apply to stream events and HTTP error bodies.
+
+The composer exposes the configured provider's model catalog and supported thinking levels directly, using the canonical meeting-summary setting definitions and validated manual UI mutations. These settings are shared with meeting summaries; the selected model and reasoning effort pass through unchanged. The earlier Fast answers shortcut has been removed. Provider failures give specific configuration, authentication, rate-limit, or connectivity guidance without exposing raw server details.
+
+The design follows the repeated model/tool cycle and explicit context management described in [Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/) and the separation of tool specification and runtime dispatch in [Codex's tool registry](https://github.com/openai/codex/blob/5d1fbf26c43abc65a203928b2e31561cb039e06d/codex-rs/core/src/tools/spec_plan.rs).
+
+Current limits: lexical retrieval can miss paraphrases; results arrive as complete validated answers rather than streamed tokens; tool activity is transient rather than persisted; native provider tool APIs are not implemented. ChatGPT can stream provider-designated reasoning summaries into a transient disclosure when supplied; other providers currently show operational progress only. A future streaming implementation should preserve attempt ownership and deletion invalidation before exposing partial output.
+
+## Threads and meeting relationships
+
+Threads are first-class records, separate from meetings. They belong in their own table because a meeting can have several conversations and a conversation can use several meetings.
+
+| Table | Responsibility |
+| --- | --- |
+| `meeting_chat_sessions` | Thread identity, title, current retrieval scope, timestamps, usable history boundary |
+| `meeting_chat_session_meetings` | Normalized many-to-many explicit selection plus at most one stable `anchor` meeting |
+| `meeting_chat_turns` | Ordered questions/answers, immutable per-turn scope, attempt/state, citations, editable draft |
+| `meeting_chat_dependencies` | Every source revision disclosed to a turn, including inherited history and uncited evidence |
+| `meeting_chat_passages` and index tables | Rebuildable local retrieval data |
+
+The anchor records where a conversation started; it is independent of the current set of selected meetings. Entering from a meeting resumes its newest anchored conversation if that conversation still explicitly includes the meeting. Otherwise it opens a new conversation. Archive-wide chats which merely cited a meeting are not implicitly selected by that entry point.
+
+Selection and evidence are deliberately separate. Selecting a meeting does not mean it was consulted. Conversely, an archive-scoped thread can consult a meeting without explicitly selecting it. `sessions(meetingID:)` can find all three relationships: anchor, selection, or consulted evidence.
+
+Changing retrieval scope no longer erases usable conversation. Every turn preserves its historical scope. Removed meetings are excluded from new retrieval, but their already-displayed answers may remain conversational context while their source revisions are valid. Deleted or changed source answers are excluded from future prompts. Conversational follow-ups inherit source dependencies so deletion invalidates derived replies too. Migration backfills existing explicitly scoped sessions once. Deleting a meeting detaches its session associations and removes answers, excerpts, and drafts derived from it. Incremental retrieval accumulates dependencies; completion persists the union of attached, final, and cited dependencies atomically. An empty explicit selection remains empty and cannot silently widen to the archive.
+
+After the first successful answer, a separate background request generates a short thread title with the same backend, model, and reasoning configuration. The latest validated exchange supplies bounded topic context. Failed title generation leaves the provisional title intact. Atomic checks protect manual renames, newer turns, scope changes, and invalidated sources; generated titles are scrubbed when their source is invalidated. Legacy titles matching the old default are eligible for automatic updates; other legacy names are preserved.
+
+Chat storage is local SQLite. These records are not yet part of CloudKit synchronization.
+
+## Native presentation
+
+The interface uses SwiftUI and the existing Muesli theme: differentiated user messages, readable answer width, block Markdown, a focused composer, context selection, conversation history, actual tool activity, source disclosures, and answer/draft actions. The welcome state and history sidebar use compact typography. The composer grows with its content from 34 to 144 points and reserves a bottom safe-area inset so the final answer/source rows remain reachable. Citations group by meeting while retaining each original numbered passage, source type, timestamp when present, and an excerpt preview that opens the exact passage. SF Symbols keep controls consistent with the rest of the Mac app. No dependency or third-party icon assets were added.
+
+[AI Elements tools](https://elements.ai-sdk.dev/components/tool) and [sources](https://elements.ai-sdk.dev/components/sources) provide useful interaction patterns, rather than code that can be directly ported from React. The UI shows operations actually executed. During provider waits, neutral status phrases rotate every five seconds; real retrieval, validation, and repair states keep their specific labels. The [reasoning disclosure](https://elements.ai-sdk.dev/components/reasoning) displays only provider-supplied ChatGPT reasoning-summary events, never raw reasoning or encrypted content. The request opts into `summary: auto` for supported reasoning models, consuming the dedicated [Responses reasoning-summary events](https://developers.openai.com/api/reference/resources/responses/streaming-events/). Availability depends on the provider/model; an accepted request can return no summary. Summaries and tool activity are transient, associated with the latest run, and cleared on stop, retry, or source invalidation. They are not saved in chat history. Event callbacks verify the persisted attempt and source validity before publishing; source validation runs off the main actor and caches against source mutation version.
+
+Meeting choices load from saved metadata without waiting for the passage index. The composer supports caret-aware `@` searches across saved meeting titles, with dated results, keyboard navigation, and removable context chips. It uses an AppKit `NSTextView` bridge for caret and IME handling on macOS 14. Attaching a meeting switches archive/folder context to explicit meetings and clears date filters; subsequent attachments accumulate. Removing the final attachment preserves an empty scope. Prior Ask Meetings chats are not selectable sources.
+
+Exa research compared the following primary sources. Adoption figures are approximate indexed snapshots, not live counts:
+
+| Library | Adoption / license | Fit |
+| --- | --- | --- |
+| [Exyte Chat](https://github.com/exyte/Chat) | About 1.8k stars; MIT | Established SwiftUI chat, but iOS-focused; not a macOS drop-in |
+| [MarkdownUI](https://github.com/gonzalezreal/swift-markdown-ui) | About 3.9k stars; MIT | macOS-capable Markdown, now in maintenance mode; useful reference for richer future rendering |
+| [SwiftyChat](https://github.com/EnesKaraosman/SwiftyChat) | About 350 stars; Apache-2.0 | macOS support, smaller chatbot-oriented component collection |
+| [Lucide](https://github.com/lucide-icons/lucide) | About 25k stars; ISC | Widely used SVG icon set; would need a Swift asset/package integration |
+
+None provides a mature, complete macOS equivalent of AI Elements' agentic components. Native composition currently avoids importing mobile navigation assumptions and keeps keyboard, accessibility, and appearance behavior within Muesli's existing stack.
+
+## Validation
+
+The October 11, 2026 local review ran 142 meeting-chat/presentation/ChatGPT-transport tests successfully after separating conversation history from retrieval scope; the preceding integration run passed 288 existing storage, sync, summary-provider, and OAuth tests. The 48-test computer-use settings suite passed in isolation after one existing planning-timeout test failed in the parallel combined run. Changed-file classification, CI shard assignment, and update-flow checks with `--skip-dmg` passed. The presentation suite is registered in the meetings CI shard. A writer-lock test now waits for startup recovery before placing the lock, so it tests chat creation rather than racing initialization.
+
+This host uses Xcode 27 / Swift 6.4, newer than the documented CI toolchain. Automated suites use synthetic responses. Live checks using only synthetic content confirmed HTTP 200 and a valid cited Markdown-table answer from the configured `gpt-6.1-sol` model. A real meeting request exposed a response-validation failure; bounded recovery and specific diagnostics were added. A synthetic request with `reasoning.summary: auto` was accepted but emitted no summary events, confirming that the disclosure must remain conditional. End-to-end answer quality across real meeting archives still needs evaluation.
+
+Live synthetic follow-up checks with no current sources returned `conversation` for a rewrite and `insufficient_evidence` for an unsupported new meeting deadline. These checks used invented release-discussion text, not the user’s meeting archive.

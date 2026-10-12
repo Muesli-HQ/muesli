@@ -37,6 +37,33 @@ struct MeetingChatNavigationTests {
         #expect(target.locate(in: "Unrelated new transcript") == nil)
         #expect(target.locate(in: "Preface\n[00:00:01] You: Launch Friday.")?.location == 8)
     }
+    @Test func meetingEntryResumesAnchoredChatAndPreservesAdditionalContext() async throws {
+        let (controller, store, citation) = try controllerFixture()
+        await controller.showMeetingChat(meetingID: citation.meetingID)?.value
+        let chat = controller.meetingChatCoordinator
+        let sessionID = try #require(chat.selectedSessionID)
+        let secondID = try store.insertMeeting(title: "Planning", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Planning context", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        await chat.setScope(.init(selection: .meetings([citation.meetingID, secondID])))
+        chat.composerDraft = "Compare these meetings"
+        await chat.createChat(scope: .init())
+        await controller.showMeetingChat(meetingID: citation.meetingID)?.value
+        #expect(chat.selectedSessionID == sessionID)
+        #expect(chat.scope.selection == .meetings([citation.meetingID, secondID]))
+        #expect(chat.composerDraft == "Compare these meetings")
+        #expect(chat.sessions.count == 2)
+    }
+
+    @Test func meetingEntryDoesNotResumeAnchorWhoseScopeExcludesMeeting() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        await controller.showMeetingChat(meetingID: citation.meetingID)?.value
+        let chat = controller.meetingChatCoordinator
+        let oldID = try #require(chat.selectedSessionID)
+        await chat.setScope(.init(selection: .meetings([])))
+        await controller.showMeetingChat(meetingID: citation.meetingID)?.value
+        #expect(chat.selectedSessionID != oldID)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
     @Test func noteCitationTargetsNotesAndMissingMeetingDoesNotNavigate() async throws {
         let (controller, store, original) = try controllerFixture()
         var citation = original; citation.kind = .generatedNotes; citation.timestamp = nil
@@ -121,4 +148,62 @@ struct MeetingChatNavigationTests {
         await coordinator.deleteChat(id: session)
         #expect(!coordinator.hasChatHistory)
     }
+    @Test func firstComposerAttachmentCreatesScopedChatAndPreservesDraft() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        chat.composerDraft = "Compare @Launch with the plan"
+        #expect(await chat.addMeetingToScope(id: citation.meetingID))
+        #expect(chat.selectedSessionID != nil)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+        #expect(chat.composerDraft == "Compare @Launch with the plan")
+        #expect(chat.sessions.first?.anchorMeetingID == citation.meetingID)
+    }
+
+    @Test func composerAttachmentsAccumulateDeduplicateAndRemoveWithoutBroadening() async throws {
+        let (controller, store, citation) = try controllerFixture()
+        let second = try store.insertMeeting(title: "Review", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Review the launch", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        let chat = controller.meetingChatCoordinator
+        #expect(await chat.addMeetingToScope(id: citation.meetingID))
+        let session = try #require(chat.selectedSessionID)
+        chat.composerDraft = "What changed?"
+        #expect(await chat.addMeetingToScope(id: second))
+        #expect(await chat.addMeetingToScope(id: second))
+        #expect(chat.scope.selection == .meetings([citation.meetingID, second]))
+        #expect(try chat.store.sessions(meetingID: second).map(\.id) == [session])
+        #expect(await chat.removeMeetingFromScope(id: citation.meetingID))
+        #expect(await chat.removeMeetingFromScope(id: second))
+        #expect(chat.scope.selection == .meetings([]))
+        #expect(chat.selectedSessionID == session)
+        #expect(chat.composerDraft == "What changed?")
+        #expect(try chat.store.sourceSnapshots(scope: chat.scope).isEmpty)
+    }
+
+    @Test func attachmentReplacesBroadFiltersAndStartsNewHistoryBoundary() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        await chat.createChat(scope: .init(selection: .all, startDate: Date().addingTimeInterval(86_400)))
+        let session = try #require(chat.selectedSessionID)
+        let originalScope = chat.scope
+        _ = try chat.store.beginTurn(sessionID: session, question: "Existing question", scope: originalScope, provider: "test", model: "test")
+        chat.composerDraft = "Now this meeting"
+        #expect(await chat.addMeetingToScope(id: citation.meetingID))
+        #expect(chat.scope == .init(selection: .meetings([citation.meetingID])))
+        #expect(chat.sessions.first?.contextStartOrdinal == 1)
+        #expect(try chat.store.turns(sessionID: session).first?.scope == originalScope)
+        #expect(chat.composerDraft == "Now this meeting")
+    }
+
+    @Test func staleMeetingAttachmentDoesNotMutateScopeOrDraft() async throws {
+        let (controller, store, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        chat.composerDraft = "Ask @Launch"
+        try store.deleteMeeting(id: citation.meetingID)
+        #expect(await chat.addMeetingToScope(id: citation.meetingID) == false)
+        #expect(chat.selectedSessionID == nil)
+        #expect(chat.scope.selection == .all)
+        #expect(chat.composerDraft == "Ask @Launch")
+        #expect(chat.errorMessage != nil)
+    }
+
 }

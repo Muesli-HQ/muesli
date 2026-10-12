@@ -7,6 +7,14 @@ import Testing
 @MainActor
 @Suite("Meeting chat review regressions", .serialized)
 struct MeetingChatReviewTests {
+    @Test func providerFailuresGiveSafeActionableGuidance() {
+        let rejected = MeetingChatCoordinator.failureMessage(ChatGPTResponsesError.backendFailed(statusCode: 400, message: "private server details"))
+        #expect(rejected.contains("selected model"))
+        #expect(!rejected.contains("private server details"))
+        #expect(MeetingChatCoordinator.failureMessage(ChatGPTResponsesError.backendFailed(statusCode: 429, message: "private server details")).contains("usage or rate limit"))
+        #expect(MeetingChatCoordinator.failureMessage(ChatGPTAuthError.refreshFailed("private server details")).contains("Sign in again"))
+        #expect(MeetingChatCoordinator.failureMessage(URLError(.timedOut)).contains("timed out"))
+    }
     private func fixture(generator: any MeetingTextGenerating = ReviewReplyProbe()) throws -> (DictationStore, MeetingChatCoordinator) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("chat-review-\(UUID()).db")
         let store = DictationStore(databaseURL: url)
@@ -132,6 +140,8 @@ struct MeetingChatReviewTests {
 
     @Test func implicitChatCreationDoesNotSendIntoANewSelection() async throws {
         let (store, coordinator) = try fixture()
+        // The writer lock must block chat creation, not startup recovery.
+        await coordinator.waitForIdle()
         await coordinator.refreshChoices()
         let existing = try coordinator.store.createSession(scope: .init(), title: "Existing chat")
         coordinator.reload()
@@ -176,6 +186,7 @@ struct MeetingChatReviewTests {
     @Test func stoppedImplicitCreationKeepsTextTypedWhileSaving() async throws {
         let probe = ReviewReplyProbe()
         let (store, coordinator) = try fixture(generator: probe)
+        await coordinator.waitForIdle()
         await coordinator.refreshChoices()
         coordinator.composerDraft = "Launch?"
         let writer = await holdWriter(store)
@@ -192,6 +203,46 @@ struct MeetingChatReviewTests {
         #expect(try coordinator.store.turns(sessionID: session).isEmpty)
         #expect(await probe.calls == 0)
     }
+    @Test func emptyScopeNewAndRetriedFollowupsUseHistoryWithoutRebuildingIndex() async throws {
+        for retry in [false, true] {
+            let probe = ConversationHistoryProbe()
+            let (meetings, coordinator) = try fixture(generator: probe)
+            await coordinator.waitForIdle()
+            await coordinator.createChat(scope: .init())
+            let session = try #require(coordinator.selectedSessionID)
+            let source = try #require(coordinator.store.sourceSnapshots(scope: .init()).first)
+            let first = try coordinator.store.beginTurn(sessionID: session, question: "When is launch?", scope: .init(), provider: "test", model: "test")
+            let deps = [MeetingChatDependency(meetingID: source.meetingID, revision: source.revision)]
+            try coordinator.store.attachEvidence(turnID: first.id, dependencies: deps)
+            #expect(try coordinator.store.finishTurn(turnID: first.id, answer: "Launch Friday [[S1]]", citations: [], dependencies: deps))
+            await coordinator.setScope(.init(selection: .meetings([])))
+            if retry {
+                let interrupted = try coordinator.store.beginTurn(sessionID: session, question: "Put it in a table", scope: coordinator.scope, provider: "test", model: "test")
+                try coordinator.store.setTurnState(id: interrupted.id, state: .interrupted)
+                coordinator.reload()
+                await coordinator.retry(turnID: interrupted.id, config: AppConfig())
+            } else {
+                await coordinator.send(question: "Put it in a table", config: AppConfig())
+            }
+            await coordinator.waitForIdle()
+            #expect(await probe.calls == 1)
+            let prompt = try #require(await probe.lastUser)
+            #expect(prompt.contains("Launch Friday"))
+            #expect(!prompt.contains("[[S1]]"))
+            #expect(!prompt.contains("\"excerpt\""))
+            let saved = try #require(coordinator.store.turns(sessionID: session).last)
+            #expect(saved.state == .completed)
+            #expect(saved.citations.isEmpty)
+            #expect(try coordinator.store.dependencies(turnID: saved.id) == deps)
+            try meetings.withChatDatabase { db in
+                let count = try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_index_state", db: db) { sqlite3_column_int64($0, 0) }.first
+                #expect(count == 0)
+            }
+            try meetings.deleteMeeting(id: source.meetingID)
+            #expect(try coordinator.store.turns(sessionID: session).last?.state == .sourceDeleted)
+        }
+    }
+
 }
 
 private actor ReviewReplyProbe: MeetingTextGenerating {
@@ -199,5 +250,14 @@ private actor ReviewReplyProbe: MeetingTextGenerating {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         calls += 1
         return #"{"status":"answered","markdown":"Launch Friday [[S1]]"}"#
+    }
+}
+
+private actor ConversationHistoryProbe: MeetingTextGenerating {
+    private(set) var calls = 0
+    private(set) var lastUser: String?
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        calls += 1; lastUser = request.user
+        return #"{"status":"conversation","markdown":"| Item | Date |\n| --- | --- |\n| Launch | Friday |"}"#
     }
 }
