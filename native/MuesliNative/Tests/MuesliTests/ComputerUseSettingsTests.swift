@@ -448,6 +448,12 @@ struct ComputerUseSettingsTests {
         #expect(settings.first { $0.id == "cua_shortcut" }?.requestPermission != nil)
         #expect(settings.first { $0.id == "bodhan_output" }?.choices.map(\.id) == BodhanOutputMode.allCases.map(\.rawValue))
         #expect(settings.first { $0.id == "bodhan_language" }?.choices.map(\.id) == BodhanLanguage.allCases.map(\.rawValue))
+        #expect(settings.first { $0.id == "whisper_language" }?.choices.map(\.id) == WhisperKitLanguage.allCases.map(\.rawValue))
+        #expect(settings.first { $0.id == "nemotron_language" }?.choices.map(\.id) == Nemotron35Language.allCases.map(\.rawValue))
+        try await controller.applySetting("whisper_language", value: "ta")
+        #expect(configStore.load().resolvedWhisperLanguage == .tamil)
+        try await controller.applySetting("nemotron_language", value: "nl")
+        #expect(configStore.load().resolvedNemotron35Language == .dutch)
 
         #expect(settings.first { $0.id == "summary_anthropic_model" }?.choices.map(\.id) == SummaryModelPreset.anthropicModels.map(\.id))
         #expect(settings.first { $0.id == "summary_claude_code_model" }?.choices.map(\.id) == [""] + SummaryModelPreset.claudeCodeModels.map(\.id))
@@ -487,6 +493,45 @@ struct ComputerUseSettingsTests {
         #expect(controller.config.recordingIndicatorStyle == .classic)
         #expect(!controller.config.soundEnabled)
         #expect(!configStore.load().soundEnabled)
+    }
+
+    @Test("voice rechecks Cantonese compatibility for both Whisper scopes", arguments: ["dictation", "meeting"])
+    func cantoneseVoiceCompatibility(scope: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.sttBackend = "whisper"
+        initial.sttModel = BackendOption.whisperLargeTurbo.model
+        initial.meetingTranscriptionBackend = "whisper"
+        initial.meetingTranscriptionModel = BackendOption.whisperLargeTurbo.model
+        initial.enableLiveStreamingPartials = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let definitions = controller.settingsDefinitions()
+        let setting = try #require(definitions.first { $0.id == "whisper_language" })
+        let inspected = setting.snapshot(config: controller.config)
+        #expect(inspected.unavailable["yue"] == nil)
+        controller.updateConfig {
+            if scope == "dictation" { $0.sttModel = BackendOption.whisperSmall.model }
+            else { $0.meetingTranscriptionModel = BackendOption.whisperSmall.model }
+        }
+        #expect(setting.snapshot(config: controller.config).unavailable["yue"] != nil)
+        #expect(setting.snapshot(config: controller.config, source: .manualUI).unavailable["yue"] == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await MuesliSettings.apply(.init(setting: "whisper_language", value: "yue"),
+                settings: definitions, snapshots: [inspected], config: { controller.config },
+                persistedConfig: { configStore.load() })
+        }
+        #expect(configStore.load().resolvedWhisperLanguage == .auto)
+        // An inactive Large Turbo model card may configure the shared preference manually.
+        try await controller.applySetting("whisper_language", value: "yue")
+        #expect(configStore.load().resolvedWhisperLanguage == .cantonese)
     }
 
     @Test("shortcut catalog applies all four assignments, validates combinations, and preserves conflicts")
