@@ -401,7 +401,7 @@ struct MeetingChatRetrievalTests {
         }
         for useFTS in [true, false] {
             let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: useFTS)
-                .retrieve(question: "quasar", scope: .init(selection: .meetings(ids)))
+                .retrieve(question: "quasar", scope: .init(selection: .meetings(ids)), includeScopeContext: true)
             #expect(evidence.passages.first?.excerpt.contains("quasar") == true)
             #expect(evidence.passages.contains { $0.excerpt.contains("launch Monday") })
         }
