@@ -1,0 +1,514 @@
+{
+  "aiElementsRevision": "6a9d5b1822ffb10bba4bd97175f01edd7d8651cd",
+  "lucideRevision": "70562c1ee1c4fdcf736fe97bc893fb8511927934",
+  "chatbotComponents": [
+    "attachments",
+    "chain-of-thought",
+    "checkpoint",
+    "confirmation",
+    "context",
+    "conversation",
+    "inline-citation",
+    "message",
+    "model-selector",
+    "plan",
+    "prompt-input",
+    "question",
+    "queue",
+    "reasoning",
+    "shimmer",
+    "sources",
+    "suggestion",
+    "task",
+    "tool"
+  ],
+  "scope": "Lucide value imports in the 19 upstream Chatbot component sources and recursively imported in-repository component dependencies. Excludes external npm internals, docs/examples, custom SVG artwork, other categories, and consumer-supplied icons.",
+  "files": [
+    {
+      "path": "packages/elements/src/attachments.tsx",
+      "icons": [
+        {
+          "import": "FileTextIcon",
+          "svg": "file-text",
+          "swift": "fileText",
+          "sha256": "52ca55846c202335fb870c8aa23e9345630ec10489303756d62e750f7109605c"
+        },
+        {
+          "import": "GlobeIcon",
+          "svg": "globe",
+          "swift": "globe",
+          "sha256": "82c6b8fa0b8e8d775ec9becd86f74a4e50bff7bee4c81f7362de45348504f14d"
+        },
+        {
+          "import": "ImageIcon",
+          "svg": "image",
+          "swift": "image",
+          "sha256": "619c9db58c879dce6250376ba67d9c9102ca6dbb3b1efb9294c9f180e22273a5"
+        },
+        {
+          "import": "Music2Icon",
+          "svg": "music-2",
+          "swift": "music2",
+          "sha256": "fd3e51e40de1d9c5b1872030467fc1e181592072c3a70854133e060b134c3661"
+        },
+        {
+          "import": "PaperclipIcon",
+          "svg": "paperclip",
+          "swift": "paperclip",
+          "sha256": "28308381efeab2e711feffe560a8eea33b092d440711aec108058041e5879f9f"
+        },
+        {
+          "import": "VideoIcon",
+          "svg": "video",
+          "swift": "video",
+          "sha256": "d4fb6587f282c1152b953fe9494cd8ccafdf1e9f44957fbb7fe8dc7af0457597"
+        },
+        {
+          "import": "XIcon",
+          "svg": "x",
+          "swift": "x",
+          "sha256": "4a9cdab38fbb96162e7dace28e33f4ca0e49d8963a6162abc3d4691b7d675117"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/chain-of-thought.tsx",
+      "icons": [
+        {
+          "import": "BrainIcon",
+          "svg": "brain",
+          "swift": "brain",
+          "sha256": "1eb21ec91c19634cb46b241e423bc1ddee810919fab129954c3229c513207b07"
+        },
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        },
+        {
+          "import": "DotIcon",
+          "svg": "dot",
+          "swift": "dot",
+          "sha256": "7c98b944e15871f137e75ad9898975d4722bc632a30f65ac19d5ca39f3b5e2b4"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/checkpoint.tsx",
+      "icons": [
+        {
+          "import": "BookmarkIcon",
+          "svg": "bookmark",
+          "swift": "bookmark",
+          "sha256": "1d5023760db81f21c3b5a63f012ef540acc01932731c733e4645012a876d39f4"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/code-block.tsx",
+      "icons": [
+        {
+          "import": "CheckIcon",
+          "svg": "check",
+          "swift": "check",
+          "sha256": "7f33acc9a77a61659531044525fc008edebe215bf4dcf1c789c8674ad3277db0"
+        },
+        {
+          "import": "CopyIcon",
+          "svg": "copy",
+          "swift": "copy",
+          "sha256": "ea80e566c7a12628a447cb53179b19aea4f60b9143e2becd0d0f20bf260e5718"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/confirmation.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/context.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/conversation.tsx",
+      "icons": [
+        {
+          "import": "ArrowDownIcon",
+          "svg": "arrow-down",
+          "swift": "arrowDown",
+          "sha256": "2b641c7a59d39450edfed72067fcc9940a1a316a737346af23b4b9103c0689f2"
+        },
+        {
+          "import": "DownloadIcon",
+          "svg": "download",
+          "swift": "download",
+          "sha256": "3daeee13ded5a3afa2198b1bb4e2262d163922f97d96ac6ff9953e8ed4fe039d"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/inline-citation.tsx",
+      "icons": [
+        {
+          "import": "ArrowLeftIcon",
+          "svg": "arrow-left",
+          "swift": "arrowLeft",
+          "sha256": "c5f4b88076108eb1a0d95336e1aa7e7bb1419a3a92af96f6247d88cd3456f933"
+        },
+        {
+          "import": "ArrowRightIcon",
+          "svg": "arrow-right",
+          "swift": "arrowRight",
+          "sha256": "288397fdb73bb4f783cf9eabb726ff47357df1d4e3f1201dd748090579f108b9"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/message.tsx",
+      "icons": [
+        {
+          "import": "ChevronLeftIcon",
+          "svg": "chevron-left",
+          "swift": "chevronLeft",
+          "sha256": "83b0681aa38bf55e9d52a1e4b4cced624abe1fe7678ecafda133a574f1161d93"
+        },
+        {
+          "import": "ChevronRightIcon",
+          "svg": "chevron-right",
+          "swift": "chevronRight",
+          "sha256": "2758143d7b2434e4aa7307dfd34405c87909ff4052f21b5f3f40d45224b4f19b"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/model-selector.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/plan.tsx",
+      "icons": [
+        {
+          "import": "ChevronsUpDownIcon",
+          "svg": "chevrons-up-down",
+          "swift": "chevronsUpDown",
+          "sha256": "edc561e007cfab9b6b45301a8cb02711fd7c901e53e30ee29c5491b74dbe6bcc"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/prompt-input.tsx",
+      "icons": [
+        {
+          "import": "CornerDownLeftIcon",
+          "svg": "corner-down-left",
+          "swift": "cornerDownLeft",
+          "sha256": "1e6eef07c5f63c794acbacd48067681e2ef81fc74a84cec619d6c567dd799679"
+        },
+        {
+          "import": "ImageIcon",
+          "svg": "image",
+          "swift": "image",
+          "sha256": "619c9db58c879dce6250376ba67d9c9102ca6dbb3b1efb9294c9f180e22273a5"
+        },
+        {
+          "import": "Monitor",
+          "svg": "monitor",
+          "swift": "monitor",
+          "sha256": "d1a443233345724859de8e4fb48968ba91e885e12ddbd710701548bd91b39428"
+        },
+        {
+          "import": "PlusIcon",
+          "svg": "plus",
+          "swift": "plus",
+          "sha256": "7f6af73bf1ff6c4bca3f18351c8d1bdec6749c0c2530c4de5da85d520c21df17"
+        },
+        {
+          "import": "SquareIcon",
+          "svg": "square",
+          "swift": "square",
+          "sha256": "bd979354f0ab184b95cecf03eedefe40c2dc65830ac6d7e60017b2b25a354acb"
+        },
+        {
+          "import": "XIcon",
+          "svg": "x",
+          "swift": "x",
+          "sha256": "4a9cdab38fbb96162e7dace28e33f4ca0e49d8963a6162abc3d4691b7d675117"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/question.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/queue.tsx",
+      "icons": [
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        },
+        {
+          "import": "PaperclipIcon",
+          "svg": "paperclip",
+          "swift": "paperclip",
+          "sha256": "28308381efeab2e711feffe560a8eea33b092d440711aec108058041e5879f9f"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/reasoning.tsx",
+      "icons": [
+        {
+          "import": "BrainIcon",
+          "svg": "brain",
+          "swift": "brain",
+          "sha256": "1eb21ec91c19634cb46b241e423bc1ddee810919fab129954c3229c513207b07"
+        },
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/shimmer.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/sources.tsx",
+      "icons": [
+        {
+          "import": "BookIcon",
+          "svg": "book",
+          "swift": "book",
+          "sha256": "1a94c0af6224104124e873af2f6ba73d5a17dc536360a03cdb826eab858826a5"
+        },
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/suggestion.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/elements/src/task.tsx",
+      "icons": [
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        },
+        {
+          "import": "SearchIcon",
+          "svg": "search",
+          "swift": "search",
+          "sha256": "283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc"
+        }
+      ]
+    },
+    {
+      "path": "packages/elements/src/tool.tsx",
+      "icons": [
+        {
+          "import": "CheckCircleIcon",
+          "svg": "circle-check-big",
+          "swift": "circleCheckBig",
+          "sha256": "25f075fd621df48282ace8326680a4cd165965e61458d2fd0cc1303cefc179ac"
+        },
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        },
+        {
+          "import": "CircleIcon",
+          "svg": "circle",
+          "swift": "circle",
+          "sha256": "3a991bd47beaf9874fba6fdf87bbba442970a89b5e6aa391558bc8b0a00a0513"
+        },
+        {
+          "import": "ClockIcon",
+          "svg": "clock",
+          "swift": "clock",
+          "sha256": "e9d3e3acf4d1c280fcf8092293439dc0a4756a908ceb859de144b12451cd1cb9"
+        },
+        {
+          "import": "WrenchIcon",
+          "svg": "wrench",
+          "swift": "wrench",
+          "sha256": "b5f3bf792743edb9e81b543dd1b13ccc26d3afe1d33500a1cd8dee2e052d6197"
+        },
+        {
+          "import": "XCircleIcon",
+          "svg": "circle-x",
+          "swift": "circleX",
+          "sha256": "bcd8788901e6f29e1b231a81ba5e707d083d06cb4848a28f29407fab4f8e0b64"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/alert.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/badge.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/button-group.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/button.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/card.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/carousel.tsx",
+      "icons": [
+        {
+          "import": "ArrowLeft",
+          "svg": "arrow-left",
+          "swift": "arrowLeft",
+          "sha256": "c5f4b88076108eb1a0d95336e1aa7e7bb1419a3a92af96f6247d88cd3456f933"
+        },
+        {
+          "import": "ArrowRight",
+          "svg": "arrow-right",
+          "swift": "arrowRight",
+          "sha256": "288397fdb73bb4f783cf9eabb726ff47357df1d4e3f1201dd748090579f108b9"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/collapsible.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/command.tsx",
+      "icons": [
+        {
+          "import": "SearchIcon",
+          "svg": "search",
+          "swift": "search",
+          "sha256": "283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/dialog.tsx",
+      "icons": [
+        {
+          "import": "XIcon",
+          "svg": "x",
+          "swift": "x",
+          "sha256": "4a9cdab38fbb96162e7dace28e33f4ca0e49d8963a6162abc3d4691b7d675117"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/dropdown-menu.tsx",
+      "icons": [
+        {
+          "import": "CheckIcon",
+          "svg": "check",
+          "swift": "check",
+          "sha256": "7f33acc9a77a61659531044525fc008edebe215bf4dcf1c789c8674ad3277db0"
+        },
+        {
+          "import": "ChevronRightIcon",
+          "svg": "chevron-right",
+          "swift": "chevronRight",
+          "sha256": "2758143d7b2434e4aa7307dfd34405c87909ff4052f21b5f3f40d45224b4f19b"
+        },
+        {
+          "import": "CircleIcon",
+          "svg": "circle",
+          "swift": "circle",
+          "sha256": "3a991bd47beaf9874fba6fdf87bbba442970a89b5e6aa391558bc8b0a00a0513"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/hover-card.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/input-group.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/input.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/progress.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/scroll-area.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/select.tsx",
+      "icons": [
+        {
+          "import": "CheckIcon",
+          "svg": "check",
+          "swift": "check",
+          "sha256": "7f33acc9a77a61659531044525fc008edebe215bf4dcf1c789c8674ad3277db0"
+        },
+        {
+          "import": "ChevronDownIcon",
+          "svg": "chevron-down",
+          "swift": "chevronDown",
+          "sha256": "66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87"
+        },
+        {
+          "import": "ChevronUpIcon",
+          "svg": "chevron-up",
+          "swift": "chevronUp",
+          "sha256": "d09f13fcbef3c493ead7e4663b5ee91804fec38d5edb5e7cc3acfbd547641cf4"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/separator.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/spinner.tsx",
+      "icons": [
+        {
+          "import": "Loader2Icon",
+          "svg": "loader-circle",
+          "swift": "loaderCircle",
+          "sha256": "043021bb903919668804bdb6fee0342072e4ffea5f03fbd857774c440179ad3b"
+        }
+      ]
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/textarea.tsx",
+      "icons": []
+    },
+    {
+      "path": "packages/shadcn-ui/components/ui/tooltip.tsx",
+      "icons": []
+    }
+  ]
+}

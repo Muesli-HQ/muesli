@@ -51,9 +51,9 @@ struct MeetingExporter {
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(meeting: MeetingRecord, content: MeetingExportContent) {
+    static func export(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) {
         DispatchQueue.main.async {
-            let markdown = buildMarkdown(meeting: meeting, content: content)
+            let markdown = buildMarkdown(meeting: meeting, content: content, notesOverride: notesOverride)
             let filename = suggestedFilename(meeting: meeting, content: content)
 
             let panel = NSSavePanel()
@@ -97,12 +97,14 @@ struct MeetingExporter {
         return parts.joined(separator: "\n")
     }
 
-    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) -> String {
         var parts: [String] = [metadataHeader(for: meeting)]
 
         switch content {
         case .notes:
-            if meeting.notesState == .structuredNotes {
+            if let notesOverride {
+                parts.append(notesOverride)
+            } else if meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available. Raw transcript included below.*")
@@ -167,6 +169,16 @@ struct MeetingExporter {
         textView.textContainerInset = .zero
         textView.textStorage?.setAttributedString(attributed)
 
+        // Printing can paginate the entire string while lazy text layout only
+        // draws the initial viewport, leaving later pages blank. Lay out every
+        // glyph and expand the view before NSPrintOperation captures its pages.
+        if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+            layoutManager.ensureLayout(for: container)
+            textView.setFrameSize(NSSize(
+                width: contentWidth,
+                height: max(pageHeight - margin * 2, ceil(layoutManager.usedRect(for: container).maxY))))
+        }
+
         let printInfo = NSPrintInfo()
         printInfo.paperSize = NSSize(width: pageWidth, height: pageHeight)
         printInfo.topMargin = margin
@@ -193,7 +205,7 @@ struct MeetingExporter {
 
     // MARK: - Save panel
 
-    private static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
+    static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
         NSApp.activate()
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { response in
@@ -435,7 +447,7 @@ struct MeetingExporter {
 
 // MARK: - Save panel format picker accessory
 
-private class ExportFormatAccessory: NSObject {
+class ExportFormatAccessory: NSObject {
     let view: NSView
     private let popup: NSPopUpButton
     private weak var panel: NSSavePanel?
