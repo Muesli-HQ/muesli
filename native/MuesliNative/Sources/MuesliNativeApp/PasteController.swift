@@ -15,6 +15,10 @@ enum PasteController {
         case clipboardSnapshotCompleted = "clipboard_snapshot_completed"
         case clipboardSnapshotFailed = "clipboard_snapshot_failed"
         case clipboardSnapshotTimedOut = "clipboard_snapshot_timed_out"
+        case selectionVerificationBegun = "selection_verification_begun"
+        case selectionVerificationCompleted = "selection_verification_completed"
+        case selectionVerificationFailed = "selection_verification_failed"
+        case selectionVerificationTimedOut = "selection_verification_timed_out"
         case clipboardStaged = "clipboard_staged"
         case clipboardStageFailed = "clipboard_stage_failed"
         case targetSnapshotted = "target_snapshotted"
@@ -34,6 +38,19 @@ enum PasteController {
     /// Only value types cross from the snapshot queue to the main actor.
     struct ClipboardSnapshot: Sendable {
         let items: [[(String, Data)]]
+        let changeCount: Int?
+        let verificationDeadline: DispatchTime?
+
+        init(items: [[(String, Data)]], changeCount: Int? = nil, verificationDeadline: DispatchTime? = nil) {
+            self.items = items
+            self.changeCount = changeCount
+            self.verificationDeadline = verificationDeadline
+        }
+
+        var plainText: String? {
+            guard let data = items.first?.first(where: { $0.0 == NSPasteboard.PasteboardType.string.rawValue })?.1 else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
     }
 
     /// Clipboard providers can block indefinitely and AppKit requires promise
@@ -44,12 +61,15 @@ enum PasteController {
     final class ClipboardSnapshotWorker {
         static let shared = ClipboardSnapshotWorker()
         typealias Reader = @Sendable (String, Int) -> ClipboardSnapshot?
+        typealias Delivery = @MainActor (@escaping @MainActor () -> Void) -> Void
         private let queue = DispatchQueue(label: "com.muesli.clipboard-snapshot", qos: .userInitiated)
         private let reader: Reader?
         private let helperURL: URL?
         private let timeout: TimeInterval
         private let startupTimeout: TimeInterval
         private let transferTimeout: TimeInterval
+        private let readinessDelivery: Delivery
+        private let resultDelivery: Delivery
         private var busy = false
         private var pending: [Request] = []
 
@@ -57,12 +77,18 @@ enum PasteController {
             let name: String
             let changeCount: Int
             let deadline: DispatchTime
+            let shouldCopy: (@MainActor () -> Bool)?
+            let copyAction: (@MainActor () -> Bool)?
             var completion: ((ClipboardSnapshot?, Bool) -> Void)?
 
-            init(name: String, changeCount: Int, deadline: DispatchTime, completion: @escaping (ClipboardSnapshot?, Bool) -> Void) {
+            init(name: String, changeCount: Int, deadline: DispatchTime,
+                 shouldCopy: (@MainActor () -> Bool)?, copyAction: (@MainActor () -> Bool)?,
+                 completion: @escaping (ClipboardSnapshot?, Bool) -> Void) {
                 self.name = name
                 self.changeCount = changeCount
                 self.deadline = deadline
+                self.shouldCopy = shouldCopy
+                self.copyAction = copyAction
                 self.completion = completion
             }
 
@@ -70,6 +96,19 @@ enum PasteController {
                 let callback = completion
                 completion = nil
                 callback?(snapshot, timedOut)
+            }
+        }
+
+        /// A timed-out child must not cause a queued main-actor readiness
+        /// callback to post Copy after verification has already failed.
+        private final class CopyPermit: @unchecked Sendable {
+            private let lock = NSLock()
+            private var active = true
+            func invalidate() { lock.lock(); active = false; lock.unlock() }
+            func isActive(until deadline: DispatchTime) -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return active && DispatchTime.now() < deadline
             }
         }
 
@@ -81,13 +120,17 @@ enum PasteController {
             startupTimeout: TimeInterval = 2,
             transferTimeout: TimeInterval = 2,
             helperURL: URL? = nil,
-            reader: Reader? = nil
+            reader: Reader? = nil,
+            readinessDelivery: @escaping Delivery = { $0() },
+            resultDelivery: @escaping Delivery = { $0() }
         ) {
             self.timeout = timeout
             self.startupTimeout = startupTimeout
             self.transferTimeout = transferTimeout
             self.helperURL = helperURL ?? Self.bundledHelperURL()
             self.reader = reader
+            self.readinessDelivery = readinessDelivery
+            self.resultDelivery = resultDelivery
         }
 
         private static func bundledHelperURL() -> URL? {
@@ -101,14 +144,37 @@ enum PasteController {
         }
 
         func snapshot(name: String, changeCount: Int, completion: @escaping (ClipboardSnapshot?, Bool) -> Void) {
+            enqueue(name: name, changeCount: changeCount, shouldCopy: nil, copyAction: nil, completion: completion)
+        }
+
+        func copiedSelection(
+            name: String, changeCount: Int,
+            shouldCopy: @escaping @MainActor () -> Bool,
+            copyAction: @escaping @MainActor () -> Bool,
+            completion: @escaping (ClipboardSnapshot?, Bool) -> Void
+        ) {
+            enqueue(name: name, changeCount: changeCount, shouldCopy: shouldCopy, copyAction: copyAction, completion: completion)
+        }
+
+        private func enqueue(
+            name: String, changeCount: Int,
+            shouldCopy: (@MainActor () -> Bool)?, copyAction: (@MainActor () -> Bool)?,
+            completion: @escaping (ClipboardSnapshot?, Bool) -> Void
+        ) {
             guard pending.count < 16 else {
                 completion(nil, true)
                 return
             }
             // Queue waiting counts against the total budget. Injected readers
             // retain a simple deadline, including noncooperative test readers.
-            let totalTimeout = reader == nil ? startupTimeout + timeout + transferTimeout : timeout
-            let request = Request(name: name, changeCount: changeCount, deadline: .now() + totalTimeout, completion: completion)
+            let totalTimeout: TimeInterval
+            if copyAction != nil {
+                totalTimeout = startupTimeout + ClipboardSnapshotTransport.copyWaitTimeout + timeout + min(transferTimeout, 0.2)
+            } else {
+                totalTimeout = reader == nil ? startupTimeout + timeout + transferTimeout : timeout
+            }
+            let request = Request(name: name, changeCount: changeCount, deadline: .now() + totalTimeout,
+                                  shouldCopy: shouldCopy, copyAction: copyAction, completion: completion)
             pending.append(request)
             DispatchQueue.main.asyncAfter(deadline: request.deadline) { [self] in
                 pending.removeAll { $0 === request }
@@ -128,21 +194,50 @@ enum PasteController {
             let deadline = request.deadline
             let startupTimeout = startupTimeout
             let readTimeout = timeout
-            let transferTimeout = transferTimeout
+            let waitsForCopy = request.copyAction != nil
+            let transferTimeout = waitsForCopy ? min(transferTimeout, 0.2) : transferTimeout
+            let copyPermit = CopyPermit()
+            let readinessDelivery = readinessDelivery
+            let resultDelivery = resultDelivery
+            let onReady: @Sendable (DispatchTime) -> Void = { copyDeadline in
+                DispatchQueue.main.async {
+                    readinessDelivery {
+                        guard request.completion != nil, copyPermit.isActive(until: copyDeadline) else { return }
+                        guard request.shouldCopy?() == true else {
+                            copyPermit.invalidate()
+                            request.finish(nil, timedOut: false)
+                            return
+                        }
+                        // Focus checks can cross AX process boundaries. Recheck the
+                        // deadline after them and immediately before posting Copy.
+                        guard copyPermit.isActive(until: copyDeadline) else { return }
+                        guard request.copyAction?() == true else {
+                            copyPermit.invalidate()
+                            request.finish(nil, timedOut: false)
+                            return
+                        }
+                    }
+                }
+            }
             queue.async {
                 let result: (ClipboardSnapshot?, Bool)
-                if let reader {
+                if let reader, !waitsForCopy {
                     result = (reader(name, changeCount), false)
                 } else {
                     result = Self.readInHelper(
                         name: name, changeCount: changeCount, helperURL: helperURL,
                         deadline: deadline, startupTimeout: startupTimeout,
-                        readTimeout: readTimeout, transferTimeout: transferTimeout
+                        readTimeout: readTimeout, transferTimeout: transferTimeout,
+                        waitsForCopy: waitsForCopy, copyPermit: copyPermit, onReady: onReady
                     )
                 }
+                copyPermit.invalidate()
                 DispatchQueue.main.async { [self] in
                     busy = false
-                    request.finish(result.0, timedOut: result.1)
+                    resultDelivery {
+                        let expired = result.0?.verificationDeadline.map { DispatchTime.now() >= $0 } ?? false
+                        request.finish(expired ? nil : result.0, timedOut: result.1 || expired)
+                    }
                     startNext()
                 }
             }
@@ -150,7 +245,8 @@ enum PasteController {
 
         nonisolated private static func readInHelper(
             name: String, changeCount: Int, helperURL: URL?, deadline: DispatchTime,
-            startupTimeout: TimeInterval, readTimeout: TimeInterval, transferTimeout: TimeInterval
+            startupTimeout: TimeInterval, readTimeout: TimeInterval, transferTimeout: TimeInterval,
+            waitsForCopy: Bool, copyPermit: CopyPermit, onReady: @escaping @Sendable (DispatchTime) -> Void
         ) -> (ClipboardSnapshot?, Bool) {
             guard DispatchTime.now() < deadline else { return (nil, true) }
             guard let helperURL else { return (nil, false) }
@@ -159,6 +255,7 @@ enum PasteController {
             let output = Pipe()
             process.executableURL = helperURL
             process.arguments = ["clipboard-snapshot", "--pasteboard-name", name, "--change-count", String(changeCount)]
+            if waitsForCopy { process.arguments?.append("--wait-for-copy") }
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
@@ -177,14 +274,19 @@ enum PasteController {
             let fd = output.fileHandleForReading.fileDescriptor
             guard fcntl(fd, F_SETFL, O_NONBLOCK) != -1 else { return (nil, false) }
             var bytes = Data()
-            let maximumBytes = ClipboardSnapshotTransport.maximumWireBytes
+            let maximumBytes = waitsForCopy
+                ? ClipboardSnapshotTransport.maximumSelectionBytes + 1024
+                : ClipboardSnapshotTransport.maximumWireBytes
+            var verificationDeadline: DispatchTime?
             var ready = false
+            var copyObserved = !waitsForCopy
             var payloadReady = false
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             var reachedEOF = false
             while !reachedEOF || process.isRunning {
                 let now = DispatchTime.now()
                 guard now < phaseDeadline else { return (nil, true) }
+                guard copyPermit.isActive(until: deadline) else { return (nil, false) }
                 if reachedEOF {
                     usleep(1_000)
                     continue
@@ -207,9 +309,19 @@ enum PasteController {
                         guard bytes.starts(with: ClipboardSnapshotTransport.ready) else { return (nil, false) }
                         bytes.removeFirst(ClipboardSnapshotTransport.ready.count)
                         ready = true
+                        phaseDeadline = min(deadline, .now() + (waitsForCopy ? ClipboardSnapshotTransport.copyWaitTimeout : readTimeout))
+                        if waitsForCopy {
+                            verificationDeadline = min(deadline, phaseDeadline + readTimeout + transferTimeout)
+                            onReady(phaseDeadline)
+                        }
+                    }
+                    if ready, !copyObserved, let marker = bytes.first {
+                        guard marker == ClipboardSnapshotTransport.selectionReadStarted else { return (nil, false) }
+                        bytes.removeFirst()
+                        copyObserved = true
                         phaseDeadline = min(deadline, .now() + readTimeout)
                     }
-                    if ready, !payloadReady, let marker = bytes.first {
+                    if ready, copyObserved, !payloadReady, let marker = bytes.first {
                         guard marker == ClipboardSnapshotTransport.payloadReady else { return (nil, false) }
                         bytes.removeFirst()
                         payloadReady = true
@@ -222,8 +334,10 @@ enum PasteController {
             process.waitUntilExit()
             guard process.terminationStatus == 0, ready, payloadReady,
                   let wire = try? PropertyListDecoder().decode(ClipboardSnapshotPayload.self, from: bytes),
-                  wire.changeCount == changeCount else { return (nil, false) }
-            return (ClipboardSnapshot(items: wire.items.map { $0.map { ($0.type, $0.data) } }), false)
+                  (waitsForCopy ? wire.changeCount != changeCount : wire.changeCount == changeCount) else { return (nil, false) }
+            guard DispatchTime.now() < phaseDeadline else { return (nil, true) }
+            return (ClipboardSnapshot(items: wire.items.map { $0.map { ($0.type, $0.data) } },
+                                      changeCount: wire.changeCount, verificationDeadline: verificationDeadline), false)
         }
     }
 
@@ -284,6 +398,8 @@ enum PasteController {
         shortcut: PasteShortcut = .automatic,
         snapshotWorker: ClipboardSnapshotWorker? = nil,
         requireStagedClipboardOwnership: Bool = false,
+        selectionToVerifyByCopy: String? = nil,
+        simulateCopyAction: @escaping @MainActor () -> Bool = PasteController.simulateCopy,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
@@ -313,15 +429,21 @@ enum PasteController {
             onClipboardSettled()
         }
         onLifecycleEvent(.clipboardSnapshotBegun)
-        let stage: @MainActor (ClipboardSnapshot?, Bool) -> Void = { snapshot, timedOut in
-            onLifecycleEvent(timedOut ? .clipboardSnapshotTimedOut : (snapshot == nil ? .clipboardSnapshotFailed : .clipboardSnapshotCompleted))
+        var verificationDeadline: DispatchTime?
+        let stage: @MainActor (ClipboardSnapshot?, Int) -> Void = { snapshot, expectedChangeCount in
             guard pendingPastes[name] == requestID, shouldDispatchPaste() else {
                 onLifecycleEvent(.pasteDispatchCancelled)
                 onPasteFinished(nil)
                 settle()
                 return
             }
-            guard pasteboard.changeCount == originalChangeCount else {
+            if let verificationDeadline, DispatchTime.now() >= verificationDeadline {
+                onLifecycleEvent(.selectionVerificationTimedOut)
+                onPasteFinished(nil)
+                settle()
+                return
+            }
+            guard pasteboard.changeCount == expectedChangeCount else {
                 onLifecycleEvent(.clipboardOwnershipLost)
                 onPasteFinished(nil)
                 settle()
@@ -390,6 +512,11 @@ enum PasteController {
                     return
                 }
 
+                if let verificationDeadline, DispatchTime.now() >= verificationDeadline {
+                    onLifecycleEvent(.selectionVerificationTimedOut)
+                    settleFailedDispatch()
+                    return
+                }
                 let didDispatchPaste: Bool
                 switch dispatchStrategy {
                 case .keyboardShortcut:
@@ -439,10 +566,54 @@ enum PasteController {
                 onPasteFinished(didDispatchPaste ? targetApplication : nil)
             }
         }
+        let worker = snapshotWorker ?? .shared
+        let backupCompleted: @MainActor (ClipboardSnapshot?, Bool) -> Void = { snapshot, timedOut in
+            onLifecycleEvent(timedOut ? .clipboardSnapshotTimedOut : (snapshot == nil ? .clipboardSnapshotFailed : .clipboardSnapshotCompleted))
+            guard let expectedSelection = selectionToVerifyByCopy else {
+                stage(snapshot, originalChangeCount)
+                return
+            }
+            onLifecycleEvent(.selectionVerificationBegun)
+            // A verification Copy must never destroy a clipboard we could not back up.
+            guard let snapshot else {
+                onLifecycleEvent(.selectionVerificationFailed)
+                onPasteFinished(nil)
+                settle()
+                return
+            }
+            var didCopy = false
+            worker.copiedSelection(
+                name: name, changeCount: originalChangeCount,
+                shouldCopy: {
+                    pendingPastes[name] == requestID && shouldDispatchPaste()
+                        && pasteboard.changeCount == originalChangeCount
+                },
+                copyAction: {
+                    didCopy = simulateCopyAction()
+                    return didCopy
+                },
+                completion: { selection, timedOut in
+                    guard didCopy, let selection, selection.plainText == expectedSelection,
+                          let copiedChangeCount = selection.changeCount,
+                          copiedChangeCount == pasteboard.changeCount,
+                          pendingPastes[name] == requestID, shouldDispatchPaste() else {
+                        onLifecycleEvent(timedOut ? .selectionVerificationTimedOut : .selectionVerificationFailed)
+                        // An uncertain generation may belong to another application.
+                        // Preserve it; the original backup is only restored after a stage we own.
+                        onPasteFinished(nil)
+                        settle()
+                        return
+                    }
+                    verificationDeadline = selection.verificationDeadline
+                    onLifecycleEvent(.selectionVerificationCompleted)
+                    stage(snapshot, copiedChangeCount)
+                }
+            )
+        }
         if let previousStage {
-            stage(previousStage.snapshot, false)
+            backupCompleted(previousStage.snapshot, false)
         } else {
-            (snapshotWorker ?? .shared).snapshot(name: name, changeCount: originalChangeCount, completion: stage)
+            worker.snapshot(name: name, changeCount: originalChangeCount, completion: backupCompleted)
         }
     }
 

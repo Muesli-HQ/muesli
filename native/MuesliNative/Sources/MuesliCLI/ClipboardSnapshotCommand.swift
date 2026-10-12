@@ -15,6 +15,7 @@ struct ClipboardSnapshotCommand: AsyncParsableCommand {
 
     @Option var pasteboardName: String
     @Option var changeCount: Int
+    @Flag var waitForCopy = false
 
     mutating func run() async throws {
         var outputStatus = stat()
@@ -22,6 +23,7 @@ struct ClipboardSnapshotCommand: AsyncParsableCommand {
               outputStatus.st_mode & S_IFMT == S_IFIFO else { Foundation.exit(1) }
         let name = pasteboardName
         let expectedCount = changeCount
+        let readCopiedSelection = waitForCopy
         let snapshot = await MainActor.run {
             // Readiness means the helper's main actor is actually running, not
             // merely that dyld or ArgumentParser has started the process.
@@ -29,7 +31,10 @@ struct ClipboardSnapshotCommand: AsyncParsableCommand {
             do {
                 try FileHandle.standardOutput.write(contentsOf: ClipboardSnapshotTransport.ready)
             } catch { return nil }
-            guard let snapshot = Self.snapshot(name: name, expectedCount: expectedCount) else { return nil }
+            let result = readCopiedSelection
+                ? Self.copiedSelection(name: name, originalCount: expectedCount)
+                : Self.snapshot(name: name, expectedCount: expectedCount)
+            guard let snapshot = result else { return nil }
             do {
                 try FileHandle.standardOutput.write(contentsOf: Data([ClipboardSnapshotTransport.payloadReady]))
             } catch { return nil }
@@ -45,6 +50,30 @@ struct ClipboardSnapshotCommand: AsyncParsableCommand {
         } catch {
             Foundation.exit(1)
         }
+    }
+
+    /// The app posts Copy only after receiving readiness. All clipboard reads
+    /// remain on this helper's main thread and the parent bounds each phase.
+    @MainActor
+    private static func copiedSelection(name: String, originalCount: Int) -> ClipboardSnapshotPayload? {
+        guard Thread.isMainThread else { return nil }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(name))
+        let deadline = Date().addingTimeInterval(ClipboardSnapshotTransport.copyWaitTimeout)
+        while pasteboard.changeCount == originalCount, Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.005)))
+        }
+        let copiedCount = pasteboard.changeCount
+        guard copiedCount != originalCount else { return nil }
+        do {
+            try FileHandle.standardOutput.write(contentsOf: Data([ClipboardSnapshotTransport.selectionReadStarted]))
+        } catch { return nil }
+        guard let text = pasteboard.string(forType: .string),
+              pasteboard.changeCount == copiedCount else { return nil }
+        let data = Data(text.utf8)
+        guard data.count <= ClipboardSnapshotTransport.maximumSelectionBytes else { return nil }
+        return ClipboardSnapshotPayload(changeCount: copiedCount, items: [[
+            .init(type: NSPasteboard.PasteboardType.string.rawValue, data: data),
+        ]])
     }
 
     @MainActor

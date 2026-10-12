@@ -435,6 +435,10 @@ struct PasteControllerTests {
             "clipboard_snapshot_completed",
             "clipboard_snapshot_failed",
             "clipboard_snapshot_timed_out",
+            "selection_verification_begun",
+            "selection_verification_completed",
+            "selection_verification_failed",
+            "selection_verification_timed_out",
             "clipboard_staged",
             "clipboard_stage_failed",
             "target_snapshotted",
@@ -942,6 +946,252 @@ struct PasteControllerTests {
         #expect(pasteboard.string(forType: .string) == "after")
     }
 
+    @Test("late browser verification stages only matching selection and restores original backup", arguments: [true, false])
+    func lateBrowserVerification(matches: Bool) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original clipboard", forType: .string)
+        let worker = makeTestClipboardSnapshotWorker()
+        var copies = 0
+        var pastes = 0
+        var events: [PasteController.LifecycleEvent] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "replacement", pasteboard: pasteboard, snapshotWorker: worker,
+                requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+                simulateCopyAction: {
+                    copies += 1
+                    #expect(!events.contains(.clipboardStaged))
+                    pasteboard.clearContents()
+                    pasteboard.setString(matches ? "selected" : "different", forType: .string)
+                    return true
+                },
+                targetApplicationProvider: { NSRunningApplication.current },
+                simulatePasteAction: { _ in pastes += 1; return true },
+                onClipboardSettled: { continuation.resume() },
+                onLifecycleEvent: { events.append($0) }
+            )
+        }
+        #expect(copies == 1)
+        #expect(pastes == (matches ? 1 : 0))
+        #expect(events.contains(.clipboardStaged) == matches)
+        #expect(pasteboard.string(forType: .string) == (matches ? "original clipboard" : "different"))
+    }
+
+    @Test("late browser verification respects input changes during backup without installing monitors", arguments: [true, false])
+    func lateBrowserInputChangeDuringBackup(inputChanges: Bool) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        var invalidate: (@MainActor () -> Void)?
+        var stopped = false
+        let input = QuilPendingInputGuard(source: { signal in
+            invalidate = signal
+            return { stopped = true }
+        })
+        let worker = PasteController.ClipboardSnapshotWorker(timeout: 2, helperURL: testClipboardHelperURL(), reader: { _, _ in
+            started.signal()
+            release.wait()
+            return .init(items: [[(NSPasteboard.PasteboardType.string.rawValue, Data("original".utf8))]])
+        })
+        var finished = false
+        var copies = 0
+        var pastes = 0
+        PasteController.paste(
+            text: "replacement", pasteboard: pasteboard, snapshotWorker: worker,
+            requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+            simulateCopyAction: {
+                copies += 1
+                pasteboard.clearContents()
+                pasteboard.setString("selected", forType: .string)
+                return true
+            },
+            shouldDispatchPaste: { input.isUnchanged },
+            simulatePasteAction: { _ in pastes += 1; return true },
+            onPasteFinished: { _ in input.stop(); finished = true }
+        )
+        while !takeAvailableSignal(started) { try? await Task.sleep(for: .milliseconds(5)) }
+        if inputChanges { invalidate?() }
+        release.signal()
+        for _ in 0..<200 where !finished { try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(finished)
+        #expect(stopped)
+        #expect(copies == (inputChanges ? 0 : 1))
+        #expect(pastes == (inputChanges ? 0 : 1))
+        let restored = await waitForClipboardString(in: pasteboard, expected: "original")
+        #expect(restored == "original")
+    }
+
+    @Test("browser verification cancels after Copy when input or clipboard changes", arguments: [true, false])
+    func lateBrowserChangeAfterCopy(inputChanges: Bool) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var allowed = true
+        var pastes = 0
+        var staged = false
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "replacement", pasteboard: pasteboard, snapshotWorker: makeTestClipboardSnapshotWorker(),
+                requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+                simulateCopyAction: {
+                    pasteboard.clearContents()
+                    pasteboard.setString("selected", forType: .string)
+                    if inputChanges {
+                        allowed = false
+                    } else {
+                        pasteboard.clearContents()
+                        pasteboard.setString("external copy", forType: .string)
+                    }
+                    return true
+                },
+                shouldDispatchPaste: { allowed },
+                simulatePasteAction: { _ in pastes += 1; return true },
+                onClipboardSettled: { continuation.resume() },
+                onLifecycleEvent: { if $0 == .clipboardStaged { staged = true } }
+            )
+        }
+        #expect(pastes == 0)
+        #expect(!staged)
+        #expect(pasteboard.string(forType: .string) == (inputChanges ? "selected" : "external copy"))
+    }
+
+    @Test("native selection gate catches same-field caret and text changes")
+    func nativeSelectionGate() {
+        let range = CFRange(location: 3, length: 4)
+        #expect(QuilSelectionSnapshot.selectionMatches(expectedText: "text", currentText: "text",
+            expectedRange: range, currentRange: range, usesClipboardFallback: false))
+        #expect(!QuilSelectionSnapshot.selectionMatches(expectedText: "text", currentText: "text",
+            expectedRange: range, currentRange: CFRange(location: 8, length: 4), usesClipboardFallback: false))
+        #expect(!QuilSelectionSnapshot.selectionMatches(expectedText: "text", currentText: "",
+            expectedRange: range, currentRange: CFRange(location: 7, length: 0), usesClipboardFallback: false))
+        #expect(!QuilSelectionSnapshot.selectionMatches(expectedText: "text", currentText: "edit",
+            expectedRange: range, currentRange: range, usesClipboardFallback: false))
+    }
+
+    @Test("selection helper never copies before readiness and bounds every phase", arguments: ["startup", "copy", "read", "transfer"])
+    func selectionHelperPhaseDeadlines(phase: String) async throws {
+        let output: String
+        switch phase {
+        case "copy": output = "printf MCS2R; exec /bin/sleep 5"
+        case "read": output = "printf MCS2RC; exec /bin/sleep 5"
+        case "transfer": output = "printf MCS2RCP; exec /bin/sleep 5"
+        default: output = "exec /bin/sleep 5"
+        }
+        let (helper, directory) = try selectionHelperFixture(output)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = PasteController.ClipboardSnapshotWorker(timeout: 0.05, startupTimeout: 0.1,
+            transferTimeout: 0.05, helperURL: helper)
+        var copies = 0
+        let start = Date()
+        let result = await withCheckedContinuation { continuation in
+            worker.copiedSelection(name: "test-only-no-pasteboard", changeCount: 0,
+                shouldCopy: { true }, copyAction: { copies += 1; return true }) { snapshot, timeout in
+                    continuation.resume(returning: (snapshot, timeout))
+                }
+        }
+        #expect(result.0 == nil)
+        #expect(result.1)
+        // These fixtures exercise parser deadlines, not Copy acknowledgement.
+        // Immediate C/P emission may let the worker expire before main runs.
+        #expect(copies <= 1)
+        if phase == "startup" { #expect(copies == 0) }
+        #expect(Date().timeIntervalSince(start) < 1)
+    }
+
+    @Test("expired readiness cannot post Copy when delivery resumes", arguments: [false, true])
+    func selectionHelperExpiredReady(childExits: Bool) async throws {
+        let (helper, directory) = try selectionHelperFixture(childExits
+            ? "printf MCS2R; exit 0" : "printf MCS2R; exec /bin/sleep 5")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var heldReady: (@MainActor () -> Void)?
+        let worker = PasteController.ClipboardSnapshotWorker(timeout: 0.05, startupTimeout: 1,
+            transferTimeout: 0.05, helperURL: helper, readinessDelivery: { heldReady = $0 })
+        var copies = 0
+        var completed = false
+        worker.copiedSelection(name: "test-only-no-pasteboard", changeCount: 0,
+            shouldCopy: { true }, copyAction: { copies += 1; return true }) { snapshot, _ in
+                #expect(snapshot == nil)
+                completed = true
+            }
+        for _ in 0..<200 where !completed || heldReady == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let replay = try #require(heldReady)
+        #expect(completed)
+        replay()
+        #expect(copies == 0)
+    }
+
+    @Test("successful copied result delivered after expiry never stages or pastes")
+    func selectionHelperExpiredResult() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var deliveries = 0
+        var heldResult: (@MainActor () -> Void)?
+        let worker = PasteController.ClipboardSnapshotWorker(helperURL: testClipboardHelperURL(),
+            resultDelivery: { deliver in
+                deliveries += 1
+                if deliveries == 1 { deliver() } else { heldResult = deliver }
+            })
+        var copies = 0
+        var pastes = 0
+        var completed = false
+        var events: [PasteController.LifecycleEvent] = []
+        PasteController.paste(
+            text: "replacement", pasteboard: pasteboard, snapshotWorker: worker,
+            requireStagedClipboardOwnership: true, selectionToVerifyByCopy: "selected",
+            simulateCopyAction: {
+                copies += 1
+                pasteboard.clearContents()
+                pasteboard.setString("selected", forType: .string)
+                return true
+            },
+            simulatePasteAction: { _ in pastes += 1; return true },
+            onPasteFinished: { _ in completed = true },
+            onLifecycleEvent: { events.append($0) }
+        )
+        for _ in 0..<300 where heldResult == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let replay = try #require(heldResult)
+        #expect(copies == 1)
+        #expect(!completed)
+        // Only the injected delivery is held; other MainActor work stays runnable.
+        try await Task.sleep(for: .seconds(1))
+        replay()
+        #expect(completed)
+        #expect(copies == 1)
+        #expect(pastes == 0)
+        #expect(!events.contains(.clipboardStaged))
+        #expect(events.contains(.selectionVerificationTimedOut))
+        #expect(pasteboard.string(forType: .string) == "selected")
+    }
+
+    @Test("pending input guard fails closed when its source cannot be installed")
+    func pendingInputGuardInstallationFailure() {
+        let input = QuilPendingInputGuard(source: { _ in nil })
+        #expect(!input.isUnchanged)
+        input.stop()
+    }
+
+    @Test("pending input guard removes its source once on stop or release", arguments: [true, false])
+    func pendingInputGuardTeardown(explicitStop: Bool) async throws {
+        var stops = 0
+        var input: QuilPendingInputGuard? = QuilPendingInputGuard(source: { _ in { stops += 1 } })
+        #expect(input?.isUnchanged == true)
+        if explicitStop { input?.stop(); input?.stop() }
+        input = nil
+        for _ in 0..<100 where stops == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(stops == 1)
+    }
+
+    private func selectionHelperFixture(_ output: String) throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let helper = directory.appendingPathComponent("fixture")
+        try ("#!/bin/sh\n" + output + "\n").write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        return (helper, directory)
+    }
+
     private func makePasteboard() -> NSPasteboard {
         let name = NSPasteboard.Name("com.muesli.tests.PasteController.\(UUID().uuidString)")
         return NSPasteboard(name: name)
@@ -1002,6 +1252,11 @@ private final class ClipboardSnapshotTestBundle: NSObject {}
 
 @MainActor
 func makeTestClipboardSnapshotWorker() -> PasteController.ClipboardSnapshotWorker {
+    PasteController.ClipboardSnapshotWorker(helperURL: testClipboardHelperURL())
+}
+
+@MainActor
+private func testClipboardHelperURL() -> URL? {
     // The helper is an exact sibling SwiftPM product. Never use PATH or the
     // installed release, which may not implement this private IPC endpoint.
     let testBundle = Bundle(for: ClipboardSnapshotTestBundle.self)
@@ -1012,5 +1267,5 @@ func makeTestClipboardSnapshotWorker() -> PasteController.ClipboardSnapshotWorke
     ].compactMap { $0 }
     let helper = candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     #expect(helper != nil, "Build the muesli-cli product alongside the test bundle")
-    return PasteController.ClipboardSnapshotWorker(helperURL: helper)
+    return helper
 }

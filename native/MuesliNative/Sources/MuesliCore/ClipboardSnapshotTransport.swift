@@ -5,6 +5,9 @@ import Foundation
 /// expansion when preserving image pasteboards with several representations.
 public enum ClipboardSnapshotTransport {
     public static let ready = Data("MCS2R".utf8)
+    public static let selectionReadStarted: UInt8 = 0x43
+    public static let copyWaitTimeout: TimeInterval = 0.35
+    public static let maximumSelectionBytes = 4 * 1024 * 1024
     public static let payloadReady: UInt8 = 0x50
     public static let maximumDataBytes = 128 * 1024 * 1024
     public static let maximumWireBytes = 136 * 1024 * 1024

@@ -9788,7 +9788,7 @@ public final class MuesliController: NSObject {
                 }
                 try Task.checkCancellation()
                 let selectionStillCurrent = await MainActor.run {
-                    snapshot.isStillCurrentForReplacement()
+                    snapshot.isStillCurrent()
                 }
                 guard selectionStillCurrent else {
                     throw QuilTransformationError.selectionChanged
@@ -9814,19 +9814,22 @@ public final class MuesliController: NSObject {
                         return
                     }
                     var pasteLifecycleEvents: [PasteController.LifecycleEvent] = []
+                    let pendingInput = QuilPendingInputGuard()
                     PasteController.paste(
                         text: replacement,
                         shortcut: configSnapshot.pasteShortcut,
                         requireStagedClipboardOwnership: true,
+                        selectionToVerifyByCopy: snapshot.selectionToVerifyByCopy,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: {
-                            self.quilTaskID == taskID && snapshot.isTargetStillFocused()
+                            self.quilTaskID == taskID && pendingInput.isUnchanged && snapshot.isStillCurrent()
                         },
                         dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
                             ? .targetApplicationPasteCommand
                             : .keyboardShortcut,
                         retainStagedTextOnFailure: true,
                         onPasteDispatched: {
+                            pendingInput.stop()
                             // The post-dictation correction monitor cannot distinguish a
                             // user edit from Quill's deliberate rewrite. Once Quill actually
                             // replaces the selection, the original dictation is no longer a
@@ -9834,6 +9837,7 @@ public final class MuesliController: NSObject {
                             self.dictationCorrectionMonitor.cancel()
                         },
                         onPasteFinished: { target in
+                            pendingInput.stop()
                             guard self.quilTaskID == taskID else { return }
                             let usedTargetPasteCommand = pasteLifecycleEvents.contains(
                                 .targetPasteCommandDispatched
@@ -9852,6 +9856,23 @@ public final class MuesliController: NSObject {
                                     ? "Pasted through the target application's standard Paste command"
                                     : "Paste keyboard command dispatched to the target application"
                                 userMessage = nil
+                            } else if pasteLifecycleEvents.contains(.selectionVerificationFailed)
+                                        || pasteLifecycleEvents.contains(.selectionVerificationTimedOut) {
+                                deliveryStatus = "needs_attention"
+                                deliveryMessage = "Selection could not be verified for automatic paste"
+                                deliveryTraceBody = retainedForManualPaste
+                                    ? "Selection verification expired before dispatch; generated text was retained on the clipboard"
+                                    : "Late selection verification failed or timed out; the current clipboard was preserved"
+                                userMessage = retainedForManualPaste
+                                    ? "Selection could not be verified — generated text is on the clipboard"
+                                    : "Selection could not be verified; output saved in history"
+                            } else if pasteLifecycleEvents.contains(.pasteDispatchCancelled) {
+                                deliveryStatus = "needs_attention"
+                                deliveryMessage = "Selection or focus changed before automatic paste"
+                                deliveryTraceBody = "Automatic paste was cancelled because the pending target was no longer current"
+                                userMessage = retainedForManualPaste
+                                    ? "Selection changed — generated text is on the clipboard"
+                                    : "Selection changed; output saved in history"
                             } else if retainedForManualPaste {
                                 deliveryStatus = "needs_attention"
                                 deliveryMessage = "Generated text is ready for manual paste"
