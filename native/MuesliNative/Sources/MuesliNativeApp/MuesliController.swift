@@ -11010,6 +11010,9 @@ public final class MuesliController: NSObject {
             pendingDictationStopStartedAt = nil
             pendingReleaseSoundSessionID = nil
             clearCapturedDictationSessionContext()
+            // A failed start must not leave the next press acting as a stop.
+            hotkeyMonitor.cancelToggleMode()
+            indicator.setToggleDictation(false, config: config)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
             meetingMonitor.refreshState()
