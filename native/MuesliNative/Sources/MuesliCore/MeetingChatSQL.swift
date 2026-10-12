@@ -220,10 +220,14 @@ enum MeetingChatSQL {
             if !(try rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db) { _ in true }).isEmpty { return }
             var afterID: Int64 = 0
             while true {
-                let current = try snapshots(scope: .init(), db: db, afterID: afterID)
-                guard let last = current.last else { break }
-                let legacy = try snapshots(scope: .init(), db: db, afterID: afterID, includesFolderInRevision: true)
-                let oldRevisions = Dictionary(uniqueKeysWithValues: legacy.map { ($0.meetingID, $0.revision) })
+                // The dependency index bounds startup work to sources actually
+                // used in chats, even when the saved-meeting library is enormous.
+                let ids = try rows("SELECT DISTINCT meeting_id FROM meeting_chat_dependencies WHERE meeting_id>? ORDER BY meeting_id LIMIT 200", [.integer(afterID)], db: db) { sqlite3_column_int64($0, 0) }
+                guard let lastID = ids.last else { break }
+                var oldRevisions: [Int64: String] = [:]
+                let current = try snapshots(scope: .init(selection: .meetings(ids)), db: db, legacyRevision: { id, revision in
+                    oldRevisions[id] = revision
+                })
                 for source in current {
                     guard let old = oldRevisions[source.meetingID], old != source.revision else { continue }
                     let turns = try rows("SELECT body FROM meeting_chat_turns WHERE id IN (SELECT turn_id FROM meeting_chat_dependencies WHERE meeting_id=? AND revision=?)", [.integer(source.meetingID), .text(old)], db: db) {
@@ -237,9 +241,12 @@ enum MeetingChatSQL {
                     }
                     try execute("UPDATE meeting_chat_dependencies SET revision=? WHERE meeting_id=? AND revision=?", [.text(source.revision), .integer(source.meetingID), .text(old)], db: db)
                 }
-                afterID = last.meetingID
+                afterID = lastID
             }
-            try execute("INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM meetings WHERE deleted_at IS NULL", db: db)
+            // Unfiled sources already use the same hash. Old passage-schema
+            // migration clears this cache itself; only surviving folder-sensitive
+            // entries need rebuilding, without reading their meeting content.
+            try execute("INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT meeting_id FROM meeting_chat_index_state WHERE folder_id IS NOT NULL", db: db)
             try execute("INSERT INTO local_migrations VALUES('meeting_chat_content_revision_v2',strftime('%s','now'))", db: db)
         }
     }
@@ -275,7 +282,7 @@ enum MeetingChatSQL {
         try execute("DELETE FROM meeting_chat_dirty_sources", db: db)
     }
 
-    static func snapshots(scope: MeetingChatScope, db: OpaquePointer?, afterID: Int64 = 0, limit: Int = 200, includesFolderInRevision: Bool = false) throws -> [MeetingChatSourceSnapshot] {
+    static func snapshots(scope: MeetingChatScope, db: OpaquePointer?, afterID: Int64 = 0, limit: Int = 200, includesFolderInRevision: Bool = false, legacyRevision: ((Int64, String) -> Void)? = nil) throws -> [MeetingChatSourceSnapshot] {
         var clause = "m.deleted_at IS NULL AND m.meeting_status NOT IN ('recording','processing') AND m.id>?"
         var bindings: [Value] = [.integer(afterID)]
         switch scope.selection {
@@ -302,6 +309,10 @@ enum MeetingChatSQL {
             if !includesFolderInRevision { contentFields[2] = "" }
             let revisionData = try JSONEncoder().encode(contentFields)
             let revision = SHA256.hash(data: revisionData).map { String(format: "%02x", $0) }.joined()
+            if let legacyRevision {
+                let legacy = fields == contentFields ? revision : SHA256.hash(data: try JSONEncoder().encode(fields)).map { String(format: "%02x", $0) }.joined()
+                legacyRevision(sqlite3_column_int64(s, 0), legacy)
+            }
             return MeetingChatSourceSnapshot(meetingID: sqlite3_column_int64(s, 0), title: fields[0], startDate: date,
                 folderID: sqlite3_column_type(s, 3) == SQLITE_NULL ? nil : sqlite3_column_int64(s, 3), transcript: transcript,
                 manualNotes: fields[4], generatedNotes: notes,

@@ -104,6 +104,29 @@ struct MeetingChatRetrievalTests {
         #expect(scoped.passages.isEmpty)
     }
 
+    @Test func revisionMigrationWithoutChatDependenciesDoesNotReadMeetingTextOrDirtyWarmIndex() throws {
+        let store = try database()
+        for _ in 0..<12 { _ = try insert(store, text: String(repeating: "Unrelated transcript. ", count: 500)) }
+        _ = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DELETE FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db)
+            // Deny preparing any read of source text. Migration must not load
+            // even one unrelated transcript when there is no chat history.
+            sqlite3_set_authorizer(db, { _, action, table, column, _, _ in
+                if action == SQLITE_READ, let table, let column,
+                   String(cString: table) == "meetings",
+                   ["raw_transcript", "manual_notes", "formatted_notes"].contains(String(cString: column)) {
+                    return SQLITE_DENY
+                }
+                return SQLITE_OK
+            }, nil)
+            defer { sqlite3_set_authorizer(db, nil, nil) }
+            try MeetingChatSQL.migrate(db: db)
+            let dirty = try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_dirty_sources", db: db) { sqlite3_column_int64($0, 0) }.first
+            #expect(dirty == 0)
+        }
+    }
+
     @Test func revisionMigrationPreservesCurrentEvidenceButNotStaleEvidence() throws {
         let store = try database()
         let id = try insert(store, text: "sunflower launch")
@@ -118,12 +141,16 @@ struct MeetingChatRetrievalTests {
         #expect(try chat.finishTurn(turnID: turn.id, answer: "Sunflower", citations: [], dependencies: deps))
         let stale = try chat.beginTurn(sessionID: session.id, question: "Earlier", scope: scope, provider: "test", model: "test")
         #expect(try chat.finishTurn(turnID: stale.id, answer: "Old facts", citations: [], dependencies: deps))
+        let unrelated = try insert(store, text: "Unrelated saved meeting")
+        _ = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).prepareIndex()
         try store.withChatDatabase { db in
             let old = try #require(MeetingChatSQL.snapshots(scope: scope, db: db, includesFolderInRevision: true).first).revision
             try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision=? WHERE turn_id=?", [.text(old), .text(turn.id.uuidString)], db: db)
             try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision='stale-content' WHERE turn_id=?", [.text(stale.id.uuidString)], db: db)
             try MeetingChatSQL.execute("DELETE FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db)
             try MeetingChatSQL.migrate(db: db)
+            let unrelatedDirty = try MeetingChatSQL.rows("SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=?", [.integer(unrelated)], db: db) { _ in true }
+            #expect(unrelatedDirty.isEmpty)
         }
         let next = try chat.beginTurn(sessionID: session.id, question: "Explain", scope: scope, provider: "test", model: "test")
         #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
