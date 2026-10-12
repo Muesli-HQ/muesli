@@ -46,11 +46,17 @@ struct MeetingChatExporterTests {
         var value = turn(); value.originalAnswer = (0..<120).map { "Decision \($0): launch Friday [[S1]]." }.joined(separator: "\n\n")
         let markdown = MeetingChatExporter.markdown(turn: value, session: session(), useEditedDraft: false)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("chat-export-\(UUID()).pdf")
-        try MeetingExporter.writePDF(attributed: MeetingExporter.buildAttributedString(from: markdown), to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try MeetingChatExporter.save(markdown: markdown, destination: url, pdf: true)
         let document = try #require(PDFDocument(url: url))
         #expect(document.pageCount > 1)
-        #expect(document.string?.contains("Planning") == true)
-        #expect(document.string?.contains("Written notes") == true)
+        let text = try #require(document.string)
+        // Page count alone misses lazy-layout exports whose later pages are blank.
+        for index in 0..<120 {
+            #expect(text.contains("Decision \(index): launch Friday [1]."))
+        }
+        #expect(text.contains("Planning"))
+        #expect(text.contains("Written notes"))
     }
     @Test @MainActor func cancelDoesNotWriteAFile() throws {
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("cancelled-chat-export-\(UUID()).md")

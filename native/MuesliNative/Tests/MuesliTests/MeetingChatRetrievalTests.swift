@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MuesliCore
+@testable import MuesliNativeApp
 import SQLite3
 
 
@@ -170,5 +171,65 @@ struct MeetingChatRetrievalTests {
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
         #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 10_000)
         #expect(evidence.coverage.isPartialRecap)
+    }
+
+    @Test @MainActor func browseToolPreservesCompleteSmallRecapCoverage() async throws {
+        let store = try database()
+        _ = try insert(store, text: "First launch discussion.")
+        _ = try insert(store, text: "Second launch discussion.")
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Review context", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        #expect(turn.coverage?.evidenceMeetingCount == 2)
+        #expect(turn.coverage?.isPartialRecap == false)
+    }
+
+    @Test @MainActor func focusedSearchDoesNotTreatUnrelatedMeetingsAsOmittedEvidence() async throws {
+        let store = try database()
+        _ = try insert(store, text: "Sunflower launch discussion.")
+        _ = try insert(store, text: "Unrelated budget review.")
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"search_meeting_sources","query":"sunflower"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Sunflower", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        #expect(turn.coverage?.eligibleMeetingCount == 2)
+        #expect(turn.coverage?.evidenceMeetingCount == 1)
+        #expect(turn.coverage?.isPartialRecap == false)
+    }
+
+    @Test @MainActor func browseToolRetainsRetrieverBudgetTruncation() async throws {
+        let store = try database()
+        _ = try insert(store, text: (0..<600).map { "[00:00:01] You: Item \($0)." }.joined(separator: "\n"))
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Review context", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        // One represented meeting still contains omitted passages.
+        #expect(turn.coverage?.evidenceMeetingCount == 1)
+        #expect(turn.coverage?.isPartialRecap == true)
+    }
+}
+
+private actor CoverageToolProbe: MeetingTextGenerating {
+    let tool: String
+    private var calls = 0
+    init(tool: String) { self.tool = tool }
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        calls += 1
+        if calls == 1 { return tool }
+        return #"{"status":"answered","markdown":"The meeting includes this discussion [[S1]]."}"#
     }
 }

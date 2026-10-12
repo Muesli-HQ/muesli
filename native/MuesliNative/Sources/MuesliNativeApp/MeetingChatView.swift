@@ -80,7 +80,8 @@ struct MeetingChatView: View {
                         LazyVStack(alignment: .leading, spacing: 28) {
                             if coordinator.turns.isEmpty { welcome }
                             ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
-                                if index > 0 && coordinator.turns[index - 1].scope != turn.scope {
+                                if (index == 0 && turn.scope != coordinator.scope) ||
+                                    (index > 0 && coordinator.turns[index - 1].scope != turn.scope) {
                                     Label { Text(turn.scopeLabel ?? "Meeting context changed") } icon: { AIIcon(.slidersHorizontal) }
                                         .font(.caption).foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity).padding(.vertical, 8)

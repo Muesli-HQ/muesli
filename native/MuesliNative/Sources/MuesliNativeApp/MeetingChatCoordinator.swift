@@ -8,7 +8,7 @@ private actor MeetingChatWorker {
     private var summaryValidation: (turnID: UUID, sourceVersion: Int64)?
     init(databaseURL: URL) { store = .init(databaseURL: databaseURL); retrieval = .init(databaseURL: databaseURL) }
     func interruptPendingTurns() throws { try store.interruptPendingTurns() }
-    func createChat(scope: MeetingChatScope) throws -> MeetingChatSession { try store.createSession(scope: scope, title: "New chat") }
+    func createChat(scope: MeetingChatScope, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession { try store.createSession(scope: scope, title: "New chat", expectedSourceVersion: expectedSourceVersion) }
     func updateSession(id: UUID, title: String? = nil, scope: MeetingChatScope? = nil) throws { try store.updateSession(id: id, title: title, scope: scope) }
     func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, config: AppConfig, attemptID: UUID) throws -> MeetingChatTurn {
         try store.beginTurn(sessionID: sessionID, question: question, scope: scope,
@@ -75,7 +75,7 @@ private actor MeetingChatWorker {
             evidence = .init(scope: turn.scope, passages: selected,
                 dependencies: Array(Set(selected.map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) })),
                 coverage: .init(eligibleMeetingCount: representative.coverage.eligibleMeetingCount, evidenceMeetingCount: represented.count,
-                    isPartialRecap: representative.coverage.isPartialRecap || represented.count < representative.coverage.eligibleMeetingCount),
+                    isPartialRecap: representative.coverage.isPartialRecap || representative.passages.contains { passage in !selected.contains { $0.id == passage.id } }),
                 metrics: .init(sourceSnapshotCount: evidence.metrics.sourceSnapshotCount + representative.metrics.sourceSnapshotCount,
                     reindexedMeetingCount: evidence.metrics.reindexedMeetingCount + representative.metrics.reindexedMeetingCount,
                     decodedCandidateCount: evidence.metrics.decodedCandidateCount + representative.metrics.decodedCandidateCount))
@@ -87,11 +87,16 @@ private actor MeetingChatWorker {
         try Task.checkCancellation()
         guard try store.dependenciesAreCurrent(evidence.dependencies) else { throw MeetingChatError.sourceChanged }
         let incoming: [MeetingChatPassage]
+        var incomingIsPartialRecap = false
         switch call {
         case .search(let query):
-            incoming = try retrieval.retrieve(question: query, scope: turn.scope).passages
+            let retrieved = try retrieval.retrieve(question: query, scope: turn.scope)
+            incoming = retrieved.passages
+            incomingIsPartialRecap = retrieved.coverage.isPartialRecap
         case .browse:
-            incoming = try retrieval.retrieve(question: turn.question, scope: turn.scope, broadRecap: true).passages
+            let retrieved = try retrieval.retrieve(question: turn.question, scope: turn.scope, broadRecap: true)
+            incoming = retrieved.passages
+            incomingIsPartialRecap = retrieved.coverage.isPartialRecap
         case .read(let key):
             guard let passage = evidence.passages.first(where: { $0.sourceKey == key }),
                 let snapshot = try source(passage.meetingID), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
@@ -104,20 +109,22 @@ private actor MeetingChatWorker {
         var selected: [MeetingChatPassage] = []
         var seen = Set<String>(); var bytes = 0
         var nextKey = nextSourceKey
+        var omittedForBudget = false
         // An empty refinement does not erase evidence already gathered.
         for var passage in incoming + evidence.passages {
             guard seen.insert(passage.id).inserted else { continue }
             passage.sourceKey = evidence.passages.first(where: { $0.id == passage.id })?.sourceKey ?? "S\(nextKey)"
             let size = MeetingChatPassages.promptByteCount(passage)
-            guard bytes + size <= 10_000 else { continue }
+            guard bytes + size <= 10_000 else { omittedForBudget = true; continue }
             if !evidence.passages.contains(where: { $0.id == passage.id }) { nextKey += 1 }
             bytes += size; selected.append(passage)
         }
         result.passages = selected
         result.dependencies = Array(Set(evidence.dependencies + selected.map { .init(meetingID: $0.meetingID, revision: $0.revision) }))
         result.coverage.evidenceMeetingCount = Set(selected.map(\.meetingID)).count
-        result.coverage.isPartialRecap = evidence.coverage.isPartialRecap || incoming.count > selected.count || result.coverage.evidenceMeetingCount < result.coverage.eligibleMeetingCount
-        if case .browse = call { result.coverage.isPartialRecap = true }
+        // A focused search need not match every eligible meeting. Preserve the
+        // retriever's completeness assessment and record actual packet eviction.
+        result.coverage.isPartialRecap = evidence.coverage.isPartialRecap || incomingIsPartialRecap || omittedForBudget
         // Attach before the next network call so deletion invalidates every source already disclosed.
         try store.attachEvidence(turnID: turn.id, dependencies: result.dependencies, attemptID: turn.attemptID)
         return (result, nextKey, incoming.count)
@@ -173,9 +180,10 @@ final class MeetingChatCoordinator {
     private(set) var reasoningSummaries: [String] = []
     private(set) var activityTurnID: UUID?
     private var composerDrafts: [UUID?: String] = [:]
+    private var composerEditVersion = UUID()
     var composerDraft: String {
         get { composerDrafts[selectedSessionID] ?? "" }
-        set { composerDrafts[selectedSessionID] = newValue }
+        set { composerDrafts[selectedSessionID] = newValue; composerEditVersion = UUID() }
     }
     var errorMessage: String?
     var scrollAnchors: [UUID: UUID] = [:]
@@ -216,9 +224,11 @@ final class MeetingChatCoordinator {
         isUpdatingChat = true
         defer { isUpdatingChat = false }
         let version = UUID(); selectionVersion = version
-        await initialization?.value
         do {
-            let session = try await worker.createChat(scope: scope)
+            let expectedSourceVersion = try store.sourceMutationVersion()
+            await initialization?.value
+            guard selectionVersion == version, !Task.isCancelled else { return nil }
+            let session = try await worker.createChat(scope: scope, expectedSourceVersion: expectedSourceVersion)
             if selectionVersion == version { selectedSessionID = session.id; errorMessage = nil }
             reload()
             return session.id
@@ -246,6 +256,9 @@ final class MeetingChatCoordinator {
     private func updateMeetingAttachment(id: Int64, adding: Bool) async -> Bool {
         guard !isBusy, !isUpdatingChat else { return false }
         let target = selectedSessionID
+        let expectedSourceVersion: Int64
+        do { expectedSourceVersion = try store.sourceMutationVersion() }
+        catch { errorMessage = error.localizedDescription; return false }
         let version = selectionVersion
         var attached: [Int64] = []
         if case .meetings(let ids) = scope.selection { attached = ids }
@@ -273,7 +286,7 @@ final class MeetingChatCoordinator {
             if let target {
                 try await worker.updateSession(id: target, scope: newScope)
             } else {
-                let session = try await worker.createChat(scope: newScope)
+                let session = try await worker.createChat(scope: newScope, expectedSourceVersion: expectedSourceVersion)
                 // Preserve the untitled composer's latest edits while registration awaits.
                 if selectionVersion == version {
                     composerDrafts[session.id] = composerDrafts[nil]
@@ -291,12 +304,23 @@ final class MeetingChatCoordinator {
         }
     }
     func applyPreparedPrompt(_ prompt: MeetingChatPreparedPrompt) async -> Bool {
+        let editVersion = composerEditVersion
+        let originalTarget = selectedSessionID
         let target: UUID?
         if prompt.scope != scope {
             guard let id = await setScope(prompt.scope) else { return false }
             target = id
         } else { target = selectedSessionID }
         guard selectedSessionID == target else { return false }
+        guard composerEditVersion == editVersion else {
+            // Scope setup may register the previously untitled composer. Carry
+            // edits into that session rather than leaving them in the nil slot.
+            if originalTarget == nil, let target {
+                composerDrafts[target] = composerDrafts[nil]
+                composerDrafts[nil] = nil
+            }
+            return false
+        }
         composerDraft = prompt.text
         return true
     }
@@ -545,6 +569,9 @@ final class MeetingChatCoordinator {
     func refreshForSourceChanges() {
         guard let version = try? store.sourceMutationVersion(), version != sourceMutationVersion else { return }
         sourceMutationVersion = version
+        // Invalidate setup ownership too: there may not be a turn/session ID yet.
+        selectionVersion = UUID()
+        if activeRequestID != nil, activeTurnID == nil { stop() }
         for sessionID in Array(titleTasks.keys) { cancelTitle(sessionID: sessionID) }
         reasoningSummaries = []; activityTurnID = nil
         if let sessionID = activeSessionID, let turnID = activeTurnID {

@@ -23,7 +23,7 @@ struct MeetingChatReviewTests {
         return (store, MeetingChatCoordinator(databaseURL: url, generator: generator))
     }
 
-    private func holdWriter(_ store: DictationStore) async -> (task: Task<Void, Error>, release: DispatchSemaphore) {
+    private func holdWriter(_ store: DictationStore, clearChatHistory: Bool = false) async -> (task: Task<Void, Error>, release: DispatchSemaphore) {
         let release = DispatchSemaphore(value: 0)
         let (events, continuation) = AsyncStream<Void>.makeStream()
         let writer = Task.detached {
@@ -32,6 +32,7 @@ struct MeetingChatReviewTests {
                 guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw NSError(domain: "test-lock", code: 1) }
                 continuation.yield(())
                 let progressed = release.wait(timeout: .now() + 10) == .success
+                if clearChatHistory { try MeetingChatSQL.clear(db: db) }
                 sqlite3_exec(db, "COMMIT", nil, nil, nil)
                 guard progressed else { throw NSError(domain: "test-lock-timeout", code: 1) }
             }
@@ -181,6 +182,45 @@ struct MeetingChatReviewTests {
         #expect(coordinator.selectedSessionID == existing.id)
         #expect(coordinator.composerDraft == "Existing chat draft")
         #expect(coordinator.scope == existing.scope)
+    }
+
+    @Test(arguments: [false, true]) func delayedPreparedPromptPreservesTyping(existingChat: Bool) async throws {
+        let (store, coordinator) = try fixture()
+        await coordinator.waitForIdle()
+        await coordinator.refreshChoices()
+        if existingChat { await coordinator.createChat(scope: .init()) }
+        coordinator.composerDraft = "Original draft"
+        let prompt = MeetingChatQuickAction.weeklyRecap.prepare(scope: .init(), now: Date(), calendar: .current, userDisplayName: nil)
+        let writer = await holdWriter(store)
+        let preparation = Task { await coordinator.applyPreparedPrompt(prompt) }
+        for _ in 0..<100 where !coordinator.isUpdatingChat { try await Task.sleep(for: .milliseconds(2)) }
+        #expect(coordinator.isUpdatingChat)
+        coordinator.composerDraft = "My newer question"
+        writer.release.signal(); try await writer.task.value
+        #expect(await preparation.value == false)
+        #expect(coordinator.composerDraft == "My newer question")
+    }
+
+    @Test func queuedImplicitCreationCannotRecreateWipedHistory() async throws {
+        let probe = ReviewReplyProbe()
+        let (store, coordinator) = try fixture(generator: probe)
+        await coordinator.waitForIdle()
+        await coordinator.refreshChoices()
+        coordinator.composerDraft = "Launch?"
+        // The wipe owns the writer transaction first. Session creation is queued
+        // behind it and must validate its original version after obtaining the lock.
+        let writer = await holdWriter(store, clearChatHistory: true)
+        let request = Task { await coordinator.send(question: coordinator.composerDraft, config: AppConfig()) }
+        for _ in 0..<100 where !coordinator.isUpdatingChat { try await Task.sleep(for: .milliseconds(2)) }
+        #expect(coordinator.isUpdatingChat)
+        writer.release.signal(); try await writer.task.value
+        await request.value
+        coordinator.refreshForSourceChanges()
+        await coordinator.waitForIdle()
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.sessions.isEmpty)
+        #expect(try coordinator.store.sessions().isEmpty)
+        #expect(await probe.calls == 0)
     }
 
     @Test func stoppedImplicitCreationKeepsTextTypedWhileSaving() async throws {

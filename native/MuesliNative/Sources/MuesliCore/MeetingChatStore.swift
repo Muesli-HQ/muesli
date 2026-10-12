@@ -8,13 +8,19 @@ public struct MeetingChatStore: Sendable {
     private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
         try DictationStore(databaseURL: databaseURL).withChatDatabase(operation)
     }
-    public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil) throws -> MeetingChatSession {
+    public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession {
         let now = Date()
         var session = MeetingChatSession(id: UUID(), title: title, scope: scope, createdAt: now, updatedAt: now, contextStartOrdinal: 0)
         session.titleIsAutomatic = true
         var anchor = anchorMeetingID
         if anchor == nil, case .meetings(let ids) = scope.selection, Set(ids).count == 1 { anchor = ids.first }
         return try connection { db in try MeetingChatSQL.transaction(db: db) {
+            // Validate inside the write transaction: a queued setup must not recreate
+            // chat history after a concurrent history wipe has committed.
+            if let expectedSourceVersion {
+                let current = try MeetingChatSQL.rows("SELECT version FROM meeting_chat_source_version WHERE id=1", db: db) { sqlite3_column_int64($0, 0) }.first ?? 0
+                guard current == expectedSourceVersion else { throw MeetingChatError.sourceChanged }
+            }
             try MeetingChatSQL.execute("INSERT INTO meeting_chat_sessions VALUES(?,?,?)", [.text(session.id.uuidString), .text(try MeetingChatSQL.encode(session)), .real(now.timeIntervalSince1970)], db: db)
             try saveSelectedMeetings(session, db: db)
             if let anchor { try MeetingChatSQL.linkSession(session.id, meetingID: anchor, role: "anchor", db: db) }

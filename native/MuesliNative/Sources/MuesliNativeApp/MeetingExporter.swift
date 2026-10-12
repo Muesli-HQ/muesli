@@ -167,6 +167,16 @@ struct MeetingExporter {
         textView.textContainerInset = .zero
         textView.textStorage?.setAttributedString(attributed)
 
+        // Printing can paginate the entire string while lazy text layout only
+        // draws the initial viewport, leaving later pages blank. Lay out every
+        // glyph and expand the view before NSPrintOperation captures its pages.
+        if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+            layoutManager.ensureLayout(for: container)
+            textView.setFrameSize(NSSize(
+                width: contentWidth,
+                height: max(pageHeight - margin * 2, ceil(layoutManager.usedRect(for: container).maxY))))
+        }
+
         let printInfo = NSPrintInfo()
         printInfo.paperSize = NSSize(width: pageWidth, height: pageHeight)
         printInfo.topMargin = margin
