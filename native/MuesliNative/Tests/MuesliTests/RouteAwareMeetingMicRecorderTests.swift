@@ -1,10 +1,125 @@
 import CoreAudio
 import Foundation
 import Testing
+import os
 @testable import MuesliNativeApp
 
 @Suite("RouteAwareMeetingMicRecorder", .serialized)
 struct RouteAwareMeetingMicRecorderTests {
+    @Test("pending overflow cannot promote an already queued first-buffer event")
+    func pendingOverflowBeforePromotion() throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.pending-budget.lifecycle")
+        let worker = DispatchQueue(label: "test.pending-budget.worker")
+        let cleanup = DispatchQueue(label: "test.pending-budget.cleanup")
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: replacement,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        var outcomes: [MeetingMicHandoffOutcome] = []
+        recorder.onHandoffOutcome = { outcomes.append($0) }
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        lifecycle.sync {}; worker.sync {}
+        let blocked = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        lifecycle.async { blocked.signal(); _ = release.wait(timeout: .now() + 5) }
+        #expect(blocked.wait(timeout: .now() + 5) == .success)
+        replacement.emit(Array(repeating: 1, count: 80_000), at: 0)
+        replacement.emit([2], at: 80_000)
+        release.signal()
+        lifecycle.sync {}; cleanup.sync {}
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(outcomes == [.failed])
+        #expect(old.stopCalls == 0)
+        #expect(replacement.cancelCalls == 1)
+        _ = recorder.stop()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("handoff drains retired audio until stop returns, including overlapping teardown", arguments: ["running", "paused", "stopped", "cancelled"])
+    func handoffDrainsRetiredTail(ending: String) throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.handoff-tail.lifecycle")
+        let worker = DispatchQueue(label: "test.handoff-tail.worker")
+        let cleanup = DispatchQueue(label: "test.handoff-tail.cleanup")
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: replacement,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        let deliveriesLock = NSLock()
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { samples in deliveriesLock.withLock { delivered.append(contentsOf: samples.samples) } }
+        let enteredStop = DispatchSemaphore(value: 0)
+        let releaseStop = DispatchSemaphore(value: 0)
+        old.onStop = {
+            enteredStop.signal()
+            #expect(releaseStop.wait(timeout: .now() + 10) == .success)
+            old.emit([2, 3], at: 100)
+        }
+        // Even a producer violating its callback contract during cancel must
+        // not inherit the accepted-tail entitlement.
+        old.onCancel = { old.emit([99]) }
+        defer { old.onStop = nil; old.onCancel = nil }
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        lifecycle.sync {}
+        worker.sync {}
+        replacement.emit([1], at: 102)
+        lifecycle.sync {}
+        #expect(enteredStop.wait(timeout: .now() + 5) == .success)
+        #expect(old.invalidatedForTeardown)
+        switch ending {
+        case "paused": recorder.pause()
+        case "stopped": recorder.invalidateForTeardown(); _ = recorder.stop()
+        case "cancelled": recorder.cancel()
+        default: break
+        }
+        releaseStop.signal()
+        cleanup.sync {}
+        old.emit([98])
+        let expected: [Int16] = ending == "cancelled" ? [] : [2, 3, 1]
+        #expect(deliveriesLock.withLock { delivered } == expected)
+        if ending == "running" || ending == "paused" { _ = recorder.stop() }
+        recorder.waitForQuiescence()
+    }
+
+    @Test("Stop forwards the active child's buffered tail, then rejects late delivery")
+    func stopDrainsActiveChildOnly() throws {
+        let child = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorder: child)
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { delivered.append(contentsOf: $0.samples) }
+        try recorder.start()
+        child.onStop = {
+            recorder.invalidateForTeardown()
+            child.emit([4, 5])
+        }
+        defer { child.onStop = nil }
+        recorder.invalidateForTeardown()
+        _ = recorder.stop()
+        child.emit([99])
+        #expect(delivered == [4, 5])
+    }
+
+    @Test("disconnecting the consumer before teardown discards the buffered tail")
+    func discardRejectsBufferedTail() throws {
+        let child = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorder: child)
+        var delivered: [Int16] = []
+        recorder.onRawPCMSamples = { delivered.append(contentsOf: $0.samples) }
+        try recorder.start()
+        child.onStop = { child.emit([4, 5]) }
+        defer { child.onStop = nil }
+        recorder.invalidateForTeardown()
+        recorder.onRawPCMSamples = nil
+        _ = recorder.stop()
+        #expect(delivered.isEmpty)
+    }
+
     @Test("stopping releases the microphone child and its driver ownership")
     func stopReleasesChild() throws {
         weak var child: FakeMeetingMicRecorder?
@@ -46,7 +161,7 @@ struct RouteAwareMeetingMicRecorderTests {
         try recorder.start()
         #expect(recorder.requestHealthRecovery(.init(reason: "test", requiresNonZeroSamples: false)) == .initiated)
         worker.sync {}
-        replacement?.onRawPCMSamples?([1, 2])
+        replacement?.emit([1, 2])
         lifecycle.sync {}
         cleanup.sync {}
 
@@ -126,13 +241,13 @@ struct RouteAwareMeetingMicRecorderTests {
         let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
         var forwardedSamples: [[Int16]] = []
         var failureCount = 0
-        recorder.onRawPCMSamples = { forwardedSamples.append($0) }
+        recorder.onRawPCMSamples = { forwardedSamples.append($0.samples) }
         recorder.onRecordingFailed = { _ in failureCount += 1 }
 
         try recorder.start()
-        appScoped.onRawPCMSamples?([1, 2, 3])
+        appScoped.emit([1, 2, 3])
         appScoped.onRecordingFailed?(NSError(domain: "RouteAwareMeetingMicRecorderTests", code: 1))
-        system.onRawPCMSamples?([4, 5])
+        system.emit([4, 5])
 
         #expect(forwardedSamples == [[4, 5]])
         #expect(failureCount == 0)
@@ -200,17 +315,17 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
         try await waitUntil { appScoped.startCalls == 1 }
 
-        system.onRawPCMSamples?([1])
+        system.emit([1])
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
         #expect(system.stopCalls == 0)
 
-        appScoped.onRawPCMSamples?([2])
+        appScoped.emit([2])
         try await waitUntil { recorder.activeRecorderKindForDebug() == .appScoped }
         try await waitUntil { samples == [[1], [2]] }
 
@@ -233,12 +348,12 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
         try await waitUntil { appScoped.cancelCalls == 1 }
-        system.onRawPCMSamples?([7])
+        system.emit([7])
 
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
         #expect(system.stopCalls == 0)
@@ -259,7 +374,7 @@ struct RouteAwareMeetingMicRecorderTests {
         var failures = 0
         var samples: [[Int16]] = []
         recorder.onRecordingFailed = { _ in failures += 1 }
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         failed.onRecordingFailed?(NSError(domain: "test", code: 2))
@@ -268,7 +383,7 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(recorder.isTerminallyFailedForDebug())
         #expect(failures == 1)
 
-        replacement.onRawPCMSamples?([8, 9])
+        replacement.emit([8, 9])
         try await waitUntil { !recorder.isTerminallyFailedForDebug() }
         try await waitUntil { samples == [[8, 9]] }
 
@@ -301,7 +416,7 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(recorder.isTerminallyFailedForDebug())
         recorder.preferredInputDeviceID = nil
         try await waitUntil { recoveredReplacement.startCalls == 1 }
-        recoveredReplacement.onRawPCMSamples?([3, 2, 0])
+        recoveredReplacement.emit([3, 2, 0])
         try await waitUntil { !recorder.isTerminallyFailedForDebug() }
         try await waitUntil { initial.stopCalls == 1 }
 
@@ -328,7 +443,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var deliveredSamples: [[Int16]] = []
-        recorder.onRawPCMSamples = { deliveredSamples.append($0) }
+        recorder.onRawPCMSamples = { deliveredSamples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -341,7 +456,7 @@ struct RouteAwareMeetingMicRecorderTests {
 
         #expect(elapsed < 0.2)
         #expect(replacementCancelled.wait(timeout: .now() + 5) == .success)
-        replacement.onRawPCMSamples?([4, 2])
+        replacement.emit([4, 2])
         #expect(deliveredSamples.isEmpty)
     }
 
@@ -398,7 +513,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: timeoutScheduler.schedule
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 92
@@ -406,9 +521,9 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(timeoutScheduler.fireNext())
         #expect(replacementCancelled.wait(timeout: .now() + 5) == .success)
 
-        system.onRawPCMSamples?([7])
+        system.emit([7])
         allowStart.signal()
-        replacement.onRawPCMSamples?([9])
+        replacement.emit([9])
 
         #expect(samples == [[7]])
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
@@ -427,7 +542,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -435,12 +550,12 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.preferredInputDeviceID = 92
         try await waitUntil { first.cancelCalls == 1 && second.startCalls == 1 }
 
-        first.onRawPCMSamples?([1])
-        system.onRawPCMSamples?([2])
-        second.onRawPCMSamples?([3])
+        first.emit([1])
+        system.emit([2])
+        second.emit([3])
         try await waitUntil { recorder.diagnosticsSnapshot().preferredInputDeviceID == 92 }
         try await waitUntil { system.stopCalls == 1 }
-        first.onRawPCMSamples?([4])
+        first.emit([4])
 
         #expect(samples == [[2], [3]])
         #expect(system.stopCalls == 1)
@@ -459,7 +574,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -467,11 +582,11 @@ struct RouteAwareMeetingMicRecorderTests {
 
         recorder.pause()
         try await waitUntil { pendingBeforePause.cancelCalls == 1 }
-        pendingBeforePause.onRawPCMSamples?([1])
+        pendingBeforePause.emit([1])
         recorder.resume()
         try await waitUntil { replacementAfterResume.startCalls == 1 }
-        pendingBeforePause.onRawPCMSamples?([2])
-        replacementAfterResume.onRawPCMSamples?([3])
+        pendingBeforePause.emit([2])
+        replacementAfterResume.emit([3])
         try await waitUntil { recorder.activeRecorderKindForDebug() == .appScoped }
         try await waitUntil { samples == [[3]] }
 
@@ -493,7 +608,7 @@ struct RouteAwareMeetingMicRecorderTests {
         var failures = 0
         var samples: [[Int16]] = []
         recorder.onRecordingFailed = { _ in failures += 1 }
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -501,7 +616,7 @@ struct RouteAwareMeetingMicRecorderTests {
         system.onRecordingFailed?(NSError(domain: "test", code: 4))
 
         #expect(recorder.isTerminallyFailedForDebug())
-        pending.onRawPCMSamples?([8])
+        pending.emit([8])
         try await waitUntil { !recorder.isTerminallyFailedForDebug() }
         try await waitUntil { samples == [[8]] }
 
@@ -523,7 +638,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -534,7 +649,7 @@ struct RouteAwareMeetingMicRecorderTests {
         defer {
             if queueIsSuspended { lifecycleQueue.resume() }
         }
-        pending.onRawPCMSamples?([9])
+        pending.emit([9])
         let stopReturned = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             _ = recorder.stop()
@@ -545,7 +660,7 @@ struct RouteAwareMeetingMicRecorderTests {
         lifecycleQueue.resume()
         queueIsSuspended = false
         #expect(stopReturned.wait(timeout: .now() + 5) == .success)
-        pending.onRawPCMSamples?([10])
+        pending.emit([10])
 
         #expect(samples == [[9]])
         #expect(pending.stopCalls == 1)
@@ -567,7 +682,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -578,7 +693,7 @@ struct RouteAwareMeetingMicRecorderTests {
         defer {
             if queueIsSuspended { lifecycleQueue.resume() }
         }
-        pending.onRawPCMSamples?([9])
+        pending.emit([9])
         let discardReturned = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             recorder.cancel()
@@ -590,7 +705,7 @@ struct RouteAwareMeetingMicRecorderTests {
         queueIsSuspended = false
         #expect(discardReturned.wait(timeout: .now() + 5) == .success)
         #expect(pendingCancelled.wait(timeout: .now() + 5) == .success)
-        pending.onRawPCMSamples?([10])
+        pending.emit([10])
 
         #expect(samples == [[9]])
     }
@@ -610,7 +725,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: timeoutScheduler.schedule
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
@@ -624,10 +739,10 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.preferredInputDeviceID = 93
         try await waitUntil { recovered.startCalls == 1 }
 
-        first.onRawPCMSamples?([1])
-        second.onRawPCMSamples?([2])
-        system.onRawPCMSamples?([3])
-        recovered.onRawPCMSamples?([4])
+        first.emit([1])
+        second.emit([2])
+        system.emit([3])
+        recovered.emit([4])
         try await waitUntil { recorder.diagnosticsSnapshot().preferredInputDeviceID == 93 }
         try await waitUntil { samples == [[3], [4]] }
 
@@ -657,7 +772,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        recorder.onRawPCMSamples = { samples.append($0.samples) }
 
         try recorder.start()
         #expect(recorder.requestHealthRecovery(.init(
@@ -672,12 +787,12 @@ struct RouteAwareMeetingMicRecorderTests {
 
         // An all-zero callback is not evidence that an all-zero failure has
         // recovered, so it must not replace the active graph.
-        replacement.onRawPCMSamples?([0, 0, 0])
+        replacement.emit([0, 0, 0])
         try await Task.sleep(for: .milliseconds(50))
         #expect(degraded.stopCalls == 0)
         #expect(samples.isEmpty)
 
-        replacement.onRawPCMSamples?([4, 5, 6])
+        replacement.emit([4, 5, 6])
         try await waitUntil { samples == [[4, 5, 6]] }
         try await waitUntil { degraded.stopCalls == 1 && degraded.cancelCalls == 1 }
         #expect(degraded.stopCalls == 1)
@@ -748,7 +863,7 @@ struct RouteAwareMeetingMicRecorderTests {
 
         #expect(recorder.requestHealthRecovery(.init(reason: "second attempt", requiresNonZeroSamples: false)) == .initiated)
         try await waitUntil { goodReplacement.startCalls == 1 }
-        goodReplacement.onRawPCMSamples?([1, 2])
+        goodReplacement.emit([1, 2])
         try await waitUntil { outcomes == [.failed, .promoted] }
         try await waitUntil { initial.stopCalls == 1 }
     }
@@ -866,8 +981,17 @@ private final class ManualMeetingMicHandoffTimeoutScheduler {
 }
 
 private final class FakeMeetingMicRecorder: MeetingMicRecording {
+    private static let clock = OSAllocatedUnfairLock(initialState: Int64(1_000))
     var preferredInputDeviceID: AudioObjectID?
-    var onRawPCMSamples: (([Int16]) -> Void)?
+    var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)?
+    func emit(_ samples: [Int16], at frame: Int64? = nil, admitted: Bool = false) {
+        let start = frame ?? Self.clock.withLock { value in
+            defer { value += Int64(samples.count) }
+            return value
+        }
+        onRawPCMSamples?(MicrophoneCaptureAudio(samples: samples,
+            startFrame: start, admitted: admitted))
+    }
     var onRecordingFailed: ((Error) -> Void)?
     var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)?
 
@@ -880,6 +1004,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     var cancelCalls = 0
     var startError: Error?
     var onStart: (() -> Void)?
+    var onStop: (() -> Void)?
     var onCancel: (() -> Void)?
     var onPrepareStarted: (() -> Void)?
     var prepareGate: DispatchSemaphore?
@@ -916,6 +1041,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
 
     func stop() -> URL? {
         stopCalls += 1
+        onStop?()
         return nil
     }
 

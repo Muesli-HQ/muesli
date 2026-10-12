@@ -5,6 +5,24 @@ import Testing
 
 @Suite("FallbackStreamingDictationRecorder")
 struct FallbackStreamingDictationRecorderTests {
+    @Test("admission predicate reaches both children but capability follows only the active child", arguments: [false, true])
+    func bufferedAdmissionFollowsSelection(useFallback: Bool) throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        fallback.hasBufferedSampleAdmission = true
+        if useFallback { primary.prepareResults = [.failure(NSError(domain: "test", code: 1))] }
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        let adapter = StreamingMeetingMicRecorderAdapter(recorder: recorder, kind: .appScopedAudioQueue)
+        adapter.setSampleAdmissionCheck { false }
+        #expect(primary.shouldAdmitSamples?() == false)
+        #expect(fallback.shouldAdmitSamples?() == false)
+        #expect(!adapter.hasBufferedSampleAdmission)
+        try recorder.prepare()
+        #expect(adapter.hasBufferedSampleAdmission == useFallback)
+        recorder.cancel()
+        #expect(!adapter.hasBufferedSampleAdmission)
+    }
+
     @Test("fallback uses input changed while recovering from primary start failure")
     func changedInputDuringFallbackPreparation() throws {
         let primary = FakeFallbackStreamingRecorder()
@@ -216,7 +234,9 @@ struct FallbackStreamingDictationRecorderTests {
     }
 }
 
-private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, PausableStreamingDictationRecording {
+private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+    var shouldAdmitSamples: (() -> Bool)?
+    var hasBufferedSampleAdmission = false
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
