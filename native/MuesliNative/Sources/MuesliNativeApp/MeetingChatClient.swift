@@ -157,7 +157,7 @@ enum MeetingChatClient {
             guard MeetingChatContextBudget.estimateTokens(system + user) <= budget.maximumInputTokens else { throw MeetingChatError.promptTooLarge }
             progress(correction?.progressLabel ?? "Preparing answer")
             let raw = try await generator.generate(.init(system: system, user: user, config: config, sessionID: sessionID,
-                onReasoningSummary: { summary in await reasoningSummary(iteration, summary) }))
+                onReasoningSummary: { summary in await reasoningSummary(iteration, summary) }, outputTokenLimit: budget.maximumOutputTokens))
             try Task.checkCancellation()
             let issue: MeetingChatHarnessError
             if raw.utf8.count > 64_000 {

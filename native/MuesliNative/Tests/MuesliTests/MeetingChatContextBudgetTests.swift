@@ -11,6 +11,21 @@ struct MeetingChatContextBudgetTests {
               citations: [], provider: "test", model: "test")
     }
 
+    @Test func smallNativeWindowCapsActualOutputRequestAndCompaction() throws {
+        var config = AppConfig(); config.meetingSummaryBackend = MeetingSummaryBackendOption.openAI.backend
+        config.openAIModel = "gpt-6-sol"
+        let budget = MeetingChatContextBudget(config: config, contextWindowTokens: 16_384)
+        #expect(budget.maximumInputTokens + budget.maximumOutputTokens <= 16_384)
+        let base = MeetingTextGenerationRequest(system: "System", user: "Question", config: config,
+            maxOutputTokens: 32_768, outputTokenLimit: budget.maximumOutputTokens)
+        let body = try MeetingNativeToolTransport.requestBody(.init(base: base, inputItems: Data("[]".utf8), tools: Data("[]".utf8), allowTools: true), stream: false)
+        #expect(body["max_output_tokens"] as? Int == budget.maximumOutputTokens)
+        let request = try MeetingTextGenerationClient.makeRequest(base, credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let textBody = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(textBody?["max_output_tokens"] as? Int == budget.maximumOutputTokens)
+    }
+
     @Test func oversizedNewestTurnIsCompressedInsteadOfSkipped() {
         let policy = MeetingChatContextBudget(config: AppConfig(), contextWindowTokens: 8_192)
         let older = turn(0, answer: "Short")

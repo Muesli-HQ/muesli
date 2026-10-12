@@ -52,7 +52,8 @@ enum MeetingNativeToolTransport {
         let policyModel = MeetingSummaryBackendOption.resolved(request.base.config.meetingSummaryBackend) == .openRouter && model.lowercased().hasPrefix("openai/")
             ? String(model.dropFirst("openai/".count)) : model
         let effort = ReasoningEffortPolicy.apiValue(for: policyModel, preferred: request.base.config.meetingSummaryReasoningEffort)
-        let budget = effort != nil && effort != "none" ? max(request.base.maxOutputTokens, 32_768) : request.base.maxOutputTokens
+        let requestedBudget = effort != nil && effort != "none" ? max(request.base.maxOutputTokens, 32_768) : request.base.maxOutputTokens
+        let budget = min(requestedBudget, max(1, request.base.outputTokenLimit ?? requestedBudget))
         var body: [String: Any] = [
             "model": model, "instructions": request.base.system, "input": input,
             "tools": tools, "parallel_tool_calls": false,

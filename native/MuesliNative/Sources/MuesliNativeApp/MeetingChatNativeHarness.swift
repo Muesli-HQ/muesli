@@ -83,8 +83,8 @@ enum MeetingChatNativeHarness {
             let allowTools = !corrected && calls < maximumToolCalls && initial.coverage.eligibleMeetingCount > 0
             progress("Preparing answer")
             let response = try await generator.generateNative(.init(
-                base: .init(system: instructions, user: "", config: config, maxOutputTokens: 32_768,
-                    sessionID: sessionID, onReasoningSummary: { await reasoningSummary(iteration, $0) }),
+                base: .init(system: instructions, user: "", config: config, maxOutputTokens: budget.maximumOutputTokens,
+                    sessionID: sessionID, onReasoningSummary: { await reasoningSummary(iteration, $0) }, outputTokenLimit: budget.maximumOutputTokens),
                 inputItems: inputData, tools: registeredTools, allowTools: allowTools))
             try Task.checkCancellation()
             guard response.outputItems.count <= maximumInputBytes,

@@ -8,6 +8,7 @@ struct MeetingTextGenerationRequest {
     var maxOutputTokens: Int = 1_500
     var sessionID: UUID = UUID()
     var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
+    var outputTokenLimit: Int? = nil
 }
 
 protocol MeetingTextGenerating: Sendable {
@@ -159,7 +160,8 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             // Responses counts reasoning and visible text against the same limit.
             // Reserve space for reasoning plus the complete structured answer.
             // https://developers.openai.com/api/docs/guides/reasoning
-            let budget = effort != nil && effort != "none" ? max(input.maxOutputTokens, 32_768) : input.maxOutputTokens
+            let requestedBudget = effort != nil && effort != "none" ? max(input.maxOutputTokens, 32_768) : input.maxOutputTokens
+            let budget = min(requestedBudget, max(1, input.outputTokenLimit ?? requestedBudget))
             body = ["model": model, "instructions": input.system, "input": input.user, "store": false, "max_output_tokens": budget]
             if let effort { body["reasoning"] = ["effort": effort] }
         case .openRouter:
@@ -176,7 +178,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             body.removeValue(forKey: "max_tokens"); body["stream"] = false
             // Local models may think by default without a request-level flag.
             // Keep a bounded allowance for both thinking and the answer envelope.
-            body["options"] = ["num_predict": max(input.maxOutputTokens, 8_192)]
+            body["options"] = ["num_predict": min(max(input.maxOutputTokens, 8_192), max(1, input.outputTokenLimit ?? Int.max))]
         case .lmStudio:
             guard let resolved = MeetingSummaryClient.resolveLMStudioURL(config: config) else { throw MeetingTextGenerationError.invalidEndpoint }
             url = resolved

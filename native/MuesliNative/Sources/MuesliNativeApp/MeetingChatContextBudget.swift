@@ -9,6 +9,7 @@ import MuesliCore
 struct MeetingChatContextBudget {
     let modelID: String
     let maximumInputTokens: Int
+    let maximumOutputTokens: Int
     let historyTokens: Int
     let summaryTokens: Int
     private let summaryBatchTokens: Int
@@ -25,6 +26,7 @@ struct MeetingChatContextBudget {
         let fallback = native ? 65_536 : (provider == .customLLM || provider == .ollama ? 8_192 : 32_768)
         let context = max(1, contextWindowTokens ?? fallback)
         let outputReserve = min(native ? 32_768 : 4_096, max(1, context / 2))
+        maximumOutputTokens = outputReserve
         summaryOutputTokens = min(4_096, outputReserve)
         maximumInputTokens = min(32_768, max(1, context - outputReserve))
         historyTokens = max(1, min(8_192, maximumInputTokens / 4))
@@ -105,7 +107,7 @@ struct MeetingChatContextBudget {
                 try await validateContext()
                 try Task.checkCancellation()
                 let output = try await generator.generate(.init(system: instructions, user: user, config: config,
-                    maxOutputTokens: summaryOutputTokens, sessionID: sessionID))
+                    maxOutputTokens: summaryOutputTokens, sessionID: sessionID, outputTokenLimit: maximumOutputTokens))
                 try Task.checkCancellation()
                 try await validateContext()
                 try Task.checkCancellation()
