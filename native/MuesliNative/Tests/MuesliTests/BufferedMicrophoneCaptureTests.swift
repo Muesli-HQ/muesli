@@ -82,6 +82,34 @@ struct BufferedMicrophoneCaptureTests {
 
 @Suite("StreamingMicRecorder buffered capture")
 struct StreamingMicRecorderBufferTests {
+    @Test("pause drain flushes fractional converter tail and reopens a clean stream", arguments: [44_100.0, 48_000.0])
+    func pauseDrainConversion(sampleRate: Double) throws {
+        let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let input = try buffer(format, values: Array(repeating: 0.25, count: 4096))
+        var audio: [MicrophoneCaptureAudio] = []
+        recorder.onCapturedAudio = { audio.append($0) }
+        let tap = try recorder.testing_startWithTap(format: format)
+        for cycle in 0..<3 {
+            let before = audio.count
+            let host = AVAudioTime.hostTime(forSeconds: Double(cycle + 1))
+            tap(input, AVAudioTime(hostTime: host))
+            recorder.pause()
+            recorder.drainAcceptedAudio()
+            let interval = Array(audio.dropFirst(before))
+            #expect(abs(interval.flatMap(\.samples).count - Int((4096 * 16_000 / sampleRate).rounded())) <= 1)
+            #expect(interval.first?.startFrame == Int64(cycle + 1) * 16_000)
+            let drained = audio.count
+            recorder.drainAcceptedAudio() // An empty second fence must not duplicate converter output.
+            #expect(audio.count == drained)
+            tap(input, AVAudioTime(hostTime: host)) // Paused input stays rejected.
+            recorder.resume()
+        }
+        let url = try #require(recorder.stop())
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(samples(try Data(contentsOf: url)) == audio.flatMap(\.samples))
+    }
+
     @Test("fractional hardware-rate batches retain their complete duration at stop", arguments: [48_000.0, 44_100.0], [1, 4096])
     func fractionalConversionTail(sampleRate: Double, frames: Int) throws {
         let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")

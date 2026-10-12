@@ -235,6 +235,7 @@ struct FallbackStreamingDictationRecorderTests {
 }
 
 private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, PausableStreamingDictationRecording, BufferedMicrophoneAdmissionControlling {
+    func drainAcceptedAudio() {} // This synchronous fake has no worker or buffered PCM.
     var shouldAdmitSamples: (() -> Bool)?
     var hasBufferedSampleAdmission = false
     var onAudioBuffer: (([Float]) -> Void)?

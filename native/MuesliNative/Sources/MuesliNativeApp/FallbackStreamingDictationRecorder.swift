@@ -189,6 +189,14 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         if let selected { (recorder(for: selected) as? PausableStreamingDictationRecording)?.resume() }
     }
 
+    func drainAcceptedAudio() {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        if let selected = lock.withLock({ activeRecorder }) {
+            (recorder(for: selected) as? BufferedMicrophoneAdmissionControlling)?.drainAcceptedAudio()
+        }
+    }
+
     func currentPower() -> Float {
         guard let selected = lock.withLock({ activeRecorder }) else { return -160 }
         return recorder(for: selected).currentPower()

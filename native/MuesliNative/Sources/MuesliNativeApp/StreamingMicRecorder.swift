@@ -43,6 +43,8 @@ protocol PausableStreamingDictationRecording: AnyObject {
 protocol BufferedMicrophoneAdmissionControlling: AnyObject {
     var shouldAdmitSamples: (() -> Bool)? { get set }
     var hasBufferedSampleAdmission: Bool { get }
+    /// Worker-only fence after admission is paused. Includes converter-held PCM.
+    func drainAcceptedAudio()
 }
 
 extension BufferedMicrophoneAdmissionControlling {
@@ -391,7 +393,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate, start: start)
             convert(buffer)
         }
-        finishBufferedConversion = { convert(nil) }
+        finishBufferedConversion = {
+            convert(nil)
+            converter?.reset()
+            timeline.reset()
+        }
         capture.setPaused(lock.withLock { $0.isPaused })
         bufferedCapture = capture
         return { [weak self, capture] buffer, time in
@@ -667,6 +673,14 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             state.isPaused = false
         }
         bufferedCapture?.setPaused(false)
+    }
+
+    func drainAcceptedAudio() {
+        // The lifecycle caller already closed admission through pause(). Graph
+        // ownership prevents a route restart replacing the converter mid-fence.
+        graphLock.lock()
+        defer { graphLock.unlock() }
+        processingQueue.sync { finishBufferedConversion?() }
     }
 
     /// Terminal and synchronous: this instance must never start capture again

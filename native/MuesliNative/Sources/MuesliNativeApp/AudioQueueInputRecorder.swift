@@ -217,6 +217,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         callbackState.withLock { if $0.isRunning { $0.isPaused = false } }
     }
 
+    func drainAcceptedAudio() { processingQueue.sync {} }
+
     private func prepareLocked() throws {
         let targetInputDeviceID = preferredInputDeviceID
         // Reuse is safe for the default route too: a queue prepared without an

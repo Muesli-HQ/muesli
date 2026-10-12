@@ -630,6 +630,13 @@ struct RouteAwareMeetingMicRecorderTests {
         let lifecycleQueue = DispatchQueue(label: "test.route-aware-meeting.stop-first-buffer-race")
         let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
         let pending = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let oldStopEntered = DispatchSemaphore(value: 0)
+        let releaseOldStop = DispatchSemaphore(value: 0)
+        system.onStop = {
+            oldStopEntered.signal()
+            #expect(releaseOldStop.wait(timeout: .now() + 5) == .success)
+        }
+        defer { releaseOldStop.signal(); system.onStop = nil }
         let recorder = RouteAwareMeetingMicRecorder(
             systemDefaultRecorder: system,
             appScopedRecorder: pending,
@@ -662,6 +669,19 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(stopReturned.wait(timeout: .now() + 5) == .success)
         pending.emit([10])
 
+        #expect(oldStopEntered.wait(timeout: .now() + 5) == .success)
+        #expect(samples.isEmpty) // The old immediate [[9]] assertion deterministically fails here.
+        // Stop deliberately does not wait for the retired graph. Production
+        // joins native quiescence separately before closing the session sink.
+        let quiesced = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            recorder.waitForQuiescence()
+            quiesced.signal()
+        }
+        #expect(quiesced.wait(timeout: .now() + 0.02) == .timedOut)
+        releaseOldStop.signal()
+        #expect(quiesced.wait(timeout: .now() + 5) == .success)
+
         #expect(samples == [[9]])
         #expect(pending.stopCalls == 1)
         #expect(pending.cancelCalls == 1)
@@ -672,6 +692,13 @@ struct RouteAwareMeetingMicRecorderTests {
         let lifecycleQueue = DispatchQueue(label: "test.route-aware-meeting.discard-first-buffer-race")
         let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
         let pending = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let oldStopEntered = DispatchSemaphore(value: 0)
+        let releaseOldStop = DispatchSemaphore(value: 0)
+        system.onStop = {
+            oldStopEntered.signal()
+            #expect(releaseOldStop.wait(timeout: .now() + 5) == .success)
+        }
+        defer { releaseOldStop.signal(); system.onStop = nil }
         let pendingCancelled = DispatchSemaphore(value: 0)
         pending.onCancel = { pendingCancelled.signal() }
         let recorder = RouteAwareMeetingMicRecorder(
@@ -704,10 +731,13 @@ struct RouteAwareMeetingMicRecorderTests {
         lifecycleQueue.resume()
         queueIsSuspended = false
         #expect(discardReturned.wait(timeout: .now() + 5) == .success)
+        #expect(oldStopEntered.wait(timeout: .now() + 5) == .success)
+        releaseOldStop.signal()
+        recorder.waitForQuiescence()
         #expect(pendingCancelled.wait(timeout: .now() + 5) == .success)
         pending.emit([10])
 
-        #expect(samples == [[9]])
+        #expect(samples.isEmpty) // Discard cancels staged delivery; unlike Stop it must not drain it.
     }
 
     @Test("repeated handoff timeouts cannot promote stale recorders")

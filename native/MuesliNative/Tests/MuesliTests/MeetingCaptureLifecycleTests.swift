@@ -359,6 +359,7 @@ private final class BufferedLifetimeRecorder: StreamingDictationRecording, Pausa
         resumeCompleted.continuation.yield(())
     }
     func stop() -> URL? { recorder.stop() }
+    func drainAcceptedAudio() { recorder.drainAcceptedAudio() }
     func cancel() { recorder.cancel() }
     func currentPower() -> Float { recorder.currentPower() }
     func invalidateForTeardown() { recorder.invalidateForTeardown() }

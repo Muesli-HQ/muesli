@@ -50,6 +50,7 @@ protocol MeetingMicRecording: AnyObject {
     func resume()
     func stop() -> URL?
     func waitForQuiescence()
+    func drainAcceptedAudio()
     func cancel()
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
@@ -79,6 +80,7 @@ extension MeetingMicRecording {
     func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {}
     var hasBufferedSampleAdmission: Bool { false }
     func waitForQuiescence() {}
+    func drainAcceptedAudio() {}
     func invalidateForTeardown() {}
     func requestHealthRecovery(_ trigger: MeetingMicRecoveryTrigger) -> MeetingMicRecoveryRequestResult { .unavailable }
 }
@@ -133,6 +135,10 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
 
     func stop() -> URL? {
         recorder.stop()
+    }
+
+    func drainAcceptedAudio() {
+        (recorder as? BufferedMicrophoneAdmissionControlling)?.drainAcceptedAudio()
     }
 
     func cancel() {
@@ -241,6 +247,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private let cleanupQueue: DispatchQueue
     private let graphOperations = DispatchGroup()
     private let delivery = MeetingMicrophoneDelivery()
+    private let handoffDeliveryOperations = DispatchGroup()
     private let handoffTimeout: TimeInterval
     private let scheduleHandoffTimeout: HandoffTimeoutScheduler
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -337,6 +344,15 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func waitForQuiescence() {
         graphOperations.wait()
+    }
+
+    func drainAcceptedAudio() {
+        let active = lifecycleQueue.sync { lock.withLock { $0.active?.recorder } }
+        // Never wait on processing/retirement while holding the lifecycle queue.
+        // Pause has disabled promotion; only an already-promoted old child can
+        // still own accepted audio. Unstarted/cancelled candidates do not count.
+        active?.drainAcceptedAudio()
+        handoffDeliveryOperations.wait()
     }
 
     func isTerminallyFailedForDebug() -> Bool {
@@ -452,6 +468,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         delivery.cancel()
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
+                // A promotion queued before cancel may have reopened delivery
+                // after the early cancellation above. Seal it again while
+                // removing its child: a retiring tail must not flush afterward.
+                delivery.cancel()
                 state.drainingChildID = nil
                 state.handoffDrainingChild = nil
                 state.lifecycleState = .stopping
@@ -788,6 +808,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             state.pendingAudio.removeAll()
             state.pendingAudioCount = 0
             if let old {
+                handoffDeliveryOperations.enter()
                 state.retiringIDs.insert(old.id)
                 state.handoffDrainingChild = old
             }
@@ -881,6 +902,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         cleanupQueue.async { [self] in
             let url = child.recorder.stop()
             delivery.finishRetiring(child.id)
+            handoffDeliveryOperations.leave()
             lock.withLock { state in
                 if state.handoffDrainingChild?.id == child.id { state.handoffDrainingChild = nil }
             }

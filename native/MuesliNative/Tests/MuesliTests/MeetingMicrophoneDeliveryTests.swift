@@ -1,12 +1,105 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
+import MuesliCore
 import os
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("session pause drains admitted PCM before chunk rotation and AEC reset",
+          arguments: ["stream", "queue", "fallback"], ["paused", "resume", "rapid", "stop", "discard"])
+    func sessionPauseBoundary(backend: String, ending: String) async throws {
+        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback")
+        let delayed = ContractGate(), pipeline = ContractGate()
+        let draining = DispatchSemaphore(value: 0), resumed = DispatchSemaphore(value: 0)
+        producer.beforeFirstDelivery = { delayed.block() }
+        producer.beforeDrain = { draining.signal() }
+        producer.afterResume = { resumed.signal() }
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
+        let system = ContractSystemAudio()
+        let processor = ContractAecProcessor()
+        let session = MeetingSession(title: "pause regression", calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                  menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: AppConfig(),
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: processor))
+        var micChunks: [[Int16]] = [], systemChunks: [[Int16]] = [] // Pipeline queue only.
+        func pcm(_ url: URL?) throws -> [Int16] {
+            guard let url else { return [] }
+            return try Data(contentsOf: url).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        }
+        session.testingConsumeChunk = { source, url, timing in
+            do {
+                let samples = try pcm(url)
+                #expect(timing.sampleCount == samples.count)
+                if source == "mic" { micChunks.append(samples) }
+                else { systemChunks.append(samples) }
+            } catch { Issue.record(error) }
+        }
+        defer { delayed.release.signal(); pipeline.release.signal() }
+        try await session.testingStartCapture()
+        try producer.emit([1, 2], at: 100)
+        try await delayed.waitUntilEntered()
+        try producer.emit([3], at: 102)
+        session.testingEnqueuePipeline { pipeline.block() }
+        try await pipeline.waitUntilEntered()
+        system.onPCMSamples?([0, 0, 0])
+        await MainActor.run { session.pause() } // Must return while the consumer is blocked.
+        let enteredDrain = try await MeetingCaptureLifecycle.onDriverQueue { draining.wait(timeout: .now() + 5) }
+        #expect(enteredDrain == .success)
+        pipeline.release.signal() // Reference admitted before Pause must survive delayed consumption.
+        session.testingPipelineBarrier {
+            #expect(micChunks.isEmpty && systemChunks.isEmpty)
+            #expect(processor.events == ["reset"])
+        }
+        if ending == "resume" || ending == "rapid" {
+            await MainActor.run { session.resume() }
+            if ending == "rapid" { await MainActor.run { session.pause(); session.resume() } }
+        }
+        // These callbacks arrive after logical Resume but before the pause fence.
+        // Native AudioQueue buffers must recycle, without leaking PCM into either side.
+        for _ in 0..<5 { try producer.emit([15], at: 103) }
+        if let driver = producer.driver { #expect(driver.queuedBufferCount == 3) }
+        system.onPCMSamples?([30_000])
+        if ending == "stop" { session.beginStoppingCapture() }
+        if ending == "discard" { session.discard() }
+        delayed.release.signal()
+        if ending == "discard" {
+            await session.testingWaitForDiscard()
+            session.testingPipelineBarrier {
+                #expect(micChunks.isEmpty && systemChunks.isEmpty)
+                #expect(processor.events == ["reset"]) // Late pause cannot resurrect a discarded pipeline.
+            }
+            return
+        }
+        if ending == "resume" || ending == "rapid" {
+            for _ in 0..<(ending == "rapid" ? 2 : 1) {
+                let didResume = try await MeetingCaptureLifecycle.onDriverQueue { resumed.wait(timeout: .now() + 5) }
+                #expect(didResume == .success)
+            }
+            try producer.emit([4, 5], at: 200)
+        }
+        let urls = await session.testingFinishCapture()
+        defer { for url in [urls.0, urls.1, urls.2].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        let before: [Int16] = [2047, 4095, 6143]
+        let after: [Int16] = ending == "resume" || ending == "rapid" ? [8191, 10239] : []
+        session.testingPipelineBarrier {
+            #expect(micChunks == [before])
+            #expect(systemChunks == [[0, 0, 0]])
+            #expect(processor.events.prefix(3) == ["reset", "process", "reset"])
+            #expect(processor.events.filter { $0 == "reset" }.count == (ending == "rapid" ? 3 : 2))
+        }
+        #expect(try pcm(urls.0) == after)
+        #expect(try pcm(urls.1).isEmpty)
+        #expect(try pcm(urls.2) == before.map { $0 / 2 } + after)
+    }
+
     @Test("delayed native resume recycles every active buffer without admitting paused audio",
           arguments: [false, true], ["before", "crossing", "after", "future", "untimed", "empty"])
     func resumeRecyclesBuffers(wrapped: Bool, timing: String) async throws {
@@ -354,7 +447,7 @@ struct MeetingMicrophoneDeliveryTests {
     }
 
     @Test("handoff delivers chronological, non-overlapping audio to saved WAV and transcription input",
-          arguments: [false, true], ["running", "paused", "stopped", "discarded"])
+          arguments: [false, true], ["running", "paused", "stopped", "discarded", "pauseFence", "resumeFence"])
     func captureToSinks(oldUsesQueue: Bool, ending: String) async throws {
         let old = ContractProducer(useQueue: oldUsesQueue)
         let next = ContractProducer(useQueue: !oldUsesQueue)
@@ -376,6 +469,8 @@ struct MeetingMicrophoneDeliveryTests {
         let chunks = try PCMChunkRecorder(directoryName: "meeting-delivery-contract-tests")
         let sink = DispatchQueue(label: "test.contract.session-sink")
         var delivered: [MicrophoneCaptureAudio] = [] // Sink queue only.
+        var boundaryAudio: [Int16]? // Sink queue only.
+        let boundaryCompleted = DispatchSemaphore(value: 0)
         route.onRawPCMSamples = { audio in
             capture.enqueueMicrophoneSamples(audio, on: sink) {
                 delivered.append(audio)
@@ -397,13 +492,24 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(didPromote == .success)
         try next.emit([7, 8], at: 106)
         if ending != "running" {
-            #expect(capture.setPaused(true))
+            let boundary: (() -> Void)? = ending.hasSuffix("Fence") ? {
+                sink.sync { boundaryAudio = delivered.flatMap(\.samples) }
+                boundaryCompleted.signal()
+            } : nil
+            #expect(capture.setPaused(true, boundary: boundary))
             try await paused.waitUntilEntered()
             try next.emit([15, 15], at: 108) // Phase is paused, native pause still blocked.
+            if ending == "resumeFence" { #expect(capture.setPaused(false, boundary: {})) }
         }
         if ending == "discarded" { capture.finishMicrophoneDelivery() }
         let shutdown = ending == "stopped" || ending == "discarded" ? capture.requestStop() : nil
         paused.release.signal()
+        if ending.hasSuffix("Fence") {
+            let prematureBoundary = try await MeetingCaptureLifecycle.onDriverQueue {
+                boundaryCompleted.wait(timeout: .now() + 0.02)
+            }
+            #expect(prematureBoundary == .timedOut) // Old accepted tail still owns the pre-pause interval.
+        }
         delayed.release.signal()
         // Drain both real producers, including the retired one, before the same
         // final queue barrier used by MeetingSession closes delivery.
@@ -416,6 +522,7 @@ struct MeetingMicrophoneDeliveryTests {
         let audio = sink.sync { delivered }
         let expected: [Int16] = ending == "discarded" ? [] : (1...8).map { Int16(Float($0) / 16 * 32767) }
         #expect(audio.flatMap(\.samples) == expected)
+        if ending.hasSuffix("Fence") { #expect(sink.sync { boundaryAudio } == expected) }
         for pair in zip(audio, audio.dropFirst()) { #expect(pair.0.endFrame <= pair.1.startFrame) }
         let saved = writer.stop()
         let transcription = chunks.stop()
@@ -550,6 +657,7 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
     private var first = true
     var beforeFirstDelivery: (() -> Void)?
     var beforePause: (() -> Void)?
+    var beforeDrain: (() -> Void)?
     var beforeResume: (() -> Void)?
     var afterResume: (() -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
@@ -603,6 +711,7 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         }
     }
     func pause() { beforePause?(); (child as? PausableStreamingDictationRecording)?.pause() }
+    func drainAcceptedAudio() { beforeDrain?(); child.drainAcceptedAudio() }
     func resume() {
         beforeResume?()
         (child as? PausableStreamingDictationRecording)?.resume()
@@ -689,4 +798,14 @@ private final class ContractSystemAudio: SystemAudioCapturing {
     func pause() { isPaused = true }
     func resume() { isPaused = false }
     func stop() -> URL? { isRecording = false; return nil }
+}
+
+private final class ContractAecProcessor: MeetingAecProcessor {
+    let name = "test", frameSize = 4, sampleRate = 16_000
+    var events: [String] = [] // Session pipeline queue only.
+    func reset() { events.append("reset") }
+    func processFrame(mic: [Float], reference: [Float]) throws -> [Float] {
+        events.append("process")
+        return mic
+    }
 }

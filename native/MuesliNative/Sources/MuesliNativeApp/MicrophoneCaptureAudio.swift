@@ -49,6 +49,10 @@ final class MicrophoneCaptureTimeline {
     private var assignedFrames = 0
     private var previousEnd: Int64?
 
+    func reset() {
+        spans.removeAll(); inputFrames = 0; assignedFrames = 0; previousEnd = nil
+    }
+
     func append(frames: Int, rate: Double, start: Int64) {
         inputFrames += Double(frames)
         let total = Int(ceil(inputFrames * 16_000 / rate))
