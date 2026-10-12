@@ -2529,6 +2529,88 @@ struct HotkeyMonitorTests {
         )
     }
 
+    @Test("dictation can start and stop with an own-app text editor focused")
+    @MainActor
+    func dictationStartsWhileEditingOwnText() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.allowsStartsWhileEditingText = true
+        monitor.configure(keyCode: 63)
+        monitor.doubleTapEnabled = false // Test the hold lifecycle without the double-tap guard delay.
+        let editor = NSTextView()
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+
+        let acceptsStart = monitor.shouldHandleLocalEventForTests(
+            type: .flagsChanged, keyCode: 63, firstResponder: editor
+        )
+        #expect(acceptsStart)
+        if acceptsStart { monitor.handleFlagsChanged(keyCode: 63, flags: .function) }
+        scheduler.advance(by: 0.06)
+        let acceptsRelease = monitor.shouldHandleLocalEventForTests(
+            type: .flagsChanged, keyCode: 63, firstResponder: editor
+        )
+        #expect(acceptsRelease)
+        if acceptsRelease { monitor.handleFlagsChanged(keyCode: 63, flags: []) }
+        #expect(events == ["prepare", "start", "stop"])
+        #expect(monitor.shouldHandleLocalEventForTests(
+            type: .flagsChanged, keyCode: 63, firstResponder: NSTextField()
+        ))
+    }
+
+    @Test("dictation combination fallback starts in an own-app editor")
+    @MainActor
+    func dictationCombinationFallbackStartsWhileEditing() {
+        let monitor = HotkeyMonitor()
+        monitor.allowsStartsWhileEditingText = true
+        monitor.configure(.combination(modifiers: [.control, .option], keyCode: 49))
+        monitor.combinationToggleRequiresHold = false
+        let editor = NSTextView()
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("stop") }
+        for _ in 0..<2 {
+            // The event-monitor fallback used when Carbon registration fails
+            // must reach the same combination state machine from our own fields.
+            let acceptsPress = monitor.shouldHandleLocalEventForTests(
+                type: .keyDown, keyCode: 49, firstResponder: editor
+            )
+            #expect(acceptsPress)
+            if acceptsPress {
+                #expect(monitor.handleCombinationForTests(
+                    type: .keyDown, keyCode: 49, flags: [.control, .option]
+                ))
+            }
+            #expect(monitor.shouldHandleLocalEventForTests(
+                type: .keyUp, keyCode: 49, firstResponder: editor
+            ))
+            #expect(monitor.handleCombinationForTests(
+                type: .keyUp, keyCode: 49, flags: [.control, .option]
+            ))
+        }
+        #expect(events == ["start", "stop"])
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("ordinary editing shortcuts still cancel an armed dictation start")
+    @MainActor
+    func editingShortcutDoesNotStartDictation() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.allowsStartsWhileEditingText = true
+        monitor.configure(keyCode: 55)
+        monitor.doubleTapEnabled = false
+        var starts = 0
+        monitor.onStart = { starts += 1 }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleKeyDown(keyCode: 8) // Cmd+C still belongs to the text editor.
+        scheduler.advance(by: 0.1)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(starts == 0)
+    }
+
     @Test("local monitor preserves key-up cleanup after hotkey session is armed")
     @MainActor
     func localMonitorPreservesKeyUpCleanupAfterHotkeySessionIsArmed() async throws {

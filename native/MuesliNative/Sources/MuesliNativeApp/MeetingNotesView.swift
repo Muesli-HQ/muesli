@@ -3,13 +3,17 @@ import MuesliCore
 
 struct MeetingNotesView: View {
     let markdown: String
+    var highlightedRange: NSRange? = nil
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                 let lines = markdown.components(separatedBy: .newlines)
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     markdownLine(line)
+                        .background(index == highlightedLine ? MuesliTheme.surfaceSelected : Color.clear)
+                        .id(index)
                 }
             }
             .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
@@ -19,6 +23,13 @@ struct MeetingNotesView: View {
             .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        }
+    }
+    private var highlightedLine: Int? {
+        guard let range = highlightedRange, range.location >= 0, range.location <= (markdown as NSString).length else { return nil }
+        return (markdown as NSString).substring(to: range.location).components(separatedBy: .newlines).count - 1
     }
 
     @ViewBuilder
