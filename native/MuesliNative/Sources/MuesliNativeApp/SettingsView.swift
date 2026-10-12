@@ -1018,7 +1018,7 @@ struct SettingsView: View {
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: displayedDictationBackend?.model ?? appState.config.sttModel)
                 }
             }
         }
@@ -1208,7 +1208,7 @@ struct SettingsView: View {
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             }
         }
@@ -1392,8 +1392,9 @@ struct SettingsView: View {
         settingsControl("nemotron_language")
     }
 
-    private var whisperLanguageMenu: some View {
-        settingsControl("whisper_language")
+    private func whisperLanguageMenu(model: String) -> some View {
+        MuesliSettingControl(controller: controller, id: "whisper_language",
+            allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: model).map(\.rawValue)))
     }
 
     @ViewBuilder
