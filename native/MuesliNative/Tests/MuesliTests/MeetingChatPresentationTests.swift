@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 @testable import MuesliCore
 @testable import MuesliNativeApp
@@ -86,4 +87,56 @@ struct MeetingChatPresentationTests {
         #expect(String(rendered.characters) == "Ship Friday [1]")
         #expect(rendered.runs.compactMap(\.link).count == 1)
     }
+    @Test func mentionEditsPreserveTypingUndoAndRedo() throws {
+        let editor = MeetingChatUndoTestEditor()
+        editor.isRichText = false
+        editor.allowsUndo = true
+        let undo = try #require(editor.undoManager)
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        editor.insertText("Question ", replacementRange: NSRange(location: 0, length: 0))
+        editor.breakUndoCoalescing()
+        undo.endUndoGrouping()
+        undo.beginUndoGrouping()
+        MeetingChatComposerTextSync.apply("Question @meeting", to: editor, resetUndo: false)
+        undo.endUndoGrouping()
+        undo.beginUndoGrouping()
+        MeetingChatComposerTextSync.apply("Question ", to: editor, resetUndo: false)
+        undo.endUndoGrouping()
+        undo.undo()
+        #expect(editor.string == "Question @meeting")
+        undo.undo()
+        #expect(editor.string == "Question ")
+        undo.undo()
+        #expect(editor.string.isEmpty)
+        undo.redo(); undo.redo(); undo.redo()
+        #expect(editor.string == "Question ")
+    }
+
+    @Test func chatSwitchAndSubmissionClearUndoEvenForIdenticalDrafts() throws {
+        let editor = MeetingChatUndoTestEditor()
+        editor.isRichText = false
+        editor.allowsUndo = true
+        let undo = try #require(editor.undoManager)
+        undo.groupsByEvent = false
+        for replacement in ["Same draft", ""] {
+            editor.string = ""
+            undo.beginUndoGrouping()
+            editor.insertText("Same draft", replacementRange: NSRange(location: 0, length: 0))
+            editor.breakUndoCoalescing()
+            undo.endUndoGrouping()
+            #expect(undo.canUndo)
+            MeetingChatComposerTextSync.apply(replacement, to: editor, resetUndo: true)
+            #expect(editor.string == replacement)
+            #expect(!undo.canUndo)
+            #expect(!undo.canRedo)
+        }
+    }
+}
+
+
+@MainActor
+private final class MeetingChatUndoTestEditor: NSTextView {
+    private let testUndoManager = UndoManager()
+    override var undoManager: UndoManager? { testUndoManager }
 }

@@ -258,7 +258,7 @@ struct MeetingChatView: View {
                             .foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
                     }
                     MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                              focusRequest: composerFocusRequest, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
+                                              focusRequest: composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
@@ -586,6 +586,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var selection: NSRange
     var focusRequest: UUID
+    var undoIdentity: UUID
     let onFocus: (Bool) -> Void
     let onKey: (Key) -> Bool
 
@@ -593,6 +594,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         let editor = Editor()
+        editor.string = text
         editor.delegate = context.coordinator
         editor.onKey = onKey
         editor.onFocus = onFocus
@@ -631,10 +633,8 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         defer { context.coordinator.isUpdating = false }
         editor.onKey = onKey
         editor.onFocus = onFocus
-        if editor.string != text {
-            editor.undoManager?.removeAllActions()
-            editor.string = text
-        }
+        MeetingChatComposerTextSync.apply(text, to: editor, resetUndo: context.coordinator.undoIdentity != undoIdentity)
+        context.coordinator.undoIdentity = undoIdentity
         let length = (text as NSString).length
         let safe = NSRange(location: min(selection.location, length), length: min(selection.length, max(0, length - selection.location)))
         if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
@@ -647,9 +647,11 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         var parent: MeetingChatComposerEditor
         var isUpdating = false
         var lastFocusRequest: UUID
+        var undoIdentity: UUID
         init(_ parent: MeetingChatComposerEditor) {
             self.parent = parent
             lastFocusRequest = parent.focusRequest
+            undoIdentity = parent.undoIdentity
         }
         func textDidChange(_ notification: Notification) {
             guard !isUpdating, let editor = notification.object as? NSTextView else { return }
@@ -720,5 +722,28 @@ enum MeetingChatComposerLayout {
             .boundingRect(with: NSSize(width: max(80, width - 10), height: CGFloat.greatestFiniteMagnitude),
                           options: [.usesLineFragmentOrigin, .usesFontLeading])
         return min(144, max(34, ceil(measured.height) + 16))
+    }
+}
+
+
+/// Synchronize host-originated edits through NSTextView's undo registration.
+/// A different draft identity (chat switch or accepted send) is a hard boundary,
+/// including when the two drafts happen to contain identical text.
+@MainActor
+enum MeetingChatComposerTextSync {
+    static func apply(_ text: String, to editor: NSTextView, resetUndo: Bool) {
+        if resetUndo {
+            editor.breakUndoCoalescing()
+            editor.undoManager?.removeAllActions()
+            if editor.string != text { editor.string = text }
+            return
+        }
+        guard editor.string != text else { return }
+        let range = NSRange(location: 0, length: (editor.string as NSString).length)
+        editor.breakUndoCoalescing()
+        guard editor.shouldChangeText(in: range, replacementString: text) else { return }
+        editor.textStorage?.replaceCharacters(in: range, with: text)
+        editor.didChangeText()
+        editor.breakUndoCoalescing()
     }
 }

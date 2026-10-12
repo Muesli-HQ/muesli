@@ -465,4 +465,32 @@ struct MeetingChatStoreTests {
         #expect(try chat.sessions().allSatisfy { $0.rollingSummary == nil })
     }
 
+    @Test func retryOlderUncompletedTurnCanCompactBeforeALaterSavedSummary() throws {
+        for state in [MeetingChatTurnState.failed, .stopped] {
+            let (_, chat, id) = try fixture()
+            let (session, first, deps) = try pending(chat, id)
+            #expect(try chat.finishTurn(turnID: first.id, answer: String(repeating: "Earlier context. ", count: 400), citations: [], dependencies: deps))
+            let older = try chat.beginTurn(sessionID: session.id, question: "Retry this later", scope: .init(), provider: "test", model: "test")
+            try chat.setTurnState(id: older.id, state: state)
+            let later = try chat.beginTurn(sessionID: session.id, question: "Later question", scope: .init(), provider: "test", model: "test")
+            #expect(try chat.finishTurn(turnID: later.id, answer: "Later answer", citations: [], dependencies: []))
+            let newest = try chat.beginTurn(sessionID: session.id, question: "Summarize", scope: .init(), provider: "test", model: "test")
+            let laterContext = try chat.historyContext(before: newest)
+            #expect(try chat.saveRollingSummary(text: "Later conversation memory", coveredTurns: laterContext.turns, for: newest))
+            #expect(try chat.sessions().first?.rollingSummary?.throughOrdinal == later.ordinal)
+            try chat.setTurnState(id: newest.id, state: .stopped)
+
+            let retry = try #require(try chat.restartTurn(id: older.id, provider: "test", model: "test"))
+            #expect(retry.attemptID != older.attemptID)
+            #expect(try chat.rollingSummary(before: retry) == nil)
+            #expect(try chat.sessions().first?.rollingSummary == nil)
+            let retryContext = try chat.historyContext(before: retry)
+            #expect(retryContext.turns.map(\.id) == [first.id])
+            #expect(try chat.saveRollingSummary(text: "Earlier request memory", coveredTurns: retryContext.turns, for: retry))
+            #expect(try chat.rollingSummary(before: retry)?.throughOrdinal == first.ordinal)
+            // Clearing the derived cache preserves all later raw exchanges.
+            #expect(try chat.turns(sessionID: session.id).first { $0.id == later.id }?.originalAnswer == "Later answer")
+        }
+    }
+
 }

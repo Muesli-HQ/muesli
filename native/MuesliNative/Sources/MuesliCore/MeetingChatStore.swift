@@ -242,6 +242,15 @@ public struct MeetingChatStore: Sendable {
     public func restartTurn(id: UUID, provider: String, model: String) throws -> MeetingChatTurn? {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard var turn = try turn(id, db: db), turn.state != .sourceDeleted else { return nil }
+            // A later summary cannot be used before this retried turn. Failed/stopped
+            // turns were never covered by its fingerprints, so the turn-change trigger
+            // alone cannot invalidate that incompatible cache. Clear it atomically
+            // before retry compaction; the raw conversation remains available to rebuild.
+            var session = try session(turn.sessionID, db: db)
+            if let summary = session.rollingSummary, summary.throughOrdinal >= turn.ordinal {
+                session.rollingSummary = nil
+                try saveSession(session, db: db)
+            }
             turn.state = .finding; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
             turn.error = nil; turn.provider = provider; turn.model = model; turn.coverage = nil
             turn.attemptID = UUID()

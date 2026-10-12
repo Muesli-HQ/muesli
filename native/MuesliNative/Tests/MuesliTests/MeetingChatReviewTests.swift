@@ -469,6 +469,26 @@ struct MeetingChatReviewTests {
         #expect(!coordinator.reasoningIsStreaming)
     }
 
+    @Test func composerUndoIdentityFollowsAttachmentRegistrationAndResetsOnSend() async throws {
+        let (_, coordinator) = try fixture()
+        await coordinator.refreshChoices()
+        let meeting = try #require(coordinator.sourceChoices.first)
+        coordinator.composerDraft = "Question @Launch"
+        let draftIdentity = coordinator.composerUndoIdentity
+        #expect(await coordinator.addMeetingToScope(id: meeting.id))
+        #expect(coordinator.composerUndoIdentity == draftIdentity)
+        let firstSession = try #require(coordinator.selectedSessionID)
+        coordinator.composerDraft = "Launch?"
+        await coordinator.send(question: "Launch?", config: AppConfig())
+        #expect(coordinator.composerUndoIdentity != draftIdentity)
+        let submittedIdentity = coordinator.composerUndoIdentity
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        #expect(coordinator.composerUndoIdentity != submittedIdentity)
+        coordinator.selectChat(id: firstSession)
+        #expect(coordinator.composerUndoIdentity == submittedIdentity)
+    }
+
 }
 
 private actor ReviewReplyProbe: MeetingTextGenerating {

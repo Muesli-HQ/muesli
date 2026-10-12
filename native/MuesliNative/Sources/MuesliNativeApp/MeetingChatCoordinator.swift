@@ -231,6 +231,16 @@ final class MeetingChatCoordinator {
     private(set) var activityTurnID: UUID?
     private var composerDrafts: [UUID?: String] = [:]
     private var composerEditVersion = UUID()
+    private var untitledComposerUndoIdentity = UUID()
+    private var composerUndoIdentities: [UUID: UUID] = [:]
+    var composerUndoIdentity: UUID {
+        guard let id = selectedSessionID else { return untitledComposerUndoIdentity }
+        return composerUndoIdentities[id] ?? id
+    }
+    private func transferUntitledComposerUndoIdentity(to sessionID: UUID) {
+        composerUndoIdentities[sessionID] = untitledComposerUndoIdentity
+        untitledComposerUndoIdentity = UUID()
+    }
     var composerDraft: String {
         get { composerDrafts[selectedSessionID] ?? "" }
         set { composerDrafts[selectedSessionID] = newValue; composerEditVersion = UUID() }
@@ -341,6 +351,7 @@ final class MeetingChatCoordinator {
                 if selectionVersion == version {
                     composerDrafts[session.id] = composerDrafts[nil]
                     composerDrafts[nil] = nil
+                    transferUntitledComposerUndoIdentity(to: session.id)
                     selectedSessionID = session.id
                 }
             }
@@ -368,6 +379,7 @@ final class MeetingChatCoordinator {
             if originalTarget == nil, let target {
                 composerDrafts[target] = composerDrafts[nil]
                 composerDrafts[nil] = nil
+                transferUntitledComposerUndoIdentity(to: target)
             }
             return false
         }
@@ -427,6 +439,8 @@ final class MeetingChatCoordinator {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
                 reload(); return
             }
+            // An accepted send is an undo boundary even if the user started a new draft while saving.
+            composerUndoIdentities[id] = UUID()
             if composerDrafts[submittedDraftKey] == submittedDraft, submittedDraft.trimmingCharacters(in: .whitespacesAndNewlines) == question { composerDrafts[submittedDraftKey] = nil }
             errorMessage = nil; reload(); launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens)
         } catch {
@@ -443,6 +457,7 @@ final class MeetingChatCoordinator {
         guard selectedSessionID == sessionID, composerDrafts[sessionID] == nil else { return }
         composerDrafts[sessionID] = composerDrafts[nil]
         composerDrafts[nil] = nil
+        transferUntitledComposerUndoIdentity(to: sessionID)
     }
     func retry(turnID: UUID, config: AppConfig, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
@@ -629,7 +644,7 @@ final class MeetingChatCoordinator {
             reasoningSummaries = []; self.activityTurnID = nil
         }
         if activeSessionID == id { stop() }
-        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; reload() } catch { errorMessage = error.localizedDescription }
+        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; composerUndoIdentities[id] = nil; reload() } catch { errorMessage = error.localizedDescription }
     }
     func saveDraft(turnID: UUID, text: String) async {
         do { try await worker.saveDraft(turnID: turnID, text: text); reload() } catch { errorMessage = error.localizedDescription }
