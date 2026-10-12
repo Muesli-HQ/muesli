@@ -135,18 +135,59 @@ struct MeetingChatClientTests {
 
     @Test func reasoningSummariesUseOnlyExplicitSummaryEvents() {
         var accumulator = ChatGPTReasoningSummaryAccumulator()
-        let ignoredRawReasoning = accumulator.apply(["type": "response.reasoning_text.delta", "item_id": "r1", "summary_index": 0, "delta": "HIDDEN_REASONING"])
+        let ignoredRawReasoning = accumulator.apply(["type": "response.reasoning_text.delta", "item_id": "r1", "output_index": 0, "summary_index": 0, "delta": "HIDDEN_REASONING"])
         #expect(!ignoredRawReasoning)
-        let firstDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": "Checking "])
+        let firstDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "output_index": 0, "summary_index": 0, "delta": "Checking "])
         #expect(firstDeltaChanged)
-        let secondDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": "meeting sources."])
+        let secondDeltaChanged = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "output_index": 0, "summary_index": 0, "delta": "meeting sources."])
         #expect(secondDeltaChanged)
-        let completedChanged = accumulator.apply(["type": "response.reasoning_summary_text.done", "item_id": "r1", "summary_index": 0, "text": "Checking meeting sources."])
+        let completedChanged = accumulator.apply(["type": "response.reasoning_summary_text.done", "item_id": "r1", "output_index": 0, "summary_index": 0, "text": "Checking meeting sources."])
         #expect(!completedChanged)
         #expect(accumulator.text == "Checking meeting sources.")
         #expect(!accumulator.text.contains("HIDDEN_REASONING"))
         let payload: [String: Any] = ["output": [["type": "reasoning", "content": [["text": "HIDDEN_REASONING"]]], ["type": "message", "content": [["text": "Final answer"]]]]]
         #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Final answer")
+    }
+
+    @Test func reasoningSummariesOrderInterleavedPartsAndIgnoreLateDeltas() {
+        var accumulator = ChatGPTReasoningSummaryAccumulator()
+        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "b", "output_index": 2, "summary_index": 0, "delta": "Third"])
+        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "a", "output_index": 0, "summary_index": 1, "delta": "Second"])
+        _ = accumulator.apply(["type": "response.reasoning_summary_part.done", "item_id": "a", "output_index": 0, "summary_index": 0, "part": ["type": "summary_text", "text": "First"]])
+        #expect(accumulator.text == "First\n\nSecond\n\nThird")
+        let late = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "a", "output_index": 0, "summary_index": 0, "delta": " duplicated"])
+        let duplicate = accumulator.apply(["type": "response.reasoning_summary_text.done", "item_id": "a", "output_index": 0, "summary_index": 0, "text": "First"])
+        #expect(!late && !duplicate)
+        #expect(accumulator.text == "First\n\nSecond\n\nThird")
+    }
+
+    @Test func reasoningFinalSnapshotReconcilesWithoutExposingPrivateContent() {
+        var accumulator = ChatGPTReasoningSummaryAccumulator()
+        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "a", "output_index": 0, "summary_index": 0, "delta": "Partial"])
+        let final: [String: Any] = ["type": "response.output_item.done", "output_index": 0,
+            "item": ["id": "a", "type": "reasoning", "encrypted_content": "SECRET", "content": [["type": "reasoning_text", "text": "HIDDEN"]],
+                     "summary": [["type": "summary_text", "text": "Final public summary"], ["type": "reasoning_text", "text": "HIDDEN"]]]]
+        let changed = accumulator.apply(final)
+        let duplicate = accumulator.apply(final)
+        let late = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "a", "output_index": 0, "summary_index": 1, "delta": "Late"])
+        #expect(changed && !duplicate && !late)
+        #expect(accumulator.text == "Final public summary")
+        let unrelated = accumulator.apply(["type": "response.output_item.done", "output_index": 1, "item": ["id": "m", "type": "message", "summary": [["type": "summary_text", "text": "NOT_REASONING"]]]])
+        #expect(!unrelated)
+    }
+
+    @Test func reasoningSummaryRejectsInvalidIndicesAndBoundsFinalSnapshots() {
+        var accumulator = ChatGPTReasoningSummaryAccumulator()
+        for (output, summary) in [(-1, 0), (0, -1), (0, 32)] {
+            let changed = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "a", "output_index": output, "summary_index": summary, "delta": "INVALID"])
+            #expect(!changed)
+        }
+        let parts = (0..<40).map { index in ["type": "summary_text", "text": "Part \(index)"] }
+        _ = accumulator.apply(["type": "response.output_item.done", "output_index": 0, "item": ["id": "a", "type": "reasoning", "summary": parts]])
+        #expect(accumulator.text.contains("Part 31"))
+        #expect(!accumulator.text.contains("Part 32"))
+        _ = accumulator.apply(["type": "response.output_item.done", "output_index": 0, "item": ["id": "a", "type": "reasoning", "summary": [["type": "summary_text", "text": String(repeating: "x", count: 8_000)]]]])
+        #expect(accumulator.text.count == 6_000)
     }
 
     @Test func reasoningSummaryRequestsAreOptInAndRespectModelCapabilities() {
@@ -157,7 +198,7 @@ struct MeetingChatClientTests {
         let normal = ChatGPTResponsesClient.requestBody(systemPrompt: "S", userPrompt: "U", model: "gpt-6.1-sol", reasoningEffort: .low)
         #expect((normal["reasoning"] as? [String: String])?["summary"] == nil)
         var accumulator = ChatGPTReasoningSummaryAccumulator()
-        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "summary_index": 0, "delta": String(repeating: "a", count: 8_000)])
+        _ = accumulator.apply(["type": "response.reasoning_summary_text.delta", "item_id": "r1", "output_index": 0, "summary_index": 0, "delta": String(repeating: "a", count: 8_000)])
         #expect(accumulator.text.count == 6_000)
     }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import MuesliCore
+import AIElementsSwift
 
 struct MeetingChatDocumentTarget {
     let citation: MeetingChatCitation
@@ -35,7 +36,8 @@ struct MeetingChatCitationView: View {
     @State private var changed = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(citation.kind.label, systemImage: "text.quote").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            Label { Text(citation.kind.label) } icon: { AIIcon(.fileText, size: 14) }
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             Text(citation.title).font(MuesliTheme.title3())
             Text("\(citation.startDate.formatted(date: .abbreviated, time: .shortened)) · \(citation.kind.label)\(citation.timestamp.map { " · \($0)" } ?? "")")
                 .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
@@ -45,7 +47,9 @@ struct MeetingChatCitationView: View {
             }.frame(maxHeight: 300).background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))
             if changed { Text("This source changed since the answer was written.").font(.caption).foregroundStyle(.orange) }
             if checked && !available { Text("This source is no longer available.").font(.caption) }
-            Button("Open in meeting", systemImage: "arrow.up.right", action: onOpen).buttonStyle(.borderedProminent).disabled(!available).accessibilityIdentifier("meeting-chat-open-source")
+            Button(action: onOpen) {
+                Label { Text("Open in meeting") } icon: { AIIcon(.arrowUpRight, size: 14) }
+            }.buttonStyle(.borderedProminent).disabled(!available).accessibilityIdentifier("meeting-chat-open-source")
         }
         .padding(20).frame(width: 440)
         .task(id: coordinator.sourceMutationVersion) {
@@ -95,40 +99,22 @@ struct MeetingChatSourcesView: View {
     let onSelect: (MeetingChatCitation) -> Void
 
     var body: some View {
-        DisclosureGroup {
+        AIDisclosure(title: MeetingChatSourceGroup.label(for: citations), icon: .bookOpen) {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(MeetingChatSourceGroup.grouped(citations)) { group in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: "doc.text").foregroundStyle(.secondary)
+                            AIIcon(.fileText, size: 15).foregroundStyle(.secondary)
                             Text(group.title).font(.callout.weight(.medium)).lineLimit(2)
                             Spacer(minLength: 0)
                             Text(group.startDate, format: .dateTime.month(.abbreviated).day().year())
                                 .font(.caption2).foregroundStyle(.secondary).fixedSize()
                         }
                         ForEach(group.passages) { passage in
-                            Button { onSelect(passage.citation) } label: {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("\(passage.number)")
-                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(MuesliTheme.accent)
-                                        .frame(width: 20, height: 20)
-                                        .background(MuesliTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 4))
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack(spacing: 5) {
-                                            Text(passage.citation.kind.label)
-                                            if let timestamp = passage.citation.timestamp {
-                                                Text("·")
-                                                Text(timestamp).monospacedDigit()
-                                            }
-                                        }.font(.caption2).foregroundStyle(.secondary)
-                                        Text(passage.preview).font(.system(size: 12)).lineLimit(2)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(.tertiary)
-                                }.padding(8).contentShape(Rectangle())
-                                    .background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 7))
-                            }.buttonStyle(.plain)
+                            AISourcePassage(number: passage.number,
+                                metadata: passage.citation.kind.label + (passage.citation.timestamp.map { " · \($0)" } ?? ""),
+                                preview: passage.preview,
+                                action: { onSelect(passage.citation) })
                                 .help("Read passage \(passage.number) from \(group.title)")
                                 .accessibilityLabel("Passage \(passage.number), \(passage.citation.kind.label)\(passage.citation.timestamp.map { ", \($0)" } ?? ""): \(passage.preview)")
                                 .accessibilityIdentifier("meeting-chat-passage-\(passage.citation.sourceKey)")
@@ -136,9 +122,6 @@ struct MeetingChatSourcesView: View {
                     }
                 }
             }.padding(.top, 8)
-        } label: {
-            Label(MeetingChatSourceGroup.label(for: citations), systemImage: "text.book.closed")
-                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
         }
     }
 }

@@ -243,6 +243,20 @@ struct MeetingChatReviewTests {
         }
     }
 
+    @Test func toolCardsExposeResultsAndReasoningStopsStreamingAfterCompletion() async throws {
+        let (_, coordinator) = try fixture(generator: ToolPresentationProbe())
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Review launch context", config: AppConfig())
+        await coordinator.waitForIdle()
+        let activity = try #require(coordinator.activities.first)
+        #expect(activity.state == .completed)
+        #expect(activity.output?.contains("passages returned") == true)
+        #expect(activity.error == nil)
+        #expect(coordinator.reasoningSummaries.contains("Checking the supplied launch context."))
+        #expect(!coordinator.reasoningIsStreaming)
+    }
+
 }
 
 private actor ReviewReplyProbe: MeetingTextGenerating {
@@ -259,5 +273,15 @@ private actor ConversationHistoryProbe: MeetingTextGenerating {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         calls += 1; lastUser = request.user
         return #"{"status":"conversation","markdown":"| Item | Date |\n| --- | --- |\n| Launch | Friday |"}"#
+    }
+}
+
+private actor ToolPresentationProbe: MeetingTextGenerating {
+    var calls = 0
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        calls += 1
+        await request.onReasoningSummary?("Checking the supplied launch context.")
+        if calls == 1 { return #"{"tool":"browse_meeting_sources"}"# }
+        return #"{"status":"answered","markdown":"Launch Friday [[S1]]"}"#
     }
 }

@@ -94,28 +94,72 @@ enum ChatGPTResponsesTransport {
 /// Collect only provider-designated reasoning summaries. Raw reasoning text,
 /// encrypted reasoning, and unrelated output events never enter this display channel.
 struct ChatGPTReasoningSummaryAccumulator {
-    private var parts: [String: String] = [:]
-    private var order: [String] = []
+    private struct Key: Hashable {
+        let itemID: String
+        let summaryIndex: Int
+    }
+    private struct Part {
+        let outputIndex: Int
+        var text: String
+        var isDone: Bool
+    }
+    private var parts: [Key: Part] = [:]
+    private var completedItems: Set<String> = []
     private(set) var text = ""
 
     mutating func apply(_ payload: [String: Any]) -> Bool {
-        let type = payload["type"] as? String
-        guard type == "response.reasoning_summary_text.delta" || type == "response.reasoning_summary_text.done",
-              let itemID = payload["item_id"] as? String,
-              let index = payload["summary_index"] as? Int,
-              let fragment = payload[type == "response.reasoning_summary_text.delta" ? "delta" : "text"] as? String else { return false }
-        let key = "\(itemID):\(index)"
-        guard parts[key] != nil || order.count < 32 else { return false }
-        if parts[key] == nil { order.append(key) }
-        if type == "response.reasoning_summary_text.delta" {
-            parts[key] = String(((parts[key] ?? "") + fragment).prefix(6_000))
+        guard let type = payload["type"] as? String,
+              let outputIndex = payload["output_index"] as? Int, outputIndex >= 0 else { return false }
+        if type == "response.output_item.done" {
+            guard let item = payload["item"] as? [String: Any], item["type"] as? String == "reasoning",
+                  let itemID = item["id"] as? String, !itemID.isEmpty,
+                  let summary = item["summary"] as? [[String: Any]],
+                  completedItems.contains(itemID) || completedItems.count < 32 else { return false }
+            // The final item contains only public summary_text parts here. Never
+            // consult content (raw reasoning) or encrypted_content.
+            parts = parts.filter { $0.key.itemID != itemID }
+            for (index, entry) in summary.prefix(32).enumerated() {
+                guard entry["type"] as? String == "summary_text", let fragment = entry["text"] as? String else { continue }
+                store(itemID: itemID, index: index, outputIndex: outputIndex, fragment: fragment, isDelta: false)
+            }
+            completedItems.insert(itemID)
         } else {
-            parts[key] = String(fragment.prefix(6_000))
+            guard let itemID = payload["item_id"] as? String, !itemID.isEmpty,
+                  let index = payload["summary_index"] as? Int, (0..<32).contains(index),
+                  !completedItems.contains(itemID) else { return false }
+            let fragment: String
+            let isDelta = type == "response.reasoning_summary_text.delta"
+            switch type {
+            case "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done":
+                guard let value = payload[isDelta ? "delta" : "text"] as? String else { return false }
+                fragment = value
+            case "response.reasoning_summary_part.done":
+                guard let part = payload["part"] as? [String: Any], part["type"] as? String == "summary_text",
+                      let value = part["text"] as? String else { return false }
+                fragment = value
+            default: return false
+            }
+            store(itemID: itemID, index: index, outputIndex: outputIndex, fragment: fragment, isDelta: isDelta)
         }
-        let updated = String(order.compactMap { parts[$0] }.joined(separator: "\n\n").prefix(6_000))
+        let updated = String(parts.sorted {
+            if $0.value.outputIndex != $1.value.outputIndex { return $0.value.outputIndex < $1.value.outputIndex }
+            if $0.key.summaryIndex != $1.key.summaryIndex { return $0.key.summaryIndex < $1.key.summaryIndex }
+            return $0.key.itemID < $1.key.itemID
+        }.map { $0.value.text }.filter { !$0.isEmpty }.joined(separator: "\n\n").prefix(6_000))
         guard updated != text else { return false }
         text = updated
         return true
+    }
+
+    private mutating func store(itemID: String, index: Int, outputIndex: Int, fragment: String, isDelta: Bool) {
+        let key = Key(itemID: itemID, summaryIndex: index)
+        let previous = parts[key]
+        guard previous != nil || parts.count < 32,
+              previous == nil || previous?.outputIndex == outputIndex,
+              !isDelta || previous?.isDone != true else { return }
+        let bounded = String(fragment.prefix(6_000))
+        let content = isDelta ? String(((previous?.text ?? "") + bounded).prefix(6_000)) : bounded
+        parts[key] = Part(outputIndex: outputIndex, text: content, isDone: !isDelta)
     }
 }
 

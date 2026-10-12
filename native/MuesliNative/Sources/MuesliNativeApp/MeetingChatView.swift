@@ -1,5 +1,6 @@
 import SwiftUI
 import MuesliCore
+import AIElementsSwift
 
 struct MeetingChatView: View {
     let appState: AppState
@@ -60,6 +61,8 @@ struct MeetingChatView: View {
         // Share one canonical catalog across every setting control on this surface.
         let _ = appState.config
         return chatContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+            .aiElementsTheme(.init(surface: MuesliTheme.backgroundRaised, border: MuesliTheme.surfaceBorder,
+                                   accent: MuesliTheme.accent, muted: MuesliTheme.textSecondary))
     }
 
     private var chatContent: some View {
@@ -78,7 +81,7 @@ struct MeetingChatView: View {
                             if coordinator.turns.isEmpty { welcome }
                             ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
                                 if index > 0 && coordinator.turns[index - 1].scope != turn.scope {
-                                    Label(turn.scopeLabel ?? "Meeting context changed", systemImage: "line.3.horizontal.decrease")
+                                    Label { Text(turn.scopeLabel ?? "Meeting context changed") } icon: { AIIcon(.slidersHorizontal) }
                                         .font(.caption).foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                                 }
@@ -91,7 +94,7 @@ struct MeetingChatView: View {
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             VStack(spacing: 0) {
                                 if let error = coordinator.errorMessage {
-                                    Label(error, systemImage: "exclamationmark.circle")
+                                    Label { Text(error) } icon: { AIIcon(.circleAlert) }
                                         .foregroundStyle(.orange).font(.callout).textSelection(.enabled)
                                         .padding(.horizontal, 24).padding(.vertical, 8)
                                 }
@@ -141,13 +144,13 @@ struct MeetingChatView: View {
     }
     private var header: some View {
         HStack(spacing: 12) {
-            Button { showHistory = !historyIsVisible } label: { Image(systemName: "sidebar.left") }
+            Button { showHistory = !historyIsVisible } label: { AIIcon(.panelLeft) }
                 .buttonStyle(.borderless).help("Toggle chat history").accessibilityLabel("Toggle chat history")
             Text("Ask Meetings").font(.system(size: 17, weight: .semibold))
             Spacer()
-            Button("New chat", systemImage: "square.and.pencil") {
+            Button {
                 Task { await coordinator.createChat(scope: .init()); focusComposer() }
-            }.disabled(coordinator.isUpdatingChat).help("Start a new conversation")
+            } label: { Label { Text("New chat") } icon: { AIIcon(.squarePen) } }.disabled(coordinator.isUpdatingChat).help("Start a new conversation")
         }.padding(.horizontal, 24).padding(.vertical, 14)
     }
 
@@ -171,8 +174,8 @@ struct MeetingChatView: View {
                         }.buttonStyle(.plain)
                             .accessibilityAddTraits(coordinator.selectedSessionID == session.id ? .isSelected : [])
                             .contextMenu {
-                                Button("Rename", systemImage: "pencil") { renamingChat = session.id; newTitle = session.title }
-                                Button("Delete", systemImage: "trash", role: .destructive) { deletingChat = session.id }
+                                Button { renamingChat = session.id; newTitle = session.title } label: { Label { Text("Rename") } icon: { AIIcon(.squarePen) } }
+                                Button(role: .destructive) { deletingChat = session.id } label: { Label { Text("Delete") } icon: { AIIcon(.trash) } }
                             }
                     }
                 }.padding(.horizontal, 6).padding(.bottom, 12)
@@ -184,9 +187,9 @@ struct MeetingChatView: View {
         HStack(spacing: 8) {
             Button { showScope = true } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "rectangle.stack")
+                    AIIcon(.bookOpen)
                     Text(scopeLabel).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                    AIIcon(.chevronDown, size: 10)
                 }.font(.system(size: 12, weight: .medium))
             }.buttonStyle(.borderless).disabled(coordinator.isUpdatingChat)
                 .accessibilityIdentifier("meeting-chat-scope").help("Choose which meetings this chat can search")
@@ -220,7 +223,7 @@ struct MeetingChatView: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if coordinator.sourceChoices.isEmpty {
-                Button("Open Meetings", systemImage: "rectangle.stack") { controller.showMeetingsHome() }
+                Button { controller.showMeetingsHome() } label: { Label { Text("Open Meetings") } icon: { AIIcon(.bookOpen) } }
             } else if coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], alignment: .leading, spacing: 6) {
                     ForEach(MeetingChatQuickAction.allCases) { action in
@@ -228,7 +231,7 @@ struct MeetingChatView: View {
                             HStack(spacing: 6) {
                                 Text(action.label).font(.system(size: 12))
                                 Spacer(minLength: 4)
-                                Image(systemName: "arrow.up.left").font(.system(size: 9)).foregroundStyle(.tertiary)
+                                AIIcon(.arrowUpRight, size: 12).foregroundStyle(.tertiary)
                             }.padding(.horizontal, 10).padding(.vertical, 9)
                                 .background(MuesliTheme.backgroundRaised.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
                         }.buttonStyle(.plain).disabled(coordinator.isUpdatingChat)
@@ -242,13 +245,12 @@ struct MeetingChatView: View {
         VStack(alignment: .leading, spacing: 6) {
             if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.mini)
-                    Text(coordinator.phase.isEmpty ? "Saving question" : coordinator.phase).font(.caption).foregroundStyle(.secondary)
-                }.padding(.horizontal, 4).padding(.bottom, 3)
+                AIShimmer(coordinator.phase.isEmpty ? "Saving question" : coordinator.phase)
+                    .padding(.horizontal, 4).padding(.bottom, 3)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            AIPromptInput(isFocused: composerFocused, header: {
                 if let ids = attachedMeetingIDs { attachmentChips(ids) }
+            }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
                         Text(coordinator.turns.isEmpty ? "Ask a question, or @ to attach a meeting…" : "Ask a follow-up, or @ to add context…")
@@ -260,15 +262,16 @@ struct MeetingChatView: View {
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
                 }
+            }, footer: {
                 HStack(spacing: 10) {
-                    Button { insertMentionTrigger() } label: { Image(systemName: "at") }
+                    Button { insertMentionTrigger() } label: { AIIcon(.atSign) }
                         .buttonStyle(.borderless).help("Attach a meeting with @")
                         .accessibilityLabel("Attach a meeting").disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                     Button { showModelPicker = true } label: {
                         HStack(spacing: 5) {
                             Text(MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
                             if let thinkingLabel { Text("· " + thinkingLabel).foregroundStyle(.secondary).lineLimit(1) }
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                            AIIcon(.chevronDown, size: 10)
                         }.font(.caption)
                     }.buttonStyle(.borderless).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         .help("Choose the model and thinking level shared by meeting chats and summaries")
@@ -282,22 +285,21 @@ struct MeetingChatView: View {
                             ForEach(MeetingChatQuickAction.allCases) { action in
                                 Button(action.label) { Task { await prepare(action, name: appState.config.userName) } }
                             }
-                        } label: { Image(systemName: "text.badge.plus") }
+                        } label: { AIIcon(.plus) }
                             .menuStyle(.borderlessButton).fixedSize().help("Prepare a question")
                             .accessibilityLabel("Prepare a question").disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                     }
                     if coordinator.isBusy {
-                        Button { coordinator.stop() } label: { Image(systemName: "stop.fill").frame(width: 20, height: 24) }
+                        Button { coordinator.stop() } label: { AIIcon(.square).frame(width: 20, height: 24) }
                             .help("Stop answer").accessibilityLabel("Stop answer")
                     } else {
-                        Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)).frame(width: 20, height: 24) }
+                        Button { send() } label: { AIIcon(.arrowUp, size: 16).frame(width: 20, height: 24) }
                             .buttonStyle(.borderedProminent).tint(MuesliTheme.accent)
                             .help("Send question").accessibilityLabel("Send question")
                             .disabled(coordinator.isUpdatingChat || coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-            }.padding(10).background(MuesliTheme.backgroundRaised.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(composerFocused ? MuesliTheme.accent.opacity(0.45) : MuesliTheme.surfaceBorder, lineWidth: 1))
+            })
             ViewThatFits(in: .horizontal) {
                 HStack {
                     Text("Check the sources for important details.")
@@ -316,22 +318,15 @@ struct MeetingChatView: View {
                     HStack(spacing: 6) {
                         ForEach(ids, id: \.self) { id in
                             let source = coordinator.sourceChoices.first { $0.id == id }
-                            HStack(spacing: 6) {
-                                Image(systemName: "doc.text").foregroundStyle(.secondary)
-                                Text(source?.title ?? "Unavailable meeting").lineLimit(1)
-                                Button {
-                                    let sessionID = coordinator.selectedSessionID
-                                    Task {
-                                        guard coordinator.selectedSessionID == sessionID else { return }
-                                        _ = await coordinator.removeMeetingFromScope(id: id)
-                                    }
-                                } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
-                                    .buttonStyle(.borderless).help("Remove \(source?.title ?? "meeting") from context")
-                                    .accessibilityLabel("Remove \(source?.title ?? "meeting") from context")
-                                    .disabled(coordinator.isBusy || coordinator.isUpdatingChat)
-                            }.font(.caption).padding(.horizontal, 9).padding(.vertical, 6)
-                                .background(MuesliTheme.backgroundBase, in: RoundedRectangle(cornerRadius: 7))
-                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(MuesliTheme.surfaceBorder, lineWidth: 1))
+                            AIAttachment(title: source?.title ?? "Unavailable meeting", onRemove: {
+                                let sessionID = coordinator.selectedSessionID
+                                Task {
+                                    guard coordinator.selectedSessionID == sessionID else { return }
+                                    _ = await coordinator.removeMeetingFromScope(id: id)
+                                }
+                            })
+                            .help("Remove \(source?.title ?? "meeting") from context")
+                            .disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         }
                     }
                 }
@@ -348,7 +343,7 @@ struct MeetingChatView: View {
     private func mentionSuggestions(_ mention: MeetingChatMentionQuery) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Label("Attach a meeting", systemImage: "at").font(.caption.weight(.semibold))
+                Label { Text("Attach a meeting") } icon: { AIIcon(.atSign) }.font(.caption.weight(.semibold))
                 Spacer()
                 Text("↑↓ Choose · ↵ Attach · Esc Close").font(.system(size: 10)).foregroundStyle(.secondary)
             }.padding(12)
@@ -363,7 +358,7 @@ struct MeetingChatView: View {
                 ForEach(Array(mentionMatches.enumerated()), id: \.element.id) { index, meeting in
                     Button { attachMeeting(meeting, mention: mention) } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "doc.text").foregroundStyle(.secondary)
+                            AIIcon(.fileText).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(meeting.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
                                 Text(meeting.startDate, format: .dateTime.month(.abbreviated).day().year())
@@ -371,7 +366,7 @@ struct MeetingChatView: View {
                             }
                             Spacer()
                             if attachedMeetingIDs?.contains(meeting.id) == true {
-                                Image(systemName: "checkmark").foregroundStyle(.secondary)
+                                AIIcon(.check).foregroundStyle(.secondary)
                             }
                         }.padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
                             .background(index == mentionIndex ? MuesliTheme.surfaceSelected : Color.clear)
@@ -457,77 +452,60 @@ struct MeetingChatView: View {
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack {
-                Spacer(minLength: 36)
+            AIMessage(role: .user) {
                 Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 16))
             }
-            VStack(alignment: .leading, spacing: 14) {
-                if turn.state.isPending {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            ProgressView().controlSize(.small)
+            AIMessage(role: .assistant) {
+                VStack(alignment: .leading, spacing: 14) {
+                    if turn.state.isPending {
+                        VStack(alignment: .leading, spacing: 10) {
                             MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
-                                 ? coordinator.phase
-                                 : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                        if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
-                            DisclosureGroup {
-                                activityRows.padding(.top, 6)
-                            } label: {
-                                Text("\(coordinator.activities.count) research steps").font(.caption).foregroundStyle(.secondary)
+                                     ? coordinator.phase
+                                     : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
+                                    .font(.callout).foregroundStyle(.secondary)
+                            if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
+                                AIDisclosure(title: "\(coordinator.activities.count) research steps", icon: .search) {
+                                    activityRows
+                                }
+                            }
+                        }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if turn.id == coordinator.activityTurnID {
+                        if !turn.state.isPending && !coordinator.activities.isEmpty {
+                            AIDisclosure(title: "Meeting research · \(coordinator.activities.count) steps", icon: .search) {
+                                activityRows
                             }
                         }
-                    }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if turn.id == coordinator.activityTurnID {
-                    if !turn.state.isPending && !coordinator.activities.isEmpty {
-                        DisclosureGroup {
-                            activityRows.padding(.top, 8)
-                        } label: {
-                            Label("Meeting research · \(coordinator.activities.count) steps", systemImage: "checklist")
-                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        if !visibleReasoningSummaries.isEmpty {
+                            AIReasoning(summary: visibleReasoningSummaries.joined(separator: "\n\n"),
+                                        state: coordinator.reasoningIsStreaming ? .streaming : .completed)
                         }
                     }
-                    if !visibleReasoningSummaries.isEmpty {
-                        DisclosureGroup {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(Array(visibleReasoningSummaries.enumerated()), id: \.offset) { _, summary in
-                                    Text(summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                                }
-                            }.padding(.top, 8)
-                        } label: {
-                            Label("Reasoning summary", systemImage: "text.alignleft")
-                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    if let answer = turn.originalAnswer {
+                        MeetingChatAnswerView(answer: answer, citations: turn.citations)
+                            .environment(\.openURL, OpenURLAction { url in
+                                let key = String(url.path.dropFirst())
+                                guard url.scheme == "muesli-citation", let source = turn.citations.first(where: { $0.sourceKey == key }) else { return .discarded }
+                                citation = source; return .handled
+                            })
+                        if !turn.citations.isEmpty {
+                            MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
                         }
+                        if let coverage = turn.coverage, coverage.eligibleMeetingCount > 0 {
+                            Text("\(coverage.isPartialRecap ? "Partial recap · " : "")\(coverage.eligibleMeetingCount) meeting\(coverage.eligibleMeetingCount == 1 ? "" : "s") in scope")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        answerActions(turn)
+                    } else if turn.state == .sourceDeleted {
+                        Label { Text("Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else if !turn.state.isPending {
+                        Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button {
+                            let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config) }
+                        } label: { Label { Text("Try again") } icon: { AIIcon(.rotateCcw) } }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                     }
-                }
-                if let answer = turn.originalAnswer {
-                    MeetingChatAnswerView(answer: answer, citations: turn.citations)
-                        .environment(\.openURL, OpenURLAction { url in
-                            let key = String(url.path.dropFirst())
-                            guard url.scheme == "muesli-citation", let source = turn.citations.first(where: { $0.sourceKey == key }) else { return .discarded }
-                            citation = source; return .handled
-                        })
-                    if !turn.citations.isEmpty {
-                        MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
-                    }
-                    if let coverage = turn.coverage, coverage.eligibleMeetingCount > 0 {
-                        Text("\(coverage.isPartialRecap ? "Partial recap · " : "")\(coverage.eligibleMeetingCount) meeting\(coverage.eligibleMeetingCount == 1 ? "" : "s") in scope")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    answerActions(turn)
-                } else if turn.state == .sourceDeleted {
-                    Label("Answer removed because a source meeting was deleted", systemImage: "doc.badge.ellipsis")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else if !turn.state.isPending {
-                    Label(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted"), systemImage: "exclamationmark.circle")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("Try again", systemImage: "arrow.clockwise") {
-                        let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config) }
-                    }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -540,25 +518,29 @@ struct MeetingChatView: View {
     private var activityRows: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(coordinator.activities) { activity in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: activity.state == .completed ? "checkmark.circle" : "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(activity.title).font(.caption.weight(.medium))
-                        if !activity.detail.isEmpty { Text(activity.detail).font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
+                AITool(title: activity.title, state: toolState(activity.state),
+                       input: activity.detail.isEmpty ? nil : activity.detail,
+                       output: activity.output, error: activity.error)
             }
+        }
+    }
+
+    private func toolState(_ state: MeetingChatActivity.State) -> AIToolState {
+        switch state {
+        case .running: .running
+        case .completed: .completed
+        case .failed: .failed
+        case .cancelled: .cancelled
         }
     }
 
     @ViewBuilder private func answerActions(_ turn: MeetingChatTurn) -> some View {
         if let session = coordinator.sessions.first(where: { $0.id == turn.sessionID }) {
             HStack(spacing: 14) {
-                Button("Copy", systemImage: "doc.on.doc") {
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(MeetingChatExporter.plainText(turn: turn, session: session, useEditedDraft: false), forType: .string)
-                }
+                } label: { Label { Text("Copy") } icon: { AIIcon(.copy) } }
                 Menu {
                     Button("Export answer…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: false) }
                     if turn.editableDraft != nil {
@@ -568,8 +550,8 @@ struct MeetingChatView: View {
                         }
                         Button("Export edited draft…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: true) }
                     }
-                } label: { Label("Export", systemImage: "square.and.arrow.up") }.menuStyle(.borderlessButton).fixedSize()
-                if turn.editableDraft != nil { Image(systemName: "checkmark.circle").help("Edited draft saved").accessibilityLabel("Edited draft saved") }
+                } label: { Label { Text("Export") } icon: { AIIcon(.download) } }.menuStyle(.borderlessButton).fixedSize()
+                if turn.editableDraft != nil { AIIcon(.check).help("Edited draft saved").accessibilityLabel("Edited draft saved") }
             }.buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -579,150 +561,8 @@ struct MeetingChatView: View {
         guard await coordinator.applyPreparedPrompt(prompt) else { return }
         preparedIsDraft = prompt.isDraft; focusComposer()
     }
-    static func attributedAnswer(_ raw: String, citations: [MeetingChatCitation]) -> AttributedString {
-        var markdown = MeetingChatClient.displayText(raw)
-        for (index, source) in citations.enumerated() { markdown = markdown.replacingOccurrences(of: "[[\(source.sourceKey)]]", with: "[[\(index + 1)]](muesli-citation:///\(source.sourceKey))") }
-        var attributed = (try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(markdown)
-        for run in Array(attributed.runs) {
-            if let link = run.link, link.scheme != "muesli-citation" || !citations.contains(where: { String(link.path.dropFirst()) == $0.sourceKey }) { attributed[run.range].link = nil }
-        }
-        return attributed
-    }
+
 }
-
-/// Native block layout keeps headings and lists intact; inline parsing shares the
-/// citation allowlist with the chat. Model-provided image and web URLs never load.
-private struct MeetingChatAnswerView: View {
-    let answer: String
-    let citations: [MeetingChatCitation]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .code(let code):
-                    ScrollView(.horizontal) {
-                        Text(code).font(.system(size: 12, design: .monospaced)).padding(12)
-                    }.background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 8))
-                case .line(let line):
-                    lineView(line)
-                case .table(let rows):
-                    ScrollView(.horizontal) {
-                        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                            ForEach(Array(rows.enumerated()), id: \.offset) { index, cells in
-                                GridRow {
-                                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                                        Text(MeetingChatView.attributedAnswer(cell, citations: citations))
-                                            .font(.system(size: 13, weight: index == 0 ? .semibold : .regular))
-                                            .frame(minWidth: 120, maxWidth: 240, alignment: .leading)
-                                            .padding(10)
-                                            .background(index == 0 ? MuesliTheme.backgroundRaised : MuesliTheme.backgroundDeep)
-                                            .overlay(Rectangle().stroke(MuesliTheme.surfaceBorder, lineWidth: 0.5))
-                                    }
-                                }
-                            }
-                        }.clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.padding(.vertical, 4)
-                }
-            }
-        }.font(MuesliTheme.reading()).lineSpacing(4).textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var blocks: [MeetingChatMarkdownBlock] { MeetingChatMarkdownBlock.parse(MeetingChatClient.displayText(answer)) }
-
-    @ViewBuilder private func lineView(_ raw: String) -> some View {
-        let line = raw.trimmingCharacters(in: .whitespaces)
-        let indent = min(raw.prefix { $0 == " " }.count / 2, 4)
-        if line.isEmpty {
-            Color.clear.frame(height: 5)
-        } else if let heading = line.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
-            Text(MeetingChatView.attributedAnswer(String(line[heading.upperBound...]), citations: citations))
-                .font(line.hasPrefix("# ") ? MuesliTheme.title3() : MuesliTheme.headline()).padding(.top, 8)
-        } else if let list = line.range(of: #"^(?:[-*+] \[[ xX]\] |[-*+] |\d+[.)]\s+)"#, options: .regularExpression) {
-            let marker = String(line[..<list.upperBound]).trimmingCharacters(in: .whitespaces)
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(marker.count == 1 ? "•" : marker).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .trailing)
-                Text(MeetingChatView.attributedAnswer(String(line[list.upperBound...]), citations: citations))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.leading, CGFloat(indent) * 16)
-        } else if line.hasPrefix("> ") {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2).fill(MuesliTheme.surfacePrimary).frame(width: 3)
-                Text(MeetingChatView.attributedAnswer(String(line.dropFirst(2)), citations: citations)).foregroundStyle(.secondary)
-            }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 4)
-        } else {
-            Text(MeetingChatView.attributedAnswer(raw, citations: citations)).frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-
-/// A small, local block parser. It never interprets HTML or fetches remote content.
-enum MeetingChatMarkdownBlock: Equatable {
-    case line(String)
-    case code(String)
-    case table([[String]])
-
-    static func parse(_ markdown: String) -> [Self] {
-        let lines = markdown.components(separatedBy: .newlines)
-        var result: [Self] = []
-        var index = 0
-        while index < lines.count {
-            let line = lines[index]
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                index += 1
-                var code: [String] = []
-                while index < lines.count && !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                    code.append(lines[index]); index += 1
-                }
-                result.append(.code(code.joined(separator: "\n")))
-                if index < lines.count { index += 1 }
-                continue
-            }
-            if index + 1 < lines.count, line.contains("|"),
-               let header = tableCells(line), let separators = tableCells(lines[index + 1]),
-               header.count == separators.count,
-               separators.allSatisfy({ $0.range(of: #"^:?-{3,}:?$"#, options: .regularExpression) != nil }) {
-                var rows = [header]
-                index += 2
-                while index < lines.count, lines[index].contains("|"),
-                      let cells = tableCells(lines[index]), cells.count == header.count {
-                    rows.append(cells); index += 1
-                }
-                result.append(.table(rows))
-                continue
-            }
-            result.append(.line(line)); index += 1
-        }
-        return result
-    }
-
-    private static func tableCells(_ line: String) -> [String]? {
-        var text = line.trimmingCharacters(in: .whitespaces)
-        if text.hasPrefix("|") { text.removeFirst() }
-        // A trailing escaped pipe is cell content, not a table delimiter.
-        if text.hasSuffix("|"), !text.hasSuffix(#"\|"#) { text.removeLast() }
-        var cells: [String] = []
-        var cell = ""
-        var escaped = false
-        var inlineCode = false
-        for character in text {
-            if escaped {
-                if character != "|" { cell.append("\\") }
-                cell.append(character); escaped = false
-            } else if character == "\\" { escaped = true }
-            else if character == "`" { inlineCode.toggle(); cell.append(character) }
-            else if character == "|" && !inlineCode {
-                cells.append(cell.trimmingCharacters(in: .whitespaces)); cell = ""
-            } else { cell.append(character) }
-        }
-        if escaped { cell.append("\\") }
-        cells.append(cell.trimmingCharacters(in: .whitespaces))
-        return cells.count > 1 ? cells : nil
-    }
-}
-
 
 /// Caret-aware UTF-16 ranges match NSTextView, including titles after emoji.
 struct MeetingChatMentionQuery: Equatable {
@@ -860,104 +700,6 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
 }
 
 
-private struct MeetingChatModelPicker: View {
-    let appState: AppState
-    let controller: MuesliController
-    @Environment(\.muesliSettingDefinitions) private var definitions
-    @Environment(\.dismiss) private var dismiss
-    @State private var applying = false
-    @State private var errorMessage: String?
-
-    private var modelSettingID: String? {
-        let backend = appState.config.meetingSummaryBackend
-        if backend == MeetingSummaryBackendOption.chatGPT.backend { return "summary_chatgpt_model" }
-        if backend == MeetingSummaryBackendOption.openAI.backend { return "summary_openai_model" }
-        if backend == MeetingSummaryBackendOption.anthropic.backend { return "summary_anthropic_model" }
-        if backend == MeetingSummaryBackendOption.claudeCode.backend { return "summary_claude_code_model" }
-        if backend == MeetingSummaryBackendOption.openRouter.backend { return "summary_openrouter_model" }
-        return nil
-    }
-    private func snapshot(_ id: String) -> MuesliSetting.Snapshot? {
-        definitions.first { $0.id == id }?.snapshot(config: appState.config, source: .manualUI)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Model").font(MuesliTheme.headline())
-                Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend).label)
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(16)
-            if let id = modelSettingID, let state = snapshot(id) {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        if !state.choices.contains(where: { $0.id == state.current }) {
-                            HStack {
-                                Text(state.current.isEmpty ? MeetingTextGenerationClient.model(appState.config) : state.current)
-                                Spacer()
-                                Image(systemName: "checkmark")
-                            }.font(.callout).padding(.horizontal, 16).padding(.vertical, 10)
-                            Text("Custom model · configured in AI Settings").font(.caption).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
-                        }
-                        ForEach(state.choices, id: \.id) { choice in
-                            Button { apply(id, value: choice.id) } label: {
-                                HStack {
-                                    Text(choice.label).font(.callout)
-                                    Spacer()
-                                    if choice.id == state.current { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
-                                }.padding(.horizontal, 16).padding(.vertical, 10).contentShape(Rectangle())
-                                    .background(choice.id == state.current ? MuesliTheme.surfaceSelected.opacity(0.65) : Color.clear)
-                            }.buttonStyle(.plain).disabled(state.unavailable[choice.id] != nil)
-                                .help(state.unavailable[choice.id] ?? choice.label)
-                                .accessibilityAddTraits(choice.id == state.current ? .isSelected : [])
-                        }
-                    }
-                }.frame(maxHeight: 280)
-            } else {
-                Text(MeetingTextGenerationClient.model(appState.config)).font(.callout).padding(.horizontal, 16).padding(.bottom, 12)
-            }
-            if let thinking = snapshot("summary_thinking"), !thinking.choices.isEmpty {
-                Divider()
-                HStack {
-                    Text("Thinking level").font(.callout)
-                    Spacer()
-                    Menu {
-                        ForEach(thinking.choices, id: \.id) { choice in
-                            Button { apply("summary_thinking", value: choice.id) } label: {
-                                if choice.id == thinking.current { Label(choice.label, systemImage: "checkmark") }
-                                else { Text(choice.label) }
-                            }.disabled(thinking.unavailable[choice.id] != nil)
-                        }
-                    } label: {
-                        Text(thinking.choices.first { $0.id == thinking.current }?.label ?? thinking.current)
-                    }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Meeting AI thinking level")
-                }.padding(16)
-            }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Shared with meeting summaries. Changes apply to your next question.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("AI Settings…", systemImage: "slider.horizontal.3") {
-                    dismiss(); appState.selectedSettingsPane = .meetings; appState.selectedTab = .settings
-                }.buttonStyle(.borderless).font(.caption)
-            }.padding(16)
-        }.frame(width: 310).disabled(applying)
-            .alert("Setting could not be changed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-                Button("OK") { errorMessage = nil }
-            } message: { Text(errorMessage ?? "") }
-    }
-
-    private func apply(_ id: String, value: String) {
-        applying = true
-        Task { @MainActor in
-            defer { applying = false }
-            do { try await controller.applySetting(id, value: value) }
-            catch { errorMessage = error.localizedDescription }
-        }
-    }
-}
-
 /// Vary only a genuine provider-wait phase; retrieval/tool events retain their real labels.
 private struct MeetingChatWaitingLabel: View {
     let phase: String
@@ -965,7 +707,7 @@ private struct MeetingChatWaitingLabel: View {
     @State private var phrases = MeetingChatWaitingStatus.phrases.shuffled()
     var body: some View {
         SwiftUI.TimelineView(.periodic(from: startedAt, by: 5)) { timeline in
-            Text(MeetingChatWaitingStatus.label(phase: phase, elapsed: timeline.date.timeIntervalSince(startedAt), phrases: phrases))
+            AIShimmer(MeetingChatWaitingStatus.label(phase: phase, elapsed: timeline.date.timeIntervalSince(startedAt), phrases: phrases))
         }.onChange(of: phase) { _, _ in startedAt = Date() }
     }
 }

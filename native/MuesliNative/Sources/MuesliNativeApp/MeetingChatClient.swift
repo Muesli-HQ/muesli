@@ -23,11 +23,13 @@ enum MeetingChatToolCall: Sendable, Equatable {
 }
 
 struct MeetingChatActivity: Identifiable {
-    enum State { case running, completed }
+    enum State { case running, completed, failed, cancelled }
     let id = UUID()
     let title: String
     var detail: String
     var state: State
+    var output: String? = nil
+    var error: String? = nil
 }
 
 struct MeetingChatToolResult {

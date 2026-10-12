@@ -1,4 +1,5 @@
 import SwiftUI
+import AIElementsSwift
 import MuesliCore
 
 struct MeetingChatScopePicker: View {
@@ -16,7 +17,7 @@ struct MeetingChatScopePicker: View {
     @State private var end = Date()
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Meeting context", systemImage: "rectangle.stack").font(MuesliTheme.title2())
+            Label { Text("Meeting context") } icon: { AIIcon(.archive, size: 20) }.font(MuesliTheme.title2())
             Text("Choose the meetings this conversation can search. Earlier answers keep their original sources.")
                 .font(.callout).foregroundStyle(.secondary)
             Picker("Search", selection: $mode) {
@@ -30,7 +31,7 @@ struct MeetingChatScopePicker: View {
                 Text("This folder only; subfolders are excluded.").font(.caption).foregroundStyle(.secondary)
             }
             if mode == 2 {
-                HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Find meetings by title", text: $query).textFieldStyle(.plain) }
+                HStack { AIIcon(.search).foregroundStyle(.secondary); TextField("Find meetings by title", text: $query).textFieldStyle(.plain) }
                     .padding(10).background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
                 Text("\(selected.count) selected").font(.caption).foregroundStyle(.secondary)
                 List(meetings.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }) { meeting in

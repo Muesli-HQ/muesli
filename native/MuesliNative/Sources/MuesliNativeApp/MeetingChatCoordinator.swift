@@ -169,6 +169,7 @@ final class MeetingChatCoordinator {
     private var activeSessionID: UUID?
     private(set) var phase = ""
     private(set) var activities: [MeetingChatActivity] = []
+    private(set) var reasoningIsStreaming = false
     private(set) var reasoningSummaries: [String] = []
     private(set) var activityTurnID: UUID?
     private var composerDrafts: [UUID?: String] = [:]
@@ -395,12 +396,12 @@ final class MeetingChatCoordinator {
     private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool) {
         cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
-        activities = []; reasoningSummaries = []; activityTurnID = turn.id
+        activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id
         let worker = worker; let generator = generator
         tasks[requestID] = Task {
             defer {
                 tasks.removeValue(forKey: requestID)
-                if activeRequestID == requestID { activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = "" }
+                if activeRequestID == requestID { activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""; reasoningIsStreaming = false }
                 reload()
             }
             do {
@@ -415,9 +416,13 @@ final class MeetingChatCoordinator {
                         try Task.checkCancellation()
                         let (result, next, count) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey)
                         nextSourceKey = next
+                        if self.activeRequestID == requestID, let index = self.activities.indices.last {
+                            self.activities[index].output = "\(count) passages returned · \(result.coverage.evidenceMeetingCount) meetings in the current source packet"
+                        }
                         return MeetingChatToolResult(evidence: result, matchedPassageCount: count)
                     }, activity: { call, completed in
                         guard self.activeRequestID == requestID else { return }
+                        self.reasoningIsStreaming = false
                         if completed {
                             if let index = self.activities.indices.last { self.activities[index].state = .completed }
                             self.phase = "Writing answer"
@@ -427,6 +432,7 @@ final class MeetingChatCoordinator {
                         }
                     }, progress: { phase in
                         guard self.activeRequestID == requestID else { return }
+                        self.reasoningIsStreaming = false
                         self.phase = phase
                     }, reasoningSummary: { [weak self] iteration, summary in
                         guard let self, self.activeRequestID == requestID, !Task.isCancelled else { return }
@@ -436,6 +442,7 @@ final class MeetingChatCoordinator {
                         guard self.activeRequestID == requestID, !Task.isCancelled else { return }
                         guard valid else { self.reasoningSummaries = []; self.stop(); return }
                         while self.reasoningSummaries.count <= iteration { self.reasoningSummaries.append("") }
+                        self.reasoningIsStreaming = true
                         self.reasoningSummaries[iteration] = summary
                         self.phase = "Preparing answer"
                     })
@@ -448,6 +455,11 @@ final class MeetingChatCoordinator {
                 guard activeRequestID == requestID else { return }
                 let stopped = Task.isCancelled || error is CancellationError
                 let message = stopped ? nil : Self.failureMessage(error)
+                reasoningIsStreaming = false
+                for index in activities.indices where activities[index].state == .running {
+                    activities[index].state = stopped ? .cancelled : .failed
+                    activities[index].error = message
+                }
                 try? await worker.setTurnState(id: turn.id, state: stopped ? .stopped : .failed, error: message, attemptID: turn.attemptID)
             }
         }
@@ -502,6 +514,7 @@ final class MeetingChatCoordinator {
         return "Meeting AI request failed. Please retry or check your connection settings."
     }
     func stop() {
+        reasoningIsStreaming = false
         reasoningSummaries = []; activityTurnID = nil
         guard let id = activeRequestID else { return }
         tasks[id]?.cancel()
