@@ -8,6 +8,108 @@ import Testing
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("normal session preserves both tracks regardless of microphone timestamp jitter",
+          arguments: ["stream", "queue", "fallback"], ["exact", "jitter", "missing", "mixed"])
+    func normalSessionKeepsEverySample(backend: String, timing: String) async throws {
+        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback")
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
+        let system = ContractSystemAudio()
+        let session = MeetingSession(title: "ordinary recording regression", calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                  menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: AppConfig(),
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+        try await session.testingStartCapture()
+        var expectedMic: [Int16] = [], expectedSystem: [Int16] = []
+        let captureStart = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - 4096
+        for index in 0..<8 {
+            // Real 512-frame native buffers, unique contents, delivered in order.
+            // Only timestamp availability/spacing changes, never the captured PCM.
+            let value = index + 1
+            let reference = [Int16](repeating: Int16(100 + index), count: 512)
+            system.onPCMSamples?(reference)
+            let timed = timing != "missing" && !(timing == "mixed" && index % 2 == 0)
+            let start = captureStart + Int64(index * (timing == "jitter" ? 432 : 512))
+            try producer.emit(Array(repeating: value, count: 512), at: start, timed: timed)
+            expectedMic += Array(repeating: Int16(Float(value) / 16 * 32767), count: 512)
+            expectedSystem += reference
+        }
+        let urls = await session.testingFinishCapture()
+        defer { for url in [urls.0, urls.1, urls.2].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        func pcm(_ url: URL?) throws -> [Int16] {
+            let url = try #require(url)
+            return try Data(contentsOf: url).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        }
+        #expect(try pcm(urls.0) == expectedMic) // The actual microphone transcription chunk.
+        #expect(try pcm(urls.1) == expectedSystem) // The actual system transcription chunk.
+        let mixed = zip(expectedMic, expectedSystem).map { Int16((Int($0) + Int($1)) / 2) }
+        #expect(try pcm(urls.2) == mixed) // Neither side lost from the retained recording.
+    }
+
+    @Test("steady microphone delivery never deduplicates consecutive PCM using timestamps",
+          arguments: [0, -80, -4096, 800])
+    func sameSourceJitter(offset: Int) {
+        let delivery = MeetingMicrophoneDelivery(), source = UUID()
+        var output: [Int16] = []
+        delivery.deliver = { output += $0.samples }
+        delivery.activate(source)
+        let first = [Int16](repeating: 1, count: 4096)
+        let second = [Int16](repeating: 2, count: 4096)
+        delivery.receive(.init(samples: first, startFrame: 10_000, admitted: true), from: source)
+        delivery.receive(.init(samples: second, startFrame: Int64(14_096 + offset), admitted: true), from: source)
+        #expect(output == first + second)
+        delivery.cancel()
+        delivery.receive(.init(samples: [99], startFrame: 100_000, admitted: true), from: source)
+        #expect(output == first + second)
+    }
+
+    @Test("handoff clips only the cross-source boundary, not jitter within either source")
+    func handoffDoesNotDeduplicateSameSource() {
+        let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
+        var output: [Int16] = []
+        delivery.deliver = { output += $0.samples }
+        delivery.activate(old)
+        delivery.receive(.init(samples: [1], startFrame: 98, admitted: true), from: old)
+        delivery.beginHandoff(from: old, to: next,
+            audio: [.init(samples: [4, 5], startFrame: 102, admitted: true)])
+        delivery.receive(.init(samples: [2, 3], startFrame: 98, admitted: true), from: old)
+        delivery.receive(.init(samples: [6, 7], startFrame: 101, admitted: true), from: next)
+        #expect(output == [1, 2, 3]) // Replacement still waits for the retired producer.
+        delivery.finishRetiring(old)
+        delivery.receive(.init(samples: [8], startFrame: 101, admitted: true), from: next)
+        delivery.receive(.init(samples: [99], startFrame: 103, admitted: true), from: old)
+        #expect(output == Array(1...8))
+    }
+
+    @Test("handoff cut remains closed after each source crosses it despite later timestamp jitter")
+    func handoffCutIsOneWay() {
+        let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
+        var output: [Int16] = []
+        delivery.deliver = { output += $0.samples }
+        delivery.activate(old)
+        delivery.receive(.init(samples: [1, 2], startFrame: 100, admitted: true), from: old)
+        delivery.beginHandoff(from: old, to: next,
+            audio: [.init(samples: [99], startFrame: 100, admitted: true)]) // Entirely before cut=102.
+        delivery.receive(.init(samples: [99, 3, 4], startFrame: 101, admitted: true), from: next)
+        delivery.receive(.init(samples: [5, 6], startFrame: 100, admitted: true), from: next)
+        delivery.receive(.init(samples: [99], startFrame: 100, admitted: true), from: old)
+        delivery.finishRetiring(old)
+        #expect(output == [1, 2, 3, 4, 5, 6])
+
+        // The old side may instead reach the cut while its stop is draining.
+        let third = UUID()
+        delivery.beginHandoff(from: next, to: third,
+            audio: [.init(samples: [9], startFrame: 106, admitted: true)])
+        delivery.receive(.init(samples: [7, 8, 99], startFrame: 104, admitted: true), from: next)
+        delivery.receive(.init(samples: [99], startFrame: 104, admitted: true), from: next)
+        delivery.finishRetiring(next)
+        #expect(output == Array(1...9))
+    }
+
     @Test("session pause drains admitted PCM before chunk rotation and AEC reset",
           arguments: ["stream", "queue", "fallback"], ["paused", "resume", "rapid", "stop", "discard"])
     func sessionPauseBoundary(backend: String, ending: String) async throws {
@@ -695,19 +797,19 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         if let streaming { tap = try streaming.testing_startWithTap(format: AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!) }
         else { try child.start() }
     }
-    func emit(_ values: [Int], at frame: Int64, stale: Bool = false) throws {
+    func emit(_ values: [Int], at frame: Int64, stale: Bool = false, timed: Bool = true) throws {
         let samples = values.map { Float($0) / 16 }
         let host = AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000)
         if let driver {
             if stale { driver.emitLate(samples, host: host) }
-            else { driver.emit(samples, host: host) }
+            else { driver.emit(samples, host: host, timed: timed) }
         }
         else {
             let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
             let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)))
             buffer.frameLength = buffer.frameCapacity
             for (i, value) in samples.enumerated() { buffer.floatChannelData![0][i] = value }
-            tap?(buffer, AVAudioTime(hostTime: host))
+            tap?(buffer, timed ? AVAudioTime(hostTime: host) : AVAudioTime(sampleTime: frame, atRate: 16_000))
         }
     }
     func pause() { beforePause?(); (child as? PausableStreamingDictationRecording)?.pause() }

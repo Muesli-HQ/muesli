@@ -88,6 +88,8 @@ final class MicrophoneCaptureTimeline {
 /// One serial delivery boundary, independent of native lifecycle queues. During
 /// handoff, keep old audio below a fixed cut and stage new audio above it. Flush
 /// the new side only AFTER the retired producer's synchronous drain completes.
+/// Within one source, FIFO buffer ownership—not timestamp estimates—establishes
+/// uniqueness. Never deduplicate consecutive speech using callback timing.
 /// Calls carrying audio come from processing workers, never native callbacks.
 final class MeetingMicrophoneDelivery {
     private let queue = DispatchQueue(label: "com.muesli.meeting-mic-delivery")
@@ -132,14 +134,16 @@ final class MeetingMicrophoneDelivery {
     }
 
     func receive(_ audio: MicrophoneCaptureAudio, from id: UUID) {
+        guard !audio.samples.isEmpty else { return }
         let generation = control.withLock { epoch }
         queue.sync {
             guard isCurrent(generation), !failed else { return }
             if id == retiring {
-                if let kept = audio.trimming(before: lastEnd, after: cut) { emit(kept, generation: generation) }
+                guard lastEnd < cut else { return } // The old source cannot reopen after reaching the cut.
+                if let kept = audio.trimming(before: .min, after: cut) { emit(kept, generation: generation) }
             } else if id == active {
                 if retiring != nil { stage(audio, generation: generation) }
-                else if let kept = audio.trimming(before: lastEnd) { emit(kept, generation: generation) }
+                else { emit(audio, generation: generation) }
             }
         }
     }
@@ -165,8 +169,11 @@ final class MeetingMicrophoneDelivery {
     private func isCurrent(_ generation: UInt64) -> Bool { control.withLock { epoch == generation } }
 
     private func stage(_ audio: MicrophoneCaptureAudio, generation: UInt64) {
-        guard !failed, isCurrent(generation) else { return }
-        guard let kept = audio.trimming(before: max(cut, staged.last?.endFrame ?? cut)) else { return }
+        guard !failed, isCurrent(generation), !audio.samples.isEmpty else { return }
+        // Drop only the replacement's prefix already covered by the old source.
+        // Once it crosses the cut, every following buffer is new audio, even if
+        // its estimated timestamp overlaps a previous replacement buffer.
+        guard let kept = staged.isEmpty ? audio.trimming(before: cut) : audio else { return }
         guard kept.samples.count <= maximumStagedSamples - stagedCount else {
             failed = true
             staged.removeAll(); stagedCount = 0
@@ -182,13 +189,13 @@ final class MeetingMicrophoneDelivery {
         let pending = staged
         staged.removeAll(); stagedCount = 0
         for audio in pending where !failed {
-            if let kept = audio.trimming(before: lastEnd) { emit(kept, generation: generation) }
+            emit(audio, generation: generation)
         }
     }
 
     private func emit(_ audio: MicrophoneCaptureAudio, generation: UInt64) {
         guard isCurrent(generation) else { return }
-        lastEnd = audio.endFrame
+        lastEnd = max(lastEnd, audio.endFrame) // Handoff high-water mark, not steady-source deduplication.
         deliver?(audio)
     }
 }
