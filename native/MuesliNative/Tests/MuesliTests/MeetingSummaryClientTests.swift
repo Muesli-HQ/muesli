@@ -1162,6 +1162,9 @@ struct MeetingSummaryClientTests {
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.inputTooLarge))
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.instructionsTooLarge))
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.failed("Not signed in")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.invalidResponse(exitCode: 0, details: "Malformed JSON")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.processFailed(exitCode: 2, details: "Unknown option")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.launchFailed("Permission denied")))
         #expect(MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.timedOut))
         #expect(MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.emptyResponse))
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(

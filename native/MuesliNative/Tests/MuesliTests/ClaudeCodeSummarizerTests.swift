@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import MuesliCore
+@testable import MuesliCore
 @testable import MuesliNativeApp
 @testable import MuesliCLI
 
@@ -20,13 +20,15 @@ struct ClaudeCodeSummarizerTests {
         #expect(String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) == path)
     }
 
-    @Test("runs a configured executable with the prompt on stdin and parses its JSON result")
-    func configuredExecutable() async throws {
+    @Test("runs a configured executable with the prompt on stdin and parses normal or verbose JSON", arguments: [false, true])
+    func configuredExecutable(verbose: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-claude-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = directory.appendingPathComponent("fake claude")
+        let result = ###"{"type":"result","is_error":false,"result":"## Summary\n- Ship"}"###
+        let response = verbose ? #"[{"type":"system"},{"type":"assistant","message":{"content":"partial response"}},"# + result + "]" : result
         let script = """
         #!/bin/sh
         input=$(cat)
@@ -34,7 +36,7 @@ struct ClaudeCodeSummarizerTests {
           *"Decision: ship"*) ;;
           *) exit 3 ;;
         esac
-        printf '%s' '{"type":"result","is_error":false,"result":"## Summary\\n- Ship"}'
+        printf '%s' '\(response)'
         """
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -60,6 +62,24 @@ struct ClaudeCodeSummarizerTests {
             Issue.record("Expected missing executable failure")
         } catch {
             #expect(error.localizedDescription.contains("Claude Code could not be found"))
+        }
+    }
+
+    @Test("an executable that cannot launch reports a process startup error")
+    func failedLaunch() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-claude-launch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try "#!/missing/muesli-test-interpreter\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        do {
+            _ = try await ClaudeCodeSummarizer.run(instructions: "Summarize", input: "Transcript", executablePath: executable.path)
+            Issue.record("Expected launch failure")
+        } catch let error as ClaudeCodeSummaryError {
+            #expect(error.diagnosticCode == "CLAUDE_CODE_9")
+            #expect(error.localizedDescription.contains("could not start Claude Code"))
         }
     }
 
@@ -153,6 +173,102 @@ struct ClaudeCodeSummarizerTests {
             Issue.record("Expected CLI error payload to fail")
         } catch {
             #expect(error.localizedDescription.contains("Not logged in"))
+        }
+    }
+
+    @Test("structured errors without a result explain the failure, including in verbose output", arguments: [false, true])
+    func structuredErrors(verbose: Bool) throws {
+        let failure = #"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Authentication expired","Please sign in again"]}"#
+        let response = verbose ? "[{\"type\":\"assistant\",\"message\":\"private partial notes\"},\(failure)]" : failure
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data(response.utf8), diagnostic: "", exitCode: 1)
+            Issue.record("Expected structured CLI error")
+        } catch ClaudeCodeSummaryError.failed(let message) {
+            #expect(message.contains("error_during_execution"))
+            #expect(message.contains("Authentication expired; Please sign in again"))
+            #expect(message.contains("exit 1"))
+            #expect(!message.contains("private partial notes"))
+        }
+    }
+
+    @Test("the final result wins over earlier successful turns")
+    func finalResultWins() throws {
+        let response = #"[{"type":"result","subtype":"success","result":"Earlier notes"},{"type":"result","subtype":"error_max_budget_usd","is_error":false,"errors":["Budget exceeded"]}]"#
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data(response.utf8), diagnostic: "", exitCode: 0)
+            Issue.record("Expected final error result to fail even with exit 0")
+        } catch ClaudeCodeSummaryError.failed(let message) {
+            #expect(message.contains("Budget exceeded"))
+            #expect(message.contains("error_max_budget_usd"))
+            #expect(!message.contains("Earlier notes"))
+        }
+    }
+
+    @Test("unexpected output has a support code and shape without exposing raw meeting content", arguments: [
+        "private transcript text that is not JSON",
+        #"[{"type":"assistant","message":"private transcript text"}]"#,
+        #"{"type":"assistant","result":"private transcript text"}"#,
+        #"{"type":"result","subtype":"unknown","result":"private transcript text"}"#,
+        #"{"type":"result","subtype":"success","result":42}"#,
+    ])
+    func unexpectedOutput(response: String) throws {
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data(response.utf8), diagnostic: "", exitCode: 0)
+            Issue.record("Expected unexpected response failure")
+        } catch let error as ClaudeCodeSummaryError {
+            #expect(error.diagnosticCode == "CLAUDE_CODE_7")
+            #expect(error.localizedDescription.contains("exit 0"))
+            #expect(error.localizedDescription.contains("stdout \(response.utf8.count) bytes"))
+            #expect(error.localizedDescription.contains("claude doctor"))
+            #expect(!error.localizedDescription.contains("private transcript text"))
+        }
+    }
+
+    @Test("nonzero exits preserve stderr and never accept a successful-looking result", arguments: [
+        "private transcript text",
+        #"{"type":"result","is_error":false,"result":"private transcript text"}"#,
+    ])
+    func unsuccessfulExit(response: String) throws {
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data(response.utf8), diagnostic: "Unknown option --example", exitCode: 2)
+            Issue.record("Expected process failure")
+        } catch let error as ClaudeCodeSummaryError {
+            #expect(error.diagnosticCode == "CLAUDE_CODE_8")
+            #expect(error.localizedDescription.contains("code 2"))
+            #expect(error.localizedDescription.contains("Unknown option --example"))
+            #expect(!error.localizedDescription.contains("private transcript text"))
+        }
+    }
+
+    @Test("no stdout is an empty response, not invalid JSON")
+    func emptyOutput() throws {
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data(), diagnostic: "", exitCode: 0)
+            Issue.record("Expected empty response")
+        } catch ClaudeCodeSummaryError.emptyResponse {
+            // Empty responses retain the app's existing automatic retry policy.
+        }
+    }
+
+    @Test("CLI diagnostics are retained when stdout cannot be decoded")
+    func malformedOutputWithDiagnostics() throws {
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: Data("not JSON".utf8), diagnostic: "CLI startup warning", exitCode: 0)
+            Issue.record("Expected invalid response")
+        } catch let error as ClaudeCodeSummaryError {
+            #expect(error.localizedDescription.contains("CLI startup warning"))
+            #expect(error.diagnosticCode == "CLAUDE_CODE_7")
+        }
+    }
+
+    @Test("CLI error details are bounded")
+    func boundedErrorDetails() throws {
+        let payload: [String: Any] = ["type": "result", "is_error": true, "errors": [String(repeating: "x", count: 10_000)]]
+        do {
+            _ = try ClaudeCodeSummarizer.result(from: JSONSerialization.data(withJSONObject: payload), diagnostic: "", exitCode: 1)
+            Issue.record("Expected structured CLI error")
+        } catch let error as ClaudeCodeSummaryError {
+            #expect(error.localizedDescription.count < 1600)
         }
     }
 
