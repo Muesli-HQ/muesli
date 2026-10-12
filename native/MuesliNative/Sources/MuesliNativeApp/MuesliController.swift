@@ -5869,15 +5869,19 @@ public final class MuesliController: NSObject {
                     participantNames: participantNames,
                     openRouterAPIKeyOverride: openRouterKey
                 )
-                try self.dictationStore.updateMeetingSummary(
-                    id: meeting.id,
-                    title: plan.persistedTitle,
-                    formattedNotes: notes,
-                    selectedTemplateID: templateSnapshot.id,
-                    selectedTemplateName: templateSnapshot.name,
-                    selectedTemplateKind: templateSnapshot.kind,
-                    selectedTemplatePrompt: templateSnapshot.prompt
-                )
+                do {
+                    try self.dictationStore.updateMeetingSummary(
+                        id: meeting.id,
+                        title: plan.persistedTitle,
+                        formattedNotes: notes,
+                        selectedTemplateID: templateSnapshot.id,
+                        selectedTemplateName: templateSnapshot.name,
+                        selectedTemplateKind: templateSnapshot.kind,
+                        selectedTemplatePrompt: templateSnapshot.prompt
+                    )
+                } catch {
+                    throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
+                }
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                     self.syncAppState()
@@ -5885,13 +5889,9 @@ public final class MuesliController: NSObject {
                     completion(.success(()))
                 }
             } catch {
-                fputs("[muesli-native] failed to generate or persist meeting summary: \(error)\n", stderr)
+                fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
                 await MainActor.run {
-                    if error is MeetingSummaryError {
-                        completion(.failure(error))
-                    } else {
-                        completion(.failure(MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)))
-                    }
+                    completion(.failure(error))
                 }
             }
         }

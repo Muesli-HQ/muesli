@@ -58,7 +58,8 @@ enum MeetingSummaryRetryPolicy {
             switch claudeError {
             case .timedOut, .emptyResponse:
                 return true
-            case .unavailable, .inputTooLarge, .instructionsTooLarge, .failed:
+            case .unavailable, .inputTooLarge, .instructionsTooLarge, .failed,
+                 .invalidResponse, .processFailed, .launchFailed:
                 return false
             }
         }

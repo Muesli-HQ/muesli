@@ -251,6 +251,8 @@ muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes
 
 `--summarize` uses configured Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM settings. When Claude Code is already installed, Muesli offers it under Settings → Meeting Summaries. Muesli passes the prompt on stdin, disables Claude's tools and MCP servers for this call, and does not save a Claude session. Your Claude Code user settings, including any configured provider or hooks, still apply. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
 
+Claude Code failures include a stable `CLAUDE_CODE_<number>` support code and the CLI's error details when available. Code `7` means the CLI returned an unexpected response format; code `8` means the process exited unsuccessfully. Run `claude --version` and `claude doctor` in Terminal when investigating a failure, and include the support code and CLI version in your report. Muesli accepts both ordinary JSON results and the message arrays produced by Claude Code's verbose view mode. Raw response JSON is omitted from error messages because it can contain meeting text.
+
 Save the import into Muesli as `source = audio_import`:
 
 ```bash
