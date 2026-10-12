@@ -199,12 +199,15 @@ struct ComputerUseSettingsTests {
     @Test("planning budget spans requests and rejects a late write")
     func cumulativePlanning() async {
         let h = Harness()
+        // Exercise the injected cumulative clock without racing the real per-call
+        // watchdog when parallel CI tests keep the main actor busy.
+        let budget: TimeInterval = 3_600
         var time: TimeInterval = 0
         var calls = 0
         let result = await ComputerUseSettings.run(command: "Switch to notch", settings: [h.setting],
-            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: 10, now: { time }) { _, _ in
+            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: budget, now: { time }) { _, _ in
                 calls += 1
-                time += 6
+                time += budget * 0.6
                 return calls == 1
                     ? ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
                     : ("set_muesli_setting", #"{"setting":"indicator","value":"notch"}"#)
