@@ -13,13 +13,6 @@ struct MicrophoneCaptureAudio: Sendable {
         Int64((AVAudioTime.seconds(forHostTime: time) * 16_000).rounded())
     }
 
-    func trimming(before lower: Int64, after upper: Int64 = .max) -> Self? {
-        let start = max(startFrame, lower)
-        let end = min(endFrame, upper)
-        guard end > start else { return nil }
-        return Self(samples: Array(samples[Int(start - startFrame)..<Int(end - startFrame)]),
-                    startFrame: start, admitted: admitted)
-    }
 }
 
 /// Meeting consumers use this path; dictation keeps its existing Float callback.
@@ -85,51 +78,32 @@ final class MicrophoneCaptureTimeline {
     }
 }
 
-/// One serial delivery boundary, independent of native lifecycle queues. During
-/// handoff, keep old audio below a fixed cut and stage new audio above it. Flush
-/// the new side only AFTER the retired producer's synchronous drain completes.
-/// Within one source, FIFO buffer ownership—not timestamp estimates—establishes
-/// uniqueness. Never deduplicate consecutive speech using callback timing.
+/// Serializes source selection with delivery, independently of native teardown.
+/// Like main's route switch, a ready replacement owns delivery immediately;
+/// old callbacks arriving after that boundary are rejected, not spliced in.
+/// FIFO ownership—not timestamps—establishes uniqueness. This deliberately
+/// makes no gap-free/overlap-free guarantee across different microphones.
 /// Calls carrying audio come from processing workers, never native callbacks.
 final class MeetingMicrophoneDelivery {
     private let queue = DispatchQueue(label: "com.muesli.meeting-mic-delivery")
     private let control = NSLock()
     private var epoch: UInt64 = 0
     private var active: UUID?
-    private var retiring: UUID?
-    private var cut: Int64 = 0
-    private var lastEnd: Int64 = .min
-    private var staged: [MicrophoneCaptureAudio] = []
-    private var stagedCount = 0
-    private var failed = false
-    private let maximumStagedSamples: Int
+    // The consumer must enqueue downstream work, never re-enter this boundary
+    // or synchronously wait for a producer currently calling receive().
     var deliver: ((MicrophoneCaptureAudio) -> Void)?
-    var onFailure: ((Error) -> Void)?
-
-    init(maximumStagedSamples: Int = 5 * 16_000) { self.maximumStagedSamples = maximumStagedSamples }
 
     // Queue lifecycle events asynchronously: no lifecycle/UI worker waits for a
     // consumer. The caller enqueues activation BEFORE publishing its new child.
-    func activate(_ id: UUID) {
+    func activate(_ id: UUID, audio: [MicrophoneCaptureAudio] = []) {
         let generation = control.withLock { epoch }
         queue.async { [self] in
             guard isCurrent(generation) else { return }
-            active = id; retiring = nil; lastEnd = .min
-            staged.removeAll(); stagedCount = 0; failed = false
-        }
-    }
-
-    func beginHandoff(from old: UUID?, to new: UUID, audio: [MicrophoneCaptureAudio]) {
-        guard let first = audio.first else { return }
-        let generation = control.withLock { epoch }
-        queue.async { [self] in
-            guard isCurrent(generation) else { return }
-            failed = false
-            staged.removeAll(); stagedCount = 0
-            retiring = old; active = new
-            cut = max(lastEnd, first.startFrame)
-            for block in audio { stage(block, generation: generation) }
-            if old == nil { flush(generation: generation) }
+            active = id
+            for block in audio where !block.samples.isEmpty {
+                guard isCurrent(generation) else { return }
+                deliver?(block)
+            }
         }
     }
 
@@ -137,65 +111,21 @@ final class MeetingMicrophoneDelivery {
         guard !audio.samples.isEmpty else { return }
         let generation = control.withLock { epoch }
         queue.sync {
-            guard isCurrent(generation), !failed else { return }
-            if id == retiring {
-                guard lastEnd < cut else { return } // The old source cannot reopen after reaching the cut.
-                if let kept = audio.trimming(before: .min, after: cut) { emit(kept, generation: generation) }
-            } else if id == active {
-                if retiring != nil { stage(audio, generation: generation) }
-                else { emit(audio, generation: generation) }
-            }
+            guard isCurrent(generation), id == active else { return }
+            deliver?(audio)
         }
     }
 
-    // Cleanup worker only, after old.stop returned. Every old callback has now
-    // crossed receive's barrier. This join is included in native quiescence.
-    func finishRetiring(_ id: UUID) {
-        let generation = control.withLock { epoch }
-        queue.sync {
-            guard isCurrent(generation), retiring == id else { return }
-            retiring = nil
-            flush(generation: generation)
-        }
-    }
+    // Background pause/stop worker only. Includes the asynchronously submitted
+    // first replacement buffers, even if its producer has no further callbacks.
+    func drain() { queue.sync {} }
 
     func cancel() {
         control.withLock { epoch &+= 1 }
         queue.async { [self] in
-            active = nil; retiring = nil; staged.removeAll(); stagedCount = 0
+            active = nil
         }
     }
 
     private func isCurrent(_ generation: UInt64) -> Bool { control.withLock { epoch == generation } }
-
-    private func stage(_ audio: MicrophoneCaptureAudio, generation: UInt64) {
-        guard !failed, isCurrent(generation), !audio.samples.isEmpty else { return }
-        // Drop only the replacement's prefix already covered by the old source.
-        // Once it crosses the cut, every following buffer is new audio, even if
-        // its estimated timestamp overlaps a previous replacement buffer.
-        guard let kept = staged.isEmpty ? audio.trimming(before: cut) : audio else { return }
-        guard kept.samples.count <= maximumStagedSamples - stagedCount else {
-            failed = true
-            staged.removeAll(); stagedCount = 0
-            onFailure?(NSError(domain: "MeetingMicrophoneDelivery", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Microphone handoff could not drain within its audio buffer budget."
-            ]))
-            return
-        }
-        staged.append(kept); stagedCount += kept.samples.count
-    }
-
-    private func flush(generation: UInt64) {
-        let pending = staged
-        staged.removeAll(); stagedCount = 0
-        for audio in pending where !failed {
-            emit(audio, generation: generation)
-        }
-    }
-
-    private func emit(_ audio: MicrophoneCaptureAudio, generation: UInt64) {
-        guard isCurrent(generation) else { return }
-        lastEnd = max(lastEnd, audio.endFrame) // Handoff high-water mark, not steady-source deduplication.
-        deliver?(audio)
-    }
 }

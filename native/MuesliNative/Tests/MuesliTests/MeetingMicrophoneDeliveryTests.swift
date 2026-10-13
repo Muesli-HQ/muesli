@@ -8,6 +8,40 @@ import Testing
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("delivery fence includes queued first replacement audio; cancel invalidates it", arguments: [false, true])
+    func queuedSelectionFence(cancel: Bool) {
+        let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let oldReturned = DispatchSemaphore(value: 0), fenced = DispatchSemaphore(value: 0)
+        let output = OSAllocatedUnfairLock(initialState: [Int16]())
+        delivery.deliver = { audio in
+            output.withLock { $0 += audio.samples }
+            if audio.samples == [1] {
+                entered.signal()
+                #expect(release.wait(timeout: .now() + 5) == .success)
+            }
+        }
+        defer { release.signal() }
+        delivery.activate(old)
+        DispatchQueue.global().async {
+            delivery.receive(.init(samples: [1], startFrame: 100, admitted: true), from: old)
+            oldReturned.signal()
+        }
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        delivery.activate(next, audio: [
+            .init(samples: [2], startFrame: 98, admitted: true),
+            .init(samples: [3], startFrame: 98, admitted: true)
+        ])
+        if cancel { delivery.cancel() }
+        DispatchQueue.global().async { delivery.drain(); fenced.signal() }
+        #expect(fenced.wait(timeout: .now() + 0.02) == .timedOut)
+        release.signal()
+        #expect(oldReturned.wait(timeout: .now() + 5) == .success)
+        #expect(fenced.wait(timeout: .now() + 5) == .success)
+        delivery.receive(.init(samples: [99], startFrame: 200, admitted: true), from: old)
+        #expect(output.withLock { $0 } == (cancel ? [1] : [1, 2, 3]))
+    }
+
     @Test("normal session preserves both tracks regardless of microphone timestamp jitter",
           arguments: ["stream", "queue", "fallback"], ["exact", "jitter", "missing", "mixed"])
     func normalSessionKeepsEverySample(backend: String, timing: String) async throws {
@@ -67,47 +101,45 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(output == first + second)
     }
 
-    @Test("handoff clips only the cross-source boundary, not jitter within either source")
+    @Test("source selection forwards replacement FIFO immediately and rejects old tails")
     func handoffDoesNotDeduplicateSameSource() {
         let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
         var output: [Int16] = []
         delivery.deliver = { output += $0.samples }
         delivery.activate(old)
         delivery.receive(.init(samples: [1], startFrame: 98, admitted: true), from: old)
-        delivery.beginHandoff(from: old, to: next,
+        delivery.activate(next,
             audio: [.init(samples: [4, 5], startFrame: 102, admitted: true)])
         delivery.receive(.init(samples: [2, 3], startFrame: 98, admitted: true), from: old)
         delivery.receive(.init(samples: [6, 7], startFrame: 101, admitted: true), from: next)
-        #expect(output == [1, 2, 3]) // Replacement still waits for the retired producer.
-        delivery.finishRetiring(old)
+        #expect(output == [1, 4, 5, 6, 7]) // No native retirement wait or timestamp trimming.
         delivery.receive(.init(samples: [8], startFrame: 101, admitted: true), from: next)
         delivery.receive(.init(samples: [99], startFrame: 103, admitted: true), from: old)
-        #expect(output == Array(1...8))
+        #expect(output == [1, 4, 5, 6, 7, 8])
     }
 
-    @Test("handoff cut remains closed after each source crosses it despite later timestamp jitter")
-    func handoffCutIsOneWay() {
+    @Test("source switch is independent of overlapping or backward replacement timestamps")
+    func sourceSwitchIgnoresTimestampOverlap() {
         let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
         var output: [Int16] = []
         delivery.deliver = { output += $0.samples }
         delivery.activate(old)
         delivery.receive(.init(samples: [1, 2], startFrame: 100, admitted: true), from: old)
-        delivery.beginHandoff(from: old, to: next,
-            audio: [.init(samples: [99], startFrame: 100, admitted: true)]) // Entirely before cut=102.
-        delivery.receive(.init(samples: [99, 3, 4], startFrame: 101, admitted: true), from: next)
+        delivery.activate(next,
+            audio: [.init(samples: [3], startFrame: 100, admitted: true)])
+        delivery.receive(.init(samples: [4], startFrame: 101, admitted: true), from: next)
         delivery.receive(.init(samples: [5, 6], startFrame: 100, admitted: true), from: next)
         delivery.receive(.init(samples: [99], startFrame: 100, admitted: true), from: old)
-        delivery.finishRetiring(old)
         #expect(output == [1, 2, 3, 4, 5, 6])
 
-        // The old side may instead reach the cut while its stop is draining.
+        // A later switch rejects the formerly active source regardless of time.
         let third = UUID()
-        delivery.beginHandoff(from: next, to: third,
+        delivery.activate(third,
             audio: [.init(samples: [9], startFrame: 106, admitted: true)])
         delivery.receive(.init(samples: [7, 8, 99], startFrame: 104, admitted: true), from: next)
         delivery.receive(.init(samples: [99], startFrame: 104, admitted: true), from: next)
-        delivery.finishRetiring(next)
-        #expect(output == Array(1...9))
+        delivery.drain()
+        #expect(output == [1, 2, 3, 4, 5, 6, 9])
     }
 
     @Test("session pause drains admitted PCM before chunk rotation and AEC reset",
@@ -349,7 +381,7 @@ struct MeetingMicrophoneDeliveryTests {
         }
     }
 
-    @Test("native-held handoff tail respects capture, cutover and terminal boundaries",
+    @Test("retired native tails never reenter the meeting; active stop boundaries remain safe",
           arguments: [false, true], ["running", "beforeNativeStop", "beforeStart", "afterCut", "paused", "resumed", "stopped", "pausedStop", "discarded", "deadline", "untimed", "cancelled"])
     func nativeHandoffTail(wrapped: Bool, ending: String) async throws {
         let oldDriver = ContractQueueDriver(), nextDriver = ContractQueueDriver()
@@ -383,8 +415,8 @@ struct MeetingMicrophoneDeliveryTests {
         oldDriver.onStop = {
             retiring.block()
             let queuedBeforeTail = oldDriver.queuedBufferCount
-            // Old PCM is still held by HAL until AFTER invalidation. The last
-            // two samples overlap the replacement and must never reach sinks.
+            // Old PCM is still held by HAL until AFTER invalidation. None of
+            // this retired source may reach meeting sinks after promotion.
             switch ending {
             case "beforeNativeStop": emit(oldDriver, [3, 4, 9, 9], at: 102)
             case "beforeStart": emit(oldDriver, [9, 9, 1, 2, 3, 4, 9, 9], at: 98)
@@ -408,8 +440,10 @@ struct MeetingMicrophoneDeliveryTests {
         try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
         emit(nextDriver, [5, 6], at: 104)
         try await retiring.waitUntilEntered() // Promotion and old invalidation have completed.
-        // Replacement waits for old native drain, even if an old prefix arrived.
-        #expect(sink.sync { delivered.allSatisfy { $0.endFrame <= 104 } })
+        // New audio is already delivered while old native stop remains blocked.
+        route.drainAcceptedAudio()
+        let replacement = [5, 6].map { Int16(Float($0) / 16 * 32767) }
+        #expect(sink.sync { delivered.flatMap(\.samples) } == replacement)
 
         if ["paused", "pausedStop", "resumed"].contains(ending) { #expect(capture.setPaused(true)) }
         if ending == "resumed" {
@@ -439,10 +473,8 @@ struct MeetingMicrophoneDeliveryTests {
         nextDriver.emitLate([0.9], host: AVAudioTime.hostTime(forSeconds: 106.0 / 16_000))
         let values: [Int]
         switch ending {
-        case "running", "beforeNativeStop", "beforeStart": values = Array(1...6)
-        case "stopped": values = Array(1...8)
-        case "discarded", "deadline", "cancelled": values = []
-        default: values = [5, 6] // Previously admitted replacement, no new paused/untimed/old-interval input.
+        case "stopped": values = [5, 6, 7, 8]
+        default: values = [5, 6] // Delivery before discard is not retracted; no retired source survives.
         }
         let expected = values.map { Int16(Float($0) / 16 * 32767) }
         let audio = sink.sync { delivered }
@@ -548,7 +580,7 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(samples == [4095, 8191])
     }
 
-    @Test("handoff delivers chronological, non-overlapping audio to saved WAV and transcription input",
+    @Test("source switch reaches both sinks without waiting for old workers; pause and stop fence new audio",
           arguments: [false, true], ["running", "paused", "stopped", "discarded", "pauseFence", "resumeFence"])
     func captureToSinks(oldUsesQueue: Bool, ending: String) async throws {
         let old = ContractProducer(useQueue: oldUsesQueue)
@@ -589,10 +621,13 @@ struct MeetingMicrophoneDeliveryTests {
         try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
         let promoted = DispatchSemaphore(value: 0)
         route.onHandoffOutcome = { if $0 == .promoted { promoted.signal() } }
-        try next.emit([3, 4, 5, 6], at: 102) // Same capture interval, not more speech.
+        try next.emit([3, 4, 5, 6], at: 102) // Main-style switch keeps the replacement intact.
         let didPromote = try await MeetingCaptureLifecycle.onDriverQueue { promoted.wait(timeout: .now() + 5) }
         #expect(didPromote == .success)
         try next.emit([7, 8], at: 106)
+        try await MeetingCaptureLifecycle.onDriverQueue { route.drainAcceptedAudio() }
+        let replacement = (3...8).map { Int16(Float($0) / 16 * 32767) }
+        #expect(sink.sync { delivered.flatMap(\.samples) } == replacement)
         if ending != "running" {
             let boundary: (() -> Void)? = ending.hasSuffix("Fence") ? {
                 sink.sync { boundaryAudio = delivered.flatMap(\.samples) }
@@ -607,10 +642,10 @@ struct MeetingMicrophoneDeliveryTests {
         let shutdown = ending == "stopped" || ending == "discarded" ? capture.requestStop() : nil
         paused.release.signal()
         if ending.hasSuffix("Fence") {
-            let prematureBoundary = try await MeetingCaptureLifecycle.onDriverQueue {
-                boundaryCompleted.wait(timeout: .now() + 0.02)
+            let completedBoundary = try await MeetingCaptureLifecycle.onDriverQueue {
+                boundaryCompleted.wait(timeout: .now() + 5)
             }
-            #expect(prematureBoundary == .timedOut) // Old accepted tail still owns the pre-pause interval.
+            #expect(completedBoundary == .success) // Old worker/retirement cannot stall Pause.
         }
         delayed.release.signal()
         // Drain both real producers, including the retired one, before the same
@@ -622,7 +657,7 @@ struct MeetingMicrophoneDeliveryTests {
         try old.emit([15], at: 110, stale: true)
         try next.emit([15], at: 110, stale: true)
         let audio = sink.sync { delivered }
-        let expected: [Int16] = ending == "discarded" ? [] : (1...8).map { Int16(Float($0) / 16 * 32767) }
+        let expected = replacement // Old worker's pre-switch backlog is rejected, including after Stop.
         #expect(audio.flatMap(\.samples) == expected)
         if ending.hasSuffix("Fence") { #expect(sink.sync { boundaryAudio } == expected) }
         for pair in zip(audio, audio.dropFirst()) { #expect(pair.0.endFrame <= pair.1.startFrame) }
@@ -637,17 +672,15 @@ struct MeetingMicrophoneDeliveryTests {
         if !expected.isEmpty { #expect(saved != nil); #expect(transcription != nil) }
     }
 
-    @Test("handoff capacity fails visibly once; cancel never flushes staged audio")
+    @Test("cancel rejects late source audio and a fresh activation preserves FIFO")
     func boundedAndCancelled() {
         for cancel in [false, true] {
-            let delivery = MeetingMicrophoneDelivery(maximumStagedSamples: 4)
+            let delivery = MeetingMicrophoneDelivery()
             let old = UUID(), next = UUID()
             var output: [Int16] = []
-            var failures = 0
             delivery.deliver = { output += $0.samples }
-            delivery.onFailure = { _ in failures += 1 }
             delivery.activate(old)
-            delivery.beginHandoff(from: old, to: next,
+            delivery.activate(next,
                 audio: [.init(samples: [3, 4], startFrame: 2, admitted: true)])
             delivery.receive(.init(samples: [5, 6], startFrame: 4, admitted: true), from: next)
             if cancel { delivery.cancel() }
@@ -655,22 +688,25 @@ struct MeetingMicrophoneDeliveryTests {
                 delivery.receive(.init(samples: [7], startFrame: 6, admitted: true), from: next)
                 delivery.receive(.init(samples: [8], startFrame: 7, admitted: true), from: next)
             }
-            delivery.finishRetiring(old)
-            #expect(output.isEmpty)
-            #expect(failures == (cancel ? 0 : 1))
-            // Failure/cancellation must not poison the next positively-ready
+            delivery.drain()
+            let previous: [Int16] = cancel ? [3, 4, 5, 6] : [3, 4, 5, 6, 7, 8]
+            #expect(output == previous)
+            delivery.receive(.init(samples: [99], startFrame: 9, admitted: true), from: old)
+            if cancel {
+                delivery.receive(.init(samples: [99], startFrame: 9, admitted: true), from: next)
+                #expect(output == previous)
+            }
+            // Cancellation must not poison the next positively-ready
             // producer, and stale old callbacks cannot enter that recording.
             let recovered = UUID()
             if cancel { delivery.activate(recovered) }
             else {
-                delivery.beginHandoff(from: next, to: recovered,
+                delivery.activate(recovered,
                     audio: [.init(samples: [9], startFrame: 8, admitted: true)])
-                delivery.finishRetiring(next)
             }
             delivery.receive(.init(samples: [99], startFrame: 9, admitted: true), from: old)
             delivery.receive(.init(samples: [10], startFrame: 9, admitted: true), from: recovered)
-            #expect(output == (cancel ? [10] : [9, 10]))
-            #expect(failures == (cancel ? 0 : 1))
+            #expect(output == previous + (cancel ? [10] : [9, 10]))
         }
     }
 
@@ -697,7 +733,7 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(duplicate == .timedOut)
     }
 
-    @Test("cutover trims overlap regardless of old delivery position", arguments: [0, 1, 2, 3, 4])
+    @Test("main-style switch keeps already delivered old PCM and intact replacement", arguments: [0, 1, 2, 3, 4])
     func cutover(oldDelivered: Int) {
         let delivery = MeetingMicrophoneDelivery()
         let old = UUID(), next = UUID()
@@ -708,13 +744,12 @@ struct MeetingMicrophoneDeliveryTests {
         if oldDelivered > 0 {
             delivery.receive(.init(samples: Array(original.prefix(oldDelivered)), startFrame: 0, admitted: true), from: old)
         }
-        delivery.beginHandoff(from: old, to: next,
+        delivery.activate(next,
             audio: [.init(samples: [3, 4, 5], startFrame: 2, admitted: true)])
         delivery.receive(.init(samples: [6], startFrame: 5, admitted: true), from: next)
         delivery.receive(.init(samples: Array(original.dropFirst(oldDelivered)), startFrame: Int64(oldDelivered), admitted: true), from: old)
-        delivery.finishRetiring(old)
         delivery.receive(.init(samples: [99], startFrame: 6, admitted: true), from: old)
-        #expect(samples == [1, 2, 3, 4, 5, 6])
+        #expect(samples == Array(original.prefix(oldDelivered)) + [3, 4, 5, 6])
     }
 
     @Test("converter timing keeps fractional-rate output and real pause gaps", arguments: [44_100.0, 48_000.0])

@@ -38,7 +38,7 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.waitForQuiescence()
     }
 
-    @Test("handoff drains retired audio until stop returns, including overlapping teardown", arguments: ["running", "paused", "stopped", "cancelled"])
+    @Test("replacement delivery does not wait for retirement; retired tails remain rejected", arguments: ["running", "paused", "stopped", "cancelled"])
     func handoffDrainsRetiredTail(ending: String) throws {
         let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
         let replacement = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
@@ -72,6 +72,8 @@ struct RouteAwareMeetingMicRecorderTests {
         lifecycle.sync {}
         #expect(enteredStop.wait(timeout: .now() + 5) == .success)
         #expect(old.invalidatedForTeardown)
+        recorder.drainAcceptedAudio()
+        #expect(deliveriesLock.withLock { delivered } == [1])
         switch ending {
         case "paused": recorder.pause()
         case "stopped": recorder.invalidateForTeardown(); _ = recorder.stop()
@@ -81,7 +83,7 @@ struct RouteAwareMeetingMicRecorderTests {
         releaseStop.signal()
         cleanup.sync {}
         old.emit([98])
-        let expected: [Int16] = ending == "cancelled" ? [] : [2, 3, 1]
+        let expected: [Int16] = [1] // Cancel does not retract audio delivered before it.
         #expect(deliveriesLock.withLock { delivered } == expected)
         if ending == "running" || ending == "paused" { _ = recorder.stop() }
         recorder.waitForQuiescence()
@@ -670,7 +672,8 @@ struct RouteAwareMeetingMicRecorderTests {
         pending.emit([10])
 
         #expect(oldStopEntered.wait(timeout: .now() + 5) == .success)
-        #expect(samples.isEmpty) // The old immediate [[9]] assertion deterministically fails here.
+        recorder.drainAcceptedAudio()
+        #expect(samples == [[9]]) // Replacement delivery no longer waits for old native stop.
         // Stop deliberately does not wait for the retired graph. Production
         // joins native quiescence separately before closing the session sink.
         let quiesced = DispatchSemaphore(value: 0)
@@ -709,9 +712,20 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
         var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0.samples) }
+        let deliveryEntered = DispatchSemaphore(value: 0)
+        let releaseDelivery = DispatchSemaphore(value: 0)
+        let initialReturned = DispatchSemaphore(value: 0)
+        recorder.onRawPCMSamples = {
+            if $0.samples == [0] {
+                deliveryEntered.signal()
+                #expect(releaseDelivery.wait(timeout: .now() + 5) == .success)
+            } else { samples.append($0.samples) }
+        }
+        defer { releaseDelivery.signal() }
 
         try recorder.start()
+        DispatchQueue.global().async { system.emit([0]); initialReturned.signal() }
+        #expect(deliveryEntered.wait(timeout: .now() + 5) == .success)
         recorder.preferredInputDeviceID = 91
         lifecycleQueue.sync {}
 
@@ -732,12 +746,14 @@ struct RouteAwareMeetingMicRecorderTests {
         queueIsSuspended = false
         #expect(discardReturned.wait(timeout: .now() + 5) == .success)
         #expect(oldStopEntered.wait(timeout: .now() + 5) == .success)
+        releaseDelivery.signal()
+        #expect(initialReturned.wait(timeout: .now() + 5) == .success)
         releaseOldStop.signal()
         recorder.waitForQuiescence()
         #expect(pendingCancelled.wait(timeout: .now() + 5) == .success)
         pending.emit([10])
 
-        #expect(samples.isEmpty) // Discard cancels staged delivery; unlike Stop it must not drain it.
+        #expect(samples.isEmpty) // Discard cancels queued activation, not just late native callbacks.
     }
 
     @Test("repeated handoff timeouts cannot promote stale recorders")

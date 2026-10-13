@@ -247,7 +247,6 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private let cleanupQueue: DispatchQueue
     private let graphOperations = DispatchGroup()
     private let delivery = MeetingMicrophoneDelivery()
-    private let handoffDeliveryOperations = DispatchGroup()
     private let handoffTimeout: TimeInterval
     private let scheduleHandoffTimeout: HandoffTimeoutScheduler
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -264,9 +263,6 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         // Only this former active child may flush accepted buffers during Stop.
         // Pending graphs never gain a final-delivery entitlement.
         var drainingChildID: UUID?
-        // Independent of Stop's active child: retirement can overlap teardown.
-        // Handoff back-pressure permits only one retiring graph at a time.
-        var handoffDrainingChild: Child?
         var startingIDs: Set<UUID> = []
         var retiringIDs: Set<UUID> = []
         var deferredRouteHandoff = false
@@ -332,10 +328,6 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             lifecycleQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
         }
         delivery.deliver = { [weak self] audio in self?.onRawPCMSamplesStorage?(audio) }
-        delivery.onFailure = { [weak self] error in
-            guard let self else { return }
-            if let id = self.lock.withLock({ $0.active?.id }) { self.receive(error, from: id) }
-        }
     }
 
     func activeRecorderKindForDebug() -> ActiveRecorderKind {
@@ -344,15 +336,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func waitForQuiescence() {
         graphOperations.wait()
+        delivery.drain()
     }
 
     func drainAcceptedAudio() {
         let active = lifecycleQueue.sync { lock.withLock { $0.active?.recorder } }
-        // Never wait on processing/retirement while holding the lifecycle queue.
-        // Pause has disabled promotion; only an already-promoted old child can
-        // still own accepted audio. Unstarted/cancelled candidates do not count.
+        // Pause has disabled promotion. Drain only the current producer and
+        // queued delivery; old native retirement no longer owns meeting audio.
+        // Never wait for processing while holding the lifecycle queue.
         active?.drainAcceptedAudio()
-        handoffDeliveryOperations.wait()
+        delivery.drain()
     }
 
     func isTerminallyFailedForDebug() -> Bool {
@@ -470,10 +463,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             let children = lock.withLock { state -> (Child?, Child?) in
                 // A promotion queued before cancel may have reopened delivery
                 // after the early cancellation above. Seal it again while
-                // removing its child: a retiring tail must not flush afterward.
+                // removing its child: queued replacement audio must not reopen it.
                 delivery.cancel()
                 state.drainingChildID = nil
-                state.handoffDrainingChild = nil
                 state.lifecycleState = .stopping
                 state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
@@ -711,7 +703,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     private func receive(_ audio: MicrophoneCaptureAudio, from childID: UUID) {
         let role = lock.withLock { state -> (active: Bool, promote: Bool, overflow: Bool, generation: UInt64) in
-            if state.active?.id == childID || state.drainingChildID == childID || state.handoffDrainingChild?.id == childID {
+            if state.active?.id == childID || state.drainingChildID == childID {
                 return (true, false, false, state.generation)
             }
             guard !state.invalidated, state.pending?.id == childID,
@@ -804,13 +796,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             let old = state.active
             // Enqueue before publishing active: subsequent callbacks cannot
             // overtake the staged first blocks. This does not wait on delivery.
-            delivery.beginHandoff(from: old?.id, to: candidate.id, audio: state.pendingAudio)
+            delivery.activate(candidate.id, audio: state.pendingAudio)
             state.pendingAudio.removeAll()
             state.pendingAudioCount = 0
             if let old {
-                handoffDeliveryOperations.enter()
                 state.retiringIDs.insert(old.id)
-                state.handoffDrainingChild = old
             }
             state.active = candidate
             state.pending = nil
@@ -819,8 +809,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard transition.completed else { return }
         // Close admission synchronously, without waiting for native teardown.
-        // Accepted work and timestamp-qualified native stop tails may drain on
-        // the cleanup worker; delivery clips the old child at the cutover.
+        // Old queued/native tails are no longer meeting input after promotion,
+        // matching main's identity-based switch. Cleanup does not gate new audio.
         transition.old?.recorder.invalidateForTeardown()
         onHandoffOutcome?(.promoted)
         fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
@@ -901,11 +891,6 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         graphOperations.enter()
         cleanupQueue.async { [self] in
             let url = child.recorder.stop()
-            delivery.finishRetiring(child.id)
-            handoffDeliveryOperations.leave()
-            lock.withLock { state in
-                if state.handoffDrainingChild?.id == child.id { state.handoffDrainingChild = nil }
-            }
             child.recorder.cancel()
             if let url { try? FileManager.default.removeItem(at: url) }
             lock.withLock { _ = $0.retiringIDs.remove(child.id) }

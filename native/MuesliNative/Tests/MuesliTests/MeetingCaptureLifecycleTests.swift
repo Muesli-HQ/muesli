@@ -9,7 +9,7 @@ import os
 struct MeetingCaptureLifecycleTests {
     enum BufferedSource: CaseIterable { case direct, fallbackAfterPrepareFailure, fallbackAfterStartFailure }
 
-    @Test("real buffered handoff tail survives a paused unbuffered replacement and stop", arguments: [false, true])
+    @Test("retired buffered source cannot reenter a paused unbuffered replacement or stop", arguments: [false, true])
     func bufferedHandoffTail(stopBeforeDelivery: Bool) async throws {
         let producer = BufferedLifetimeRecorder()
         let adapter = StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming)
@@ -38,7 +38,7 @@ struct MeetingCaptureLifecycleTests {
         try await MeetingCaptureLifecycle.onDriverQueue { lifecycle.sync {} }
         #expect(mic.activeRecorderKindForDebug() == .appScoped)
         #expect(capture.setPaused(true))
-        #expect(!mic.hasBufferedSampleAdmission) // Old packets carry their own admission proof.
+        #expect(!mic.hasBufferedSampleAdmission) // Replacement cannot borrow old admission privileges.
         replacement.emit([99], at: 103) // Cannot borrow the retired producer's admission.
         try producer.emit(0.75) // Old graph's admission is already closed.
         if stopBeforeDelivery {
@@ -51,7 +51,7 @@ struct MeetingCaptureLifecycleTests {
             #expect(!mic.hasBufferedSampleAdmission)
             #expect(!(await capture.requestStop().value).timedOut)
         }
-        #expect(received.withLock { $0 } == [8191, 16383, 1])
+        #expect(received.withLock { $0 } == [1]) // Old producer backlog is rejected after the source switch.
         capture.finishMicrophoneDelivery()
         #expect(!capture.acceptsMicrophoneSamples())
     }
