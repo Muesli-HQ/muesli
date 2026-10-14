@@ -474,6 +474,18 @@ extension MuesliController {
             }
             return ""
         }, key: \.meetingSummaryReasoningEffort)
+        let summaryLimits = Set(MeetingSummaryOutputPolicy.presets + [config.meetingSummaryMaxOutputTokens].compactMap { $0 }).sorted()
+        add("summary_output_limit", "Meeting summary output token limit",
+            [Choice(id: "0", label: "No added limit (default)")] + summaryLimits.map {
+                Choice(id: String($0), label: "\($0.formatted()) tokens")
+            }, read: { String($0.meetingSummaryMaxOutputTokens ?? 0) }, unavailable: { value in
+                guard value != "0" else { return nil }
+                return [MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(.resolved(self.config.meetingSummaryBackend))
+                    ? "ChatGPT and Claude Code manage their own output limits. Select an API backend to set a limit."
+                    : nil
+            }) { value in
+                self.updateConfig { $0.meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(Int(value)) }
+            }
         for calendar in appState.availableEventKitCalendars {
             add("calendar_" + calendar.id, "Include calendar: " + calendar.sourceTitle + " / " + calendar.title,
                 [.init(id: "on", label: "Included"), .init(id: "off", label: "Hidden")],
