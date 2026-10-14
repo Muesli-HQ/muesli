@@ -135,9 +135,17 @@ enum MeetingBrowserLogic {
         return date >= threshold
     }
 
+    // Start times repeat on every render of the list, the timeline and the filter
+    // menu, and each uncached parse is an ICU call. Failed parses are not cached.
+    private static let parsedDates = NSCache<NSString, NSDate>()
+
     static func parseDate(_ raw: String) -> Date? {
-        isoParsers.lazy.compactMap { $0.date(from: raw) }.first
-            ?? localParsers.lazy.compactMap { $0.date(from: raw) }.first
+        let key = raw as NSString
+        if let cached = parsedDates.object(forKey: key) { return cached as Date }
+        guard let parsed = isoParsers.lazy.compactMap({ $0.date(from: raw) }).first
+            ?? localParsers.lazy.compactMap({ $0.date(from: raw) }).first else { return nil }
+        parsedDates.setObject(parsed as NSDate, forKey: key)
+        return parsed
     }
 
     static func formatStartTime(
