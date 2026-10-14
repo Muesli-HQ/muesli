@@ -111,8 +111,12 @@ enum MeetingSummaryRetryPolicy {
     private static func isPermanentRequestFailure(_ error: Error) -> Bool {
         if let outputError = error as? MeetingSummaryOutputPolicy.OutputError {
             switch outputError {
-            case .modelLimitUnavailable, .outputLimitReached: return true
+            case .modelLimitUnavailable, .outputLimitReached, .contextWindowExceeded: return true
             case .modelLimitRequestFailed(let status): return !isTransientHTTPStatus(status)
+            case .provider(let type, _):
+                // SSE errors arrive with HTTP 200. Retry only documented transient types;
+                // unknown or missing types need user action rather than repeated paid calls.
+                return !["rate_limit_error", "api_error", "timeout_error", "overloaded_error"].contains(type ?? "")
             default: break
             }
         }

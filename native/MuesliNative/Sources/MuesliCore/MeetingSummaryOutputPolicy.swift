@@ -67,7 +67,8 @@ public enum MeetingSummaryOutputPolicy {
         case modelLimitRequestFailed(statusCode: Int)
         case incompleteStream
         case outputLimitReached
-        case provider(String)
+        case contextWindowExceeded
+        case provider(type: String?, message: String)
 
         public var errorDescription: String? {
             switch self {
@@ -79,7 +80,9 @@ public enum MeetingSummaryOutputPolicy {
                 return "The summary response ended before the model finished. Try again."
             case .outputLimitReached:
                 return "The summary reached its output token limit before finishing. Increase or remove the output token limit in Meetings → Meeting Summaries → Advanced, or choose a model with a larger output allowance, then try again."
-            case .provider(let message): return message
+            case .contextWindowExceeded:
+                return "The summary filled the model's context window before finishing. Use a model with a larger context window or shorten the transcript and notes, then try again."
+            case .provider(_, let message): return message
             }
         }
     }
@@ -88,9 +91,7 @@ public enum MeetingSummaryOutputPolicy {
     /// stop reason followed by the terminal event, rejecting token-limit stops.
     public static func anthropicText(from data: Data, redactProviderErrors: Bool = false) throws -> String {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if json["stop_reason"] as? String == "max_tokens" {
-                throw OutputError.outputLimitReached
-            }
+            try validateAnthropicStopReason(json["stop_reason"] as? String)
             let content = json["content"] as? [[String: Any]] ?? []
             return content.filter { $0["type"] as? String == "text" }
                 .compactMap { $0["text"] as? String }.joined(separator: "\n")
@@ -126,9 +127,7 @@ public enum MeetingSummaryOutputPolicy {
                 if let reason = delta["stop_reason"] as? String, !reason.isEmpty {
                     sawStopReason = true
                 }
-                if delta["stop_reason"] as? String == "max_tokens" {
-                    throw OutputError.outputLimitReached
-                }
+                try validateAnthropicStopReason(delta["stop_reason"] as? String)
             case "message_stop":
                 guard sawStopReason else { throw OutputError.incompleteStream }
                 finished = true
@@ -136,7 +135,7 @@ public enum MeetingSummaryOutputPolicy {
                 let error = event["error"] as? [String: Any]
                 let message = redactProviderErrors ? "The custom summary provider reported an error."
                     : (error?["message"] as? String ?? "The summary provider reported an error.")
-                throw OutputError.provider(String(message.prefix(1200)))
+                throw OutputError.provider(type: error?["type"] as? String, message: String(message.prefix(1200)))
             default: break
             }
         }
@@ -150,5 +149,15 @@ public enum MeetingSummaryOutputPolicy {
         guard finished else { throw OutputError.incompleteStream }
         return textBlocks.keys.sorted().compactMap { textBlocks[$0] }.joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Both token and context-window exhaustion indicate truncated output:
+    /// https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+    private static func validateAnthropicStopReason(_ reason: String?) throws {
+        switch reason {
+        case "max_tokens": throw OutputError.outputLimitReached
+        case "model_context_window_exceeded": throw OutputError.contextWindowExceeded
+        default: break
+        }
     }
 }

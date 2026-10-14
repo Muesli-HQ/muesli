@@ -215,13 +215,14 @@ struct CustomLLMHeaderPropagationTests {
         #expect(requests == 2)
     }
 
-    @Test("Anthropic app and CLI reject truncated summaries and allow a fresh manual retry", arguments: [false, true])
-    func truncatedAnthropicSummaries(stream: Bool) async throws {
+    @Test("Anthropic app and CLI reject truncated summaries and allow a fresh manual retry",
+          arguments: [false, true], ["max_tokens", "model_context_window_exceeded"])
+    func truncatedAnthropicSummaries(stream: Bool, stopReason: String) async throws {
         var truncated = true
         var requests = 0
         CustomLLMHeaderPropagationURLProtocol.install { _ in
             requests += 1
-            let reason = truncated ? "max_tokens" : "end_turn"
+            let reason = truncated ? stopReason : "end_turn"
             let notes = truncated ? "Partial notes" : "Complete notes"
             let response = stream
                 ? "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\(notes)\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"\(reason)\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -237,8 +238,13 @@ struct CustomLLMHeaderPropagationTests {
             _ = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
             Issue.record("App must not return partial notes as a completed summary")
         } catch {
-            #expect(error.localizedDescription.contains("output token limit before finishing"))
-            #expect(error.localizedDescription.contains("Advanced"))
+            if stopReason == "model_context_window_exceeded" {
+                #expect(error.localizedDescription.contains("context window before finishing"))
+                #expect(error.localizedDescription.contains("shorten the transcript"))
+            } else {
+                #expect(error.localizedDescription.contains("output token limit before finishing"))
+                #expect(error.localizedDescription.contains("Advanced"))
+            }
             #expect(!error.localizedDescription.contains("could not be reached"))
         }
         #expect(requests == 1)
@@ -251,10 +257,42 @@ struct CustomLLMHeaderPropagationTests {
         // A new user-triggered request is independent of the failed automatic retry loop.
         truncated = false
         config.meetingSummaryMaxOutputTokens = 64_000
+        config.customLLMModel = "larger-model"
         #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
         let retryConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
         #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: retryConfig) == "Complete notes")
         #expect(requests == 4)
+    }
+
+    @Test("streamed summary errors preserve automatic and manual retry behavior",
+          arguments: ["authentication_error", "overloaded_error"])
+    func streamedSummaryErrorRetries(type: String) async throws {
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { _ in
+            requests += 1
+            if requests == 1 {
+                return .init(data: Data("data: {\"type\":\"error\",\"error\":{\"type\":\"\(type)\",\"message\":\"reflected secret\"}}\n\n".utf8))
+            }
+            let complete = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+            return .init(data: Data(complete.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = 64_000
+        config.meetingSummaryRetryCount = 3
+        do {
+            let notes = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+            #expect(type == "overloaded_error")
+            #expect(notes == "Complete notes")
+        } catch {
+            #expect(type == "authentication_error")
+            #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+        #expect(requests == (type == "overloaded_error" ? 2 : 1))
+        // Explicit user retries remain possible even after a permanent provider failure.
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        #expect(requests == (type == "overloaded_error" ? 3 : 2))
     }
 
     @Test("generated title sends additional headers")
