@@ -201,6 +201,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         // A native start may deliver callbacks before returning (or throwing).
         // Audio alone does not establish that this child can own the route.
         var startupSucceeded = false
+        /// The system default input this graph was built for; nil for a chosen microphone.
+        /// Read before the graph binds, so a default change after that point is never missed.
+        let followedDefaultInputDeviceID: AudioObjectID?
     }
     private enum CandidateSignalRequirement {
         case callback
@@ -215,9 +218,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     /// when the system default input moves (AirPods connect), yet the capture graph is bound to
     /// the old default and its configuration-change observer is off (the owner of route
     /// recovery is this recorder). The assignment therefore compares the route's current default
-    /// input with the last one seen and hands off only when it moved, so repeated notifications
-    /// for an unchanged default (inventory and output events) stay quiet. A chosen microphone
-    /// never consults the default.
+    /// input with the one the live graph (or an in-flight handoff request) serves, and hands off
+    /// only when they differ, so repeated notifications for an unchanged default (inventory and
+    /// output events) stay quiet. A chosen microphone never consults the default.
     var preferredInputDeviceID: AudioObjectID? {
         get { lock.withLock { $0.preferredInputDeviceIDStorage } }
         set {
@@ -226,12 +229,12 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 : nil
             let shouldHandoff = lock.withLock { state -> Bool in
                 let changed = state.preferredInputDeviceIDStorage != newValue
-                // While paused the observation is left unconsumed, so resume() sees the move.
-                let defaultInputMoved = state.lifecycleState != .paused
-                    && state.noteDefaultInput(currentDefaultInputDeviceID)
+                let isLive = state.lifecycleState == .running || state.lifecycleState == .failed
+                let defaultInputMoved = isLive && state.followedDefaultInputMoved(to: currentDefaultInputDeviceID)
                 guard changed || defaultInputMoved || state.lifecycleState == .failed else { return false }
                 if changed { state.preferredInputDeviceIDStorage = newValue }
-                guard state.lifecycleState == .running || state.lifecycleState == .failed else { return false }
+                guard isLive else { return false }
+                if let currentDefaultInputDeviceID { state.requestedDefaultInputDeviceID = currentDefaultInputDeviceID }
                 state.generation &+= 1
                 return true
             }
@@ -293,17 +296,20 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var sampleAdmissionCheck: (() -> Bool)?
         var nativeStopDrainRange: (() -> Range<Int64>?)?
 
-        /// The system default input last seen by a default-following graph or notification.
-        /// Updated synchronously with the decision, so a burst of notifications for one new
+        /// The system default a handoff was requested for and has neither promoted nor been
+        /// dropped. Set synchronously with the decision, so a burst of notifications for one new
         /// default starts one handoff even before the queued handoff has created its candidate.
-        var observedDefaultInputDeviceID: AudioObjectID?
+        /// Cleared when the handoff promotes, fails, or is cancelled (pause, stop), so the
+        /// baseline falls back to the graph that is actually capturing.
+        var requestedDefaultInputDeviceID: AudioObjectID?
 
-        /// True when the system default is now a different, known device than last observed.
-        /// An unknown default (nil) carries no information and is ignored.
-        mutating func noteDefaultInput(_ current: AudioObjectID?) -> Bool {
+        /// True when the system default is a known device other than the one the capture serves
+        /// (the pending request, else the active graph). An unknown default carries no information.
+        func followedDefaultInputMoved(to current: AudioObjectID?) -> Bool {
             guard let current else { return false }
-            defer { observedDefaultInputDeviceID = current }
-            return observedDefaultInputDeviceID != current
+            let served = requestedDefaultInputDeviceID
+                ?? (active?.deviceID == nil ? active?.followedDefaultInputDeviceID : nil)
+            return served != current
         }
     }
 
@@ -426,6 +432,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.pending = nil
                 state.pendingAudio.removeAll()
                 state.pendingAudioCount = 0
+                // The cancelled replacement never served its default; resume() re-derives the need.
+                state.requestedDefaultInputDeviceID = nil
                 return (state.active?.recorder, pending)
             }
             cancelAsync(result.1)
@@ -441,9 +449,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 let shouldRecover = state.shouldRecoverOnResume
                 state.shouldRecoverOnResume = false
                 state.lifecycleState = shouldRecover ? .failed : .running
-                // The default may have moved while paused (setter leaves it unconsumed).
+                // The default may have moved while paused, or a replacement for it may have
+                // been cancelled by pause(): compare against the graph that is capturing.
                 let defaultInputMoved = state.preferredInputDeviceIDStorage == nil
-                    && state.noteDefaultInput(currentDefaultInputDeviceID)
+                    && state.followedDefaultInputMoved(to: currentDefaultInputDeviceID)
+                if defaultInputMoved { state.requestedDefaultInputDeviceID = currentDefaultInputDeviceID }
                 return (state.active?.recorder, shouldRecover, defaultInputMoved)
             }
             guard let result else { return }
@@ -467,6 +477,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.pending = nil
                 state.pendingAudio.removeAll()
                 state.pendingAudioCount = 0
+                state.requestedDefaultInputDeviceID = nil
                 state.shouldRecoverOnResume = false
                 return result
             }
@@ -508,6 +519,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.pending = nil
                 state.pendingAudio.removeAll()
                 state.pendingAudioCount = 0
+                state.requestedDefaultInputDeviceID = nil
                 state.shouldRecoverOnResume = false
                 return result
             }
@@ -736,12 +748,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         if let range = lock.withLock({ $0.nativeStopDrainRange }) {
             recorder.setNativeStopDrainRange(range)
         }
-        if deviceID == nil {
-            // Read before the graph binds, so a default change after this point is never missed.
-            let defaultInputDeviceID = routeSnapshotProvider()?.defaultInputDeviceID
-            lock.withLock { $0.observedDefaultInputDeviceID = defaultInputDeviceID }
-        }
-        let child = Child(id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID)
+        let child = Child(
+            id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID,
+            followedDefaultInputDeviceID: deviceID == nil ? routeSnapshotProvider()?.defaultInputDeviceID : nil
+        )
         // The recorder owns these callbacks. Capturing Child would retain that
         // same recorder (and its native graph) even after stop or retirement.
         recorder.onRawPCMSamples = { [weak self, childID = child.id] samples in
@@ -857,6 +867,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             }
             state.active = candidate
             state.pending = nil
+            // The active graph now carries the default it was built for.
+            state.requestedDefaultInputDeviceID = nil
             state.lifecycleState = .running
             return (true, old)
         }
@@ -878,6 +890,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             state.pending = nil
             state.pendingAudio.removeAll()
             state.pendingAudioCount = 0
+            // The request was not served: the next notification for this default retries it.
+            state.requestedDefaultInputDeviceID = nil
             state.retiringIDs.insert(candidate.id)
             return (candidate, state.lifecycleState == .failed)
         }
