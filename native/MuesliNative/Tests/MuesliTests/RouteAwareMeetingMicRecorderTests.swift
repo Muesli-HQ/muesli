@@ -1325,6 +1325,40 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.waitForQuiescence()
     }
 
+    @Test("start and resume read the default only after capture is live")
+    func defaultIsSnapshottedAfterTheLifecycleGoesLive() async throws {
+        // A route notification that lands while the recorder is not live is ignored, so a snapshot
+        // taken before the transition can be stale by the time it is compared.
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let observedLive = LockedLiveObservations()
+        var recorderRef: RouteAwareMeetingMicRecorder?
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            routeSnapshotProvider: {
+                if initial.startCalls == 1 || observedLive.isResuming {
+                    observedLive.record(recorderRef?.isLiveForDebug() ?? false)
+                }
+                return route.snapshot()
+            },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        recorderRef = recorder
+        try recorder.start()
+        #expect(observedLive.values.contains(true), "no default snapshot was taken once capture was live")
+        #expect(!observedLive.values.contains(false), "a default snapshot was taken before capture was live: \(observedLive.values)")
+
+        recorder.pause()
+        observedLive.isResuming = true
+        observedLive.reset()
+        recorder.resume()
+        #expect(observedLive.values.contains(true))
+        #expect(!observedLive.values.contains(false), "resume snapshotted the default before going live: \(observedLive.values)")
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
     @Test("an unchanged default between prepare and start does not hand off")
     func unchangedDefaultBetweenPrepareAndStartStaysQuiet() async throws {
         let route = DefaultInputRoute(defaultInputDeviceID: 90)
@@ -1660,4 +1694,17 @@ final class FakeMeetingMicRecorder: MeetingMicRecording {
             route: nil
         )
     }
+}
+
+private final class LockedLiveObservations: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Bool] = []
+    private var resuming = false
+    var values: [Bool] { lock.withLock { storage } }
+    var isResuming: Bool {
+        get { lock.withLock { resuming } }
+        set { lock.withLock { resuming = newValue } }
+    }
+    func record(_ live: Bool) { lock.withLock { storage.append(live) } }
+    func reset() { lock.withLock { storage.removeAll() } }
 }
