@@ -1,13 +1,28 @@
 # Local direct-trycua benchmark
 
+## Cursor comparison (October 14)
+
+The reference host enables upstream's native agent cursor overlay. Action tools
+animate resolved targets; `move_cursor` and `get_agent_cursor_state` are exposed
+for explicit shadow-cursor movement/readback. Foreground delivery, desktop scope,
+and desktop targets are refused by the host before dispatch, preserving the
+human pointer. Window-targeted overlays follow upstream target-relative ordering;
+a covered or off-Space window is not brought forward to make its cursor visible.
+
+A cursor-only smoke test moved the overlay to two screen points and confirmed
+rendering and reported position. The frontmost app/window stayed unchanged. The
+human pointer moved during observation, so this does not establish stationary
+pointer parity. This smoke test does not establish end-to-end Twitter success or
+visibility on an off-Space window. Native Swift background rendering is separate.
+
 ## Branch ownership
 
 - Native PR branch: `codex/cua-background-driver`.
 - Local benchmark branch: `codex/cua-trycua-benchmark` (this branch).
-- Common application baseline: `05eb305db67d4b39beabf70388dc790d4d6c5a12`, PR #515.
+- Common application baseline: `ca66d8ec8d1414c28f9a954ec69b218a99a1fd53` (main fetched October 14).
 - Shared checkout: `/Users/pranavhari/.codex/worktrees/b617/muesli`.
 - Upstream reference: `https://github.com/trycua/cua`, commit
-  `39a206e637273385f39a41b3b8544e6d3ab5c099`.
+  `05d14942609e907e3d3a3e09bf1886adeffacb9b`, driver 0.35.4.
 
 This branch is explicitly authorized to use the real upstream runtime locally.
 The native shipping branch remains Swift. Do not push this branch, open a PR

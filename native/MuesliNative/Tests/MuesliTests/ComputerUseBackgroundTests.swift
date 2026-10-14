@@ -8,6 +8,10 @@ struct ComputerUseBackgroundTests {
     @Test("Reference comparison rejects foreground delivery before dispatch")
     func referenceBackgroundDelivery() {
         #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery([:]))
+        #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery(["scope": "window", "target": ["kind": "window", "pid": 123, "window_id": 456]]))
+        #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["scope": "desktop"]))
+        #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["target": ["kind": "desktop"]]))
+        #expect(ComputerUseReferenceRuntime.allowedTools.contains("move_cursor"))
         #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": "background"]))
         #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": "foreground"]))
         #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": true]))
