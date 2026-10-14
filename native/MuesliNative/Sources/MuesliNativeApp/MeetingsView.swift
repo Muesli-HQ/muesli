@@ -337,6 +337,7 @@ struct MeetingsView: View {
                                 record: meeting,
                                 isSelected: appState.selectedMeetingID == meeting.id,
                                 hasFollowUps: presentation.meetingIDsWithFollowUps.contains(meeting.id),
+                                localeVersion: localeChangeVersion,
                                 folders: appState.folders,
                                 onSelect: { controller.showMeetingDocument(id: meeting.id) },
                                 onMove: { folderID in
@@ -351,7 +352,6 @@ struct MeetingsView: View {
                             )
                         }
                     }
-                    .id(localeChangeVersion)
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
