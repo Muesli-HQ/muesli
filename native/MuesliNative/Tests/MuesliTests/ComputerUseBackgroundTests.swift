@@ -18,6 +18,24 @@ struct ComputerUseBackgroundTests {
         #expect(result.message.contains("unlocked Mac"))
     }
 
+    @Test("Background writing cannot bypass the scoped executor")
+    func writingUsesBackgroundBoundary() async {
+        var config = AppConfig()
+        config.enableComputerUsePlanner = true
+        config.computerUseBackgroundMode = true
+        let runtime = ComputerUsePlannerRuntime(config: config, maxSteps: 1,
+            prepareEdit: { _, _ in
+                Issue.record("Background edits must not use the foreground writing path")
+                throw CancellationError()
+            }, plan: { _ in
+                ComputerUsePlannerResponse(toolCall: .init(tool: .editText,
+                    elementID: "missing", instruction: "Rewrite this", scope: "field"))
+            }, isScreenLocked: { false })
+        let result = await runtime.run(command: "Rewrite the acquired field")
+        #expect(result.status == .failed)
+        #expect(result.traceEvents.contains { $0.kind == "tool_result" && $0.body.contains("No acquired background window") })
+    }
+
     @Test("Corroboration refuses blank titles and same-frame sibling ambiguity")
     func exactCorroboration() {
         let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
