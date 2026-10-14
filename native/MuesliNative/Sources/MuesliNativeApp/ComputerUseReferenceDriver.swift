@@ -49,6 +49,12 @@ final class ComputerUseReferenceDriver {
             let service = Process()
             service.executableURL = URL(fileURLWithPath: executable)
             service.arguments = ["serve", "--embedded", "--socket", socket]
+            // Explicit dev-host launch authorization, never derived from a
+            // planner argument or an ambient permission bypass.
+            let existingProfileAuthorized = CommandLine.arguments.contains("--trycua-authorize-existing-profile")
+            if existingProfileAuthorized {
+                service.arguments?.append(contentsOf: ["--grant", "existing-profile"])
+            }
             service.environment = environment
             service.standardOutput = log; service.standardError = log
             try service.run()
@@ -83,7 +89,8 @@ final class ComputerUseReferenceDriver {
             try save(catalog, name: "tools.json")
             try save(try await call(name: "check_permissions", arguments: ["prompt": false]), name: "permissions.json")
             try save(["pid": service.processIdentifier, "socket": socket, "executable": executable,
-                      "host": Bundle.main.bundleIdentifier ?? "", "permission_mode": "standard"], name: "endpoint.json")
+                      "host": Bundle.main.bundleIdentifier ?? "", "permission_mode": "standard",
+                      "existing_profile_authorized": existingProfileAuthorized], name: "endpoint.json")
             fputs("[muesli-reference] Ready; evidence: \(root.path)\n", stderr)
         } catch {
             try? save(["error": error.localizedDescription], name: "failure.json")
