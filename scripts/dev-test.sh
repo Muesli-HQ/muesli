@@ -105,7 +105,9 @@ done
 case "$LANE" in
   "")
     DEV_APP_NAME="MuesliDev"
-    DEV_BUNDLE_ID="com.muesli.dev"
+    # com.muesli.dev belongs to upstream's Apple team; set MUESLI_DEV_BUNDLE_ID to an id your own
+    # team can register (needed for iCloud, see scripts/dev-sign-cloud.sh).
+    DEV_BUNDLE_ID="${MUESLI_DEV_BUNDLE_ID:-com.muesli.dev}"
     ;;
   A|a|B|b|C|c)
     LANE_UPPER="$(printf '%s' "$LANE" | tr '[:lower:]' '[:upper:]')"

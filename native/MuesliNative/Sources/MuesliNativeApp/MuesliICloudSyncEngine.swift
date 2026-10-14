@@ -415,7 +415,11 @@ enum ICloudSyncCallbackDeadline {
 
 final class MuesliICloudSyncEngine {
     enum Schema {
-        static let containerIdentifier = "iCloud.com.mueslihq.muesli"
+        /// Upstream's container, used when the build carries no iCloud container entitlement.
+        static let defaultContainerIdentifier = "iCloud.com.mueslihq.muesli"
+        /// The container this build is entitled to use, so a build signed under another team's
+        /// container syncs there instead of failing against upstream's.
+        static let containerIdentifier = resolveContainerIdentifier(entitled: entitledContainers())
         static let syncZoneName = "MuesliSyncZone"
         static let textRecordType = "MuesliTextRecord"
         static let bridgeDeviceRecordType = "MuesliBridgeDevice"
@@ -424,6 +428,27 @@ final class MuesliICloudSyncEngine {
 
         static var syncZoneID: CKRecordZone.ID {
             CKRecordZone.ID(zoneName: syncZoneName, ownerName: CKCurrentUserDefaultName)
+        }
+
+        static func resolveContainerIdentifier(entitled: Any?) -> String {
+            let identifiers: [String]
+            if let list = entitled as? [String] {
+                identifiers = list
+            } else if let single = entitled as? String {
+                identifiers = [single]
+            } else {
+                identifiers = []
+            }
+            return identifiers.first { $0.hasPrefix("iCloud.") } ?? defaultContainerIdentifier
+        }
+
+        private static func entitledContainers() -> Any? {
+            guard let task = SecTaskCreateFromSelf(nil) else { return nil }
+            return SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.developer.icloud-container-identifiers" as CFString,
+                nil
+            )
         }
     }
 
