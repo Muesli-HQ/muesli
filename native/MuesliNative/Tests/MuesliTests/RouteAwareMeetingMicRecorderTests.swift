@@ -976,6 +976,71 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.waitForQuiescence()
     }
 
+    @Test("pausing before the replacement delivers audio still hands off on resume")
+    func pauseBeforeReplacementAudioStillHandsOffOnResume() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let abandoned = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [abandoned, replacement]
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        try await waitUntil { abandoned.startCalls == 1 }
+        // The candidate has started but not produced audio when the user pauses.
+        recorder.pause()
+        try await waitUntil { abandoned.cancelCalls == 1 }
+        recorder.preferredInputDeviceID = nil
+        #expect(replacement.startCalls == 0)
+
+        recorder.resume()
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.onRawPCMSamples?([6])
+        try await waitUntil { initial.stopCalls == 1 }
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("a failed default-input handoff is retried by the next notification")
+    func failedDefaultInputHandoffIsRetried() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let failing = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        failing.startError = NSError(domain: "test", code: 7)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [failing, replacement]
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        try await waitUntil { failing.cancelCalls == 1 }
+        recorder.waitForQuiescence()
+        // The old graph is still the one capturing, so the same default is still unserved.
+        recorder.preferredInputDeviceID = nil
+
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.onRawPCMSamples?([7])
+        try await waitUntil { initial.stopCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
     @Test("resuming with an unchanged default input does not restart the microphone")
     func resumeWithUnchangedDefaultInputDoesNotRestart() async throws {
         let route = DefaultInputRoute(defaultInputDeviceID: 90)
