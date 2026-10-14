@@ -71,6 +71,7 @@ extension MuesliSettings {
         ("10b981", "Green"),
         ("8b5cf6", "Purple"),
         ("ec4899", "Pink"),
-        ("1e1e2e", "Dark"),
+        // Legacy stored value for the adaptive default accent, not a literal dark color.
+        ("1e1e2e", "Default"),
     ]
 }

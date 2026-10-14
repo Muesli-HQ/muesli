@@ -10,7 +10,6 @@ BrowserMeetingActivityCollectorTests
 CohereTranscribeLanguageTests
 CohereTranscribeUtilsTests
 ControlCenterSensorAttributionMonitorTests
-CoreAudioSystemRecorderTests
 DiagnosticIncidentReporterTests
 DictationAudioSessionManagerTests
 DictationBackendReadinessTests
@@ -25,7 +24,6 @@ ICloudBridgeAppStateTests
 ICloudBridgeWorkingCopyTests
 ICloudSyncCallbackDeadlineTests
 InferenceGateTests
-InsightsTests
 LaunchAtLoginManagerTests
 MediaPlaybackControllerTests
 MeetingAutoStopPolicyTests

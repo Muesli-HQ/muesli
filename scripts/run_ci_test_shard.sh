@@ -18,6 +18,7 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      InsightsTests
       DictationStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -116,6 +117,9 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMicrophoneCaptureTests
+      MeetingMicrophoneDeliveryTests
+      StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
@@ -129,6 +133,7 @@ case "${shard}" in
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
+      CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
@@ -149,6 +154,17 @@ case "${shard}" in
       CustomLLMRequestHeadersTests
       SettingsModelFieldTests
       MeetingSummaryClientTests
+      MeetingChatStoreTests
+      MeetingChatRetrievalTests
+      MeetingChatClientTests
+      MeetingChatContextBudgetTests
+      MeetingChatNativeBudgetTests
+      MeetingChatNavigationTests
+      MeetingChatExporterTests
+      MeetingChatNotesActionTests
+      MeetingChatReviewTests
+      MeetingChatPresentationTests
+      MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests

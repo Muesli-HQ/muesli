@@ -1,0 +1,15 @@
+name: Swift package
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: swift test
+      - name: Verify generated icons are reproducible
+        run: |
+          python3 Scripts/generate_icons.py
+          git diff --exit-code -- Sources/AIElementsSwift/AIIcon.swift

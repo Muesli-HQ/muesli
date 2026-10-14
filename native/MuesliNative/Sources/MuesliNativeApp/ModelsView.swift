@@ -233,7 +233,6 @@ struct ModelsView: View {
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
-                .featureTourTarget(.bodhanFlexCard)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -929,7 +928,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    MuesliSettingControl(controller: controller, id: "whisper_language")
+                    MuesliSettingControl(controller: controller, id: "whisper_language",
+                        allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: selectedOption.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1116,22 +1116,31 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func brandLogo(_ name: String?) -> some View {
-        if name == "apple-system-logo" {
-            Image(systemName: "apple.logo")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .frame(width: 24, height: 24)
-                .padding(.top, 2)
-        } else if let name,
-           let url = Bundle.main.url(forResource: name, withExtension: "png")
-                ?? Bundle.main.url(forResource: name, withExtension: "svg"),
-           let nsImage = NSImage(contentsOf: url) {
-            Image(nsImage: nsImage)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 24, height: 24)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .padding(.top, 2)
+        if let name {
+            Group {
+                if name == "apple-system-logo" {
+                    Image(systemName: "apple.logo")
+                        .font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                } else if name == "openai-logo" {
+                    OpenAILogoShape()
+                        .fill(MuesliTheme.textPrimary)
+                        .frame(width: 23, height: 23)
+                } else if let url = Bundle.main.url(forResource: name, withExtension: "png")
+                    ?? Bundle.main.url(forResource: name, withExtension: "svg"),
+                    let nsImage = NSImage(contentsOf: url) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 24, height: 24)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(width: 32, height: 32)
+            .accessibilityHidden(true)
         }
     }
 
@@ -1356,6 +1365,7 @@ struct ModelsView: View {
                         Text("Output").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                             .frame(width: 64, alignment: .leading)
                         MuesliSettingControl(controller: controller, id: "bodhan_output").frame(maxWidth: 220, alignment: .leading)
+                        .featureTourTarget(.bodhanFlexCard)
                         .disabled(incompatibilityReason != nil)
                         .help("Native script, mixed Indic and English scripts, or all Latin letters.")
                     }
@@ -1400,7 +1410,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    MuesliSettingControl(controller: controller, id: "whisper_language")
+                    MuesliSettingControl(controller: controller, id: "whisper_language",
+                        allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: option.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)

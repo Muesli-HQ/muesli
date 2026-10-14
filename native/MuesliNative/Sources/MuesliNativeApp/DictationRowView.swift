@@ -11,6 +11,7 @@ struct DictationRowView: View {
     @State private var isHovered = false
     @State private var showDeleteConfirmation = false
     @State private var isExpanded = false
+    @State private var showsFullText = false
 
     private var isComputerUseCommand: Bool {
         record.source == "cua"
@@ -18,6 +19,15 @@ struct DictationRowView: View {
 
     private var isQuilTransformation: Bool {
         record.source == "quil"
+    }
+
+    private var canExpandText: Bool {
+        record.rawText.count > 160 || record.rawText.filter { $0 == "\n" }.count > 2
+    }
+
+    private var displayedText: String {
+        guard !showsFullText, record.rawText.count > 160 else { return record.rawText }
+        return String(record.rawText.prefix(160)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
     private var hasExpandableDetails: Bool {
@@ -70,10 +80,11 @@ struct DictationRowView: View {
                             SyncOriginBadge(label: syncOriginBadgeLabel)
                         }
 
-                        Text(record.rawText)
-                            .font(.system(size: 14, weight: .regular))
+                        Text(displayedText)
+                            .font(MuesliTheme.reading())
                             .foregroundStyle(MuesliTheme.textPrimary)
-                            .lineLimit(nil)
+                            .lineLimit(showsFullText || !canExpandText ? nil : 3)
+                            .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -89,6 +100,17 @@ struct DictationRowView: View {
                                     .foregroundStyle(statusColor(trace.finalStatus))
                             }
                         }
+                    }
+
+                    if canExpandText {
+                        Button(showsFullText ? "Show less" : "Show more") {
+                            showsFullText.toggle()
+                        }
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.accent)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showsFullText ? "Collapse dictation text" : "Show full dictation text")
+                        .accessibilityIdentifier("dictation.expand.\(record.id)")
                     }
 
                     if isExpanded, let trace = record.computerUseTrace {
@@ -149,7 +171,13 @@ struct DictationRowView: View {
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing16)
-        .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+        }
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovered = hovering
