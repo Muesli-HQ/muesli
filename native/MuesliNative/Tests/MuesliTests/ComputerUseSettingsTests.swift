@@ -868,6 +868,24 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("summary output limit uses the shared setting and verifies persistence")
+    func summaryOutputSetting() async throws {
+        try await withShortcutSettings { controller, store in
+            controller.updateConfig { $0.meetingSummaryBackend = "openai" }
+            try await controller.applySetting("summary_output_limit", value: "20000")
+            #expect(controller.config.meetingSummaryMaxOutputTokens == 20_000)
+            #expect(store.load().meetingSummaryMaxOutputTokens == 20_000)
+            try await controller.applySetting("summary_output_limit", value: "0")
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
+            controller.updateConfig { $0.meetingSummaryBackend = "chatgpt" }
+            do {
+                try await controller.applySetting("summary_output_limit", value: "20000")
+                Issue.record("Unsupported backend must not silently accept an output cap")
+            } catch {}
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
+        }
+    }
+
     private func withShortcutSettings(_ exercise: @MainActor (MuesliController, ConfigStore) async throws -> Void) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("shortcut-settings-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

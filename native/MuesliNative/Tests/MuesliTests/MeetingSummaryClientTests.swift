@@ -5,6 +5,77 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("Anthropic output uses the model maximum unless a smaller cap is requested")
+    func anthropicOutputLimits() async throws {
+        let url = URL(string: "https://summary.example.test/v1/messages")!
+        for (model, requested, expected) in [("claude-sonnet-5-5", nil, 128_000), ("claude-haiku-4-5", nil, 64_000),
+                                             ("claude-sonnet-5-5", 5_000, 5_000), ("claude-haiku-4-5", 128_000, 64_000)] {
+            let limit = try await MeetingSummaryOutputPolicy.anthropicLimit(model: model, requested: requested,
+                messagesURL: url, apiKey: "test", send: { _ in
+                    Issue.record("Bundled models and explicit limits must not require a discovery request")
+                    throw URLError(.badServerResponse)
+                })
+            #expect(limit == expected)
+        }
+        let discovered = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "future/model", requested: nil,
+            messagesURL: url, apiKey: "test", workspaceID: "workspace", extraHeaders: ["source": "muesli"], send: { request in
+                #expect(request.httpMethod == "GET")
+                #expect(request.url?.absoluteString == "https://summary.example.test/v1/models/future%2Fmodel")
+                #expect(request.value(forHTTPHeaderField: "x-api-key") == "test")
+                #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "workspace")
+                #expect(request.value(forHTTPHeaderField: "source") == "muesli")
+                return (Data(#"{"max_tokens":96000}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+        #expect(discovered == 96_000)
+        for status in [401, 429, 503] {
+            do {
+                _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                    messagesURL: url, apiKey: "test", send: { request in
+                        (Data(), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+                    })
+                Issue.record("Expected failed model lookup")
+            } catch {
+                #expect(error.localizedDescription.contains("HTTP \(status)"))
+                #expect(MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: error)) == (status != 401))
+            }
+        }
+        do {
+            _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                messagesURL: url, apiKey: "test", send: { request in
+                    (Data(#"{}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                })
+            Issue.record("Expected configuration guidance instead of a hidden default cap")
+        } catch {
+            #expect(error.localizedDescription.contains("Advanced"))
+            #expect(!MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: error)))
+        }
+    }
+
+    @Test("Anthropic streaming summaries require completion and ignore reasoning")
+    func streamedAnthropicOutput() throws {
+        let events = [
+            #"{"type":"message_start","message":{"content":[]}}"#,
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private"}}"#,
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private reasoning"}}"#,
+            #"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Complete notes"}}"#,
+        ].map { "data: " + $0 + "\n\n" }.joined()
+        for newline in ["\n", "\r\n"] {
+            let complete = (events + "data: {\"type\":\"message_stop\"}\n\n").replacingOccurrences(of: "\n", with: newline)
+            #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(complete.utf8)) == "Complete notes")
+        }
+        #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
+            try MeetingSummaryOutputPolicy.anthropicText(from: Data(events.utf8))
+        }
+        let failure = "data: {\"type\":\"error\",\"error\":{\"message\":\"reflected secret\"}}\n\n"
+        do {
+            _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(failure.utf8), redactProviderErrors: true)
+            Issue.record("Expected stream error")
+        } catch {
+            #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+    }
+
     @Test("Custom LLM transport failures explain HTTPS and trusted certificates")
     func customLLMTransportGuidance() throws {
         let error = MeetingSummaryError.requestFailed(
@@ -170,7 +241,8 @@ struct MeetingSummaryClientTests {
                     let requestBody = try #require(request.httpBody)
                     let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
                     #expect(payload["model"] as? String == "claude-sonnet-5-5")
-                    #expect(payload["max_tokens"] as? Int == AnthropicModelPolicy.summaryMaxOutputTokens)
+                    #expect(payload["max_tokens"] as? Int == 128_000)
+                    #expect(payload["stream"] as? Bool == true)
                     #expect((payload["system"] as? String)?.contains("meeting notes assistant") == true)
                     let messages = try #require(payload["messages"] as? [[String: String]])
                     #expect(messages.first?["content"]?.contains("launch on Friday") == true)
@@ -187,7 +259,6 @@ struct MeetingSummaryClientTests {
 
     @Test("brief Anthropic tasks reserve output and use supported low effort")
     func anthropicBriefTaskPolicy() {
-        #expect(AnthropicModelPolicy.summaryMaxOutputTokens >= 10_000)
         #expect(AnthropicModelPolicy.titleMaxOutputTokens >= 1_024)
         #expect(AnthropicModelPolicy.cleanupMaxOutputTokens >= 10_000)
         #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-opus-5-5") == "low")

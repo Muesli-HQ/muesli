@@ -93,6 +93,7 @@ struct CustomLLMHeaderPropagationTests {
             #expect(request.value(forHTTPHeaderField: "source") == "muesli")
             #expect(request.value(forHTTPHeaderField: "org-id") == "2")
             #expect(request.value(forHTTPHeaderField: "x-api-key") == "static-key")
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":64000}"#.utf8)) }
             return .init(data: Data(#"{"content":[{"type":"text","text":"OK"}]}"#.utf8))
         }
         defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
@@ -105,6 +106,45 @@ struct CustomLLMHeaderPropagationTests {
             config: config
         )
         #expect(result == "OK")
+    }
+
+    @Test("app and CLI summaries omit default caps and honor explicit limits", arguments: ["custom_llm", "custom_anthropic", "lmstudio", "ollama"], [0, 5_000])
+    func summaryOutputLimits(backend: String, cap: Int) async throws {
+        let limit: Int? = cap == 0 ? nil : cap
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":96000}"#.utf8)) }
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            if backend == "custom_anthropic" {
+                #expect(body?["max_tokens"] as? Int == (limit ?? 96_000))
+                #expect(body?["stream"] as? Bool == (limit == nil))
+                let stream = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                return .init(data: limit == nil ? Data(stream.utf8) : Data(#"{"content":[{"type":"text","text":"Complete notes"}]}"#.utf8))
+            }
+            if backend == "ollama" {
+                #expect((body?["options"] as? [String: Int])?["num_predict"] == (limit ?? -1))
+                return .init(data: Data(#"{"message":{"content":"Complete notes"}}"#.utf8))
+            }
+            #expect(body?["max_tokens"] as? Int == limit)
+            #expect(body?["max_completion_tokens"] == nil)
+            return .init(data: Data(#"{"choices":[{"message":{"content":"Complete notes"}}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig()
+        config.meetingSummaryBackend = backend == "custom_anthropic" ? "custom_llm" : backend
+        if backend == "custom_anthropic" {
+            config.customLLMFormat = "anthropic"
+            config.customLLMAPIKey = "test-key"
+        }
+        config.meetingSummaryMaxOutputTokens = limit
+        config.lmStudioURL = config.customLLMURL
+        config.lmStudioModel = "local-model"
+        config.ollamaURL = "https://headers.example.test"
+        let appNotes = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(cliConfig.meetingSummaryMaxOutputTokens == limit)
+        let cliNotes = try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
+        #expect(appNotes == "Complete notes")
+        #expect(cliNotes == appNotes)
     }
 
     @Test("generated title sends additional headers")
@@ -177,10 +217,11 @@ struct CustomLLMHeaderPropagationTests {
             } else {
                 #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(expectedKey)")
             }
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":64000}"#.utf8)) }
             let body = try? JSONSerialization.jsonObject(
                 with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)
             ) as? [String: Any]
-            #expect(body?["max_tokens"] as? Int == 2500)
+            #expect(body?["max_tokens"] as? Int == (format == "anthropic" ? 64_000 : nil))
             #expect(body?["max_completion_tokens"] == nil)
             let response = format == "anthropic"
                 ? #"{"content":[{"type":"text","text":"CLI notes"}]}"#
@@ -225,7 +266,6 @@ struct CustomLLMHeaderPropagationTests {
             let body = try? JSONSerialization.jsonObject(
                 with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)
             ) as? [String: Any]
-            #expect(body?["max_tokens"] as? Int != nil)
             #expect(body?["max_completion_tokens"] == nil)
             #expect(body?["reasoning_effort"] == nil)
             return .init(statusCode: 401, data: responseBody)
