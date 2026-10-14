@@ -205,6 +205,24 @@ struct ComputerUseBackgroundTests {
 }
 
 extension ComputerUseBackgroundTests {
+    @Test("Strict reference background catalog excludes self-activating shortcut routes")
+    func referenceShortcutBoundary() {
+        let excluded = ["hotkey", "press_key", "invoke_menu"]
+        let available = ["browser_navigate", "browser_type", "set_value", "move_cursor"]
+        let catalog: [[String: Any]] = (excluded + available).map {
+            ["name": $0, "inputSchema": ["type": "object"]]
+        }
+        let names = Set(ComputerUseReferenceRuntime.definitions(from: catalog)
+            .compactMap { $0["name"] as? String })
+        for name in excluded {
+            #expect(!names.contains(name))
+            // execute validates against these definitions before driver.call;
+            // a hallucinated or stale shortcut must not reach the driver.
+            #expect(!ComputerUseReferenceRuntime.allowedTools.contains(name))
+        }
+        for name in available { #expect(names.contains(name)) }
+    }
+
     @Test("Reference schemas preserve upstream targeting and exclude administration")
     func referenceSchemas() throws {
         let schema: [String: Any] = ["type": "object", "required": ["pid", "window_id"],
