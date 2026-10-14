@@ -1949,9 +1949,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
                 settingsRow("Background execution (experimental)", controlWidth: meetingControlWidth) {
-                    settingsSwitch(isOn: appState.config.computerUseBackgroundMode) { newValue in
-                        controller.updateConfig { $0.computerUseBackgroundMode = newValue }
-                    }
+                    settingsControl("cua_background")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Enable planner", controlWidth: meetingControlWidth) {
