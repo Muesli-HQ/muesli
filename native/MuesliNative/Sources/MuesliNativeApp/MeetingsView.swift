@@ -164,7 +164,20 @@ enum MeetingBrowserLogic {
     private static let startTimeFormatterLock = NSLock()
     nonisolated(unsafe) private static var startTimeFormatters: [String: DateFormatter] = [:]
 
+    // The 12/24-hour preference can change without changing the locale identifier,
+    // so the identifier key alone would keep serving a stale clock format.
+    private static let localeChangeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: NSLocale.currentLocaleDidChangeNotification,
+        object: nil,
+        queue: nil
+    ) { _ in
+        startTimeFormatterLock.lock()
+        startTimeFormatters.removeAll()
+        startTimeFormatterLock.unlock()
+    }
+
     private static func startTimeFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+        _ = localeChangeObserver
         let key = "\(locale.identifier)|\(timeZone.identifier)"
         startTimeFormatterLock.lock()
         defer { startTimeFormatterLock.unlock() }
