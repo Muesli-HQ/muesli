@@ -217,18 +217,21 @@ struct ComputerUseSettingsTests {
         #expect(h.applies == 0)
     }
 
-    @Test("answering a question does not consume the planning budget")
+    @Test("answering a question does not consume the planning budget", .timeLimit(.minutes(1)))
     func questionTimeExcluded() async {
         let h = Harness()
+        // Scale the injected clock, as in cumulativePlanning, so a busy main actor
+        // cannot race the real watchdog. The answer still exceeds the entire budget.
+        let budget: TimeInterval = 3_600
         var time: TimeInterval = 0
         var calls = 0
         let result = await ComputerUseSettings.run(command: "Switch indicator", settings: [h.setting],
             config: { h.config }, persistedConfig: { h.saved }, ask: { _ in
-                time += 1_000
+                time += budget * 2
                 return "Notch"
-            }, planningTimeout: 10, now: { time }) { _, _ in
+            }, planningTimeout: budget, now: { time }) { _, _ in
                 calls += 1
-                time += 1
+                time += budget * 0.1
                 switch calls {
                 case 1: return ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
                 case 2: return ("ask_user_question", #"{"question":"Which indicator?","options":["Notch","Classic"]}"#)
@@ -236,6 +239,7 @@ struct ComputerUseSettingsTests {
                 }
             }
         #expect(result?.status == .done)
+        #expect(calls == 3)
         #expect(h.applies == 1)
     }
 
@@ -865,6 +869,24 @@ struct ComputerUseSettingsTests {
             })
             #expect(result?.status == .done)
             #expect(store.load().dictationHotkey == .combination(modifiers: .option, keyCode: 124))
+        }
+    }
+
+    @Test("summary output limit uses the shared setting and verifies persistence")
+    func summaryOutputSetting() async throws {
+        try await withShortcutSettings { controller, store in
+            controller.updateConfig { $0.meetingSummaryBackend = "openai" }
+            try await controller.applySetting("summary_output_limit", value: "20000")
+            #expect(controller.config.meetingSummaryMaxOutputTokens == 20_000)
+            #expect(store.load().meetingSummaryMaxOutputTokens == 20_000)
+            try await controller.applySetting("summary_output_limit", value: "0")
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
+            controller.updateConfig { $0.meetingSummaryBackend = "chatgpt" }
+            do {
+                try await controller.applySetting("summary_output_limit", value: "20000")
+                Issue.record("Unsupported backend must not silently accept an output cap")
+            } catch {}
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
         }
     }
 
