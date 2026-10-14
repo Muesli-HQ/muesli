@@ -367,6 +367,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         delivery.deliver = { [weak self] audio in self?.onRawPCMSamplesStorage?(audio) }
     }
 
+    func isLiveForDebug() -> Bool {
+        lock.withLock { $0.lifecycleState == .running || $0.lifecycleState == .failed }
+    }
+
     func activeRecorderKindForDebug() -> ActiveRecorderKind {
         lock.withLock { $0.active?.kind ?? Self.kind(for: $0.preferredInputDeviceIDStorage) }
     }
@@ -415,23 +419,31 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     func start() throws {
         let child = try lifecycleQueue.sync { try ensureCurrentChild() }
         try child.recorder.start()
-        // The default may have moved after the graph was built (prepare, or the system audio
-        // that starts before this): notifications in that window were not live, so compare the
-        // default the graph serves with the current one now that capture is.
-        let currentDefaultInputDeviceID = routeSnapshotProvider()?.defaultInputDeviceID
-        let defaultInputMoved = try lock.withLock { state -> Bool in
+        try lock.withLock { state in
             guard !state.invalidated else { throw CancellationError() }
             state.lifecycleState = .running
-            guard state.preferredInputDeviceIDStorage == nil,
-                  state.followedDefaultInputMoved(to: currentDefaultInputDeviceID) else { return false }
-            state.requestedDefaultInputDeviceID = currentDefaultInputDeviceID
-            state.generation &+= 1
-            return true
         }
-        if defaultInputMoved {
+        // The default may have moved after the graph was built (prepare, or the system audio
+        // that starts before this): notifications in that window were not live.
+        if requestHandoffIfDefaultInputMovedWhileLive() {
             lifecycleQueue.async { [weak self] in
                 self?.restartHandoffIfNeeded(force: true)
             }
+        }
+    }
+
+    /// Compares the default the capture graph serves with the current one. Call it after the
+    /// lifecycle went live: a route notification that arrived earlier was ignored as not live,
+    /// and a snapshot taken before the transition can be stale by the time it is compared.
+    private func requestHandoffIfDefaultInputMovedWhileLive() -> Bool {
+        let current = routeSnapshotProvider()?.defaultInputDeviceID
+        return lock.withLock { state in
+            guard state.lifecycleState == .running,
+                  state.preferredInputDeviceIDStorage == nil,
+                  state.followedDefaultInputMoved(to: current) else { return false }
+            state.requestedDefaultInputDeviceID = current
+            state.generation &+= 1
+            return true
         }
     }
 
@@ -457,25 +469,21 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
 
     func resume() {
         lifecycleQueue.sync {
-            let currentDefaultInputDeviceID = routeSnapshotProvider()?.defaultInputDeviceID
-            let result = lock.withLock { state -> (recorder: MeetingMicRecording?, shouldRecover: Bool, defaultInputMoved: Bool)? in
+            let result = lock.withLock { state -> (recorder: MeetingMicRecording?, shouldRecover: Bool)? in
                 guard state.lifecycleState == .paused else { return nil }
                 let shouldRecover = state.shouldRecoverOnResume
                 state.shouldRecoverOnResume = false
                 state.lifecycleState = shouldRecover ? .failed : .running
-                // The default may have moved while paused, or a replacement for it may have
-                // been cancelled by pause(): compare against the graph that is capturing.
-                let defaultInputMoved = state.preferredInputDeviceIDStorage == nil
-                    && state.followedDefaultInputMoved(to: currentDefaultInputDeviceID)
-                if defaultInputMoved { state.requestedDefaultInputDeviceID = currentDefaultInputDeviceID }
-                return (state.active?.recorder, shouldRecover, defaultInputMoved)
+                return (state.active?.recorder, shouldRecover)
             }
             guard let result else { return }
             if result.shouldRecover {
                 restartHandoffIfNeeded(force: true)
             } else {
                 result.recorder?.resume()
-                restartHandoffIfNeeded(force: result.defaultInputMoved)
+                // The default may have moved while paused, or a replacement for it may have been
+                // cancelled by pause(): compare against the graph that is capturing.
+                restartHandoffIfNeeded(force: requestHandoffIfDefaultInputMovedWhileLive())
             }
         }
     }
