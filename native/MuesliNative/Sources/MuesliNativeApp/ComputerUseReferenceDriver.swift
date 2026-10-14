@@ -11,6 +11,7 @@ final class ComputerUseReferenceDriver {
               CommandLine.arguments.indices.contains(index + 1) else { return nil }
         return CommandLine.arguments[index + 1]
     }
+    private(set) var serverVersion = "unknown"
     private(set) var tools: [[String: Any]] = []
     private var daemon: Process?
     private var proxy: Process?
@@ -47,7 +48,7 @@ final class ComputerUseReferenceDriver {
         do {
             let service = Process()
             service.executableURL = URL(fileURLWithPath: executable)
-            service.arguments = ["serve", "--embedded", "--socket", socket, "--no-overlay"]
+            service.arguments = ["serve", "--embedded", "--socket", socket]
             service.environment = environment
             service.standardOutput = log; service.standardError = log
             try service.run()
@@ -69,6 +70,8 @@ final class ComputerUseReferenceDriver {
             let initialized = try await request(method: "initialize", params: [
                 "protocolVersion": "2024-11-05", "capabilities": [:],
                 "clientInfo": ["name": "MuesliReferenceBenchmark", "version": "1"]])
+            let initializationResult = initialized["result"] as? [String: Any]
+            serverVersion = (initializationResult?["serverInfo"] as? [String: Any])?["version"] as? String ?? "unknown"
             try save(initialized, name: "initialize.json")
             try send(["jsonrpc": "2.0", "method": "notifications/initialized"])
             let catalog = try await request(method: "tools/list", params: [:])
