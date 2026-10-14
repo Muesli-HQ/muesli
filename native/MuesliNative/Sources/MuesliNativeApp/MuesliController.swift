@@ -10377,7 +10377,7 @@ public final class MuesliController: NSObject {
             fputs("[cua] replay refused: requires an idle dev lane with background mode enabled\n", stderr)
             return
         }
-        guard ensureComputerUseScreenRecordingAccess(isGranted: CGPreflightScreenCaptureAccess()) else { return }
+        // The shared command handler checks screen access only after settings routing.
         let taskID = UUID()
         computerUseCommandTaskID = taskID
         meetingMonitor.suppressWhileActive()
