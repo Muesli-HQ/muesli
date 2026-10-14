@@ -1,0 +1,31 @@
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+index 1b6060632..83e2bb6e4 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+@@ -114,6 +114,12 @@ fn resolve_owning_window<E>(
+     parent: impl Fn(&E) -> Option<E>,
+     window_id: impl Fn(&E) -> Option<u32>,
+ ) -> Option<u32> {
++    // Chromium can expose an AXGroup as AXWindow. Its compositor ID is
++    // not a top-level window identity. Let element_window_id fall back to
++    // the live AXParent chain instead of treating that ID as authoritative.
++    if !matches!(role(&start).as_deref(), Some("AXWindow") | Some("AXSheet")) {
++        return None;
++    }
+     let own_id = window_id(&start);
+     let mut current = start;
+     for _ in 0..=max_nesting {
+@@ -318,6 +324,13 @@ mod tests {
+         )
+     }
+ 
++    #[test]
++    fn compositor_surface_cannot_masquerade_as_an_owning_window() {
++        assert_eq!(resolve(&[("AXGroup", None, Some(999))], 0), None);
++        assert_eq!(resolve(&[("AXButton", None, Some(999))], 0), None);
++        assert_eq!(resolve(&[("AXApplication", None, Some(999))], 0), None);
++    }
++
+     #[test]
+     fn window_maps_to_itself() {
+         assert_eq!(resolve(&[("AXWindow", None, Some(167))], 0), Some(167));
