@@ -1,7 +1,35 @@
 import CoreAudio
 import Foundation
 
-final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
+final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
+    var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)? {
+        get { lock.withLock { capturedHandler } }
+        set { lock.withLock { capturedHandler = newValue } }
+    }
+    private var capturedHandler: ((MicrophoneCaptureAudio) -> Void)?
+    private var stopDrainRange: (() -> Range<Int64>?)?
+    var nativeStopDrainRange: (() -> Range<Int64>?)? {
+        get { lock.withLock { stopDrainRange } }
+        set {
+            lock.withLock { stopDrainRange = newValue }
+            (primary as? MicrophoneCaptureReporting)?.nativeStopDrainRange = newValue
+            (fallback as? MicrophoneCaptureReporting)?.nativeStopDrainRange = newValue
+        }
+    }
+    var shouldAdmitSamples: (() -> Bool)? {
+        get { lock.withLock { sampleAdmissionCheck } }
+        set {
+            lock.withLock { sampleAdmissionCheck = newValue }
+            // Configured before prepare/start, including children not yet selected.
+            // Never call a child while holding the callback-selection lock.
+            (primary as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = newValue
+            (fallback as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = newValue
+        }
+    }
+    var hasBufferedSampleAdmission: Bool {
+        guard let selected = lock.withLock({ activeRecorder }) else { return false }
+        return (recorder(for: selected) as? BufferedMicrophoneAdmissionControlling)?.hasBufferedSampleAdmission ?? false
+    }
     // Snapshot the consumer together with generation validation. An accepted
     // callback may finish during cancellation, but must never pick a new sink.
     var onAudioBuffer: (([Float]) -> Void)? {
@@ -44,6 +72,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     private var generation: UInt64 = 0
     private var invalidated = false
     private var preferredInputDeviceIDStorage: AudioObjectID?
+    private var sampleAdmissionCheck: (() -> Bool)?
 
     init(
         primary: StreamingDictationRecording,
@@ -138,7 +167,10 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     }
 
     func invalidateForTeardown() {
-        lock.withLock { invalidated = true; generation &+= 1 }
+        // checkCurrent rejects startup using invalidated. Keep the current
+        // callback generation alive for the active child's accepted stop tail;
+        // stop/cancel still advance it when delivery must become terminal.
+        lock.withLock { invalidated = true }
         primary.invalidateForTeardown()
         fallback.invalidateForTeardown()
     }
@@ -155,6 +187,14 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         defer { operationLock.unlock() }
         let selected = lock.withLock { activeRecorder }
         if let selected { (recorder(for: selected) as? PausableStreamingDictationRecording)?.resume() }
+    }
+
+    func drainAcceptedAudio() {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        if let selected = lock.withLock({ activeRecorder }) {
+            (recorder(for: selected) as? BufferedMicrophoneAdmissionControlling)?.drainAcceptedAudio()
+        }
     }
 
     func currentPower() -> Float {
@@ -198,6 +238,15 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
 
     private func wireCallbacks() {
         let callbackGeneration = lock.withLock { generation }
+        for (slot, child) in [(ActiveRecorder.primary, primary), (.fallback, fallback)] {
+            (child as? MicrophoneCaptureReporting)?.onCapturedAudio = { [weak self] audio in
+                guard let self else { return }
+                let callback = self.lock.withLock {
+                    self.activeRecorder == slot && self.generation == callbackGeneration ? self.capturedHandler : nil
+                }
+                callback?(audio)
+            }
+        }
         primary.onAudioBuffer = { [weak self] samples in
             self?.forwardAudioBuffer(samples, from: .primary, generation: callbackGeneration)
         }
