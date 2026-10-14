@@ -28,6 +28,11 @@ final class ComputerUseReferenceRuntime {
         self.onEvent = onEvent; self.onStatus = onStatus
     }
 
+    static func permitsBackgroundDelivery(_ arguments: [String: Any]) -> Bool {
+        guard let mode = arguments["delivery_mode"] else { return true }
+        return (mode as? String) == "background"
+    }
+
     static func definitions(from catalog: [[String: Any]]) -> [[String: Any]] {
         var definitions = catalog.compactMap { tool -> [String: Any]? in
             guard let name = tool["name"] as? String, allowedTools.contains(name),
@@ -120,6 +125,9 @@ final class ComputerUseReferenceRuntime {
                 return finish(call.name == "finish" ? .done : .failed,
                               arguments["message"] as? String ?? call.name,
                               kind: call.name == "finish" ? "finish" : "failed")
+            }
+            guard Self.permitsBackgroundDelivery(arguments) else {
+                return finish(.failed, "Foreground delivery is disabled for this background comparison; no action dispatched.", kind: "failed")
             }
             onStatus("trycua: \(call.name)")
             let response = try await driver.call(name: call.name, arguments: arguments)
