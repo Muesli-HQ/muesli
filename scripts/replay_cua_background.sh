@@ -41,6 +41,9 @@ reference_args=()
 if [[ -n "${MUESLI_REFERENCE_DRIVER:-}" ]]; then
   [[ -x "$MUESLI_REFERENCE_DRIVER" ]] || { echo "Reference driver missing" >&2; exit 2; }
   reference_args=(--trycua-driver "$MUESLI_REFERENCE_DRIVER")
+  if [[ "${MUESLI_REFERENCE_AUTHORIZE_EXISTING_PROFILE:-0}" == "1" ]]; then
+    reference_args+=(--trycua-authorize-existing-profile)
+  fi
 fi
 open -g -a "/Applications/$app.app" --args --computer-use-command-file "$command_file" "${reference_args[@]}"
 PYTHONUNBUFFERED=1 python3 - "$support/muesli.db" "$previous_id" "$command_file" "$output_dir" <<'PY'
