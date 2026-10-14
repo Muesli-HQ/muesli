@@ -5,6 +5,14 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Reference comparison rejects foreground delivery before dispatch")
+    func referenceBackgroundDelivery() {
+        #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery([:]))
+        #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": "background"]))
+        #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": "foreground"]))
+        #expect(!ComputerUseReferenceRuntime.permitsBackgroundDelivery(["delivery_mode": true]))
+    }
+
     @Test("Locked sessions stop before calling the model or acquiring a window")
     func lockedSessionPreflight() async {
         var config = AppConfig()
