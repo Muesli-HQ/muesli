@@ -123,7 +123,7 @@ struct CustomLLMHeaderPropagationTests {
             if backend == "custom_anthropic" {
                 #expect(body?["max_tokens"] as? Int == (limit ?? 96_000))
                 #expect(body?["stream"] as? Bool == (limit == nil))
-                let stream = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                let stream = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
                 return .init(data: limit == nil ? Data(stream.utf8) : Data(#"{"content":[{"type":"text","text":"Complete notes"}]}"#.utf8))
             }
             if backend == "ollama" {
@@ -215,18 +215,24 @@ struct CustomLLMHeaderPropagationTests {
         #expect(requests == 2)
     }
 
-    @Test("Anthropic app and CLI reject token-truncated summaries", arguments: [false, true])
+    @Test("Anthropic app and CLI reject truncated summaries and allow a fresh manual retry", arguments: [false, true])
     func truncatedAnthropicSummaries(stream: Bool) async throws {
+        var truncated = true
+        var requests = 0
         CustomLLMHeaderPropagationURLProtocol.install { _ in
+            requests += 1
+            let reason = truncated ? "max_tokens" : "end_turn"
+            let notes = truncated ? "Partial notes" : "Complete notes"
             let response = stream
-                ? "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Partial notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
-                : #"{"stop_reason":"max_tokens","content":[{"type":"text","text":"Partial notes"}]}"#
+                ? "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\(notes)\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"\(reason)\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                : #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"\#(notes)"}]}"#
             return .init(data: Data(response.utf8))
         }
         defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
         var config = customConfig(format: .anthropic)
         config.customLLMAPIKey = "test-key"
         config.meetingSummaryMaxOutputTokens = stream ? 32_000 : 5_000
+        config.meetingSummaryRetryCount = 3
         do {
             _ = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
             Issue.record("App must not return partial notes as a completed summary")
@@ -235,10 +241,20 @@ struct CustomLLMHeaderPropagationTests {
             #expect(error.localizedDescription.contains("Advanced"))
             #expect(!error.localizedDescription.contains("could not be reached"))
         }
+        #expect(requests == 1)
         let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
         await #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
             try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
         }
+        #expect(requests == 2)
+
+        // A new user-triggered request is independent of the failed automatic retry loop.
+        truncated = false
+        config.meetingSummaryMaxOutputTokens = 64_000
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        let retryConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: retryConfig) == "Complete notes")
+        #expect(requests == 4)
     }
 
     @Test("generated title sends additional headers")

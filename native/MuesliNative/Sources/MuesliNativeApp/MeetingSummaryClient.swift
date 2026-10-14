@@ -111,7 +111,7 @@ enum MeetingSummaryRetryPolicy {
     private static func isPermanentRequestFailure(_ error: Error) -> Bool {
         if let outputError = error as? MeetingSummaryOutputPolicy.OutputError {
             switch outputError {
-            case .modelLimitUnavailable: return true
+            case .modelLimitUnavailable, .outputLimitReached: return true
             case .modelLimitRequestFailed(let status): return !isTransientHTTPStatus(status)
             default: break
             }

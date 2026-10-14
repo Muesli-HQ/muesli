@@ -61,7 +61,7 @@ struct MeetingSummaryClientTests {
             #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Complete notes"}}"#,
         ].map { "data: " + $0 + "\n\n" }.joined()
         for newline in ["\n", "\r\n"] {
-            let complete = (events + "data: {\"type\":\"message_stop\"}\n\n").replacingOccurrences(of: "\n", with: newline)
+            let complete = (events + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n").replacingOccurrences(of: "\n", with: newline)
             #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(complete.utf8)) == "Complete notes")
         }
         #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
@@ -73,6 +73,32 @@ struct MeetingSummaryClientTests {
             Issue.record("Expected stream error")
         } catch {
             #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+    }
+
+    @Test("Anthropic streams require a valid stop reason before message_stop",
+          arguments: ["\n", "\r\n"])
+    func streamedAnthropicCompletionSequence(newline: String) throws {
+        let text = #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Partial notes"}}"#
+        let terminal = #"{"type":"message_stop"}"#
+        let validDelta = #"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#
+        let sequences = [
+            [text, terminal],
+            [text, validDelta],
+            [text, terminal, validDelta],
+            [text, #"{"type":"message_delta"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":"invalid"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{}}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{"stop_reason":null}}"#, terminal],
+        ]
+        for events in sequences {
+            let stream = events.map { "data: " + $0 + newline + newline }.joined()
+            do {
+                _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(stream.utf8))
+                Issue.record("Missing, malformed or out-of-order completion must not return partial notes")
+            } catch MeetingSummaryOutputPolicy.OutputError.incompleteStream {
+                // Expected; transient interrupted streams remain eligible for retry.
+            }
         }
     }
 
@@ -1110,6 +1136,37 @@ struct MeetingSummaryClientTests {
 
         #expect(result == "Recovered summary")
         #expect(attempts == 3)
+    }
+
+    @Test("output-limit failures stop automatic retries, while incomplete streams can recover")
+    func summaryOutputRetryPolicy() async throws {
+        let capped = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: MeetingSummaryOutputPolicy.OutputError.outputLimitReached)
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(capped))
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(configuredCount: 3, after: capped) == 0)
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in
+                Issue.record("A capped summary must not automatically retry")
+            }) { _ in
+                attempts += 1
+                throw capped
+            }
+            Issue.record("Expected the output-limit guidance immediately")
+        } catch {
+            #expect(attempts == 1)
+            #expect(error.localizedDescription.contains("output token limit"))
+        }
+
+        let interrupted = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: MeetingSummaryOutputPolicy.OutputError.incompleteStream)
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(interrupted))
+        attempts = 0
+        let recovered = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in }) { _ in
+            attempts += 1
+            if attempts == 1 { throw interrupted }
+            return "Complete notes"
+        }
+        #expect(recovered == "Complete notes")
+        #expect(attempts == 2)
     }
 
     @Test("summary retries transient Claude Code failures without changing their error text")

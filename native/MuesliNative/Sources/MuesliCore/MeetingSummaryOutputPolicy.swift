@@ -85,7 +85,7 @@ public enum MeetingSummaryOutputPolicy {
     }
 
     /// Large Anthropic budgets use SSE. Collect only text blocks and require the
-    /// terminal event and reject token-limit stops so incomplete notes aren't saved as complete.
+    /// stop reason followed by the terminal event, rejecting token-limit stops.
     public static func anthropicText(from data: Data, redactProviderErrors: Bool = false) throws -> String {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if json["stop_reason"] as? String == "max_tokens" {
@@ -98,6 +98,7 @@ public enum MeetingSummaryOutputPolicy {
         }
         var textBlocks: [Int: String] = [:]
         var finished = false
+        var sawStopReason = false
         var eventData: [String] = []
         func consume() throws {
             guard !eventData.isEmpty else { return }
@@ -119,10 +120,18 @@ public enum MeetingSummaryOutputPolicy {
                     textBlocks[index, default: ""] += text
                 }
             case "message_delta":
-                if let delta = event["delta"] as? [String: Any], delta["stop_reason"] as? String == "max_tokens" {
+                guard let delta = event["delta"] as? [String: Any] else {
+                    throw OutputError.incompleteStream
+                }
+                if let reason = delta["stop_reason"] as? String, !reason.isEmpty {
+                    sawStopReason = true
+                }
+                if delta["stop_reason"] as? String == "max_tokens" {
                     throw OutputError.outputLimitReached
                 }
-            case "message_stop": finished = true
+            case "message_stop":
+                guard sawStopReason else { throw OutputError.incompleteStream }
+                finished = true
             case "error":
                 let error = event["error"] as? [String: Any]
                 let message = redactProviderErrors ? "The custom summary provider reported an error."
