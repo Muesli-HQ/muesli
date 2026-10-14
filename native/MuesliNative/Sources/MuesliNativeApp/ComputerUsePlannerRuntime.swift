@@ -302,7 +302,9 @@ final class ComputerUsePlannerRuntime {
                 ))
                 let beforeObservation = observation
                 let result: ComputerUseExecutionResult
-                if toolCall.tool == .editText {
+                // The foreground writing path has no background mutation lease.
+                // Route through the scoped executor, which refuses unsupported edits.
+                if toolCall.tool == .editText, backgroundSession == nil {
                     do {
                         let prepared: PreparedComputerUseTextEdit
                         do {

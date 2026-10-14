@@ -223,6 +223,7 @@ extension MuesliController {
         textMenu("menu_icon", "Menu bar icon", MenuBarIconRenderer.options.map { .init(id: $0.id, label: $0.label) }, \.menuBarIcon)
         textMenu("accent_color", "Accent color", MuesliSettings.accentPresets.map { .init(id: $0.hex, label: $0.name) }, \.recordingColorHex)
 
+        toggle("cua_background", "Computer use background execution (experimental)", \.computerUseBackgroundMode)
         toggle("cua_planner", "Computer use model planner", \.enableComputerUsePlanner)
         func checkShortcut(_ result: ShortcutHotkeyUpdateResult) throws {
             if !result.didUpdate {
