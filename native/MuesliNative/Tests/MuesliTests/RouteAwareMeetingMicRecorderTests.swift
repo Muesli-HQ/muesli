@@ -1297,6 +1297,54 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.waitForQuiescence()
     }
 
+    @Test("a system default change between prepare and start hands off once capture is live")
+    func defaultChangeBetweenPrepareAndStartHandsOffOnStart() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.prepare()
+
+        // AirPods connect while system audio is starting: the recorder is not live yet.
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        recorder.waitForQuiescence()
+        #expect(replacement.startCalls == 0)
+
+        try recorder.start()
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([6])
+        try await waitUntil { initial.stopCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("an unchanged default between prepare and start does not hand off")
+    func unchangedDefaultBetweenPrepareAndStartStaysQuiet() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.prepare()
+        try recorder.start()
+        recorder.waitForQuiescence()
+        #expect(replacement.startCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
     @Test("pausing before the replacement delivers audio still hands off on resume")
     func pauseBeforeReplacementAudioStillHandsOffOnResume() async throws {
         let route = DefaultInputRoute(defaultInputDeviceID: 90)

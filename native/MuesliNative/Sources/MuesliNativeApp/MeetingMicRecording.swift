@@ -415,9 +415,23 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     func start() throws {
         let child = try lifecycleQueue.sync { try ensureCurrentChild() }
         try child.recorder.start()
-        try lock.withLock { state in
+        // The default may have moved after the graph was built (prepare, or the system audio
+        // that starts before this): notifications in that window were not live, so compare the
+        // default the graph serves with the current one now that capture is.
+        let currentDefaultInputDeviceID = routeSnapshotProvider()?.defaultInputDeviceID
+        let defaultInputMoved = try lock.withLock { state -> Bool in
             guard !state.invalidated else { throw CancellationError() }
             state.lifecycleState = .running
+            guard state.preferredInputDeviceIDStorage == nil,
+                  state.followedDefaultInputMoved(to: currentDefaultInputDeviceID) else { return false }
+            state.requestedDefaultInputDeviceID = currentDefaultInputDeviceID
+            state.generation &+= 1
+            return true
+        }
+        if defaultInputMoved {
+            lifecycleQueue.async { [weak self] in
+                self?.restartHandoffIfNeeded(force: true)
+            }
         }
     }
 
