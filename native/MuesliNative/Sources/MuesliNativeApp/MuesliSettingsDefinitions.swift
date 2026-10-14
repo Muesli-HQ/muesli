@@ -44,14 +44,20 @@ extension MuesliController {
 
     /// Voice applies to selected transcription models; manual model cards can
     /// also configure a shared preference before switching to another model.
-    private func voiceBodhanModels() -> [BodhanModel] {
+    private func voiceTranscriptionModels() -> [(backend: String, model: String)] {
         var models = [(config.sttBackend, config.sttModel)]
         // The saved meeting model is only a recovery fallback when live speech
         // produces the final transcript; it must not restrict active dictation.
         if !(config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript) {
             models.append((config.meetingTranscriptionBackend, config.meetingTranscriptionModel))
         }
-        return models.compactMap { backend, model in backend == "bodhan" ? BodhanModel(rawValue: model) : nil }
+        return models
+    }
+
+    private func voiceBodhanModels() -> [BodhanModel] {
+        voiceTranscriptionModels().compactMap { backend, model in
+            backend == "bodhan" ? BodhanModel(rawValue: model) : nil
+        }
     }
 
     func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
@@ -259,7 +265,16 @@ extension MuesliController {
         add("apple_speech_language", "Apple Speech language", appState.settingsAppleSpeechLanguages.map { .init(id: $0.id, label: $0.label) },
             read: { $0.resolvedAppleSpeechLanguage }) { self.selectAppleSpeechLanguage($0) }
         textMenu("cohere_language", "Cohere language", CohereTranscribeLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.cohereLanguage)
-        textMenu("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.whisperLanguage)
+        add("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.whisperLanguage }, voiceUnavailable: { value in
+                guard value == WhisperKitLanguage.cantonese.rawValue else { return nil }
+                return self.voiceTranscriptionModels().contains {
+                    $0.backend == "whisper" && !WhisperKitLanguage.cantonese.isSupported(by: $0.model)
+                }
+                    ? "Cantonese requires Whisper Large Turbo. Change the Whisper model in Models first." : nil
+            }) { value in
+                self.updateConfig { $0.whisperLanguage = value }
+            }
         let bodhanTargets = [MuesliSettingActivation.Target(id: "dictation_model", label: "Dictation"),
                              .init(id: "meeting_model", label: "Meetings")]
         func bodhanActivation(supports: @escaping (BodhanModel, String) -> Bool) -> MuesliSettingActivation {

@@ -928,7 +928,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    MuesliSettingControl(controller: controller, id: "whisper_language")
+                    MuesliSettingControl(controller: controller, id: "whisper_language",
+                        allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: selectedOption.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
@@ -1409,7 +1410,8 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    MuesliSettingControl(controller: controller, id: "whisper_language")
+                    MuesliSettingControl(controller: controller, id: "whisper_language",
+                        allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: option.model).map(\.rawValue)))
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)

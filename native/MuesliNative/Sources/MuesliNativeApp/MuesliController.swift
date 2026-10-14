@@ -379,6 +379,7 @@ public final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
+    private let downloadedBackendOptions: () -> [BackendOption]
     private var storedMeetingChatCoordinator: MeetingChatCoordinator?
     var meetingChatCoordinator: MeetingChatCoordinator {
         get {
@@ -633,9 +634,11 @@ public final class MuesliController: NSObject {
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController(),
         openRouterAuth: OpenRouterAuthManager? = nil,
-        openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient()
+        openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient(),
+        downloadedBackendOptions: @escaping () -> [BackendOption] = { BackendOption.downloaded }
     ) {
         self.configStore = configStore
+        self.downloadedBackendOptions = downloadedBackendOptions
         self.openRouterAuth = openRouterAuth ?? .shared
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
@@ -682,7 +685,7 @@ public final class MuesliController: NSObject {
         self.selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: loadedConfig,
             dictationBackend: self.selectedBackend,
-            downloadedOptions: BackendOption.downloaded
+            downloadedOptions: downloadedBackendOptions()
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingBackend,
             dictationBackend: self.selectedBackend
@@ -1576,7 +1579,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     private func normalizeMeetingTranscriptionSelectionForAvailability(
-        downloadedOptions: [BackendOption] = BackendOption.downloaded
+        downloadedOptions: [BackendOption]? = nil
     ) -> BackendOption? {
         let dictationBackend = BackendOption.resolve(
             backend: config.sttBackend,
@@ -1585,7 +1588,7 @@ public final class MuesliController: NSObject {
         guard let resolved = Self.availableMeetingTranscriptionBackend(
             config: config,
             dictationBackend: dictationBackend,
-            downloadedOptions: downloadedOptions
+            downloadedOptions: downloadedOptions ?? downloadedBackendOptions()
         ) else {
             selectedMeetingTranscriptionBackend = Self.fallbackMeetingTranscriptionBackend(
                 configured: BackendOption.resolve(
@@ -1679,7 +1682,8 @@ public final class MuesliController: NSObject {
         })
         selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: config,
-            dictationBackend: selectedBackend
+            dictationBackend: selectedBackend,
+            downloadedOptions: downloadedBackendOptions()
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingTranscriptionBackend,
             dictationBackend: selectedBackend
