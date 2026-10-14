@@ -56,10 +56,21 @@ final class UserDefaultsICloudChangeTokenStore: ICloudChangeTokenStore {
 
     init(
         defaults: UserDefaults = .standard,
-        key: String = "muesli.icloud.textRecords.MuesliSyncZone.serverChangeToken.v1"
+        key: String = UserDefaultsICloudChangeTokenStore.defaultKey(
+            container: MuesliICloudSyncEngine.Schema.containerIdentifier
+        )
     ) {
         self.defaults = defaults
         self.key = key
+    }
+
+    /// The UserDefaults key holding the change token of one container's sync zone. Upstream's
+    /// container keeps the key earlier releases wrote; any other container gets its own, so a
+    /// token from one container is never replayed against another.
+    static func defaultKey(container: String) -> String {
+        "muesli.icloud.textRecords.MuesliSyncZone"
+            + MuesliICloudSyncEngine.Schema.stateKeyScope(container: container)
+            + ".serverChangeToken.v1"
     }
 
     func loadToken() -> CKServerChangeToken? {
@@ -430,6 +441,15 @@ final class MuesliICloudSyncEngine {
             CKRecordZone.ID(zoneName: syncZoneName, ownerName: CKCurrentUserDefaultName)
         }
 
+        /// The part of a saved-state key that names the container. Empty for upstream's container,
+        /// so state saved by earlier releases keeps its key; any other container gets `.<id>`, which
+        /// keeps its change tokens and account owner apart from every other container's.
+        static func stateKeyScope(container: String) -> String {
+            container == defaultContainerIdentifier ? "" : ".\(container)"
+        }
+
+        /// The first `iCloud.` identifier in the container entitlement (an array or a single
+        /// string), or upstream's container when the entitlement is missing or has none.
         static func resolveContainerIdentifier(entitled: Any?) -> String {
             let identifiers: [String]
             if let list = entitled as? [String] {
@@ -482,12 +502,19 @@ final class MuesliICloudSyncEngine {
         )
     }
 
-    static func hasRequiredCloudEntitlements(containers: Any, environment: String) -> Bool {
+    /// Whether the entitlement values name `container` (compared as a whole identifier) and an
+    /// explicit Development or Production environment. `container` is the one this build resolved
+    /// to, and is injectable so a non-default container can be checked.
+    static func hasRequiredCloudEntitlements(
+        containers: Any,
+        environment: String,
+        container: String = Schema.containerIdentifier
+    ) -> Bool {
         let hasContainer: Bool
-        if let containers = containers as? [String] {
-            hasContainer = containers.contains(Schema.containerIdentifier)
-        } else if let container = containers as? String {
-            hasContainer = container == Schema.containerIdentifier
+        if let entitled = containers as? [String] {
+            hasContainer = entitled.contains(container)
+        } else if let entitled = containers as? String {
+            hasContainer = entitled == container
         } else {
             hasContainer = false
         }

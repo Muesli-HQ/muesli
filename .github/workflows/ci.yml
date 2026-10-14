@@ -316,6 +316,10 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Test dev iCloud signing script
+        # Needs macOS (PlistBuddy); signs nothing, the tool calls are stubbed.
+        run: ./scripts/test_dev_sign_cloud.sh
+
       - name: Cache LocalVQE runtime build
         uses: actions/cache@v4
         with:
