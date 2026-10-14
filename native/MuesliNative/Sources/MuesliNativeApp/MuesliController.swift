@@ -6531,7 +6531,15 @@ public final class MuesliController: NSObject {
     /// starts for it, and that meeting then lands in this folder.
     func planFolder(_ folderID: Int64?, for event: UnifiedCalendarEvent) {
         let key = event.resolvedCalendarOccurrence.identityKey
-        updateConfig { $0.planFolder(folderID, for: key, startTime: event.startDate) }
+        let currentStarts = Dictionary(
+            appState.upcomingCalendarEvents.map { ($0.resolvedCalendarOccurrence.identityKey, $0.startDate) },
+            uniquingKeysWith: { first, _ in first })
+        updateConfig { $0.planFolder(folderID, for: key, startTime: event.startDate, currentStartTimes: currentStarts) }
+    }
+
+    /// A folder inherited from a predecessor wins; otherwise the one planned for the calendar event.
+    func folderIDForNewMeeting(inheritedFolderID: Int64?, calendarOccurrence: CalendarOccurrenceReference?) -> Int64? {
+        inheritedFolderID ?? calendarOccurrence.flatMap { plannedFolderID(for: $0) }
     }
 
     func plannedFolderID(for occurrence: CalendarOccurrenceReference) -> Int64? {
@@ -7011,7 +7019,7 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: templateSnapshot.name,
                 selectedTemplateKind: templateSnapshot.kind,
                 selectedTemplatePrompt: templateSnapshot.prompt,
-                folderID: inheritedFolderID ?? calendarOccurrence.flatMap { plannedFolderID(for: $0) },
+                folderID: folderIDForNewMeeting(inheritedFolderID: inheritedFolderID, calendarOccurrence: calendarOccurrence),
                 followUpToID: followUpToID,
                 calendarOccurrence: calendarOccurrence
             )

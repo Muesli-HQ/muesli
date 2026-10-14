@@ -1767,8 +1767,12 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 
 extension AppConfig {
     /// Remembers (or, with nil, clears) the folder picked for an upcoming meeting, and drops
-    /// choices for meetings that started more than a week ago.
-    mutating func planFolder(_ folderID: Int64?, for occurrenceKey: String, startTime: Date, now: Date = Date()) {
+    /// choices for meetings that started more than a week ago. `currentStartTimes` maps occurrence
+    /// keys to the start the calendar reports now, so a postponed event keeps its choice.
+    mutating func planFolder(_ folderID: Int64?, for occurrenceKey: String, startTime: Date, currentStartTimes: [String: Date] = [:], now: Date = Date()) {
+        for (key, start) in currentStartTimes where plannedCalendarFolders[key] != nil {
+            plannedCalendarFolders[key]?.startTime = start
+        }
         plannedCalendarFolders = plannedCalendarFolders.filter { $0.value.startTime > now.addingTimeInterval(-7 * 86_400) }
         plannedCalendarFolders[occurrenceKey] = folderID.map { PlannedCalendarFolder(folderID: $0, startTime: startTime) }
     }
