@@ -90,16 +90,17 @@ enum MeetingBrowserLogic {
             }
         }
 
-        let sorted = filtered.sorted { lhs, rhs in
-            let lhsDate = parseDate(lhs.startTime) ?? .distantPast
-            let rhsDate = parseDate(rhs.startTime) ?? .distantPast
+        // Parse each start time once. Parsing inside the comparator costs
+        // O(n log n) ISO8601 parses, which is seconds of CPU for a few hundred rows.
+        let dated = filtered.map { ($0, parseDate($0.startTime) ?? Date.distantPast) }
+        let sorted = dated.sorted { lhs, rhs in
             switch sort {
             case .newestFirst:
-                return lhsDate > rhsDate
+                return lhs.1 > rhs.1
             case .oldestFirst:
-                return lhsDate < rhsDate
+                return lhs.1 < rhs.1
             }
-        }
+        }.map(\.0)
 
         return MeetingBrowserPresentation(
             meetings: sorted,
