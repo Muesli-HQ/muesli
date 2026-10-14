@@ -34,7 +34,13 @@ private final class CustomLLMHeaderPropagationURLProtocol: URLProtocol {
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "headers.example.test"
+        guard let url = request.url else { return false }
+        if url.host == "headers.example.test" { return true }
+        lock.lock()
+        defer { lock.unlock() }
+        guard provider != nil else { return false }
+        return (url.host == "api.openai.com" && url.path == "/v1/responses")
+            || (url.host == "openrouter.ai" && url.path == "/api/v1/chat/completions")
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -145,6 +151,94 @@ struct CustomLLMHeaderPropagationTests {
         let cliNotes = try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
         #expect(appNotes == "Complete notes")
         #expect(cliNotes == appNotes)
+    }
+
+    @Test("hosted OpenAI and OpenRouter app and CLI requests honor optional output limits",
+          arguments: ["openai", "openrouter"], [0, 5_000])
+    func hostedSummaryOutputLimits(backend: String, cap: Int) async throws {
+        let limit: Int? = cap == 0 ? nil : cap
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            requests += 1
+            #expect(request.httpMethod == "POST")
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            #expect(body?["max_completion_tokens"] == nil)
+            if backend == "openai" {
+                #expect(request.url?.absoluteString == "https://api.openai.com/v1/responses")
+                #expect(body?["model"] as? String == "gpt-6.1-sol")
+                #expect(body?["input"] != nil)
+                #expect(body?["max_output_tokens"] as? Int == limit)
+                #expect(body?["max_tokens"] == nil)
+                return .init(data: Data(#"{"output":[{"type":"message","content":[{"type":"output_text","text":"Complete notes"}]}]}"#.utf8))
+            }
+            #expect(request.url?.absoluteString == "https://openrouter.ai/api/v1/chat/completions")
+            #expect(body?["model"] as? String == "anthropic/claude-sonnet-5.5")
+            #expect(body?["messages"] != nil)
+            #expect(body?["max_tokens"] as? Int == limit)
+            #expect(body?["max_output_tokens"] == nil)
+            return .init(data: Data(#"{"choices":[{"message":{"content":"Complete notes"}}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.openAIAPIKey = "test-openai-key"
+        config.openAIModel = "gpt-6.1-sol"
+        config.openRouterAPIKey = "test-openrouter-key"
+        config.openRouterModel = "anthropic/claude-sonnet-5.5"
+        config.meetingSummaryMaxOutputTokens = limit
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        #expect(requests == 1)
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig) == "Complete notes")
+        #expect(requests == 2)
+    }
+
+    @Test("Anthropic app and CLI requests stream above the SDK threshold",
+          arguments: [21_333, 21_334, 32_000])
+    func anthropicStreamingThreshold(cap: Int) async throws {
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            requests += 1
+            #expect(request.httpMethod == "POST")
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            #expect(body?["max_tokens"] as? Int == cap)
+            #expect(body?["stream"] as? Bool == (cap > 21_333))
+            return .init(data: Data(#"{"stop_reason":"end_turn","content":[{"type":"text","text":"Complete notes"}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = cap
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig) == "Complete notes")
+        #expect(requests == 2)
+    }
+
+    @Test("Anthropic app and CLI reject token-truncated summaries", arguments: [false, true])
+    func truncatedAnthropicSummaries(stream: Bool) async throws {
+        CustomLLMHeaderPropagationURLProtocol.install { _ in
+            let response = stream
+                ? "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Partial notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                : #"{"stop_reason":"max_tokens","content":[{"type":"text","text":"Partial notes"}]}"#
+            return .init(data: Data(response.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = stream ? 32_000 : 5_000
+        do {
+            _ = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+            Issue.record("App must not return partial notes as a completed summary")
+        } catch {
+            #expect(error.localizedDescription.contains("output token limit before finishing"))
+            #expect(error.localizedDescription.contains("Advanced"))
+            #expect(!error.localizedDescription.contains("could not be reached"))
+        }
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        await #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
+            try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
+        }
     }
 
     @Test("generated title sends additional headers")

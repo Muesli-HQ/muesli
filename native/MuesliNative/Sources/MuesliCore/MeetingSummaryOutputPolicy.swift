@@ -4,6 +4,12 @@ import Foundation
 public enum MeetingSummaryOutputPolicy {
     public static let presets = [2_500, 5_000, 10_000, 20_000, 64_000, 128_000]
 
+    /// Match Anthropic's SDK threshold for avoiding long-request HTTP timeouts:
+    /// https://platform.claude.com/docs/en/build-with-claude/thinking#long-requests
+    public static func anthropicRequiresStreaming(outputLimit: Int) -> Bool {
+        outputLimit > 21_333
+    }
+
     public static func normalizedLimit(_ value: Int?) -> Int? {
         guard let value, value > 0 else { return nil }
         return value
@@ -60,6 +66,7 @@ public enum MeetingSummaryOutputPolicy {
         case modelLimitUnavailable
         case modelLimitRequestFailed(statusCode: Int)
         case incompleteStream
+        case outputLimitReached
         case provider(String)
 
         public var errorDescription: String? {
@@ -70,15 +77,20 @@ public enum MeetingSummaryOutputPolicy {
                 return "The summary provider could not report the model's output limit (HTTP \(status)). Check the connection and API credentials, then try again."
             case .incompleteStream:
                 return "The summary response ended before the model finished. Try again."
+            case .outputLimitReached:
+                return "The summary reached its output token limit before finishing. Increase or remove the output token limit in Meetings → Meeting Summaries → Advanced, or choose a model with a larger output allowance, then try again."
             case .provider(let message): return message
             }
         }
     }
 
     /// Large Anthropic budgets use SSE. Collect only text blocks and require the
-    /// terminal event so an interrupted response is never saved as complete notes.
+    /// terminal event and reject token-limit stops so incomplete notes aren't saved as complete.
     public static func anthropicText(from data: Data, redactProviderErrors: Bool = false) throws -> String {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if json["stop_reason"] as? String == "max_tokens" {
+                throw OutputError.outputLimitReached
+            }
             let content = json["content"] as? [[String: Any]] ?? []
             return content.filter { $0["type"] as? String == "text" }
                 .compactMap { $0["text"] as? String }.joined(separator: "\n")
@@ -105,6 +117,10 @@ public enum MeetingSummaryOutputPolicy {
                    let delta = event["delta"] as? [String: Any], delta["type"] as? String == "text_delta",
                    let text = delta["text"] as? String, textBlocks[index] != nil {
                     textBlocks[index, default: ""] += text
+                }
+            case "message_delta":
+                if let delta = event["delta"] as? [String: Any], delta["stop_reason"] as? String == "max_tokens" {
+                    throw OutputError.outputLimitReached
                 }
             case "message_stop": finished = true
             case "error":

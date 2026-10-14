@@ -1461,7 +1461,7 @@ enum CLISummaryClient {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": outputLimit,
-            "stream": outputLimit > 32_000,
+            "stream": MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: outputLimit),
             "system": systemPrompt(),
             "messages": [
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],

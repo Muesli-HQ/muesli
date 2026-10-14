@@ -18,6 +18,9 @@ enum MeetingSummaryError: LocalizedError {
         case let .emptyResponse(backend):
             return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
         case let .requestFailed(backend, underlying):
+            if underlying is MeetingSummaryOutputPolicy.OutputError {
+                return "\(backend) could not generate meeting notes. \(underlying.localizedDescription)"
+            }
             if backend == "Custom LLM", let guidance = CustomLLMConnectionGuidance.message(for: underlying) {
                 return "Custom LLM could not be reached while generating meeting notes. \(guidance)"
             }
@@ -1289,7 +1292,7 @@ enum MeetingSummaryClient {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": outputLimit,
-            "stream": outputLimit > 32_000,
+            "stream": MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: outputLimit),
             "system": instructions,
             "messages": [
                 ["role": "user", "content": userPrompt],

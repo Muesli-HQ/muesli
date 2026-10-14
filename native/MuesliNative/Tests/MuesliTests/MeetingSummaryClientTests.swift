@@ -76,6 +76,29 @@ struct MeetingSummaryClientTests {
         }
     }
 
+    @Test("Anthropic JSON and SSE distinguish token truncation from natural completion",
+          arguments: ["end_turn", "stop_sequence", "max_tokens"], ["\n", "\r\n"])
+    func anthropicStopReasons(reason: String, newline: String) throws {
+        let json = #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"Notes"}]}"#
+        let stream = [
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Notes"}}"#,
+            #"{"type":"message_delta","delta":{"stop_reason":"\#(reason)"}}"#,
+            #"{"type":"message_stop"}"#,
+        ].map { "data: " + $0 + newline + newline }.joined()
+        for payload in [json, stream] {
+            if reason == "max_tokens" {
+                do {
+                    _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8))
+                    Issue.record("Truncated notes must not be treated as a complete summary")
+                } catch MeetingSummaryOutputPolicy.OutputError.outputLimitReached {
+                    // Expected even when the stream includes its terminal message_stop.
+                }
+            } else {
+                #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8)) == "Notes")
+            }
+        }
+    }
+
     @Test("Custom LLM transport failures explain HTTPS and trusted certificates")
     func customLLMTransportGuidance() throws {
         let error = MeetingSummaryError.requestFailed(
