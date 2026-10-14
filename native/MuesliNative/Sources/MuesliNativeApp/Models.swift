@@ -1765,6 +1765,26 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+extension AppConfig {
+    /// Remembers (or, with nil, clears) the folder picked for an upcoming meeting, and drops
+    /// choices for meetings that started more than a week ago.
+    mutating func planFolder(_ folderID: Int64?, for occurrenceKey: String, startTime: Date, now: Date = Date()) {
+        plannedCalendarFolders = plannedCalendarFolders.filter { $0.value.startTime > now.addingTimeInterval(-7 * 86_400) }
+        plannedCalendarFolders[occurrenceKey] = folderID.map { PlannedCalendarFolder(folderID: $0, startTime: startTime) }
+    }
+
+    /// The remembered folder, or nil when none was picked or the folder no longer exists.
+    func plannedFolderID(for occurrenceKey: String, existingFolderIDs: Set<Int64>) -> Int64? {
+        guard let id = plannedCalendarFolders[occurrenceKey]?.folderID, existingFolderIDs.contains(id) else { return nil }
+        return id
+    }
+}
+
+struct PlannedCalendarFolder: Codable, Equatable {
+    var folderID: Int64
+    var startTime: Date
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -1923,6 +1943,9 @@ struct AppConfig: Codable {
     var autoExportMarkdownFolderPath: String = ""
     var autoExportMarkdownContent: String = MeetingExportContent.notes.rawValue
     var autoExportFileFormat: String = MeetingAutoExportFileFormat.markdown.rawValue
+    /// Folder picked on an upcoming calendar event, keyed by the occurrence's identity key. The
+    /// meeting is only created when a note or recording starts, and it then lands in this folder.
+    var plannedCalendarFolders: [String: PlannedCalendarFolder] = [:]
     var iCloudSyncEnabled: Bool = false
     var showIOSCompanionPrompt: Bool = true
     var contributionPromptNextWordCount: Int?
@@ -2074,6 +2097,7 @@ struct AppConfig: Codable {
         case autoExportMarkdownFolderPath = "auto_export_markdown_folder_path"
         case autoExportMarkdownContent = "auto_export_markdown_content"
         case autoExportFileFormat = "auto_export_file_format"
+        case plannedCalendarFolders = "planned_calendar_folders"
         case iCloudSyncEnabled = "icloud_sync_enabled"
         case showIOSCompanionPrompt = "show_ios_companion_prompt"
         case contributionPromptNextWordCount = "contribution_prompt_next_word_count"
@@ -2344,6 +2368,7 @@ struct AppConfig: Codable {
         autoExportMarkdownContent = MeetingExportContent(rawValue: decodedAutoExportMarkdownContent)?.rawValue ?? defaults.autoExportMarkdownContent
         let decodedAutoExportFileFormat = (try? c.decode(String.self, forKey: .autoExportFileFormat)) ?? defaults.autoExportFileFormat
         autoExportFileFormat = MeetingAutoExportFileFormat(rawValue: decodedAutoExportFileFormat)?.rawValue ?? defaults.autoExportFileFormat
+        plannedCalendarFolders = (try? c.decode([String: PlannedCalendarFolder].self, forKey: .plannedCalendarFolders)) ?? defaults.plannedCalendarFolders
         contributionPromptNextWordCount = try? c.decode(Int.self, forKey: .contributionPromptNextWordCount)
         contributionPromptNextMeetingCount = try? c.decode(Int.self, forKey: .contributionPromptNextMeetingCount)
         contributionGitHubStarClicked = (try? c.decode(Bool.self, forKey: .contributionGitHubStarClicked)) ?? defaults.contributionGitHubStarClicked
