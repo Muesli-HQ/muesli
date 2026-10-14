@@ -533,7 +533,12 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 
     private static func preferredMeetingInputDeviceID(for snapshot: RouteSnapshot) -> AudioObjectID? {
-        let desiredInputDeviceID = snapshot.selectedMeetingInputDeviceID ?? snapshot.builtInInputDeviceID
+        // With no microphone chosen, follow whichever input is active (the system default), so a
+        // Bluetooth headset or display mic that the user is talking into is the one recorded.
+        // Forcing the built-in mic recorded silence whenever the lid was closed or a headset was in use.
+        guard let desiredInputDeviceID = snapshot.selectedMeetingInputDeviceID else {
+            return nil
+        }
 
         // A nil meeting preference means "use the system-default recorder".
         // Avoid forcing the same physical device through the app-scoped
