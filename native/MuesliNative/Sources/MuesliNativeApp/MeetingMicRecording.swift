@@ -198,6 +198,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let kind: ActiveRecorderKind
         let recorder: MeetingMicRecording
         let deviceID: AudioObjectID?
+        // A native start may deliver callbacks before returning (or throwing).
+        // Audio alone does not establish that this child can own the route.
+        var startupSucceeded = false
     }
     private enum CandidateSignalRequirement {
         case callback
@@ -646,6 +649,18 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                     return
                 }
                 try candidate.recorder.start()
+                self.lifecycleQueue.async { [weak self] in
+                    guard let self else { return }
+                    let current = self.lock.withLock { state in
+                        guard !state.invalidated, state.generation == generation,
+                              state.pending?.id == candidate.id else { return false }
+                        state.pending?.startupSucceeded = true
+                        return true
+                    }
+                    if current {
+                        self.completePendingHandoff(childID: candidate.id, generation: generation)
+                    }
+                }
             } catch {
                 self.lifecycleQueue.async { [weak self] in
                     self?.failPendingHandoff(
@@ -788,10 +803,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             return
         }
         let transition = lock.withLock { state -> (completed: Bool, old: Child?) in
-            guard state.generation == generation,
+            guard !state.invalidated, state.generation == generation,
                   state.lifecycleState == .running || state.lifecycleState == .failed,
                   state.pending?.id == childID,
-                  let candidate = state.pending, !state.pendingAudio.isEmpty,
+                  let candidate = state.pending, candidate.startupSucceeded,
+                  !state.pendingAudio.isEmpty,
                   !state.pendingAudioOverflow else { return (false, nil) }
             let old = state.active
             // Enqueue before publishing active: subsequent callbacks cannot

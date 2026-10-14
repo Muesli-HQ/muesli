@@ -211,42 +211,35 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         }
         guard !runState.isRunning else { return }
         try prepareLocked()
+        try startRecordingLocked { recordingID in
+            try startEngineWithTapLocked(recordingID: recordingID)
+        }
+    }
+
+    private func startRecordingLocked(_ startGraph: (UUID) throws -> Void) throws {
         let recordingID = try beginRecordingFile()
 
         installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
         do {
-            try startEngineWithTapLocked(recordingID: recordingID)
+            try startGraph(recordingID)
             // Engine start can block while the daemon negotiates the route;
             // teardown may have landed during that window. Synchronously stop
             // what just started rather than letting capture outlive teardown.
             if isPermanentlyInvalidated {
-                bufferedCapture?.close()
-                stopEngineSafely()
-                removeTapIfNeeded()
-                drainBufferedCapture(finishingConversion: false)
-                removeConfigurationChangeObserverIfNeeded()
-                clearFailureState()
-                let state = lock.withLock { state -> FileState in
-                    let old = state
-                    state = FileState()
-                    return old
-                }
-                state.fileHandle?.closeFile()
-                if let url = state.fileURL {
-                    try? FileManager.default.removeItem(at: url)
-                }
                 throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
                     NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
                 ])
             }
             runState.markStarted()
         } catch {
+            // Unlike a successful Stop, failed startup owns no queued audio.
+            // Invalidate before native teardown/drain can release buffered work.
+            clearFailureState()
             bufferedCapture?.close()
             stopEngineSafely()
             removeTapIfNeeded()
             drainBufferedCapture(finishingConversion: false)
             removeConfigurationChangeObserverIfNeeded()
-            clearFailureState()
             let state = lock.withLock { state -> FileState in
                 let old = state
                 state = FileState()
@@ -491,12 +484,25 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     /// Exercises the real tap, conversion, writing and teardown without opening
     /// hardware. Native engine installation/start are the only omitted boundary.
-    func testing_startWithTap(format: AVAudioFormat) throws -> AVAudioNodeTapBlock {
-        let id = try beginRecordingFile()
-        let tap = try makeBufferedTap(format: format, recordingID: id)
-        runState.markStarted()
+    func testing_startWithTap(
+        format: AVAudioFormat,
+        startGraph: (AVAudioNodeTapBlock) throws -> Void = { _ in }
+    ) throws -> AVAudioNodeTapBlock {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+        var tap: AVAudioNodeTapBlock!
+        try startRecordingLocked { id in
+            tap = try makeBufferedTap(format: format, recordingID: id)
+            try startGraph(tap)
+        }
         return tap
     }
+
+    func testing_enqueueProcessing(_ work: @escaping () -> Void) {
+        processingQueue.async(execute: DispatchWorkItem(block: work))
+    }
+
+    var testing_hasActiveRecording: Bool { failureLock.withLock { $0.activeRecordingID != nil } }
 
     private func inputFormatLocked() throws -> AVAudioFormat {
         if recoversFromInputConfigurationChanges {

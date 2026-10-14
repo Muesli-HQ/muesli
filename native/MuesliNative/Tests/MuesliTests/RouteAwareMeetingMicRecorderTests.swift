@@ -6,6 +6,166 @@ import os
 
 @Suite("RouteAwareMeetingMicRecorder", .serialized)
 struct RouteAwareMeetingMicRecorderTests {
+    @Test("promotion requires successful startup AND audio in either order", arguments: [true, false])
+    func startupAndAudioRequired(audioFirst: Bool) throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let candidate = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.start-gate.lifecycle")
+        let worker = DispatchQueue(label: "test.start-gate.worker")
+        let cleanup = DispatchQueue(label: "test.start-gate.cleanup")
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        candidate.onStart = {
+            if audioFirst { candidate.emit([2, 3], at: 100) }
+            entered.signal()
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        defer { release.signal(); candidate.onStart = nil }
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: candidate,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        let delivered = OSAllocatedUnfairLock(initialState: [Int16]())
+        let outcomes = OSAllocatedUnfairLock(initialState: [MeetingMicHandoffOutcome]())
+        recorder.onRawPCMSamples = { audio in delivered.withLock { $0 += audio.samples } }
+        recorder.onHandoffOutcome = { outcome in outcomes.withLock { $0.append(outcome) } }
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        lifecycle.sync {}
+        old.emit([1], at: 99)
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(delivered.withLock { $0 } == [1])
+        #expect(outcomes.withLock { $0 }.isEmpty)
+        #expect(!old.invalidatedForTeardown)
+        release.signal()
+        worker.sync {}; lifecycle.sync {}
+        if !audioFirst {
+            #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+            #expect(outcomes.withLock { $0 }.isEmpty)
+            candidate.emit([2, 3], at: 100)
+            lifecycle.sync {}
+        }
+        recorder.drainAcceptedAudio(); cleanup.sync {}
+        candidate.emit([4], at: 102)
+        old.emit([99], at: 103)
+        #expect(delivered.withLock { $0 } == [1, 2, 3, 4])
+        #expect(outcomes.withLock { $0 } == [.promoted])
+        #expect(old.stopCalls == 1)
+        #expect(recorder.activeRecorderKindForDebug() == .appScoped)
+        _ = recorder.stop()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("failed startup cannot promote early or late audio", arguments: [true, false])
+    func failedStartupRejectsAudio(audioBeforeFailure: Bool) throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let candidate = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.start-failure.lifecycle")
+        let worker = DispatchQueue(label: "test.start-failure.worker")
+        let cleanup = DispatchQueue(label: "test.start-failure.cleanup")
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        candidate.startError = NSError(domain: "test.startup", code: 1)
+        candidate.onStart = {
+            if audioBeforeFailure { candidate.emit([2], at: 100) }
+            entered.signal()
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        defer { release.signal(); candidate.onStart = nil }
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: candidate,
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        let delivered = OSAllocatedUnfairLock(initialState: [Int16]())
+        let outcomes = OSAllocatedUnfairLock(initialState: [MeetingMicHandoffOutcome]())
+        recorder.onRawPCMSamples = { audio in delivered.withLock { $0 += audio.samples } }
+        recorder.onHandoffOutcome = { outcome in outcomes.withLock { $0.append(outcome) } }
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        lifecycle.sync {} // Process early-audio promotion while start is still blocked.
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(!old.invalidatedForTeardown)
+        release.signal()
+        worker.sync {}; lifecycle.sync {}; cleanup.sync {}
+        candidate.emit([3], at: 101) // Even a late callback from failed hardware must be rejected.
+        lifecycle.sync {}
+        recorder.drainAcceptedAudio()
+        old.emit([7], at: 102)
+        #expect(delivered.withLock { $0 } == [7])
+        #expect(outcomes.withLock { $0 } == [.failed])
+        #expect(old.stopCalls == 0)
+        #expect(!old.invalidatedForTeardown)
+        #expect(candidate.cancelCalls == 1)
+        _ = recorder.stop()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("pending startup/audio cannot cross pause, stop, discard or timeout",
+          arguments: ["pause", "stop", "discard", "timeout"], [true, false])
+    func startupGateRespectsBoundaries(ending: String, audioFirst: Bool) throws {
+        let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let candidate = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let next = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let lifecycle = DispatchQueue(label: "test.start-boundary.lifecycle")
+        let worker = DispatchQueue(label: "test.start-boundary.worker")
+        let cleanup = DispatchQueue(label: "test.start-boundary.cleanup")
+        let timeouts = ManualMeetingMicHandoffTimeoutScheduler()
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        candidate.onStart = {
+            if audioFirst { candidate.emit([2], at: 100) }
+            entered.signal()
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        defer { release.signal(); candidate.onStart = nil }
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: old, appScopedRecorder: candidate,
+            appScopedRecorderFactory: { next },
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: timeouts.schedule
+        )
+        let delivered = OSAllocatedUnfairLock(initialState: [Int16]())
+        let outcomes = OSAllocatedUnfairLock(initialState: [MeetingMicHandoffOutcome]())
+        recorder.onRawPCMSamples = { audio in delivered.withLock { $0 += audio.samples } }
+        recorder.onHandoffOutcome = { outcome in outcomes.withLock { $0.append(outcome) } }
+        try recorder.start()
+        old.emit([1], at: 99)
+        recorder.preferredInputDeviceID = 91
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        lifecycle.sync {}
+        if !audioFirst { release.signal(); worker.sync {}; lifecycle.sync {} }
+        switch ending {
+        case "pause": recorder.pause()
+        case "stop": recorder.invalidateForTeardown(); _ = recorder.stop()
+        case "discard": recorder.cancel()
+        default: lifecycle.sync { #expect(timeouts.fireNext()) }
+        }
+        if audioFirst { release.signal() }
+        worker.sync {}; lifecycle.sync {}; cleanup.sync {}
+        candidate.emit([99], at: 101)
+        lifecycle.sync {}
+        recorder.waitForQuiescence()
+        #expect(delivered.withLock { $0 } == [1])
+        #expect(!outcomes.withLock { $0 }.contains(.promoted))
+        #expect(candidate.invalidatedForTeardown)
+        if ending == "pause" {
+            recorder.resume()
+            worker.sync {}; lifecycle.sync {}
+            next.emit([4], at: 102)
+            lifecycle.sync {}; recorder.drainAcceptedAudio(); cleanup.sync {}
+            #expect(delivered.withLock { $0 } == [1, 4])
+            #expect(outcomes.withLock { $0 } == [.promoted])
+        } else if ending == "timeout" {
+            #expect(outcomes.withLock { $0 } == [.timedOut])
+            old.emit([5], at: 102)
+            #expect(delivered.withLock { $0 } == [1, 5])
+            #expect(!old.invalidatedForTeardown)
+        }
+        if ending == "pause" || ending == "timeout" { _ = recorder.stop() }
+        recorder.waitForQuiescence()
+    }
+
     @Test("pending overflow cannot promote an already queued first-buffer event")
     func pendingOverflowBeforePromotion() throws {
         let old = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)

@@ -82,6 +82,53 @@ struct BufferedMicrophoneCaptureTests {
 
 @Suite("StreamingMicRecorder buffered capture")
 struct StreamingMicRecorderBufferTests {
+    @Test("failed native start invalidates queued PCM before draining", arguments: [16_000.0, 48_000.0])
+    func failedStartDiscardsQueuedBuffers(sampleRate: Double) throws {
+        let directory = "streaming-mic-failed-start-\(UUID().uuidString)"
+        let recorder = StreamingMicRecorder(directoryName: directory)
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let input = try buffer(format, values: Array(repeating: 0.25, count: 4096))
+        let blocked = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let offered = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        recorder.testing_enqueueProcessing {
+            blocked.signal()
+            #expect(release.wait(timeout: .now() + 10) == .success)
+        }
+        defer { release.signal() }
+        #expect(blocked.wait(timeout: .now() + 5) == .success)
+        recorder.onPCMSamples = { _ in Issue.record("Failed startup delivered PCM") }
+        recorder.onCapturedAudio = { _ in Issue.record("Failed startup delivered meeting audio") }
+        recorder.onAudioBuffer = { _ in Issue.record("Failed startup delivered VAD audio") }
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                _ = try recorder.testing_startWithTap(format: format) { tap in
+                    tap(input, AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1)))
+                    // Model native buffer recycling before the queued worker runs.
+                    input.floatChannelData?[0].update(repeating: -0.5, count: 4096)
+                    offered.signal()
+                    throw NSError(domain: "test.failed-start", code: 1)
+                }
+                Issue.record("Expected startup to throw")
+            } catch {
+                #expect((error as NSError).domain == "test.failed-start")
+            }
+        }
+        #expect(offered.wait(timeout: .now() + 5) == .success)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while recorder.testing_hasActiveRecording && ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        // The worker is still blocked: cleanup must invalidate BEFORE its fence.
+        #expect(!recorder.testing_hasActiveRecording)
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 5) == .success)
+        #expect(recorder.stop() == nil)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(directory)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        try? FileManager.default.removeItem(at: folder)
+    }
+
     @Test("pause drain flushes fractional converter tail and reopens a clean stream", arguments: [44_100.0, 48_000.0])
     func pauseDrainConversion(sampleRate: Double) throws {
         let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")
