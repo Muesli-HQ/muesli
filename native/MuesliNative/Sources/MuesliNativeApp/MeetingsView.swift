@@ -136,16 +136,19 @@ enum MeetingBrowserLogic {
     }
 
     // Start times repeat on every render of the list, the timeline and the filter
-    // menu, and each uncached parse is an ICU call. Failed parses are not cached.
+    // menu, and each uncached parse is an ICU call. Only strings with an explicit
+    // UTC offset are cached: a local-time string means a different instant when the
+    // system time zone changes. Failed parses are not cached.
     private static let parsedDates = NSCache<NSString, NSDate>()
 
     static func parseDate(_ raw: String) -> Date? {
         let key = raw as NSString
         if let cached = parsedDates.object(forKey: key) { return cached as Date }
-        guard let parsed = isoParsers.lazy.compactMap({ $0.date(from: raw) }).first
-            ?? localParsers.lazy.compactMap({ $0.date(from: raw) }).first else { return nil }
-        parsedDates.setObject(parsed as NSDate, forKey: key)
-        return parsed
+        if let parsed = isoParsers.lazy.compactMap({ $0.date(from: raw) }).first {
+            parsedDates.setObject(parsed as NSDate, forKey: key)
+            return parsed
+        }
+        return localParsers.lazy.compactMap { $0.date(from: raw) }.first
     }
 
     static func formatStartTime(
@@ -231,6 +234,8 @@ struct MeetingsView: View {
     let controller: MuesliController
     @State private var selectedFilter: MeetingBrowserFilter = .all
     @State private var selectedSort: MeetingBrowserSort = .newestFirst
+    // Bumped when the system locale changes so cached start-time labels redraw.
+    @State private var localeChangeVersion = 0
 
     private var scopedMeetings: [MeetingRecord] {
         appState.meetingRows
@@ -346,6 +351,7 @@ struct MeetingsView: View {
                             )
                         }
                     }
+                    .id(localeChangeVersion)
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
@@ -353,6 +359,9 @@ struct MeetingsView: View {
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+            localeChangeVersion &+= 1
         }
         .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
