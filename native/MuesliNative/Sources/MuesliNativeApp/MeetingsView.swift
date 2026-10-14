@@ -148,12 +148,26 @@ enum MeetingBrowserLogic {
         guard let date = parseDate(raw) else {
             return formatStartTimeFallback(raw)
         }
+        return startTimeFormatter(locale: locale, timeZone: timeZone).string(from: date)
+    }
+
+    // DateFormatter construction loads ICU symbol tables, which dominated list
+    // rendering when every row built its own. One formatter per locale and zone.
+    private static let startTimeFormatterLock = NSLock()
+    nonisolated(unsafe) private static var startTimeFormatters: [String: DateFormatter] = [:]
+
+    private static func startTimeFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+        let key = "\(locale.identifier)|\(timeZone.identifier)"
+        startTimeFormatterLock.lock()
+        defer { startTimeFormatterLock.unlock() }
+        if let cached = startTimeFormatters[key] { return cached }
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.timeZone = timeZone
         formatter.dateStyle = .medium
         formatter.timeStyle = .medium
-        return formatter.string(from: date)
+        startTimeFormatters[key] = formatter
+        return formatter
     }
 
     private static func formatStartTimeFallback(_ raw: String) -> String {
