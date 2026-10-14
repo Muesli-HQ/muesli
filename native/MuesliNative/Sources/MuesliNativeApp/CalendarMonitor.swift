@@ -231,6 +231,7 @@ final class CalendarMonitor {
     /// Events from calendars listed in `disabledCalendarIDs` are filtered out.
     static func upcomingEvents(
         daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
+        hoursAhead: Int? = nil,
         disabledCalendarIDs: Set<String> = [],
         now: Date = Date()
     ) -> [UnifiedCalendarEvent] {
@@ -239,7 +240,7 @@ final class CalendarMonitor {
         // reflect external changes (e.g., events moved in Google Calendar).
         // Uses a local instance to avoid racing with currentEvent()/currentOrNearbyEvent().
         let freshStore = EKEventStore()
-        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else { return [] }
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead, hourCount: hoursAhead) else { return [] }
         let predicate = freshStore.predicateForEvents(withStart: now, end: future, calendars: nil)
         let events = freshStore.events(matching: predicate)
         let unified: [UnifiedCalendarEvent] = events.compactMap { event in

@@ -174,6 +174,41 @@ struct MeetingsNavigationTests {
         #expect(savedNotes == "## Notes")
     }
 
+    @Test("Claude Code re-summarization reports the backend failure and preserves saved notes")
+    func claudeCodeResummaryFailurePreservesError() async throws {
+        let directory = makeSupportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try #"""
+        #!/bin/sh
+        printf '%s' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Authentication expired"]}'
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        let storedMeeting = try store.meeting(id: meetingID)
+        let meeting = try #require(storedMeeting)
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.claudeCode.backend
+            $0.claudeCodeExecutablePath = executable.path
+        }
+
+        let outcome: Result<Void, Error> = await withCheckedContinuation { continuation in
+            controller.resummarize(meeting: meeting) { continuation.resume(returning: $0) }
+        }
+        guard case .failure(let error) = outcome else {
+            Issue.record("Expected the CLI error to propagate")
+            return
+        }
+        #expect(error is ClaudeCodeSummaryError)
+        #expect(!(error is MeetingSummaryPersistenceError))
+        #expect(error.localizedDescription.contains("Authentication expired"))
+        #expect(error.localizedDescription.contains("CLAUDE_CODE_5"))
+        #expect(try store.meeting(id: meetingID)?.formattedNotes == "## Notes")
+    }
+
     @Test("app state defaults meetings to browser mode")
     func meetingsDefaultToBrowser() {
         let appState = AppState()

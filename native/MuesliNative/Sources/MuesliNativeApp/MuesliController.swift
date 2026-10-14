@@ -379,6 +379,16 @@ public final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
+    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    var meetingChatCoordinator: MeetingChatCoordinator {
+        get {
+            if let existing = storedMeetingChatCoordinator { return existing }
+            let coordinator = MeetingChatCoordinator(databaseURL: dictationStore.resolvedDatabaseURL)
+            storedMeetingChatCoordinator = coordinator
+            return coordinator
+        }
+        set { storedMeetingChatCoordinator = newValue }
+    }
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
@@ -471,6 +481,7 @@ public final class MuesliController: NSObject {
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
+    private let updateFocusRecovery = SparkleUpdateFocusRecovery()
     private var busyStatusGeneration = 0
 
     let appState = AppState()
@@ -553,10 +564,8 @@ public final class MuesliController: NSObject {
     private var nemotron35StreamingSessionID: UUID?
     private var previousStreamText = ""
     private var openWindowCount = 0
-    private var lastExternalApp: NSRunningApplication?
     private var capturedDictationContext: DictationContext?
     private var capturedDictationCorrectionTargetApp: DictationCorrectionTargetApp?
-    private var workspaceObserver: NSObjectProtocol?
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -763,6 +772,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
         hotkeyMonitor.combinationToggleRequiresHold = false
         hotkeyMonitor.registersCombinationGlobally = true
+        hotkeyMonitor.allowsStartsWhileEditingText = true
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -867,20 +877,6 @@ public final class MuesliController: NSObject {
             self?.updateConfig {
                 $0.indicatorAnchor = .custom
                 $0.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
-            }
-        }
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard
-                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                app != NSRunningApplication.current
-            else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.lastExternalApp = app
             }
         }
         dataDidChangeObserver = DistributedNotificationCenter.default().addObserver(
@@ -1048,10 +1044,6 @@ public final class MuesliController: NSObject {
     func shutdown() async {
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
-        if let workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
-            self.workspaceObserver = nil
-        }
         if let dataDidChangeObserver {
             DistributedNotificationCenter.default().removeObserver(dataDidChangeObserver)
             self.dataDidChangeObserver = nil
@@ -1335,6 +1327,18 @@ public final class MuesliController: NSObject {
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
             appState.selectedMeetingRecord = nil
+        case .meetingRetranscription:
+            if let meeting = (try? dictationStore.recentMeetings(limit: 100))?.first(where: {
+                $0.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    && ($0.status == .completed || $0.status == .failed)
+            }) {
+                showMeetingDocument(id: meeting.id)
+            } else {
+                appState.selectedTab = .meetings
+                appState.meetingsNavigationState = .browser
+                appState.selectedMeetingID = nil
+                appState.selectedMeetingRecord = nil
+            }
         case .meetingPeople:
             guard let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id else {
                 completeFeatureTour()
@@ -1402,6 +1406,7 @@ public final class MuesliController: NSObject {
     }
 
     func syncAppState() {
+        storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
             limit: appState.timelinePageSize,
             offset: 0,
@@ -2851,11 +2856,13 @@ public final class MuesliController: NSObject {
         capture.session.setPreferredMicrophoneInputDeviceID(deviceID)
     }
 
-    func updateUpcomingMeetingsWindow(dayCount: Int) {
-        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: dayCount).dayCount
-        guard config.upcomingMeetingsDayCount != resolvedDayCount else { return }
+    func updateUpcomingMeetingsWindow(_ window: UpcomingMeetingsWindow) {
+        guard config.upcomingMeetingsWindow != window else { return }
 
-        updateConfig { $0.upcomingMeetingsDayCount = resolvedDayCount }
+        updateConfig {
+            $0.upcomingMeetingsDayCount = window.dayCount
+            $0.upcomingMeetingsHourCount = window.hourCount
+        }
         Task {
             let refreshed = await refreshUpcomingCalendarEvents()
             guard refreshed else { return }
@@ -3828,10 +3835,12 @@ public final class MuesliController: NSObject {
         let refreshNow = Date()
         let refreshStartOfDay = Calendar.current.startOfDay(for: refreshNow)
         let disabledIDs = Set(config.disabledCalendarIDs)
-        let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let window = config.upcomingMeetingsWindow
+        let dayCount = window.dayCount
         guard let result = await calendarEventQuery.load({
             CalendarMonitor.upcomingEvents(
                 daysAhead: dayCount,
+                hoursAhead: window.hourCount,
                 disabledCalendarIDs: disabledIDs,
                 now: refreshNow
             )
@@ -3839,9 +3848,9 @@ public final class MuesliController: NSObject {
         let ekEvents = result.events
         let observedEventIDs = Set(ekEvents.map(\.id))
         let currentDisabledIDs = Set(config.disabledCalendarIDs)
-        let currentDayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let currentWindow = config.upcomingMeetingsWindow
         let currentStartOfDay = Calendar.current.startOfDay(for: Date())
-        guard dayCount == currentDayCount,
+        guard window == currentWindow,
               disabledIDs == currentDisabledIDs,
               refreshStartOfDay == currentStartOfDay else {
             return false
@@ -5577,6 +5586,7 @@ public final class MuesliController: NSObject {
     }
 
     func showMeetingsHome(folderID: Int64? = nil) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.selectedFolderID = folderID
         appState.meetingsNavigationState = .browser
@@ -5591,6 +5601,7 @@ public final class MuesliController: NSObject {
     }
 
     func showMeetingDocument(id: Int64) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.meetingDetailReturnDestination = .meetings
         appState.selectedMeetingID = id
@@ -5605,6 +5616,31 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingRecord = meeting(id: id)
         appState.meetingsNavigationState = .document(id)
     }
+
+    @discardableResult
+    func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
+        appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
+        if let id = meetingID {
+            let coordinator = meetingChatCoordinator
+            // Resume the latest conversation started from this meeting. Broader
+            // archive chats that merely cited it remain separate conversations.
+            if let session = coordinator.sessions.first(where: { session in
+                guard session.anchorMeetingID == id,
+                      case .meetings(let ids) = session.scope.selection else { return false }
+                return ids.contains(id)
+            }) {
+                coordinator.selectChat(id: session.id)
+                return nil
+            }
+            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+        }
+        return nil
+    }
+    func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {
+        guard meeting(id: target.citation.meetingID) != nil else { meetingChatCoordinator.errorMessage = "This source meeting is no longer available."; return }
+        showMeetingDocument(id: target.citation.meetingID); appState.meetingChatDocumentTarget = target
+    }
+    func returnToMeetingChat() { appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil }
 
     private func showActiveMeetingDocumentIfNeeded() {
         guard let activeMeetingID,
@@ -5647,7 +5683,12 @@ public final class MuesliController: NSObject {
     }
 
     @objc func checkForUpdates() {
-        presentStandardUpdateCheck()
+        updateFocusRecovery.cancel()
+        // NSMenu may restore the dashboard's key window as tracking ends.
+        // Let that finish before Sparkle presents or refocuses its own UI.
+        SparkleUpdatePresentation.afterMenuTracking { [weak self] in
+            self?.presentStandardUpdateCheck()
+        }
     }
 
     private func presentStandardUpdateCheck() {
@@ -5655,57 +5696,26 @@ public final class MuesliController: NSObject {
             appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
             return
         }
-        let existingWindows = Set(NSApplication.shared.windows.map(ObjectIdentifier.init))
         activateApplicationForSparkle()
         // Always enter Sparkle's standard path. Sparkle uses this same call to
         // refocus existing updater UI, so local availability gates would make
         // in-app buttons less reliable than the status-bar action.
         updaterController.checkForUpdates(nil)
-        focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
+        focusUpdaterWindowsAfterUpdateAction()
     }
 
-    private func focusUpdaterWindowsCreatedAfterUpdateAction(excluding existingWindows: Set<ObjectIdentifier>) {
-        for delay in [80_000_000, 240_000_000, 600_000_000, 1_200_000_000, 2_500_000_000] {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay))
-                self?.focusUpdaterWindows(excluding: existingWindows)
+    private func focusUpdaterWindowsAfterUpdateAction() {
+        updateFocusRecovery.start { [weak self] in
+            guard let self else { return true }
+            let windows = NSApplication.shared.windows.filter(SparkleUpdatePresentation.isUpdaterWindow)
+            guard !windows.isEmpty else { return false }
+            self.activateApplicationForSparkle()
+            for window in windows {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
             }
-        }
-    }
-
-    private func focusUpdaterWindows(excluding existingWindows: Set<ObjectIdentifier>) {
-        let updaterWindows = NSApplication.shared.windows.filter { window in
-            guard window.isVisible else { return false }
-            return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)
-        }
-        guard !updaterWindows.isEmpty else { return }
-
-        activateApplicationForSparkle()
-        for window in updaterWindows {
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    private func isLikelyUpdaterWindow(_ window: NSWindow) -> Bool {
-        let className = String(describing: type(of: window))
-        if className.localizedCaseInsensitiveContains("SPU") ||
-            className.localizedCaseInsensitiveContains("SU") ||
-            className.localizedCaseInsensitiveContains("Sparkle") {
             return true
         }
-
-        // Sparkle's standard UI can present through AppKit alert/window
-        // classes. Keep this semantic fallback narrow and only apply it to
-        // windows created after the update action.
-        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return false }
-        if title.localizedCaseInsensitiveContains("update") ||
-            title.localizedCaseInsensitiveContains("updater") ||
-            title.localizedCaseInsensitiveContains("new version") ||
-            title.localizedCaseInsensitiveContains("available") {
-            return true
-        }
-        return false
     }
 
     private func showBusyStatus(_ message: String, restoring previousStatus: SparkleUpdateStatus) {
@@ -5859,15 +5869,19 @@ public final class MuesliController: NSObject {
                     participantNames: participantNames,
                     openRouterAPIKeyOverride: openRouterKey
                 )
-                try self.dictationStore.updateMeetingSummary(
-                    id: meeting.id,
-                    title: plan.persistedTitle,
-                    formattedNotes: notes,
-                    selectedTemplateID: templateSnapshot.id,
-                    selectedTemplateName: templateSnapshot.name,
-                    selectedTemplateKind: templateSnapshot.kind,
-                    selectedTemplatePrompt: templateSnapshot.prompt
-                )
+                do {
+                    try self.dictationStore.updateMeetingSummary(
+                        id: meeting.id,
+                        title: plan.persistedTitle,
+                        formattedNotes: notes,
+                        selectedTemplateID: templateSnapshot.id,
+                        selectedTemplateName: templateSnapshot.name,
+                        selectedTemplateKind: templateSnapshot.kind,
+                        selectedTemplatePrompt: templateSnapshot.prompt
+                    )
+                } catch {
+                    throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
+                }
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                     self.syncAppState()
@@ -5875,13 +5889,9 @@ public final class MuesliController: NSObject {
                     completion(.success(()))
                 }
             } catch {
-                fputs("[muesli-native] failed to generate or persist meeting summary: \(error)\n", stderr)
+                fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
                 await MainActor.run {
-                    if error is MeetingSummaryError {
-                        completion(.failure(error))
-                    } else {
-                        completion(.failure(MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)))
-                    }
+                    completion(.failure(error))
                 }
             }
         }
@@ -6888,6 +6898,11 @@ public final class MuesliController: NSObject {
         statusBarController?.setStatus("Meeting: \(activeMeetingDisplayTitle())")
         statusBarController?.refresh()
         syncAppState()
+    }
+
+    @objc func hideCalendarEventFromMenuItem(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? CalendarMenuMeetingPayload else { return }
+        hideCalendarEvent(payload.event)
     }
 
     @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {
@@ -10384,6 +10399,7 @@ public final class MuesliController: NSObject {
         runtime.onEvent = { [weak self] event in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
+            self.indicator.recordComputerUseToolResult(event, config: self.config)
         }
         runtime.onObservedApplication = { [weak self] name, bundleID in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
@@ -11122,18 +11138,16 @@ public final class MuesliController: NSObject {
         capturedDictationCorrectionTargetApp = nil
     }
 
-    private func externalDictationTargetApp(
+    private func dictationTargetApp(
         from frontmostApplication: NSRunningApplication?
     ) -> DictationCorrectionTargetApp? {
-        return DictationCorrectionTargetApp(
-            app: frontmostApplication == NSRunningApplication.current
-                ? lastExternalApp
-                : frontmostApplication
-        )
+        // Own-app text fields are valid dictation targets. Attribute the actual
+        // recipient instead of substituting an unrelated previously active app.
+        DictationCorrectionTargetApp(app: frontmostApplication)
     }
 
-    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
-        externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
+    private func currentDictationTargetApp() -> DictationCorrectionTargetApp? {
+        dictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
     /// Snapshots the hosted provider configuration before microphone capture and,
@@ -11214,7 +11228,7 @@ public final class MuesliController: NSObject {
     #endif
 
     private func captureDictationCorrectionTargetApp() {
-        capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
+        capturedDictationCorrectionTargetApp = currentDictationTargetApp()
     }
 
     private func handleStart() {
@@ -11644,7 +11658,7 @@ public final class MuesliController: NSObject {
         )
         // If focus moved during streaming, attribute the completed session to the app active at stop.
         let targetApp = shouldPersistTargetApp
-            ? currentExternalDictationTargetApp() ?? capturedDictationCorrectionTargetApp
+            ? currentDictationTargetApp() ?? capturedDictationCorrectionTargetApp
             : nil
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
@@ -11922,7 +11936,7 @@ public final class MuesliController: NSObject {
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
-                                let targetApp = self.externalDictationTargetApp(from: targetApplication)
+                                let targetApp = self.dictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
                                 if didDispatchPaste { self.indicator.showDictationCompletion() }

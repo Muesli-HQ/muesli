@@ -1,0 +1,421 @@
+import Foundation
+import Testing
+@testable import MuesliCore
+@testable import MuesliNativeApp
+import SQLite3
+
+
+@Suite("Meeting chat retrieval")
+struct MeetingChatRetrievalTests {
+    private func database() throws -> DictationStore {
+        let store = DictationStore(databaseURL: FileManager.default.temporaryDirectory.appendingPathComponent("retrieval-\(UUID()).db"))
+        try store.migrateIfNeeded(); return store
+    }
+    private func insert(_ store: DictationStore, text: String, date: Date = Date()) throws -> Int64 {
+        try store.insertMeeting(title: "Planning", calendarEventID: nil, startTime: date, endTime: date.addingTimeInterval(60),
+            rawTranscript: text, formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+    }
+
+    @Test func concurrentFTSSetupDoesNotDuplicateBackfill() async throws {
+        let store = try database()
+        _ = try insert(store, text: "sunflower launch")
+        let url = store.resolvedDatabaseURL
+        _ = try MeetingChatRetrieval(databaseURL: url, useFTS: false).prepareIndex()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { _ = try MeetingChatRetrieval(databaseURL: url).prepareIndex() }
+            }
+            try await group.waitForAll()
+        }
+        let evidence = try MeetingChatRetrieval(databaseURL: url).retrieve(question: "sunflower", scope: .init())
+        #expect(evidence.passages.count == 1)
+        let count = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(count == 1)
+    }
+
+    @Test func interruptedFTSSetupRepairsMissingTriggersAndBackfills() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_removed_v2", db: db)
+            try MeetingChatSQL.execute("DELETE FROM meeting_chat_fts", db: db)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.deleteMeeting(id: id)
+        let count = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(count == 0)
+    }
+
+    @Test func legacyPassageCacheMigratesAndRowIDsSurviveVacuum() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_inserted_v2", db: db)
+            try MeetingChatSQL.execute("DROP TRIGGER meeting_chat_passage_removed_v2", db: db)
+            try MeetingChatSQL.execute("DROP TABLE meeting_chat_fts", db: db)
+            try MeetingChatSQL.execute("DROP TABLE meeting_chat_passages", db: db)
+            try MeetingChatSQL.execute("CREATE TABLE meeting_chat_passages (id TEXT PRIMARY KEY, meeting_id INTEGER, revision TEXT, text TEXT, body TEXT)", db: db)
+            try MeetingChatSQL.execute("CREATE VIRTUAL TABLE meeting_chat_fts USING fts5(id UNINDEXED,text)", db: db)
+            try MeetingChatSQL.migrate(db: db)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("VACUUM", db: db)
+            let trigger = try MeetingChatSQL.rows("SELECT sql FROM sqlite_master WHERE name='meeting_chat_passage_removed_v2'", db: db) { MeetingChatSQL.text($0, 0) }.first
+            #expect(trigger?.contains("WHERE rowid=OLD.seq") == true)
+        }
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.count == 1)
+        try store.deleteMeeting(id: id)
+        #expect(try retrieval.retrieve(question: "sunflower", scope: .init()).passages.isEmpty)
+    }
+
+    @Test func folderMovePreservesContentHistoryAndGeneratedTitle() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let folder = try store.createFolder(name: "Planning")
+        let chat = MeetingChatStore(databaseURL: store.resolvedDatabaseURL)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let session = try chat.createSession(scope: scope, title: "New chat")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Launch?", scope: scope, provider: "test", model: "test")
+        #expect(turn.scopeLabel == "1 selected meeting")
+        let source = try #require(chat.sourceSnapshots(scope: scope).first)
+        let deps = [MeetingChatDependency(meetingID: id, revision: source.revision)]
+        try chat.attachEvidence(turnID: turn.id, dependencies: deps)
+        try store.moveMeeting(id: id, toFolder: folder)
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Sunflower launch", citations: [], dependencies: deps))
+        #expect(try chat.updateTitleIfAutomatic(turnID: turn.id, attemptID: #require(turn.attemptID), title: "Launch"))
+        try store.moveMeeting(id: id, toFolder: nil)
+        #expect(try chat.sessions().first?.title == "Launch")
+        try store.moveMeeting(id: id, toFolder: folder)
+        try store.deleteFolder(id: folder)
+        #expect(try chat.sessions().first?.title == "Launch")
+        let next = try chat.beginTurn(sessionID: session.id, question: "Explain", scope: scope, provider: "test", model: "test")
+        #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
+        #expect(try chat.sourceSnapshots(scope: scope).first?.revision == source.revision)
+        let scoped = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "sunflower", scope: .init(selection: .folder(folder)))
+        #expect(scoped.passages.isEmpty)
+    }
+
+    @Test func revisionMigrationWithoutChatDependenciesDoesNotReadMeetingTextOrDirtyWarmIndex() throws {
+        let store = try database()
+        for _ in 0..<12 { _ = try insert(store, text: String(repeating: "Unrelated transcript. ", count: 500)) }
+        _ = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).prepareIndex()
+        try store.withChatDatabase { db in
+            try MeetingChatSQL.execute("DELETE FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db)
+            // Deny preparing any read of source text. Migration must not load
+            // even one unrelated transcript when there is no chat history.
+            sqlite3_set_authorizer(db, { _, action, table, column, _, _ in
+                if action == SQLITE_READ, let table, let column,
+                   String(cString: table) == "meetings",
+                   ["raw_transcript", "manual_notes", "formatted_notes"].contains(String(cString: column)) {
+                    return SQLITE_DENY
+                }
+                return SQLITE_OK
+            }, nil)
+            defer { sqlite3_set_authorizer(db, nil, nil) }
+            try MeetingChatSQL.migrate(db: db)
+            let dirty = try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_dirty_sources", db: db) { sqlite3_column_int64($0, 0) }.first
+            #expect(dirty == 0)
+        }
+    }
+
+    @Test func revisionMigrationPreservesCurrentEvidenceButNotStaleEvidence() throws {
+        let store = try database()
+        let id = try insert(store, text: "sunflower launch")
+        let folder = try store.createFolder(name: "Planning")
+        try store.moveMeeting(id: id, toFolder: folder)
+        let chat = MeetingChatStore(databaseURL: store.resolvedDatabaseURL)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let session = try chat.createSession(scope: scope, title: "New chat")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Launch?", scope: scope, provider: "test", model: "test")
+        let source = try #require(chat.sourceSnapshots(scope: scope).first)
+        let deps = [MeetingChatDependency(meetingID: id, revision: source.revision)]
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Sunflower", citations: [], dependencies: deps))
+        let stale = try chat.beginTurn(sessionID: session.id, question: "Earlier", scope: scope, provider: "test", model: "test")
+        #expect(try chat.finishTurn(turnID: stale.id, answer: "Old facts", citations: [], dependencies: deps))
+        let unrelated = try insert(store, text: "Unrelated saved meeting")
+        _ = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).prepareIndex()
+        try store.withChatDatabase { db in
+            let old = try #require(MeetingChatSQL.snapshots(scope: scope, db: db, includesFolderInRevision: true).first).revision
+            try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision=? WHERE turn_id=?", [.text(old), .text(turn.id.uuidString)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_chat_dependencies SET revision='stale-content' WHERE turn_id=?", [.text(stale.id.uuidString)], db: db)
+            try MeetingChatSQL.execute("DELETE FROM local_migrations WHERE identifier='meeting_chat_content_revision_v2'", db: db)
+            try MeetingChatSQL.migrate(db: db)
+            let unrelatedDirty = try MeetingChatSQL.rows("SELECT 1 FROM meeting_chat_dirty_sources WHERE meeting_id=?", [.integer(unrelated)], db: db) { _ in true }
+            #expect(unrelatedDirty.isEmpty)
+        }
+        let next = try chat.beginTurn(sessionID: session.id, question: "Explain", scope: scope, provider: "test", model: "test")
+        #expect(try chat.historyContext(before: next).turns.map(\.id) == [turn.id])
+    }
+
+    @Test(arguments: [true, false]) func attachedContextIncludesTranscriptAndSummaryWithoutLexicalMatches(fts: Bool) throws {
+        let store = try database()
+        let transcript = String(repeating: "We compared Solaris and Stalker, their lighting and framing. ", count: 110)
+        let notes = "## Meeting Summary\n\n" + String(repeating: "Solaris uses different lighting from Stalker. ", count: 35)
+        let id = try store.insertMeeting(title: "Cinematography", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: transcript, formattedNotes: notes, micAudioPath: nil, systemAudioPath: nil)
+        _ = try insert(store, text: "Private unrelated discussion")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: fts)
+        let scope = MeetingChatScope(selection: .meetings([id]))
+        let evidence = try retrieval.retrieve(question: "which movies was this meeting about?", scope: scope, includeScopeContext: true)
+        #expect(Set(evidence.passages.map(\.kind)) == [.transcript, .generatedNotes])
+        #expect(Set(evidence.passages.map(\.meetingID)) == [id])
+        #expect(!evidence.passages.contains { $0.excerpt == "## Meeting Summary" })
+        #expect(evidence.passages.filter { $0.kind == .transcript }.reduce(0) { $0 + $1.range.length } == transcript.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count)
+        #expect(!evidence.coverage.isPartialRecap)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 14_000)
+        // Search tools stay lexical; an unmatched query is not reported as a match.
+        #expect(try retrieval.retrieve(question: "nonexistentword", scope: scope).passages.isEmpty)
+        try store.deleteMeeting(id: id)
+        #expect(try retrieval.retrieve(question: "movies", scope: scope, includeScopeContext: true).passages.isEmpty)
+    }
+
+    @Test func attachedContextIsBoundedAndReportsOmissions() throws {
+        let store = try database()
+        let id = try insert(store, text: String(repeating: "A long discussion. ", count: 3000))
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Which films?", scope: .init(selection: .meetings([id])), includeScopeContext: true)
+        #expect(!evidence.passages.isEmpty)
+        #expect(evidence.coverage.isPartialRecap)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 14_000)
+    }
+
+    @Test func findsMeetingBeyondBrowserWindow() throws {
+        let store = try database()
+        let oldest = try insert(store, text: "[00:00:05] You: The launch codeword is sunflower.")
+        for _ in 0..<204 { _ = try insert(store, text: "[00:00:03] Others: Routine check-in.") }
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "sunflower", scope: .init())
+        #expect(evidence.coverage.eligibleMeetingCount == 205)
+        #expect(evidence.passages.contains { $0.meetingID == oldest })
+    }
+
+    @Test func directFolderExcludesDescendants() throws {
+        let store = try database()
+        let parent = try store.createFolder(name: "Parent")
+        let child = try store.createFolder(name: "Child", parentID: parent)
+        let first = try insert(store, text: "launch Friday")
+        let second = try insert(store, text: "launch Monday")
+        try store.moveMeeting(id: first, toFolder: parent)
+        try store.moveMeeting(id: second, toFolder: child)
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "launch", scope: .init(selection: .folder(parent)))
+        #expect(evidence.passages.map(\.meetingID) == [first])
+    }
+
+    @Test func fallbackEscapesWildcardsAndQuotes() throws {
+        let store = try database()
+        _ = try insert(store, text: "ordinary meeting")
+        let target = try insert(store, text: "We agreed to 50% off.")
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: false).retrieve(question: "%", scope: .init())
+        #expect(evidence.passages.map(\.meetingID) == [target])
+        #expect(try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: false).retrieve(question: "\"missing\"", scope: .init()).passages.isEmpty)
+    }
+
+    @Test func unicodeExcerptOffsetsRemainExact() throws {
+        let store = try database()
+        let text = "[00:00:01] You: नमस्ते 🌻\n[00:00:09] Others: Friday launch."
+        _ = try insert(store, text: text)
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Friday", scope: .init())
+        let passage = try #require(evidence.passages.first)
+        #expect((text as NSString).substring(with: passage.range.nsRange) == passage.excerpt)
+        #expect(passage.timestamp == "00:00:09")
+    }
+
+    @Test func editedSourceReindexesWithoutTimestampChange() throws {
+        let store = try database(); let id = try insert(store, text: "original launch")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        #expect(try retrieval.retrieve(question: "original", scope: .init()).passages.count == 1)
+        try store.updateMeetingTranscript(id: id, rawTranscript: "replacement launch")
+        #expect(try retrieval.retrieve(question: "original", scope: .init()).passages.isEmpty)
+        #expect(try retrieval.retrieve(question: "replacement", scope: .init()).passages.count == 1)
+        try store.deleteMeeting(id: id)
+        #expect(try retrieval.retrieve(question: "replacement", scope: .init()).passages.isEmpty)
+    }
+
+    @Test func broadRecapReportsPartialCoverage() throws {
+        let store = try database()
+        for _ in 0..<20 { _ = try insert(store, text: String(repeating: "launch discussion ", count: 100)) }
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(evidence.coverage.isPartialRecap)
+        #expect(evidence.coverage.evidenceMeetingCount < 20)
+        #expect(evidence.passages.reduce(0) { $0 + $1.excerpt.utf8.count } <= 12_000)
+    }
+
+    @Test func longUnbrokenTextFitsEvidenceBudget() throws {
+        let store = try database(); let text = String(repeating: "🌻", count: 8_000)
+        _ = try insert(store, text: text)
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(!evidence.passages.isEmpty)
+        #expect(evidence.passages.reduce(0) { $0 + $1.excerpt.utf8.count } <= 12_000)
+        for passage in evidence.passages { #expect((text as NSString).substring(with: passage.range.nsRange) == passage.excerpt) }
+        #expect(evidence.coverage.isPartialRecap)
+    }
+
+    @Test func localDatesHandleDSTBoundaries() throws {
+        let store = try database()
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 3, day: 8))!
+        let end = calendar.date(byAdding: .day, value: 1, to: start)!
+        let selected = try insert(store, text: "launch selected", date: start)
+        _ = try insert(store, text: "launch next day", date: end)
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "launch", scope: .init(startDate: start, endDateExclusive: end))
+        #expect(evidence.passages.map(\.meetingID) == [selected])
+    }
+
+    @Test func keepsRelevanceAheadOfRecency() throws {
+        let store = try database()
+        let target = try insert(store, text: "sunflower pricing contract", date: Date(timeIntervalSince1970: 1_000))
+        _ = try insert(store, text: "pricing check-in", date: Date())
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "sunflower pricing", scope: .init())
+        #expect(evidence.passages.first?.meetingID == target)
+    }
+
+    @Test func completeSmallRecapAndHistoryWipeEraseFTS() throws {
+        let store = try database()
+        _ = try insert(store, text: "first launch decision")
+        _ = try insert(store, text: "second launch decision")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        let evidence = try retrieval.retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(!evidence.coverage.isPartialRecap)
+        #expect(evidence.coverage.evidenceMeetingCount == 2)
+        try store.clearMeetings()
+        let indexed = try store.withChatDatabase { db in
+            try MeetingChatSQL.rows("SELECT COUNT(*) FROM meeting_chat_fts", db: db) { sqlite3_column_int64($0, 0) }.first
+        }
+        #expect(indexed == 0)
+    }
+
+    @Test func warmSearchDoesNotReadUnchangedMeetingContent() throws {
+        let store = try database()
+        _ = try insert(store, text: "sunflower launch")
+        let changedID = try insert(store, text: "routine review")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        let cold = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(cold.metrics.reindexedMeetingCount == 2)
+        let warm = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(warm.metrics.reindexedMeetingCount == 0)
+        #expect(warm.metrics.sourceSnapshotCount == 0)
+        try store.updateMeetingTranscript(id: changedID, rawTranscript: "sunflower changed")
+        let updated = try retrieval.retrieve(question: "sunflower", scope: .init())
+        #expect(updated.metrics.reindexedMeetingCount == 1)
+        #expect(updated.metrics.sourceSnapshotCount == 1)
+        #expect(updated.passages.contains { $0.meetingID == changedID })
+    }
+
+    @Test func boundsBroadRecapCandidateDecodingAndMarksTruncation() throws {
+        let store = try database()
+        _ = try insert(store, text: (0..<600).map { "[00:00:01] You: Item \($0)." }.joined(separator: "\n"))
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(evidence.metrics.decodedCandidateCount <= 257)
+        #expect(evidence.coverage.isPartialRecap)
+    }
+
+    @Test func benchmarkWarmArchiveSearch() throws {
+        let store = try database()
+        for index in 0..<1_000 {
+            _ = try insert(store, text: "[00:00:01] You: Project \(index) reviewed.\n" + String(repeating: "Routine discussion.\n", count: 30))
+        }
+        let target = try insert(store, text: "[00:00:05] You: The sunflower contract was approved.")
+        let retrieval = MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        _ = try retrieval.retrieve(question: "sunflower", scope: .init())
+        var milliseconds: [Double] = []
+        for _ in 0..<7 {
+            let start = Date()
+            let evidence = try retrieval.retrieve(question: "sunflower", scope: .init())
+            milliseconds.append(Date().timeIntervalSince(start) * 1_000)
+            #expect(evidence.passages.first?.meetingID == target)
+            #expect(evidence.metrics.sourceSnapshotCount == 0)
+        }
+        print("Synthetic 1,001-meeting archive warm search milliseconds: \(milliseconds.sorted())")
+        // Report timing without a flaky wall-clock assertion; deterministic work bounds are asserted above.
+    }
+
+    @Test func broadEvidenceAccountsForSerializedMetadataNotOnlyExcerptBytes() throws {
+        let store = try database()
+        for _ in 0..<300 { _ = try insert(store, text: "Brief decision.") }
+        let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "recap", scope: .init(), broadRecap: true)
+        #expect(evidence.passages.reduce(0) { $0 + MeetingChatPassages.promptByteCount($1) } <= 10_000)
+        #expect(evidence.coverage.isPartialRecap)
+    }
+
+    @Test @MainActor func browseToolPreservesCompleteSmallRecapCoverage() async throws {
+        let store = try database()
+        _ = try insert(store, text: "First launch discussion.")
+        _ = try insert(store, text: "Second launch discussion.")
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Review context", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        #expect(turn.coverage?.evidenceMeetingCount == 2)
+        #expect(turn.coverage?.isPartialRecap == false)
+    }
+
+    @Test @MainActor func focusedSearchDoesNotTreatUnrelatedMeetingsAsOmittedEvidence() async throws {
+        let store = try database()
+        _ = try insert(store, text: "Sunflower launch discussion.")
+        _ = try insert(store, text: "Unrelated budget review.")
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"search_meeting_sources","query":"sunflower"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Sunflower", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        #expect(turn.coverage?.eligibleMeetingCount == 2)
+        #expect(turn.coverage?.evidenceMeetingCount == 1)
+        #expect(turn.coverage?.isPartialRecap == false)
+    }
+
+    @Test @MainActor func browseToolRetainsRetrieverBudgetTruncation() async throws {
+        let store = try database()
+        _ = try insert(store, text: (0..<600).map { "[00:00:01] You: Item \($0)." }.joined(separator: "\n"))
+        let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
+            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+        await coordinator.waitForIdle()
+        await coordinator.createChat(scope: .init())
+        await coordinator.send(question: "Review context", config: AppConfig())
+        await coordinator.waitForIdle()
+        let turn = try #require(coordinator.turns.last)
+        #expect(turn.state == .completed)
+        // One represented meeting still contains omitted passages.
+        #expect(turn.coverage?.evidenceMeetingCount == 1)
+        #expect(turn.coverage?.isPartialRecap == true)
+    }
+    @Test func explicitAttachmentsPrioritizeMatchesOverOpeningPassages() throws {
+        let store = try database()
+        var ids: [Int64] = []
+        for index in 0..<12 {
+            let opening = String(repeating: "Routine opening discussion ", count: 60)
+            let detail = index == 0 ? "Unique quasar decision: launch Monday." : "General closing discussion."
+            ids.append(try insert(store, text: opening + "\n" + detail))
+        }
+        for useFTS in [true, false] {
+            let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL, useFTS: useFTS)
+                .retrieve(question: "quasar", scope: .init(selection: .meetings(ids)), includeScopeContext: true)
+            #expect(evidence.passages.first?.excerpt.contains("quasar") == true)
+            #expect(evidence.passages.contains { $0.excerpt.contains("launch Monday") })
+        }
+    }
+
+}
+
+private actor CoverageToolProbe: MeetingTextGenerating {
+    let tool: String
+    private var calls = 0
+    init(tool: String) { self.tool = tool }
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        calls += 1
+        if calls == 1 { return tool }
+        return #"{"status":"answered","markdown":"The meeting includes this discussion [[S1]]."}"#
+    }
+}

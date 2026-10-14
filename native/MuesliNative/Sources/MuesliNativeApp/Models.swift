@@ -847,6 +847,7 @@ enum ReasoningEffortPolicy {
 struct SummaryModelPreset {
     let id: String
     let label: String
+    var contextWindowTokens: Int? = nil
 
     static let openAIModels: [SummaryModelPreset] = [
         SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
@@ -1034,7 +1035,7 @@ enum OpenRouterModelCatalogFilter {
                 }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel) }
+            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel, contextWindowTokens: $0.contextLength) }
     }
 
     static func transcriptionPresets(from models: [OpenRouterModel]) -> [SummaryModelPreset] {
@@ -1800,6 +1801,10 @@ struct AppConfig: Codable {
     var whisperModel: String = BackendOption.whisper.model
     var idleTimeout: Double = 120
     var autoRecordMeetings: Bool = false
+    var upcomingMeetingsHourCount: Int?
+    var upcomingMeetingsWindow: UpcomingMeetingsWindow {
+        .resolve(dayCount: upcomingMeetingsDayCount, hourCount: upcomingMeetingsHourCount)
+    }
     var upcomingMeetingsDayCount: Int = UpcomingMeetingsWindow.defaultDayCount
     var showScheduledMeetingNotifications: Bool = true
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
@@ -1964,6 +1969,7 @@ struct AppConfig: Codable {
         case whisperModel = "whisper_model"
         case idleTimeout = "idle_timeout"
         case autoRecordMeetings = "auto_record_meetings"
+        case upcomingMeetingsHourCount = "upcoming_meetings_hour_count"
         case upcomingMeetingsDayCount = "upcoming_meetings_day_count"
         case showScheduledMeetingNotifications = "show_scheduled_meeting_notifications"
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
@@ -2135,6 +2141,8 @@ struct AppConfig: Codable {
         whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
+        let decodedHours = try? c.decode(Int.self, forKey: .upcomingMeetingsHourCount)
+        upcomingMeetingsHourCount = [6, 12].contains(decodedHours ?? 0) ? decodedHours : nil
         if c.contains(.upcomingMeetingsDayCount) {
             upcomingMeetingsDayCount = UpcomingMeetingsWindow
                 .resolve(dayCount: try? c.decode(Int.self, forKey: .upcomingMeetingsDayCount))

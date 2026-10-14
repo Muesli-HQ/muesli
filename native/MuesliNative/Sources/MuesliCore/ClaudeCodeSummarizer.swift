@@ -7,29 +7,63 @@ public enum ClaudeCodeAuthenticationStatus: Equatable {
     case unknown
 }
 
-public enum ClaudeCodeSummaryError: LocalizedError {
+public enum ClaudeCodeSummaryError: LocalizedError, CustomNSError {
     case unavailable
     case inputTooLarge
     case instructionsTooLarge
     case timedOut
     case failed(String)
     case emptyResponse
+    case invalidResponse(exitCode: Int32, details: String)
+    case processFailed(exitCode: Int32, details: String)
+    case launchFailed(String)
+
+    public static var errorDomain: String { "MuesliClaudeCode" }
+
+    /// Explicit values stay stable across releases and can be included in diagnostic reports.
+    public var errorCode: Int {
+        switch self {
+        case .unavailable: return 1
+        case .inputTooLarge: return 2
+        case .instructionsTooLarge: return 3
+        case .timedOut: return 4
+        case .failed: return 5
+        case .emptyResponse: return 6
+        case .invalidResponse: return 7
+        case .processFailed: return 8
+        case .launchFailed: return 9
+        }
+    }
+
+    public var diagnosticCode: String { "CLAUDE_CODE_\(errorCode)" }
+
+    public var errorUserInfo: [String: Any] {
+        [NSLocalizedDescriptionKey: errorDescription ?? diagnosticCode]
+    }
 
     public var errorDescription: String? {
+        let description: String
         switch self {
         case .unavailable:
-            return "Claude Code could not be found at the configured executable path."
+            description = "Claude Code could not be found at the configured executable path. Locate your existing installation in Settings and try again."
         case .inputTooLarge:
-            return "The meeting prompt exceeds Claude Code's 10 MB stdin limit."
+            description = "The meeting prompt exceeds Claude Code's 10 MB stdin limit. Use a shorter transcript or another summary backend."
         case .instructionsTooLarge:
-            return "The meeting instructions exceed Muesli's 100 KB safe process argument limit."
+            description = "The meeting instructions exceed Muesli's 100 KB safe process argument limit. Shorten the meeting template and try again."
         case .timedOut:
-            return "Claude Code took too long to generate meeting notes."
+            description = "Claude Code took too long to generate meeting notes. Check your connection and try again. You can also select a faster model in Settings."
         case .failed(let message):
-            return "Claude Code could not generate meeting notes. \(message)"
+            description = "Claude Code could not generate meeting notes. \(message) Open Claude Code in Terminal to check its sign-in, model availability, and connection, then try again."
         case .emptyResponse:
-            return "Claude Code returned an empty response."
+            description = "Claude Code returned an empty response. Try again. If this continues, run claude doctor in Terminal."
+        case let .invalidResponse(exitCode, details):
+            description = "Claude Code returned an unexpected response (exit \(exitCode)). \(details) Run claude --version and claude doctor in Terminal, and include this error code when reporting the problem."
+        case let .processFailed(exitCode, details):
+            description = "Claude Code exited with code \(exitCode) before returning meeting notes. \(details) Open Claude Code in Terminal to check its sign-in, model availability, and connection, then try again."
+        case .launchFailed(let message):
+            description = "Muesli could not start Claude Code. \(message) Check the executable selected in Settings."
         }
+        return "\(description) [\(diagnosticCode)]"
     }
 }
 
@@ -181,7 +215,11 @@ public enum ClaudeCodeSummarizer {
             stopProcess(process)
         }
         try Task.checkCancellation()
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            throw ClaudeCodeSummaryError.launchFailed(error.localizedDescription)
+        }
         if Task.isCancelled { stopProcess(process) }
         let outputMonitor = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         outputMonitor.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
@@ -212,14 +250,61 @@ public enum ClaudeCodeSummarizer {
         let errorData = (try? errorReader.read(upToCount: 4_096)) ?? Data()
         let diagnostic = String(decoding: errorData, as: UTF8.self)
             .prefix(1200).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let payload = try? JSONSerialization.jsonObject(with: output) as? [String: Any] else {
-            throw ClaudeCodeSummaryError.failed(diagnostic.isEmpty ? "The CLI returned invalid JSON (exit \(process.terminationStatus))." : diagnostic)
+        return try result(from: output, diagnostic: diagnostic, exitCode: process.terminationStatus)
+    }
+
+    /// `json` returns one result object, or a message array when the user's viewMode is verbose.
+    /// Only a final result is usable: assistant messages may be partial output or error text.
+    static func result(from output: Data, diagnostic: String, exitCode: Int32) throws -> String {
+        let json = try? JSONSerialization.jsonObject(with: output, options: [.fragmentsAllowed])
+        let payload: [String: Any]?
+        let shape: String
+        if let object = json as? [String: Any] {
+            payload = object["type"] as? String == "result" ? object : nil
+            shape = "JSON object without a result message"
+        } else if let messages = json as? [Any] {
+            payload = messages.compactMap { $0 as? [String: Any] }.last { $0["type"] as? String == "result" }
+            shape = "JSON array without a result message (\(messages.count) messages)"
+        } else {
+            payload = nil
+            shape = json == nil ? "Malformed or missing JSON" : "Unexpected JSON value"
         }
-        let result = (payload["result"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if process.terminationStatus != 0 || payload["is_error"] as? Bool == true {
-            throw ClaudeCodeSummaryError.failed(result.isEmpty ? (diagnostic.isEmpty ? "Exit \(process.terminationStatus)." : diagnostic) : String(result.prefix(1200)))
+        let stderrDetail = diagnostic.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Never include raw stdout in an error: verbose output contains the prompt and meeting text.
+        let responseDetail = "\(shape); stdout \(output.count) bytes."
+            + (stderrDetail.isEmpty ? " No stderr diagnostics." : " CLI diagnostics: \(String(stderrDetail.prefix(1200)))")
+
+        if let payload {
+            let subtype = payload["subtype"] as? String ?? ""
+            if payload["is_error"] as? Bool == true || subtype.hasPrefix("error_") {
+                // Error results commonly omit `result` and carry their explanation in `errors` instead.
+                let errors = (payload["errors"] as? [String] ?? [])
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                let legacyResult = (payload["result"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let explanation = !errors.isEmpty ? errors.joined(separator: "; ")
+                    : (!legacyResult.isEmpty ? legacyResult : stderrDetail)
+                let reason = subtype.isEmpty ? "error" : String(subtype.prefix(80))
+                throw ClaudeCodeSummaryError.failed("CLI result: \(reason) (exit \(exitCode)). "
+                    + (explanation.isEmpty ? "The CLI provided no error details." : String(explanation.prefix(1200))))
+            }
+            if exitCode != 0 {
+                throw ClaudeCodeSummaryError.processFailed(exitCode: exitCode, details:
+                    stderrDetail.isEmpty ? "The CLI returned a result but did not exit successfully." : String(stderrDetail.prefix(1200)))
+            }
+            guard subtype.isEmpty || subtype == "success" else {
+                throw ClaudeCodeSummaryError.invalidResponse(exitCode: exitCode, details: "Unrecognized result subtype. stdout \(output.count) bytes.")
+            }
+            guard let text = payload["result"] as? String else {
+                throw ClaudeCodeSummaryError.invalidResponse(exitCode: exitCode, details: "The result message has no text result. stdout \(output.count) bytes.")
+            }
+            let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !result.isEmpty else { throw ClaudeCodeSummaryError.emptyResponse }
+            return result
         }
-        guard !result.isEmpty else { throw ClaudeCodeSummaryError.emptyResponse }
-        return result
+        if exitCode != 0 {
+            throw ClaudeCodeSummaryError.processFailed(exitCode: exitCode, details: responseDetail)
+        }
+        if output.isEmpty, stderrDetail.isEmpty { throw ClaudeCodeSummaryError.emptyResponse }
+        throw ClaudeCodeSummaryError.invalidResponse(exitCode: exitCode, details: responseDetail)
     }
 }

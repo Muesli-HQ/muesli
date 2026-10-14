@@ -7,6 +7,7 @@ enum DashboardTab: String, CaseIterable {
     case dictations
     case insights
     case meetings
+    case meetingChat
     case dictionary
     case models
     case shortcuts
@@ -279,6 +280,7 @@ final class AppState {
 
     // Navigation
     var selectedTab: DashboardTab = .timeline
+    var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
     var insightsBackLabel: String {
         insightsReturnTab == .dictations ? "Back to Dictations" : "Back to Timeline"

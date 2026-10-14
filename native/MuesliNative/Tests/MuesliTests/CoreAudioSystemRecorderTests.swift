@@ -20,19 +20,26 @@ struct CoreAudioSystemRecorderTests {
         #expect(tapDescription.muteBehavior == .unmuted)
     }
 
-    @Test("aggregate device description includes tap with drift compensation")
-    func aggregateDeviceDescriptionIncludesTap() throws {
+    @Test("primary and fallback aggregates start explicitly without waiting for tap audio", arguments: [
+        "com.muesli.system-audio-tap",
+        "com.muesli.system-audio-tap-fallback",
+    ])
+    func aggregateDeviceDescriptionStartsIndependently(aggregateUID: String) throws {
         let description = CoreAudioSystemRecorder.makeAggregateDeviceDescription(
             tapUID: "tap-uid",
-            aggregateUID: "aggregate-uid"
+            aggregateUID: aggregateUID
         )
 
         #expect(description[kAudioAggregateDeviceNameKey] as? String == "Muesli System Audio")
-        #expect(description[kAudioAggregateDeviceUIDKey] as? String == "aggregate-uid")
+        #expect(description[kAudioAggregateDeviceUIDKey] as? String == aggregateUID)
         #expect(description[kAudioAggregateDeviceIsPrivateKey] as? Bool == true)
-        #expect(description[kAudioAggregateDeviceTapAutoStartKey] as? Bool == true)
+        // A present, explicit false prevents restoring HAL's tap-dependent
+        // autostart path, which reproduced Zoom's AudioDeviceStart hang (#600).
+        #expect(description[kAudioAggregateDeviceTapAutoStartKey] as? Bool == false)
+        #expect(description[kAudioAggregateDeviceSubDeviceListKey] == nil)
 
         let taps = try #require(description[kAudioAggregateDeviceTapListKey] as? [[String: Any]])
+        #expect(taps.count == 1)
         let tap = try #require(taps.first)
         #expect(tap[kAudioSubTapUIDKey] as? String == "tap-uid")
         #expect(tap[kAudioSubTapDriftCompensationKey] as? Bool == true)

@@ -233,7 +233,6 @@ struct ModelsView: View {
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
-                .featureTourTarget(.bodhanFlexCard)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -1365,6 +1364,7 @@ struct ModelsView: View {
                         Text("Output").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                             .frame(width: 64, alignment: .leading)
                         MuesliSettingControl(controller: controller, id: "bodhan_output").frame(maxWidth: 220, alignment: .leading)
+                        .featureTourTarget(.bodhanFlexCard)
                         .disabled(incompatibilityReason != nil)
                         .help("Native script, mixed Indic and English scripts, or all Latin letters.")
                     }

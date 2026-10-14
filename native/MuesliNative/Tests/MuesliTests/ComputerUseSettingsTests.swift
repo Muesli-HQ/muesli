@@ -196,15 +196,18 @@ struct ComputerUseSettingsTests {
         #expect(h.applies == 0)
     }
 
-    @Test("planning budget spans requests and rejects a late write")
+    @Test("planning budget spans requests and rejects a late write", .timeLimit(.minutes(1)))
     func cumulativePlanning() async {
         let h = Harness()
+        // Exercise the injected cumulative clock without racing the real per-call
+        // watchdog when parallel CI tests keep the main actor busy.
+        let budget: TimeInterval = 3_600
         var time: TimeInterval = 0
         var calls = 0
         let result = await ComputerUseSettings.run(command: "Switch to notch", settings: [h.setting],
-            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: 10, now: { time }) { _, _ in
+            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: budget, now: { time }) { _, _ in
                 calls += 1
-                time += 6
+                time += budget * 0.6
                 return calls == 1
                     ? ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
                     : ("set_muesli_setting", #"{"setting":"indicator","value":"notch"}"#)
@@ -635,6 +638,38 @@ struct ComputerUseSettingsTests {
         }
         #expect(configStore.load().dictationHotkey == initial.dictationHotkey)
         #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
+    }
+
+    @Test("a disabled Computer Use shortcut can be repaired without changing Dictation or enabling Computer Use")
+    func repairDisabledComputerUseShortcut() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.dictationHotkey = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+        initial.computerUseHotkey = initial.dictationHotkey
+        initial.enableComputerUseHotkey = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+
+        #expect(!controller.updateComputerUseHotkeyEnabled(true).didUpdate)
+        // The Change button uses the shared settings path even with the toggle off.
+        let replacement = HotkeyConfig(keyCode: 61, label: "Right Option")
+        try await controller.applySetting("cua_hotkey", value: ShortcutAssignment.value(for: replacement))
+        let saved = configStore.load()
+        #expect(saved.computerUseHotkey == replacement)
+        #expect(saved.dictationHotkey == initial.dictationHotkey)
+        #expect(saved.enablePushToTalk == initial.enablePushToTalk)
+        #expect(!saved.enableComputerUseHotkey)
+        #expect(ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
+            currentHotkey: saved.computerUseHotkey, dictationHotkey: saved.dictationHotkey,
+            meetingRecordingHotkey: saved.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: saved.enableMeetingRecordingHotkey).result.didUpdate)
     }
 
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")

@@ -2,10 +2,51 @@ import Foundation
 import Testing
 import SwiftUI
 import AppKit
+import Vision
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Recording indicator style settings")
 struct RecordingIndicatorStyleTests {
+    @MainActor
+    @Test("Compact computer-use expansion renders bounded responses", arguments: [0, 3])
+    func compactToolResponses(count: Int) throws {
+        let results = ["Opened app", "Read page text", "Inspect page elements — needs approval"]
+            .prefix(count).compactMap { NotchToolResult(ComputerUseTraceEvent(kind: "tool_result", title: "Tool result", body: "Full tool response", compactSummary: $0, status: "executed")) }
+        let geometry = NotchIndicatorGeometry(cutout: CGRect(x: 200, y: 900, width: 180, height: 32), wingWidth: 110)
+        let frame = geometry.instructionFrame(in: CGRect(x: 0, y: 0, width: 1200, height: 900), resultCount: count)
+        let hosting = NSHostingView(rootView: NotchLiveInstructionView(
+            instruction: "Can you open Twitter on Google Chrome?", status: "Working…",
+            appName: "Instruction", appIcon: nil, accent: .blue, toolResults: results,
+            onCollapse: {}, onCancel: {}).frame(width: frame.width, height: frame.height))
+        let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: frame.width, height: frame.height),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        defer { window.close() }
+        hosting.layoutSubtreeIfNeeded()
+        let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        #expect(bitmap.pixelsHigh >= Int(frame.height))
+        // Read the rendered pixels so blank or clipped instruction/response/control text fails.
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        let cgImage = try #require(bitmap.cgImage)
+        try VNImageRequestHandler(cgImage: cgImage).perform([request])
+        let recognized = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        func words(_ text: String) -> String {
+            text.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+        }
+        let expected = ["Can you open Twitter on Google Chrome?", "Cancel"] + results.map(\.message)
+        for text in expected {
+            #expect(words(recognized).contains(words(text)), "Missing or clipped content: \(text); rendered: \(recognized)")
+        }
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("muesli-compact-tool-responses-\(count).png"))
+    }
+
     @MainActor
     @Test("Live instruction panel renders long text and review controls", arguments: [false, true])
     func liveInstructionPanel(review: Bool) throws {

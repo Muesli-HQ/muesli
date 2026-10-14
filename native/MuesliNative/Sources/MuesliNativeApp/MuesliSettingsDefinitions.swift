@@ -333,9 +333,9 @@ extension MuesliController {
         textMenu("recording_format", "Meeting recording format", MeetingRecordingFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.meetingRecordingFileFormat)
         textMenu("export_content", "Meeting export content", MeetingExportContent.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportMarkdownContent)
         textMenu("export_format", "Meeting export format", MeetingAutoExportFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportFileFormat)
-        add("upcoming_meetings", "Upcoming meetings window", UpcomingMeetingsWindow.allCases.map { .init(id: String($0.dayCount), label: $0.label) },
-            read: { String($0.upcomingMeetingsDayCount) }) { value in
-            if let count = Int(value) { self.updateUpcomingMeetingsWindow(dayCount: count) }
+        add("upcoming_meetings", "Upcoming meetings window", UpcomingMeetingsWindow.allCases.map { .init(id: $0.settingID, label: $0.label) },
+            read: { $0.upcomingMeetingsWindow.settingID }) { value in
+            if let window = UpcomingMeetingsWindow.fromSettingID(value) { self.updateUpcomingMeetingsWindow(window) }
         }
         add("dictation_fallback_model", "Hosted dictation fallback model", backends.filter(\.supportsHostedDictationFallback).map { .init(id: backendID($0), label: $0.label) },
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in

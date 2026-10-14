@@ -278,6 +278,25 @@ jobs:
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
+  # Dependency test targets are not executed by the application's test shards.
+  ai-elements:
+    needs: changes
+    if: needs.changes.outputs.native_or_packaging == 'true'
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test reusable chat components
+        run: swift test --package-path native/AIElementsSwift
+      - name: Verify generated icons
+        run: |
+          python3 native/AIElementsSwift/Scripts/generate_icons.py
+          git diff --exit-code -- native/AIElementsSwift/Sources/AIElementsSwift/AIIcon.swift
+
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
@@ -333,7 +352,7 @@ jobs:
   # This is the only required check in branch protection
   ci-gate:
     if: always()
-    needs: [changes, classifier-tests, build_release, test_shards, cli-smoke, update-flow]
+    needs: [changes, classifier-tests, build_release, test_shards, ai-elements, cli-smoke, update-flow]
     runs-on: ubuntu-latest
     steps:
       # A successful draft gate could otherwise be reused on the same SHA when
@@ -356,10 +375,11 @@ jobs:
              [[ "${{ needs.classifier-tests.result }}" == "success" ]] && \
              [[ "${{ needs.build_release.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.test_shards.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.ai-elements.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.cli-smoke.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.update-flow.result }}" =~ ^(success|skipped)$ ]]; then
-            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
           else
-            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
             exit 1
           fi

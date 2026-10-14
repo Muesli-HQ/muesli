@@ -826,7 +826,7 @@
     <tr><td>Progress bar</td><td>3pt blue bar at bottom, drains left-to-right over dismiss duration</td></tr>
     <tr><td>Fade in</td><td>0.25s alpha 0&rarr;1</td></tr>
     <tr><td>Fade out</td><td>0.2s alpha 1&rarr;0</td></tr>
-    <tr><td>Platform icons</td><td>Zoom (PNG), Google Meet (PNG) &mdash; 28&times;28pt, 8pt left offset</td></tr>
+    <tr><td>Platform icons</td><td>Zoom (PNG), Google Meet (PNG) &mdash; 26&times;26pt, 14pt left offset</td></tr>
     <tr><td>Chevron dropdown</td><td>NSMenu with "Join Only" + "Transcribe Only" &mdash; darker green (#2a9e74), 24pt wide</td></tr>
     <tr><td>No URL fallback</td><td>Single blue "Start Transcribing" button (126&times;30pt)</td></tr>
   </table>
@@ -1030,6 +1030,16 @@
     <tr><td>Waveform</td><td>Shrinks to remaining width before controls; right padding is 6pt per side, gaps 4pt. Instruction disclosure moves left.</td></tr>
     <tr><td>Clearance</td><td>32pt less coverage at the usual right edge. This is a fixed first pass, not live detection of the system mic indicator. Other display and menu-bar layouts need validation.</td></tr>
   </table>
+
+  <h3>Computer-Use Expansion</h3>
+  <p class="pattern-note">Center the expanded panel beneath the visible asymmetric bar, 16pt left of the camera center for the usual 110pt/78pt wings. Keep the camera gap fixed. Instruction text uses 13pt; up to three recent tool summaries use 10pt and at most two lines each. The panel starts at 100pt and adds 30pt per response, to 190pt. Summaries describe the operation and outcome (for example, “Read page text”); full responses, observations, and tool arguments remain in Timeline.</p>
+  <div class="component-preview" style="max-width:440px;background:#0e0e0e;color:white;padding:10px 18px;border-radius:0 0 18px 18px">
+    <div style="font-size:12px;color:rgba(255,255,255,.65)">Instruction</div>
+    <p style="font-size:13px;margin:6px 0">Can you open Twitter on Google Chrome?</p>
+    <div style="font-size:12px;border-top:1px solid #444;padding-top:6px">Working…</div>
+    <p style="font-size:10px;color:rgba(255,255,255,.75);margin-top:6px">✓ Opened app</p>
+    <p style="font-size:10px;color:rgba(255,255,255,.75);margin-top:6px">✓ Navigated to page</p>
+  </div>
 
   <h3>Provider Logos &amp; Sharing</h3>
   <p class="pattern-note">Provider marks occupy a consistent 32×32pt slot. Apple and the existing OpenAI vector use a 23pt primary-color mark; other provider assets use a 24pt image on a white 32pt badge with 8pt corners. Preserve original brand colors. Social sharing moves from the sidebar to About, retaining the existing word-milestone eligibility.</p>

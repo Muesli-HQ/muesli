@@ -67,6 +67,7 @@ struct RecordingIndicatorStylePicker: View {
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 12))
                 }
+                .featureTourTarget(style == .notch ? .recordingIndicatorStyle : nil)
                 .buttonStyle(.plain)
                 .accessibilityLabel(style.title)
                 .accessibilityValue(selection == style ? "Selected" : "Not selected")

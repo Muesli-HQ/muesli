@@ -3,12 +3,14 @@ import Foundation
 import MuesliCore
 
 final class CalendarMenuMeetingPayload: NSObject {
+    let event: UnifiedCalendarEvent
     let title: String
     let calendarOccurrence: CalendarOccurrenceReference
     let endDate: Date
     let autoStopSource: MeetingAutoStopSource?
 
     init(event: UnifiedCalendarEvent) {
+        self.event = event
         self.title = event.title
         self.calendarOccurrence = event.resolvedCalendarOccurrence
         self.endDate = event.endDate
@@ -297,11 +299,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let timeStr = "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
             let item = NSMenuItem(
                 title: "\(event.title)\n\(timeStr)",
-                action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)),
+                action: nil,
                 keyEquivalent: ""
             )
-            item.target = controller
-            item.representedObject = CalendarMenuMeetingPayload(event: event)
+            let payload = CalendarMenuMeetingPayload(event: event)
+            let actions = NSMenu()
+            let record = actionItem(title: "Record Meeting", action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)))
+            record.representedObject = payload
+            actions.addItem(record)
+            let hide = actionItem(title: "Hide from Muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
+            hide.representedObject = payload
+            hide.toolTip = "Hide this occurrence from Coming Up and reminders. The calendar event is not deleted."
+            actions.addItem(hide)
+            item.submenu = actions
 
             let titleAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 13, weight: .medium),
