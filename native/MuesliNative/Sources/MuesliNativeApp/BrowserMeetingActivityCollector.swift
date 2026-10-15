@@ -116,7 +116,9 @@ final class BrowserMeetingActivityCollector {
             }
         }
 
+        let axStartedAt = Date()
         let documentURLProbe = documentURLProbeProvider?(app) ?? axDocumentURLProbe(for: app)
+        let axMilliseconds = Int(Date().timeIntervalSince(axStartedAt) * 1_000)
         switch documentURLProbe {
         case .meeting(let normalized, let isFocused):
             return .meeting(normalized, isFocused: app.isActive && isFocused)
@@ -134,7 +136,12 @@ final class BrowserMeetingActivityCollector {
         guard shouldAttemptActiveTabFallback(app.bundleID) else {
             return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
         }
+        let tabStartedAt = Date()
         let activeTabResult = await activeTabURL(for: app)
+        let tabMilliseconds = Int(Date().timeIntervalSince(tabStartedAt) * 1_000)
+        if axMilliseconds + tabMilliseconds > Self.slowProbeThresholdMilliseconds {
+            fputs("[meeting-monitor] browser_probe_slow app=\(app.bundleID) ax_ms=\(axMilliseconds) tab_ms=\(tabMilliseconds) result=\(activeTabResult)\n", stderr)
+        }
         guard case .url(let url) = activeTabResult else {
             if case .timedOut = activeTabResult {
                 return observedFocusedNonMeetingDocumentURL ? .noMeeting : .inconclusive
@@ -191,6 +198,7 @@ final class BrowserMeetingActivityCollector {
 
     private func axDocumentURLProbe(for app: RunningAppSnapshot) -> BrowserDocumentURLProbeResult {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, Self.axMessagingTimeout)
         var observedFocusedNonMeetingDocumentURL = false
         var observedBackgroundNonMeetingDocumentURL = false
         var probedWindowIDs = Set<CFHashCode>()
@@ -282,6 +290,11 @@ final class BrowserMeetingActivityCollector {
         return await Self.activeTabURLViaScriptingBridge(for: app, deadline: Self.activeTabFallbackDeadline)
     }
 
+    private static let slowProbeThresholdMilliseconds = 1_000
+    /// Each Accessibility call to a browser may block this long. An unresponsive browser (Arc's
+    /// tree is large) otherwise holds every evaluation for seconds, and a prompt or a call-end
+    /// waits on the evaluation.
+    private static let axMessagingTimeout: Float = 0.4
     private static let activeTabFallbackDeadline: TimeInterval = 1.8
     private static let allTabsDeadline: TimeInterval = 3
     private static let appleEventTicksPerSecond = 60
