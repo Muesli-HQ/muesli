@@ -2064,7 +2064,7 @@ private extension View {
     }
 }
 
-private struct MarqueeTitleTextField: View {
+struct MarqueeTitleTextField: View {
     @Binding var text: String
     var titleSize: CGFloat = 30
     let onSubmit: () -> Void
@@ -2080,35 +2080,40 @@ private struct MarqueeTitleTextField: View {
     private var titleFont: Font { .system(size: titleSize, weight: .bold) }
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            TextField("Meeting Title", text: $text)
-                .font(titleFont)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .textFieldStyle(.plain)
-                .lineLimit(1)
-                .opacity(shouldShowMarquee ? 0 : 1)
-                .focused($isTitleFocused)
-                .onSubmit(onSubmit)
-                .onChange(of: text) { _, _ in
-                    onTextChange()
-                    restartMarqueeIfNeeded()
-                }
-                .onChange(of: isTitleFocused) { _, _ in
-                    restartMarqueeIfNeeded()
-                }
+        // The row's size comes from the clear base. The full-width marquee text lives in an
+        // overlay: inside the row it made a title wider than the pane widen the whole page.
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+            .overlay(alignment: .leading) {
+                ZStack(alignment: .leading) {
+                    TextField("Meeting Title", text: $text)
+                        .font(titleFont)
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1)
+                        .opacity(shouldShowMarquee ? 0 : 1)
+                        .focused($isTitleFocused)
+                        .onSubmit(onSubmit)
+                        .onChange(of: text) { _, _ in
+                            onTextChange()
+                            restartMarqueeIfNeeded()
+                        }
+                        .onChange(of: isTitleFocused) { _, _ in
+                            restartMarqueeIfNeeded()
+                        }
 
-            Text(text.isEmpty ? "Meeting Title" : text)
-                .font(titleFont)
-                .fontWeight(.bold)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .offset(x: marqueeOffset)
-                .opacity(shouldShowMarquee ? 1 : 0)
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-        .clipped()
+                    Text(text.isEmpty ? "Meeting Title" : text)
+                        .font(titleFont)
+                        .fontWeight(.bold)
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .offset(x: marqueeOffset)
+                        .opacity(shouldShowMarquee ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
+            }
+            .clipped()
         .contentShape(Rectangle())
         .background(
             GeometryReader { proxy in
