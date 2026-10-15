@@ -444,6 +444,8 @@ struct TranscriptionEngineArtifactsFilterTests {
         let cleaned = TranscriptionEngineArtifactsFilter.apply(to: segments)
         #expect(cleaned.map(\.text) == ["Hei alle", "Det er bra"])
         #expect(cleaned.map(\.start) == [1, 2])
+        #expect(cleaned.map(\.end) == [2, 3])
+        #expect(TranscriptionEngineArtifactsFilter.apply(to: [segments[0]]).isEmpty)
     }
 
     @Test("strips leaked prompt suffix from transcript")

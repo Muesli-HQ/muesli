@@ -862,7 +862,7 @@ actor WhisperCLITranscriber: AudioTranscribing {
             throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
         }
         let start = CFAbsoluteTimeGetCurrent()
-        // English-only `.en` checkpoints have no multilingual tokens — keep default DecodingOptions.
+        // English-only `.en` checkpoints have no multilingual tokens — keep default English language decoding.
         // Multilingual variants need detectLanguage; WhisperKit defaults otherwise force English.
         let decodeOptions: DecodingOptions
         if modelName.hasSuffix(".en") {
