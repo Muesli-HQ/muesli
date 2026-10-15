@@ -1868,4 +1868,16 @@ struct MeetingSummaryClientTests {
 
         #expect(title == nil)
     }
+
+    @Test("a recording with no transcript and no notes has nothing to summarize")
+    func emptyRecordingHasNothingToSummarize() {
+        #expect(MeetingSummaryClient.hasNothingToSummarize(transcript: "", manualNotes: nil))
+        #expect(MeetingSummaryClient.hasNothingToSummarize(transcript: " \n", manualNotes: "  "))
+    }
+
+    @Test("typed notes or any transcript text still get a summary")
+    func recordingWithContentIsSummarized() {
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "[00:01] You: hello", manualNotes: nil))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "", manualNotes: "agenda"))
+    }
 }
