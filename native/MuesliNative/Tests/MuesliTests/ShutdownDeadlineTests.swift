@@ -15,10 +15,13 @@ struct ShutdownDeadlineTests {
     @Test("work that never finishes is abandoned at the deadline")
     func abandonsStuckWork() async {
         let started = Date()
+        let stuck = StuckWork()
         let finished = await ShutdownDeadline.run(seconds: 0.2) {
             // Ignores cancellation, like a job blocked on something that never answers.
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            await stuck.park()
         }
+        // The deadline abandoned the job; resume it so the test leaves no suspended task behind.
+        stuck.release()
         #expect(!finished)
         let elapsed = Date().timeIntervalSince(started)
         #expect(elapsed >= 0.2 && elapsed < 2)
@@ -31,5 +34,27 @@ struct ShutdownDeadlineTests {
         }
         #expect(!finished)
         try? await Task.sleep(nanoseconds: 200_000_000)
+    }
+}
+
+/// Holds a job suspended until the test releases it.
+private final class StuckWork: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func park() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func release() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
     }
 }
