@@ -222,7 +222,8 @@ enum MeetingURLNormalizer {
         case .googleMeet, .slack, .facetime:
             return normalized
         case .zoom:
-            return url.hasPrefix("zoom.us/j/") ? normalized : nil
+            // The identity keeps the subdomain (us02web.zoom.us/j/...), so match the /j/ room path.
+            return url.contains("/j/") ? normalized : nil
         case .teams:
             return ["/meetup-join/", "/meet/", "pre-join"].contains { url.contains($0) } ? normalized : nil
         case .webex:
