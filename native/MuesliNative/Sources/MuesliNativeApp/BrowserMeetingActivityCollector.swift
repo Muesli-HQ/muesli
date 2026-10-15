@@ -295,6 +295,18 @@ final class BrowserMeetingActivityCollector {
             return nil
         }
 
+        // Without consent every event fails, and an event that waits on the dialog times out
+        // before anyone can answer it. Ask once with no deadline and skip the lookup until then.
+        switch BrowserAutomationPermission.state(bundleID: app.bundleID) {
+        case .granted, .unavailable:
+            break
+        case .undetermined:
+            BrowserAutomationPermission.requestOnce(bundleID: app.bundleID)
+            return nil
+        case .denied:
+            return nil
+        }
+
         let errorDelegate = BrowserScriptingBridgeErrorDelegate()
         browser.delegate = errorDelegate
         // SBApplication.timeout is in Apple Event ticks (1/60 s). Keep the

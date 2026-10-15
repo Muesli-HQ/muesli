@@ -386,7 +386,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>NSMicrophoneUsageDescription</key>
   <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>$APP_DISPLAY_NAME reads the address of your browser tab to recognize which online meeting you are in.</string>
+  <string>$APP_DISPLAY_NAME reads the address of your active browser tab to recognize which online meeting you are in, so it can match the call to your calendar event for the meeting title and speaker names. This is optional: if you choose Don't Allow, recording still works and meetings are named by time.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>
