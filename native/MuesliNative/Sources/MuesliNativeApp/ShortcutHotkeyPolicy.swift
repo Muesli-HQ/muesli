@@ -80,14 +80,15 @@ struct ShortcutHotkeyPolicy {
     static func validateQuilHotkey(
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
+        additionalDictationHotkeys: [HotkeyConfig] = [],
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig,
         isMeetingRecordingEnabled: Bool
     ) -> ShortcutHotkeyUpdateResult {
         guard isValidQuilShortcut(hotkey) else { return .conflict(message: quilKeyCountMessage) }
-        if hotkeysConflict(hotkey, dictationHotkey) {
-            return conflict(with: "Dictation", hotkey: dictationHotkey)
+        if let owner = ([dictationHotkey] + additionalDictationHotkeys).first(where: { hotkeysConflict(hotkey, $0) }) {
+            return conflict(with: "Dictation", hotkey: owner)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
@@ -131,6 +132,7 @@ struct ShortcutHotkeyPolicy {
 
     static func validateDictationHotkey(
         _ hotkey: HotkeyConfig,
+        otherDictationHotkeys: [HotkeyConfig] = [],
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
@@ -138,6 +140,9 @@ struct ShortcutHotkeyPolicy {
     ) -> ShortcutHotkeyUpdateResult {
         guard hotkey.isValidDictationShortcut else {
             return .conflict(message: dictationShortcutMessage)
+        }
+        if let owner = otherDictationHotkeys.first(where: { hotkeysConflict(hotkey, $0) }) {
+            return conflict(with: "Dictation", hotkey: owner)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
@@ -151,12 +156,13 @@ struct ShortcutHotkeyPolicy {
     static func validateComputerUseHotkey(
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
+        additionalDictationHotkeys: [HotkeyConfig] = [],
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
-        if hotkeysConflict(hotkey, dictationHotkey) {
-            return conflict(with: "Dictation", hotkey: dictationHotkey)
+        if let owner = ([dictationHotkey] + additionalDictationHotkeys).first(where: { hotkeysConflict(hotkey, $0) }) {
+            return conflict(with: "Dictation", hotkey: owner)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
@@ -167,11 +173,12 @@ struct ShortcutHotkeyPolicy {
     static func validateMeetingRecordingHotkey(
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
+        additionalDictationHotkeys: [HotkeyConfig] = [],
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool
     ) -> ShortcutHotkeyUpdateResult {
-        if hotkeysConflict(hotkey, dictationHotkey) {
-            return conflict(with: "Dictation", hotkey: dictationHotkey)
+        if let owner = ([dictationHotkey] + additionalDictationHotkeys).first(where: { hotkeysConflict(hotkey, $0) }) {
+            return conflict(with: "Dictation", hotkey: owner)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
@@ -199,14 +206,16 @@ struct ShortcutHotkeyPolicy {
     static func resolvedComputerUseHotkeyWhenEnabling(
         currentHotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
+        additionalDictationHotkeys: [HotkeyConfig] = [],
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> (hotkey: HotkeyConfig, result: ShortcutHotkeyUpdateResult) {
         (currentHotkey, validateComputerUseHotkey(
             currentHotkey,
             dictationHotkey: dictationHotkey,
-            isComputerUseEnabled: true,
-            meetingRecordingHotkey: meetingRecordingHotkey,
+                additionalDictationHotkeys: additionalDictationHotkeys,
+                isComputerUseEnabled: true,
+                meetingRecordingHotkey: meetingRecordingHotkey,
             isMeetingRecordingEnabled: isMeetingRecordingEnabled
         ))
     }

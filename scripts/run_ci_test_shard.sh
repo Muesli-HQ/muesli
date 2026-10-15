@@ -55,6 +55,8 @@ case "${shard}" in
       StandardMenuShortcutTests
       MeetingChunkCollectorTests
       AppConfigTests
+      MultipleDictationShortcutConfigTests
+      MultipleDictationShortcutControllerTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
@@ -104,6 +106,7 @@ case "${shard}" in
       OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      DictationHotkeyGroupTests
       PushToTalkEnablementPolicyTests
       ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
