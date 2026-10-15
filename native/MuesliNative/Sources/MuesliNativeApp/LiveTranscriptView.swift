@@ -150,18 +150,40 @@ final class LiveTranscriptPresentationModel {
 /// New captions pull the panel to the bottom only while the reader is already there. Once they
 /// scroll up the panel stays put, and it follows again when they return to the bottom.
 struct LiveTranscriptFollowState: Equatable {
-    /// True at first render, before any bottom marker has been seen.
+    /// True at first render, before any bottom marker has been measured.
     private(set) var isAtBottom = true
+
+    /// How far below the visible area the marker may sit and still count as the bottom.
+    static let bottomTolerance: CGFloat = 24
 
     var shouldFollowNewContent: Bool { isAtBottom }
 
-    mutating func noteBottomMarker(visible: Bool) {
-        isAtBottom = visible
+    /// `markerMinY` is the marker's top edge in the scroll view's space. A lazy stack keeps rows
+    /// loaded below the visible area, so whether the marker exists says nothing about whether
+    /// the reader can see it. An unloaded marker reports `.infinity`.
+    mutating func noteBottomMarker(markerMinY: CGFloat, viewportHeight: CGFloat) {
+        guard viewportHeight > 0 else { return }
+        isAtBottom = markerMinY <= viewportHeight + Self.bottomTolerance
+    }
+}
+
+private struct LiveTranscriptMarkerMinYKey: PreferenceKey {
+    static let defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct LiveTranscriptViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
 struct LiveTranscriptFeedView: View {
     static let bottomAnchorID = "liveTranscriptBottom"
+    static let scrollSpace = "liveTranscriptScroll"
 
     let messages: [TranscriptChatMessage]
     let partialYou: String
@@ -170,8 +192,9 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
-    /// Reports whether the marker after the last caption is on screen.
-    var onBottomVisibilityChange: ((Bool) -> Void)? = nil
+    /// Reports the top edge of the marker after the last caption, in the scroll space named
+    /// `LiveTranscriptFeedView.scrollSpace`. Reports `.infinity` while the marker is not loaded.
+    var onBottomMarkerChange: ((CGFloat) -> Void)? = nil
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,10 +246,17 @@ struct LiveTranscriptFeedView: View {
                 Color.clear
                     .frame(height: 1)
                     .id(Self.bottomAnchorID)
-                    .onAppear { onBottomVisibilityChange?(true) }
-                    .onDisappear { onBottomVisibilityChange?(false) }
+                    .background {
+                        GeometryReader { marker in
+                            Color.clear.preference(
+                                key: LiveTranscriptMarkerMinYKey.self,
+                                value: marker.frame(in: .named(Self.scrollSpace)).minY
+                            )
+                        }
+                    }
             }
         }
+        .onPreferenceChange(LiveTranscriptMarkerMinYKey.self) { onBottomMarkerChange?($0) }
         .padding(.horizontal, horizontalPadding)
         .padding(.top, topPadding)
         .padding(.bottom, bottomPadding)
@@ -241,6 +271,8 @@ struct LiveTranscriptView: View {
     var partialOthers: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var follow = LiveTranscriptFollowState()
+    @State private var markerMinY: CGFloat = .infinity
+    @State private var viewportHeight: CGFloat = 0
     @State private var didCopy = false
 
     private var copyText: String {
@@ -262,9 +294,25 @@ struct LiveTranscriptView: View {
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
                         bottomPadding: MuesliTheme.spacing8,
-                        onBottomVisibilityChange: { follow.noteBottomMarker(visible: $0) }
+                        onBottomMarkerChange: {
+                            markerMinY = $0
+                            follow.noteBottomMarker(markerMinY: $0, viewportHeight: viewportHeight)
+                        }
                     )
                     .textSelection(.enabled)
+                }
+                .coordinateSpace(name: LiveTranscriptFeedView.scrollSpace)
+                .background {
+                    GeometryReader { viewport in
+                        Color.clear.preference(
+                            key: LiveTranscriptViewportHeightKey.self,
+                            value: viewport.size.height
+                        )
+                    }
+                }
+                .onPreferenceChange(LiveTranscriptViewportHeightKey.self) {
+                    viewportHeight = $0
+                    follow.noteBottomMarker(markerMinY: markerMinY, viewportHeight: $0)
                 }
                 .onChange(of: transcript) { _, newTranscript in
                     // Decided before the new lines lay out: the marker is still on screen if the

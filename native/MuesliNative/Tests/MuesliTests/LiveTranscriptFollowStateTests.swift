@@ -8,19 +8,40 @@ struct LiveTranscriptFollowStateTests {
         #expect(LiveTranscriptFollowState().shouldFollowNewContent)
     }
 
-    @Test("scrolling up stops the panel from pulling the reader down")
-    func scrollingUpStopsFollowing() {
+    @Test("a marker inside the visible area follows")
+    func markerInsideViewportFollows() {
         var state = LiveTranscriptFollowState()
-        state.noteBottomMarker(visible: true)
-        state.noteBottomMarker(visible: false)
+        state.noteBottomMarker(markerMinY: 380, viewportHeight: 400)
+        #expect(state.shouldFollowNewContent)
+    }
+
+    @Test("a small scroll up leaves the marker loaded below the screen and stops following")
+    func loadedButOffscreenMarkerStopsFollowing() {
+        var state = LiveTranscriptFollowState()
+        state.noteBottomMarker(markerMinY: 380, viewportHeight: 400)
+        state.noteBottomMarker(markerMinY: 460, viewportHeight: 400)
+        #expect(!state.shouldFollowNewContent)
+    }
+
+    @Test("a marker that is not loaded stops following")
+    func unloadedMarkerStopsFollowing() {
+        var state = LiveTranscriptFollowState()
+        state.noteBottomMarker(markerMinY: .infinity, viewportHeight: 400)
         #expect(!state.shouldFollowNewContent)
     }
 
     @Test("returning to the bottom resumes following")
     func returningToTheBottomResumes() {
         var state = LiveTranscriptFollowState()
-        state.noteBottomMarker(visible: false)
-        state.noteBottomMarker(visible: true)
+        state.noteBottomMarker(markerMinY: 900, viewportHeight: 400)
+        state.noteBottomMarker(markerMinY: 400, viewportHeight: 400)
+        #expect(state.shouldFollowNewContent)
+    }
+
+    @Test("an unmeasured viewport changes nothing")
+    func unmeasuredViewportIsIgnored() {
+        var state = LiveTranscriptFollowState()
+        state.noteBottomMarker(markerMinY: 900, viewportHeight: 0)
         #expect(state.shouldFollowNewContent)
     }
 }
