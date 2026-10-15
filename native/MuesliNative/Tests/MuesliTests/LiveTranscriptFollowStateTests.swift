@@ -44,4 +44,13 @@ struct LiveTranscriptFollowStateTests {
         state.noteBottomMarker(markerMinY: 900, viewportHeight: 0)
         #expect(state.shouldFollowNewContent)
     }
+
+    @Test("a growing tail scrolls a follower, a cleared or whitespace-only tail does not")
+    func tailChangeDecidesWhetherToScroll() {
+        #expect(LiveTranscriptFollowState.tailChanged(from: "", to: "hello"))
+        #expect(LiveTranscriptFollowState.tailChanged(from: "hello", to: "hello there"))
+        #expect(!LiveTranscriptFollowState.tailChanged(from: "hello", to: " hello "))
+        #expect(!LiveTranscriptFollowState.tailChanged(from: "hello", to: ""))
+        #expect(!LiveTranscriptFollowState.tailChanged(from: "", to: "  "))
+    }
 }

@@ -158,6 +158,13 @@ struct LiveTranscriptFollowState: Equatable {
 
     var shouldFollowNewContent: Bool { isAtBottom }
 
+    /// A provisional tail that is non-empty and differs from the last one. Only then does a
+    /// follower scroll: whitespace-only churn and a tail that went empty need no scroll.
+    static func tailChanged(from old: String, to new: String) -> Bool {
+        let trimmedNew = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedNew.isEmpty && trimmedNew != old.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// `markerMinY` is the marker's top edge in the scroll view's space. A lazy stack keeps rows
     /// loaded below the visible area, so whether the marker exists says nothing about whether
     /// the reader can see it. An unloaded marker reports `.infinity`.
@@ -330,10 +337,9 @@ struct LiveTranscriptView: View {
                         }
                     }
                 }
-                // Partials update every engine chunk; scrolling on each growth
-                // would yank a user who scrolled up back to the bottom every few
-                // seconds. Scroll only when a tail appears (empty → non-empty);
-                // committed captions keep their existing scroll behavior.
+                // A reader at the bottom follows a growing tail, which keeps the new lines from
+                // pushing the marker out of view and ending the follow. A reader who scrolled up
+                // is left alone: the follow decision is read before the new lines lay out.
                 .onChange(of: partialYou) { old, new in
                     let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
@@ -341,9 +347,7 @@ struct LiveTranscriptView: View {
                         partialYou: new,
                         partialOthers: partialOthers
                     )
-                    if followsNewLines,
-                       old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if followsNewLines, LiveTranscriptFollowState.tailChanged(from: old, to: new) {
                         scrollToBottom(proxy)
                     }
                 }
@@ -354,9 +358,7 @@ struct LiveTranscriptView: View {
                         partialYou: partialYou,
                         partialOthers: new
                     )
-                    if followsNewLines,
-                       old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if followsNewLines, LiveTranscriptFollowState.tailChanged(from: old, to: new) {
                         scrollToBottom(proxy)
                     }
                 }
