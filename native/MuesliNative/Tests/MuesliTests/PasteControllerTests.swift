@@ -641,7 +641,12 @@ struct PasteControllerTests {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
-        try await Task.sleep(nanoseconds: 150_000_000)
+        // Timeout and paste dispatch use separate main-queue callbacks. Wait for
+        // completion while the reader remains blocked, allowing for CI load.
+        let completionDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while finished == 0, ContinuousClock.now < completionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(commands == 1)
         #expect(finished == 1)
         #expect(events.contains(.clipboardSnapshotTimedOut))
