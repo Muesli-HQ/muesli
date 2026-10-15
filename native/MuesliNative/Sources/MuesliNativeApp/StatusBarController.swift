@@ -35,11 +35,29 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         build()
     }
 
-    func setStatus(_ text: String) {}
+    /// Dictation changes state without a menu rebuild, so the recording dot follows it here.
+    func setStatus(_ text: String) {
+        applyIcon()
+    }
 
     func refresh() {
         rebuildMenu()
         updateMenuBarTitle()
+        applyIcon()
+    }
+
+    /// The menu bar mark, with a red dot while a meeting or dictation is recording, and the same dot
+    /// on the Dock icon.
+    private func applyIcon() {
+        guard let button = statusItem.button else { return }
+        let recording = controller.isRecordingIndicatorActive
+        let base = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+        if recording, let base {
+            button.image = MenuBarIconRenderer.withRecordingDot(base)
+        } else {
+            button.image = base
+        }
+        DockRecordingIndicator.update(isRecording: recording)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -52,7 +70,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func refreshIcon() {
-        statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+        applyIcon()
         updateMenuBarTitle()
     }
 
@@ -92,10 +110,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func build() {
         if let button = statusItem.button {
-            button.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
             button.imageScaling = .scaleProportionallyDown
             button.toolTip = AppIdentity.displayName
         }
+        applyIcon()
         rebuildMenu()
         updateMenuBarTitle()
         statusItem.menu = menu
