@@ -2083,7 +2083,7 @@ struct MarqueeTitleTextField: View {
         // The row's size comes from the clear base. The full-width marquee text lives in an
         // overlay: inside the row it made a title wider than the pane widen the whole page.
         Color.clear
-            .frame(maxWidth: .infinity, minHeight: 38)
+            .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
             .overlay(alignment: .leading) {
                 ZStack(alignment: .leading) {
                     TextField("Meeting Title", text: $text)
