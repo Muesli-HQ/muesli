@@ -54,3 +54,78 @@ targets:
         # incremental Build & Run but doesn't survive being copied out of
         # DerivedData into a standalone bundle by build_native_app.sh.
         ENABLE_DEBUG_DYLIB: NO
+
+  # Dedicated non-shipping application host for visual UI tests. This target
+  # intentionally does not replace or alter the production intermediate app
+  # above; it has its own identity, support directory, plist gate, and local
+  # ad-hoc signature suitable for an Xcode UI-test runner.
+  MuesliVisualTestHost:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.2"
+    sources:
+      - path: VisualTestHost
+      # Match the visual resources needed by the host without changing the
+      # production packaging/staging path.
+      - path: ../../assets/muesli.icns
+        buildPhase: resources
+      - path: ../../assets/muesli_app_icon.png
+        buildPhase: resources
+      - path: ../../assets/fonts
+        buildPhase: resources
+    dependencies:
+      - package: MuesliNative
+        product: MuesliNativeAppCore
+    settings:
+      base:
+        PRODUCT_NAME: MuesliVisualTestHost
+        PRODUCT_BUNDLE_IDENTIFIER: com.muesli.visual-test-host
+        INFOPLIST_FILE: VisualTestHost/Info.plist
+        MARKETING_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.2"
+        OTHER_SWIFT_FLAGS: -parse-as-library
+        LD_RUNPATH_SEARCH_PATHS: "@loader_path @executable_path/../Frameworks"
+        ENABLE_DEBUG_DYLIB: NO
+        # UI testing requires a launchable, isolated app bundle. Do not carry
+        # production signing, entitlements, or release settings into this host.
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+
+  MuesliVisualE2ETests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.2"
+    sources:
+      - path: VisualE2ETests
+    dependencies:
+      - target: MuesliVisualTestHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.muesli.visual-test-host.e2e
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: MuesliVisualTestHost
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.2"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+
+schemes:
+  MuesliVisualTests:
+    management:
+      shared: true
+    build:
+      targets:
+        MuesliVisualTestHost: all
+        MuesliVisualE2ETests: [test]
+    test:
+      config: Debug
+      targets:
+        - name: MuesliVisualE2ETests
+          parallelizable: false
+      environmentVariables:
+        MUESLI_VISUAL_TESTS: "1"

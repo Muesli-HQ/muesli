@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "verification": "unverified",
+  "baseline_id": null,
+  "reason": "Vorflux has not yet verified a disposable credential-free Apple Silicon macOS desktop worker with an unlocked Aqua session, screenshot authorization, macOS XCUITest support, and the exact macOS/Xcode/display renderer profile required for stable baselines.",
+  "expected": {
+    "architecture": null,
+    "macos_version": null,
+    "macos_build": null,
+    "xcode_version": null,
+    "xcode_build": null,
+    "display": null,
+    "scale": null,
+    "color_space": null,
+    "locale": null,
+    "calendar": null,
+    "time_zone": null,
+    "appearance": null
+  }
+}

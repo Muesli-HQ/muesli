@@ -113,6 +113,17 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
             ]
         ),
+        .testTarget(
+            name: "MuesliSnapshotTests",
+            dependencies: [
+                "MuesliNativeApp",
+                "MuesliCore",
+            ],
+            path: "Tests/MuesliSnapshotTests",
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+            ]
+        ),
     ],
     cxxLanguageStandard: .cxx17
 )

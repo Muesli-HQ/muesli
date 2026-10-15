@@ -409,6 +409,7 @@ struct SettingsView: View {
 
                     settingsPanePicker
                     paneContent
+                        .accessibilityIdentifier("settings.pane.\(selectedPane.rawValue)")
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
             .padding(.top, MuesliTheme.pageTop)
@@ -697,6 +698,7 @@ struct SettingsView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 760)
+            .accessibilityIdentifier("settings.pane.picker")
             Spacer()
         }
     }

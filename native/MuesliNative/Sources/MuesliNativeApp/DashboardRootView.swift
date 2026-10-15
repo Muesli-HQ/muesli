@@ -96,6 +96,7 @@ struct DashboardRootView: View {
             }
         }
         .tint(MuesliTheme.accent)
+        .accessibilityIdentifier("dashboard.root")
         .frame(
             minWidth: DashboardWindowLayout.minimumContentWidth,
             minHeight: DashboardWindowLayout.minimumContentHeight
