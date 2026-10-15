@@ -227,7 +227,7 @@ enum MeetingURLNormalizer {
         case .teams:
             return ["/meetup-join/", "/meet/", "pre-join"].contains { url.contains($0) } ? normalized : nil
         case .webex:
-            return ["/meet/", "/join"].contains { url.contains($0) } ? normalized : nil
+            return ["/meet/", "/join", "/j.php"].contains { url.contains($0) } ? normalized : nil
         default:
             return nil
         }

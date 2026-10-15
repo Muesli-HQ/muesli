@@ -130,6 +130,7 @@ struct BrowserMeetingActivityCollectorTests {
             "https://us02web.zoom.us/j/81234567890?pwd=abc",
             "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc/0",
             "https://teams.live.com/meet/9312345678901",
+            "https://acme.webex.com/acme/j.php?MTID=m1234abcd",
         ]
         let notRooms = [
             "https://admin.teams.microsoft.com/dashboard",
@@ -139,6 +140,40 @@ struct BrowserMeetingActivityCollectorTests {
         ]
         #expect(rooms.allSatisfy { MeetingURLNormalizer.normalizeRoom($0) != nil })
         #expect(notRooms.allSatisfy { MeetingURLNormalizer.normalizeRoom($0) == nil })
+    }
+
+    @Test("a slow tab scan keeps the call it found before instead of reporting no meeting")
+    func slowTabScanKeepsTheCachedCall() async {
+        var tabs: [String]? = ["https://meet.google.com/qfm-jwnh-ret"]
+        let collector = BrowserMeetingActivityCollector(
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in tabs }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        tabs = nil
+        let slow = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        tabs = []
+        let empty = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(2),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+
+        #expect(first.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(slow.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(empty.isEmpty)
     }
 
     @Test("a browser that is not using the mic is not searched tab by tab")

@@ -19,7 +19,7 @@ final class BrowserMeetingActivityCollector {
     private let activeTabURLProviderOverride: ((RunningAppSnapshot) -> String?)?
     private let activeTabProbeResultProvider: ((RunningAppSnapshot) -> BrowserActiveTabProbeResult)?
     private let activeTabFallbackEnabled: Bool
-    private let allTabURLsProvider: ((RunningAppSnapshot) -> [String])?
+    private let allTabURLsProvider: ((RunningAppSnapshot) -> [String]?)?
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
     private var activeTabFallbacksAwaitingFreshResult: Set<String> = []
 
@@ -30,7 +30,7 @@ final class BrowserMeetingActivityCollector {
         activeTabURLProvider: ((RunningAppSnapshot) -> String?)? = nil,
         activeTabProbeResultProvider: ((RunningAppSnapshot) -> BrowserActiveTabProbeResult)? = nil,
         activeTabFallbackEnabled: Bool = true,
-        allTabURLsProvider: ((RunningAppSnapshot) -> [String])? = nil
+        allTabURLsProvider: ((RunningAppSnapshot) -> [String]?)? = nil
     ) {
         self.allTabURLsProvider = allTabURLsProvider
         self.cachedMeetingTTL = cachedMeetingTTL
@@ -140,7 +140,8 @@ final class BrowserMeetingActivityCollector {
         let activeTabResult = await activeTabURL(for: app)
         let tabMilliseconds = Int(Date().timeIntervalSince(tabStartedAt) * 1_000)
         if axMilliseconds + tabMilliseconds > Self.slowProbeThresholdMilliseconds {
-            fputs("[meeting-monitor] browser_probe_slow app=\(app.bundleID) ax_ms=\(axMilliseconds) tab_ms=\(tabMilliseconds) result=\(activeTabResult)\n", stderr)
+            // The result's case only: an unrelated tab's URL can carry tokens or private search text.
+            fputs("[meeting-monitor] browser_probe_slow app=\(app.bundleID) ax_ms=\(axMilliseconds) tab_ms=\(tabMilliseconds) result=\(activeTabResult.logLabel)\n", stderr)
         }
         guard case .url(let url) = activeTabResult else {
             if case .timedOut = activeTabResult {
@@ -151,20 +152,29 @@ final class BrowserMeetingActivityCollector {
         guard let normalized = MeetingURLNormalizer.normalize(url) else {
             // The browser holds the mic or camera but the front tab is something else: the call
             // is in a background tab or another window.
-            guard scansAllTabs, let background = await meetingURLInAnyTab(for: app) else { return .noMeeting }
-            return .meeting(background, isFocused: false)
+            guard scansAllTabs else { return .noMeeting }
+            switch await meetingURLInAnyTab(for: app) {
+            case .found(let background):
+                return .meeting(background, isFocused: false)
+            case .noCall:
+                return .noMeeting
+            case .timedOut:
+                return observedFocusedNonMeetingDocumentURL ? .noMeeting : .inconclusive
+            }
         }
         return .meeting(normalized, isFocused: app.isActive)
     }
 
-    private func meetingURLInAnyTab(for app: RunningAppSnapshot) async -> NormalizedMeetingURL? {
-        let urls: [String]
+    private func meetingURLInAnyTab(for app: RunningAppSnapshot) async -> BackgroundTabScanResult {
+        let scanned: [String]?
         if let allTabURLsProvider {
-            urls = allTabURLsProvider(app)
+            scanned = allTabURLsProvider(app)
         } else {
-            urls = await Self.allTabURLsViaScriptingBridge(for: app, deadline: Self.allTabsDeadline)
+            scanned = await Self.allTabURLsViaScriptingBridge(for: app, deadline: Self.allTabsDeadline)
         }
-        return urls.lazy.compactMap { MeetingURLNormalizer.normalizeRoom($0) }.first
+        guard let urls = scanned else { return .timedOut }
+        guard let room = urls.lazy.compactMap({ MeetingURLNormalizer.normalizeRoom($0) }).first else { return .noCall }
+        return .found(room)
     }
 
     private func pruneCache(runningBrowserIDs: Set<String>, now: Date) {
@@ -322,14 +332,15 @@ final class BrowserMeetingActivityCollector {
 
     /// Every tab URL in every window. The browser's "front window" is not always the one the user
     /// is looking at, and a call can sit in a background tab.
-    private static func allTabURLsViaScriptingBridge(for app: RunningAppSnapshot, deadline: TimeInterval) async -> [String] {
+    /// `nil` means the deadline passed before the browser answered.
+    private static func allTabURLsViaScriptingBridge(for app: RunningAppSnapshot, deadline: TimeInterval) async -> [String]? {
         await withCheckedContinuation { continuation in
             let completion = BrowserTabListCompletion(continuation)
             DispatchQueue.global(qos: .utility).async {
                 completion.resume(Self.allTabURLsViaScriptingBridgeSync(for: app))
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + deadline) {
-                completion.resume([])
+                completion.resume(nil)
             }
         }
     }
@@ -432,6 +443,22 @@ enum BrowserActiveTabProbeResult {
     case url(String)
     case noURL
     case timedOut
+
+    /// The case name without the URL, safe to write to a log.
+    var logLabel: String {
+        switch self {
+        case .url: "url"
+        case .noURL: "noURL"
+        case .timedOut: "timedOut"
+        }
+    }
+}
+
+/// A slow scan is not proof that no call exists, so a timeout stays apart from an empty result.
+enum BackgroundTabScanResult: Equatable {
+    case found(NormalizedMeetingURL)
+    case noCall
+    case timedOut
 }
 
 private struct CachedBrowserMeeting {
@@ -447,13 +474,13 @@ private final class BrowserScriptingBridgeErrorDelegate: NSObject, SBApplication
 
 private final class BrowserTabListCompletion: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<[String], Never>?
+    private var continuation: CheckedContinuation<[String]?, Never>?
 
-    init(_ continuation: CheckedContinuation<[String], Never>) {
+    init(_ continuation: CheckedContinuation<[String]?, Never>) {
         self.continuation = continuation
     }
 
-    func resume(_ value: [String]) {
+    func resume(_ value: [String]?) {
         lock.lock()
         let continuation = continuation
         self.continuation = nil
