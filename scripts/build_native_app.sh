@@ -385,6 +385,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>$APP_DISPLAY_NAME reads the address of your browser tab to recognize which online meeting you are in.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>
