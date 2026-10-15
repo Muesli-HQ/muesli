@@ -8,7 +8,8 @@ struct TranscriptionEngineArtifactsFilter {
         #"(?i)\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|silence|inaudible|music|applause|laughter|screaming|cheering)\s*\]"#,
         #"(?i)[\[(<]\s*(?:speaking\s+in\s+)?(?:a\s+)?foreign\s+language\s*[\])>]"#,
         #"(?i)<\s*(?:eou|eob|unk|blank|pad)\s*>"#,
-        #"(?i)<\|\s*(?:endoftext|nospeech|notimestamp|nodiarize|noitn|pnc|startofcontext|startoftranscript)\s*\|>"#,
+        // Any `<|...|>` control token (Whisper/Cohere), e.g. `<|nocaptions|>`, `<|nospeech|>`, `<|no|>`.
+        #"<\|[^|<>]*\|>"#,
     ]
 
     private static let promptLeakPatterns: [String] = [
@@ -41,6 +42,16 @@ struct TranscriptionEngineArtifactsFilter {
         }
 
         return stripPromptLeakage(from: stripped)
+    }
+
+    /// Applies `apply(_:)` to each segment's text and drops segments left empty.
+    /// Meeting transcripts are built from segments, so they need the same cleanup as the joined text.
+    static func apply(to segments: [SpeechSegment]) -> [SpeechSegment] {
+        segments.compactMap { segment in
+            let text = apply(segment.text)
+            guard !text.isEmpty else { return nil }
+            return text == segment.text ? segment : SpeechSegment(start: segment.start, end: segment.end, text: text)
+        }
     }
 
     private static func stripPromptLeakage(from text: String) -> String {
