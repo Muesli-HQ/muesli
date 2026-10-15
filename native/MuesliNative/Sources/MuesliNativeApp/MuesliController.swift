@@ -1034,8 +1034,13 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// The step `shutdown()` is in, so a quit that overruns its deadline can say what it waited on.
+    private(set) var shutdownStep = "not started"
+
     func cancelMeetingRetranscriptionsForShutdown() async {
         isShuttingDown = true
+        shutdownStep = "retranscription tasks"
+
         // Suspend asynchronously (never block the main thread) until retry
         // cancellation and its deferred state cleanup finish. Do this before
         // tearing down any shared resources those jobs may still access.
@@ -1084,6 +1089,7 @@ public final class MuesliController: NSObject {
         pendingComputerUseStopStartedAt = nil
         let attendeePersistenceTasks = calendarAttendeePersistenceTasks.values.map(\.task)
         calendarAttendeePersistenceTasks.removeAll()
+        shutdownStep = "calendar attendee persistence"
         for task in attendeePersistenceTasks {
             _ = await task.value
         }
@@ -1111,8 +1117,11 @@ public final class MuesliController: NSObject {
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
+        shutdownStep = "iCloud sync engine"
         await syncEngineCancellationTask?.value
+        shutdownStep = "transcription coordinator"
         await transcriptionCoordinator.shutdown()
+        shutdownStep = "finished"
         indicator.close()
         CoreAudioSystemRecorder.cleanupStaleDevices()
     }
