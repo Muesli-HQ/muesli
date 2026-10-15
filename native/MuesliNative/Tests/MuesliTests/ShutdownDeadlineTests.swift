@@ -37,21 +37,29 @@ struct ShutdownDeadlineTests {
     }
 }
 
-/// Holds a job suspended until the test releases it.
+/// Holds a job suspended until the test releases it. A release that arrives first is kept, so
+/// a job that parks late returns at once instead of hanging.
 private final class StuckWork: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
 
     func park() async {
         await withCheckedContinuation { continuation in
             lock.lock()
-            self.continuation = continuation
-            lock.unlock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
         }
     }
 
     func release() {
         lock.lock()
+        released = true
         let continuation = continuation
         self.continuation = nil
         lock.unlock()
