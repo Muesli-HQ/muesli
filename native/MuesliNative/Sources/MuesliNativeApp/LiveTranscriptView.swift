@@ -147,6 +147,19 @@ final class LiveTranscriptPresentationModel {
     }
 }
 
+/// New captions pull the panel to the bottom only while the reader is already there. Once they
+/// scroll up the panel stays put, and it follows again when they return to the bottom.
+struct LiveTranscriptFollowState: Equatable {
+    /// True at first render, before any bottom marker has been seen.
+    private(set) var isAtBottom = true
+
+    var shouldFollowNewContent: Bool { isAtBottom }
+
+    mutating func noteBottomMarker(visible: Bool) {
+        isAtBottom = visible
+    }
+}
+
 struct LiveTranscriptFeedView: View {
     static let bottomAnchorID = "liveTranscriptBottom"
 
@@ -157,6 +170,8 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
+    /// Reports whether the marker after the last caption is on screen.
+    var onBottomVisibilityChange: ((Bool) -> Void)? = nil
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -208,6 +223,8 @@ struct LiveTranscriptFeedView: View {
                 Color.clear
                     .frame(height: 1)
                     .id(Self.bottomAnchorID)
+                    .onAppear { onBottomVisibilityChange?(true) }
+                    .onDisappear { onBottomVisibilityChange?(false) }
             }
         }
         .padding(.horizontal, horizontalPadding)
@@ -223,6 +240,7 @@ struct LiveTranscriptView: View {
     var partialYou: String = ""
     var partialOthers: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
+    @State private var follow = LiveTranscriptFollowState()
     @State private var didCopy = false
 
     private var copyText: String {
@@ -243,16 +261,21 @@ struct LiveTranscriptView: View {
                         partialOthers: presentation.partialOthers,
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
+                        bottomPadding: MuesliTheme.spacing8,
+                        onBottomVisibilityChange: { follow.noteBottomMarker(visible: $0) }
                     )
                     .textSelection(.enabled)
                 }
                 .onChange(of: transcript) { _, newTranscript in
+                    // Decided before the new lines lay out: the marker is still on screen if the
+                    // reader was at the bottom.
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: newTranscript,
                         partialYou: partialYou,
                         partialOthers: partialOthers
                     )
+                    guard followsNewLines else { return }
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
@@ -264,23 +287,27 @@ struct LiveTranscriptView: View {
                 // seconds. Scroll only when a tail appears (empty → non-empty);
                 // committed captions keep their existing scroll behavior.
                 .onChange(of: partialYou) { old, new in
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: transcript,
                         partialYou: new,
                         partialOthers: partialOthers
                     )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    if followsNewLines,
+                       old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         scrollToBottom(proxy)
                     }
                 }
                 .onChange(of: partialOthers) { old, new in
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: new
                     )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    if followsNewLines,
+                       old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         scrollToBottom(proxy)
                     }
