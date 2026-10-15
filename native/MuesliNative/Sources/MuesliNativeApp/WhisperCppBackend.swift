@@ -83,15 +83,15 @@ actor WhisperKitTranscriber {
         modelName: String
     ) -> DecodingOptions {
         guard let effective = WhisperKitLanguage.preferenceForLoadedModel(language, modelName: modelName) else {
-            return DecodingOptions()
+            return DecodingOptions(skipSpecialTokens: true)
         }
         switch effective {
         case .auto:
             // Default DecodingOptions leaves detectLanguage false when usePrefillPrompt is true,
             // which silently forces English. Request detection explicitly for multilingual models.
-            return DecodingOptions(detectLanguage: true)
+            return DecodingOptions(detectLanguage: true, skipSpecialTokens: true)
         default:
-            return DecodingOptions(language: effective.rawValue)
+            return DecodingOptions(language: effective.rawValue, skipSpecialTokens: true)
         }
     }
 
