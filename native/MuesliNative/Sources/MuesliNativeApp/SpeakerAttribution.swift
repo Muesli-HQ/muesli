@@ -11,8 +11,8 @@ enum SpeakerAttribution {
         Set(diarizationSegments.map(\.speakerId)).count
     }
 
-    /// Raw diarizer speaker ID with the largest time overlap, falling back to the
-    /// nearest diarized speech within `nearestSpeakerMaxGapSeconds`.
+    /// Raw diarizer speaker ID with the largest total time overlap, falling back
+    /// to the nearest diarized speech within `nearestSpeakerMaxGapSeconds`.
     static func speakerID(
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment]
@@ -20,22 +20,21 @@ enum SpeakerAttribution {
         let segStart = Float(segment.start)
         let segEnd = Float(max(segment.end, segment.start + 0.1)) // ensure non-zero duration
 
-        var bestOverlap: Float = 0
-        var bestSpeakerId: String?
-
+        // Sum per speaker: a turn spanning A–B–A belongs to A even when B has the
+        // single longest diarized stretch.
+        var overlapBySpeaker: [String: Float] = [:]
         for diarSeg in diarizationSegments {
             let overlapStart = max(segStart, diarSeg.startTimeSeconds)
             let overlapEnd = min(segEnd, diarSeg.endTimeSeconds)
-            let overlap = max(0, overlapEnd - overlapStart)
-
-            if overlap > bestOverlap {
-                bestOverlap = overlap
-                bestSpeakerId = diarSeg.speakerId
+            let overlap = overlapEnd - overlapStart
+            if overlap > 0 {
+                overlapBySpeaker[diarSeg.speakerId, default: 0] += overlap
             }
         }
 
-        if let bestSpeakerId, bestOverlap > 0 {
-            return bestSpeakerId
+        // Ties break by speaker ID so attribution is deterministic.
+        if let best = overlapBySpeaker.max(by: { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }) {
+            return best.key
         }
         return nearestSpeakerID(segmentStart: segStart, segmentEnd: segEnd, in: diarizationSegments)
     }

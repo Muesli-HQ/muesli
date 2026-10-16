@@ -38,7 +38,9 @@ enum TranscriptReconciler {
         micDiarizationSegments: [TimedSpeakerSegment]? = nil
     ) -> ReconciledTranscriptInputs {
         let micSpeaker = micSpeakerResolver(for: micDiarizationSegments)
-        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns), speakerOf: micSpeaker)
+        // With several local speakers, attribute per sentence before merging back.
+        let attributableMicTurns = micSpeaker == nil ? micTurns : MicTurnNormalizer.sentenceSegments(micTurns)
+        let normalizedMicTurns = mergeReadableSegments(sortedSegments(attributableMicTurns), speakerOf: micSpeaker)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
             micTurns: normalizedMicTurns,
@@ -186,8 +188,6 @@ enum TranscriptReconciler {
 
         let orderedSegments = sortedSegments(segments)
         var merged: [SpeechSegment] = [orderedSegments[0]]
-        // Speaker of the turn being accumulated, fixed by its first piece so a
-        // merged turn is never re-attributed as it grows.
         var currentSpeaker = speakerOf?(orderedSegments[0])
 
         for segment in orderedSegments.dropFirst() {
@@ -198,12 +198,16 @@ enum TranscriptReconciler {
 
             let gap = max(0, segment.start - previous.end)
             let speaker = speakerOf?(segment)
-            if gap <= turnMergeGapSeconds && speaker == currentSpeaker {
-                merged[merged.count - 1] = SpeechSegment(
-                    start: previous.start,
-                    end: max(previous.end, segment.end),
-                    text: joinText(previous.text, segment.text)
-                )
+            let combined = SpeechSegment(
+                start: previous.start,
+                end: max(previous.end, segment.end),
+                text: joinText(previous.text, segment.text)
+            )
+            // Later passes and the formatter re-attribute the merged range, so a
+            // merge must not change who that range resolves to.
+            let keepsSpeaker = speakerOf.map { speaker == currentSpeaker && $0(combined) == currentSpeaker } ?? true
+            if gap <= turnMergeGapSeconds && keepsSpeaker {
+                merged[merged.count - 1] = combined
             } else {
                 merged.append(segment)
                 currentSpeaker = speaker
