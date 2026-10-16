@@ -168,6 +168,7 @@ case "${shard}" in
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
+      BrowserAutomationPermissionTests
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
       MeetingSummaryBackendTests
