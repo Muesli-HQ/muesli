@@ -6531,6 +6531,25 @@ public final class MuesliController: NSObject {
         statusBarController?.refresh()
     }
 
+    /// Remembers the folder for an upcoming event. No meeting exists until a note or recording
+    /// starts for it, and that meeting then lands in this folder.
+    func planFolder(_ folderID: Int64?, for event: UnifiedCalendarEvent) {
+        let key = event.resolvedCalendarOccurrence.identityKey
+        let currentStarts = Dictionary(
+            appState.upcomingCalendarEvents.map { ($0.resolvedCalendarOccurrence.identityKey, $0.startDate) },
+            uniquingKeysWith: { first, _ in first })
+        updateConfig { $0.planFolder(folderID, for: key, startTime: event.startDate, currentStartTimes: currentStarts) }
+    }
+
+    /// A folder inherited from a predecessor wins; otherwise the one planned for the calendar event.
+    func folderIDForNewMeeting(inheritedFolderID: Int64?, calendarOccurrence: CalendarOccurrenceReference?) -> Int64? {
+        inheritedFolderID ?? calendarOccurrence.flatMap { plannedFolderID(for: $0) }
+    }
+
+    func plannedFolderID(for occurrence: CalendarOccurrenceReference) -> Int64? {
+        config.plannedFolderID(for: occurrence.identityKey, existingFolderIDs: Set(appState.folders.map(\.id)))
+    }
+
     func createMeetingFromCalendarEvent(_ event: UnifiedCalendarEvent, folderID: Int64?) {
         let occurrence = event.resolvedCalendarOccurrence
         // Calendar placeholders are idempotent per occurrence. Recordings are
@@ -7004,7 +7023,7 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: templateSnapshot.name,
                 selectedTemplateKind: templateSnapshot.kind,
                 selectedTemplatePrompt: templateSnapshot.prompt,
-                folderID: inheritedFolderID,
+                folderID: folderIDForNewMeeting(inheritedFolderID: inheritedFolderID, calendarOccurrence: calendarOccurrence),
                 followUpToID: followUpToID,
                 calendarOccurrence: calendarOccurrence
             )
