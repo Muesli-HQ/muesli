@@ -8,35 +8,46 @@ enum TranscriptFormatter {
         merge(micSegments: micSegments, systemSegments: systemSegments, diarizationSegments: nil, meetingStart: meetingStart)
     }
 
-    /// Merge with optional speaker diarization for system audio.
+    /// Merge with optional speaker diarization for system audio and, for
+    /// in-person meetings, for the microphone channel.
     static func merge(
         micSegments: [SpeechSegment],
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
         let displayMicSegments = micSegments
-        let taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+        let taggedMic: [TaggedSegment]
+        // A single mic voice is almost always the device owner on a call; only
+        // split the mic channel when the room had several significant voices.
+        // Same rule as the reconciler, so turns it kept apart get distinct labels.
+        if let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments) {
+            let micSpeakerLabelMap = speakerLabelMap(for: localDiarization, prefix: "Local speaker")
+            taggedMic = displayMicSegments.map { segment in
+                let speaker = findSpeaker(
+                    for: segment,
+                    in: localDiarization,
+                    labelMap: micSpeakerLabelMap,
+                    fallback: "Local speaker"
+                )
+                return TaggedSegment(segment: segment, speaker: speaker)
+            }
+        } else {
+            taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+        }
 
         let taggedSystem: [TaggedSegment]
         if let diarizationSegments, !diarizationSegments.isEmpty {
-            // Build speaker label map: raw ID → "Speaker 1", "Speaker 2", etc. in first-appearance order
-            var speakerLabelMap: [String: String] = [:]
-            var nextSpeakerNumber = 1
-            for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
-                if speakerLabelMap[seg.speakerId] == nil {
-                    speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
-                    nextSpeakerNumber += 1
-                }
-            }
+            let speakerLabelMap = speakerLabelMap(for: diarizationSegments, prefix: "Speaker")
 
             taggedSystem = systemSegments.map { segment in
                 let speaker = conservativeSpeakerAttribution
                     ? recordedSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
-                    : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                    : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap, fallback: "Others")
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
         } else {
@@ -58,6 +69,22 @@ enum TranscriptFormatter {
             let text = taggedSegment.segment.text.trimmingCharacters(in: .whitespaces)
             return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(text)"
         }.joined(separator: "\n")
+    }
+
+    /// Raw diarizer ID → "<prefix> 1", "<prefix> 2", … in first-appearance order.
+    private static func speakerLabelMap(
+        for diarizationSegments: [TimedSpeakerSegment],
+        prefix: String
+    ) -> [String: String] {
+        var labelMap: [String: String] = [:]
+        var nextSpeakerNumber = 1
+        for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+            if labelMap[seg.speakerId] == nil {
+                labelMap[seg.speakerId] = "\(prefix) \(nextSpeakerNumber)"
+                nextSpeakerNumber += 1
+            }
+        }
+        return labelMap
     }
 
     /// Merge consecutive segments from the same speaker into single entries,
@@ -122,72 +149,16 @@ enum TranscriptFormatter {
     private static func findSpeaker(
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment],
-        labelMap: [String: String]
+        labelMap: [String: String],
+        fallback: String
     ) -> String {
         if labelMap.count == 1 {
-            return labelMap.values.first ?? "Others"
+            return labelMap.values.first ?? fallback
         }
-
-        let segStart = Float(segment.start)
-        let segEnd = Float(max(segment.end, segment.start + 0.1)) // ensure non-zero duration
-
-        var bestOverlap: Float = 0
-        var bestSpeakerId: String?
-
-        for diarSeg in diarizationSegments {
-            let overlapStart = max(segStart, diarSeg.startTimeSeconds)
-            let overlapEnd = min(segEnd, diarSeg.endTimeSeconds)
-            let overlap = max(0, overlapEnd - overlapStart)
-
-            if overlap > bestOverlap {
-                bestOverlap = overlap
-                bestSpeakerId = diarSeg.speakerId
-            }
+        guard let speakerID = SpeakerAttribution.speakerID(for: segment, in: diarizationSegments) else {
+            return fallback
         }
-
-        if let bestSpeakerId, bestOverlap > 0 {
-            return labelMap[bestSpeakerId] ?? "Others"
-        }
-
-        if let nearestSpeakerId = nearestSpeaker(
-            for: segment,
-            in: diarizationSegments,
-            maxGapSeconds: 2.0
-        ) {
-            return labelMap[nearestSpeakerId] ?? "Others"
-        }
-        return "Others"
-    }
-
-
-    private static func nearestSpeaker(
-        for segment: SpeechSegment,
-        in diarizationSegments: [TimedSpeakerSegment],
-        maxGapSeconds: Float
-    ) -> String? {
-        let segStart = Float(segment.start)
-        let segEnd = Float(max(segment.end, segment.start + 0.1))
-        let segMidpoint = (segStart + segEnd) / 2
-
-        let nearest = diarizationSegments.min { lhs, rhs in
-            temporalGap(between: segMidpoint, and: lhs) < temporalGap(between: segMidpoint, and: rhs)
-        }
-
-        guard let nearest else { return nil }
-        return temporalGap(between: segMidpoint, and: nearest) <= maxGapSeconds ? nearest.speakerId : nil
-    }
-
-    private static func temporalGap(
-        between point: Float,
-        and diarizationSegment: TimedSpeakerSegment
-    ) -> Float {
-        if point < diarizationSegment.startTimeSeconds {
-            return diarizationSegment.startTimeSeconds - point
-        }
-        if point > diarizationSegment.endTimeSeconds {
-            return point - diarizationSegment.endTimeSeconds
-        }
-        return 0
+        return labelMap[speakerID] ?? fallback
     }
 
     private static func appendText(_ lhs: String, _ rhs: String, gap: TimeInterval) -> String {
