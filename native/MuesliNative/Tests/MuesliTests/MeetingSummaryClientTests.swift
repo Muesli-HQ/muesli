@@ -5,6 +5,129 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("Anthropic output uses the model maximum unless a smaller cap is requested")
+    func anthropicOutputLimits() async throws {
+        let url = URL(string: "https://summary.example.test/v1/messages")!
+        for (model, requested, expected) in [("claude-sonnet-5-5", nil, 128_000), ("claude-haiku-4-5", nil, 64_000),
+                                             ("claude-sonnet-5-5", 5_000, 5_000), ("claude-haiku-4-5", 128_000, 64_000)] {
+            let limit = try await MeetingSummaryOutputPolicy.anthropicLimit(model: model, requested: requested,
+                messagesURL: url, apiKey: "test", send: { _ in
+                    Issue.record("Bundled models and explicit limits must not require a discovery request")
+                    throw URLError(.badServerResponse)
+                })
+            #expect(limit == expected)
+        }
+        let discovered = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "future/model", requested: nil,
+            messagesURL: url, apiKey: "test", workspaceID: "workspace", extraHeaders: ["source": "muesli"], send: { request in
+                #expect(request.httpMethod == "GET")
+                #expect(request.url?.absoluteString == "https://summary.example.test/v1/models/future%2Fmodel")
+                #expect(request.value(forHTTPHeaderField: "x-api-key") == "test")
+                #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "workspace")
+                #expect(request.value(forHTTPHeaderField: "source") == "muesli")
+                return (Data(#"{"max_tokens":96000}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+        #expect(discovered == 96_000)
+        for status in [401, 429, 503] {
+            do {
+                _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                    messagesURL: url, apiKey: "test", send: { request in
+                        (Data(), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+                    })
+                Issue.record("Expected failed model lookup")
+            } catch {
+                #expect(error.localizedDescription.contains("HTTP \(status)"))
+                #expect(MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: error)) == (status != 401))
+            }
+        }
+        do {
+            _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                messagesURL: url, apiKey: "test", send: { request in
+                    (Data(#"{}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                })
+            Issue.record("Expected configuration guidance instead of a hidden default cap")
+        } catch {
+            #expect(error.localizedDescription.contains("Advanced"))
+            #expect(!MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: error)))
+        }
+    }
+
+    @Test("Anthropic streaming summaries require completion and ignore reasoning")
+    func streamedAnthropicOutput() throws {
+        let events = [
+            #"{"type":"message_start","message":{"content":[]}}"#,
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private"}}"#,
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private reasoning"}}"#,
+            #"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Complete notes"}}"#,
+        ].map { "data: " + $0 + "\n\n" }.joined()
+        for newline in ["\n", "\r\n"] {
+            let complete = (events + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n").replacingOccurrences(of: "\n", with: newline)
+            #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(complete.utf8)) == "Complete notes")
+        }
+        #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
+            try MeetingSummaryOutputPolicy.anthropicText(from: Data(events.utf8))
+        }
+        let failure = "data: {\"type\":\"error\",\"error\":{\"message\":\"reflected secret\"}}\n\n"
+        do {
+            _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(failure.utf8), redactProviderErrors: true)
+            Issue.record("Expected stream error")
+        } catch {
+            #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+    }
+
+    @Test("Anthropic streams require a valid stop reason before message_stop",
+          arguments: ["\n", "\r\n"])
+    func streamedAnthropicCompletionSequence(newline: String) throws {
+        let text = #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Partial notes"}}"#
+        let terminal = #"{"type":"message_stop"}"#
+        let validDelta = #"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#
+        let sequences = [
+            [text, terminal],
+            [text, validDelta],
+            [text, terminal, validDelta],
+            [text, #"{"type":"message_delta"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":"invalid"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{}}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{"stop_reason":null}}"#, terminal],
+        ]
+        for events in sequences {
+            let stream = events.map { "data: " + $0 + newline + newline }.joined()
+            do {
+                _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(stream.utf8))
+                Issue.record("Missing, malformed or out-of-order completion must not return partial notes")
+            } catch MeetingSummaryOutputPolicy.OutputError.incompleteStream {
+                // Expected; transient interrupted streams remain eligible for retry.
+            }
+        }
+    }
+
+    @Test("Anthropic JSON and SSE distinguish token truncation from natural completion",
+          arguments: ["end_turn", "stop_sequence", "max_tokens", "model_context_window_exceeded"], ["\n", "\r\n"])
+    func anthropicStopReasons(reason: String, newline: String) throws {
+        let json = #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"Notes"}]}"#
+        let stream = [
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Notes"}}"#,
+            #"{"type":"message_delta","delta":{"stop_reason":"\#(reason)"}}"#,
+            #"{"type":"message_stop"}"#,
+        ].map { "data: " + $0 + newline + newline }.joined()
+        for payload in [json, stream] {
+            if reason == "max_tokens" || reason == "model_context_window_exceeded" {
+                do {
+                    _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8))
+                    Issue.record("Truncated notes must not be treated as a complete summary")
+                } catch MeetingSummaryOutputPolicy.OutputError.outputLimitReached {
+                    #expect(reason == "max_tokens")
+                    // Expected even when the stream includes its terminal message_stop.
+                } catch MeetingSummaryOutputPolicy.OutputError.contextWindowExceeded {
+                    #expect(reason == "model_context_window_exceeded")
+                }
+            } else {
+                #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8)) == "Notes")
+            }
+        }
+    }
+
     @Test("Custom LLM transport failures explain HTTPS and trusted certificates")
     func customLLMTransportGuidance() throws {
         let error = MeetingSummaryError.requestFailed(
@@ -170,7 +293,8 @@ struct MeetingSummaryClientTests {
                     let requestBody = try #require(request.httpBody)
                     let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
                     #expect(payload["model"] as? String == "claude-sonnet-5-5")
-                    #expect(payload["max_tokens"] as? Int == AnthropicModelPolicy.summaryMaxOutputTokens)
+                    #expect(payload["max_tokens"] as? Int == 128_000)
+                    #expect(payload["stream"] as? Bool == true)
                     #expect((payload["system"] as? String)?.contains("meeting notes assistant") == true)
                     let messages = try #require(payload["messages"] as? [[String: String]])
                     #expect(messages.first?["content"]?.contains("launch on Friday") == true)
@@ -187,7 +311,6 @@ struct MeetingSummaryClientTests {
 
     @Test("brief Anthropic tasks reserve output and use supported low effort")
     func anthropicBriefTaskPolicy() {
-        #expect(AnthropicModelPolicy.summaryMaxOutputTokens >= 10_000)
         #expect(AnthropicModelPolicy.titleMaxOutputTokens >= 1_024)
         #expect(AnthropicModelPolicy.cleanupMaxOutputTokens >= 10_000)
         #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-opus-5-5") == "low")
@@ -1016,6 +1139,73 @@ struct MeetingSummaryClientTests {
 
         #expect(result == "Recovered summary")
         #expect(attempts == 3)
+    }
+
+    @Test("truncation failures stop automatic retries, while incomplete streams can recover", arguments: [false, true])
+    func summaryOutputRetryPolicy(contextWindow: Bool) async throws {
+        let outputError: MeetingSummaryOutputPolicy.OutputError = contextWindow ? .contextWindowExceeded : .outputLimitReached
+        let capped = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: outputError)
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(capped))
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(configuredCount: 3, after: capped) == 0)
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in
+                Issue.record("A capped summary must not automatically retry")
+            }) { _ in
+                attempts += 1
+                throw capped
+            }
+            Issue.record("Expected the output-limit guidance immediately")
+        } catch {
+            #expect(attempts == 1)
+            #expect(error.localizedDescription.contains(contextWindow ? "context window" : "output token limit"))
+        }
+
+        let interrupted = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: MeetingSummaryOutputPolicy.OutputError.incompleteStream)
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(interrupted))
+        attempts = 0
+        let recovered = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in }) { _ in
+            attempts += 1
+            if attempts == 1 { throw interrupted }
+            return "Complete notes"
+        }
+        #expect(recovered == "Complete notes")
+        #expect(attempts == 2)
+    }
+
+    @Test("streamed provider errors retain their type and retry only transient failures",
+          arguments: ["invalid_request_error", "authentication_error", "permission_error", "not_found_error", "request_too_large", "rate_limit_error", "api_error", "timeout_error", "overloaded_error", "unknown_error", ""], [false, true])
+    func streamedProviderErrorRetries(type: String, redact: Bool) async throws {
+        let transient = ["rate_limit_error", "api_error", "timeout_error", "overloaded_error"].contains(type)
+        var details = ["message": "reflected secret"]
+        if !type.isEmpty { details["type"] = type }
+        let json = try JSONSerialization.data(withJSONObject: ["type": "error", "error": details])
+        let stream = Data(("data: " + String(decoding: json, as: UTF8.self) + "\n\n").utf8)
+        var attempts = 0
+        var sleeps = 0
+        do {
+            let notes = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in sleeps += 1 }) { _ in
+                attempts += 1
+                if attempts > 1 { return "Complete notes" }
+                do {
+                    return try MeetingSummaryOutputPolicy.anthropicText(from: stream, redactProviderErrors: redact)
+                } catch let outputError as MeetingSummaryOutputPolicy.OutputError {
+                    guard case .provider(let parsedType, let message) = outputError else { throw outputError }
+                    #expect(parsedType == (type.isEmpty ? nil : type))
+                    #expect(message.contains("reflected secret") == !redact)
+                    let wrapped = MeetingSummaryError.requestFailed(backend: redact ? "Custom LLM" : "Anthropic", underlying: outputError)
+                    #expect(MeetingSummaryRetryPolicy.shouldRetry(wrapped) == transient)
+                    throw wrapped
+                }
+            }
+            #expect(transient)
+            #expect(notes == "Complete notes")
+        } catch {
+            #expect(!transient)
+            #expect(error.localizedDescription.contains("reflected secret") == !redact)
+        }
+        #expect(attempts == (transient ? 2 : 1))
+        #expect(sleeps == (transient ? 1 : 0))
     }
 
     @Test("summary retries transient Claude Code failures without changing their error text")

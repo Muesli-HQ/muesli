@@ -1194,7 +1194,8 @@ actor TranscriptionCoordinator {
 
     private func removeArtifacts(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
         let filtered = TranscriptionEngineArtifactsFilter.apply(result.text)
-        return SpeechTranscriptionResult(text: filtered, segments: filtered.isEmpty ? [] : result.segments)
+        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments)
+        return SpeechTranscriptionResult(text: filtered, segments: segments)
     }
 
     private func postProcessDictationIfNeeded(

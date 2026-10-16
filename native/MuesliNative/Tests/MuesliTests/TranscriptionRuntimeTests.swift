@@ -426,6 +426,28 @@ struct TranscriptionEngineArtifactsFilterTests {
         )
     }
 
+    @Test("strips any Whisper control token such as nocaptions")
+    func whisperControlTokens() {
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|nocaptions|>") == "")
+        #expect(TranscriptionEngineArtifactsFilter.apply("Det er <|nocaptions|> viktig") == "Det er viktig")
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|no|><|transcribe|>Hei") == "Hei")
+        #expect(TranscriptionEngineArtifactsFilter.apply("a < b | c > d") == "a < b | c > d")
+    }
+
+    @Test("cleans segment text and drops segments left empty")
+    func cleansSegments() {
+        let segments = [
+            SpeechSegment(start: 0, end: 1, text: "<|nocaptions|>"),
+            SpeechSegment(start: 1, end: 2, text: "Hei <|nospeech|> alle"),
+            SpeechSegment(start: 2, end: 3, text: "Det er bra"),
+        ]
+        let cleaned = TranscriptionEngineArtifactsFilter.apply(to: segments)
+        #expect(cleaned.map(\.text) == ["Hei alle", "Det er bra"])
+        #expect(cleaned.map(\.start) == [1, 2])
+        #expect(cleaned.map(\.end) == [2, 3])
+        #expect(TranscriptionEngineArtifactsFilter.apply(to: [segments[0]]).isEmpty)
+    }
+
     @Test("strips leaked prompt suffix from transcript")
     func stripsLeakedPromptSuffix() {
         let text = """
