@@ -563,10 +563,10 @@ struct TranscriptFormatterTests {
         let system = [
             SpeechSegment(start: 4.0, end: 7.0, text: "Remote person"),
         ]
-        let micDiarization = [
+        let micDiarization = significant([
             makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 3.5),
             makeDiarSeg(speakerId: "spk_1", start: 7.5, end: 10.5),
-        ]
+        ])
         let systemDiarization = [
             makeDiarSeg(speakerId: "spk_0", start: 3.5, end: 7.5),
         ]
@@ -593,10 +593,10 @@ struct TranscriptFormatterTests {
             SpeechSegment(start: 3.0, end: 5.0, text: "Covered two"),
             SpeechSegment(start: 30.0, end: 32.0, text: "Far away"),
         ]
-        let micDiarization = [
+        let micDiarization = significant([
             makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.5),
             makeDiarSeg(speakerId: "room_b", start: 2.5, end: 5.5),
-        ]
+        ])
         let result = TranscriptFormatter.merge(
             micSegments: mic,
             systemSegments: [],
@@ -610,7 +610,41 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("You:"))
     }
 
+    @Test("a brief extra mic diarizer speaker keeps the You label")
+    func briefExtraMicSpeakerKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 10.0, text: "Talking on a call"),
+            SpeechSegment(start: 20.5, end: 30.0, text: "Still talking"),
+        ]
+        // A cough or AEC residue: 0.4 s under a second diarizer ID.
+        let micDiarization = [
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 20.0),
+            makeDiarSeg(speakerId: "room_b", start: 20.0, end: 20.4),
+            makeDiarSeg(speakerId: "room_a", start: 20.4, end: 60.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.allSatisfy { $0.contains("You:") })
+        #expect(!result.contains("Local speaker"))
+    }
+
     // MARK: - Helpers
+
+    /// Adds far-away speech so every speaker passes the significance filter
+    /// without changing who the tested segments resolve to.
+    private func significant(_ segments: [TimedSpeakerSegment]) -> [TimedSpeakerSegment] {
+        let speakerIDs = Set(segments.map(\.speakerId)).sorted()
+        return segments + speakerIDs.enumerated().map { index, speakerID in
+            makeDiarSeg(speakerId: speakerID, start: 1_000 + Float(index) * 10, end: 1_010 + Float(index) * 10)
+        }
+    }
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(

@@ -22,14 +22,15 @@ enum TranscriptFormatter {
         // which mic/system segments are valid, then this layer only labels/merges.
         let displayMicSegments = micSegments
         let taggedMic: [TaggedSegment]
-        let micSpeakerLabelMap = speakerLabelMap(for: micDiarizationSegments ?? [], prefix: "Local speaker")
-        if let micDiarizationSegments, micSpeakerLabelMap.count > 1 {
-            // A single mic speaker is almost always the device owner on a call;
-            // only split the mic channel when the room actually had several voices.
+        // A single mic voice is almost always the device owner on a call; only
+        // split the mic channel when the room had several significant voices.
+        // Same rule as the reconciler, so turns it kept apart get distinct labels.
+        if let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments) {
+            let micSpeakerLabelMap = speakerLabelMap(for: localDiarization, prefix: "Local speaker")
             taggedMic = displayMicSegments.map { segment in
                 let speaker = findSpeaker(
                     for: segment,
-                    in: micDiarizationSegments,
+                    in: localDiarization,
                     labelMap: micSpeakerLabelMap,
                     fallback: "Local speaker"
                 )

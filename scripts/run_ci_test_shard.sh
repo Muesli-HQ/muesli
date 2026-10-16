@@ -171,6 +171,7 @@ case "${shard}" in
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
       TranscriptReconcilerTests
+      SpeakerAttributionTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests

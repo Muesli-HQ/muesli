@@ -133,10 +133,10 @@ struct TranscriptReconcilerTests {
             micTurns: greetingSentences,
             systemSegments: [],
             diarizationSegments: nil,
-            micDiarizationSegments: [
+            micDiarizationSegments: significant([
                 makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.1),
                 makeDiarSeg(speakerId: "room_b", start: 2.1, end: 4.0),
-            ]
+            ])
         )
 
         #expect(reconciled.micSegments.map(\.text) == ["Ahoj, paní Václavková.", "Ahoj, pane Václavku."])
@@ -149,10 +149,10 @@ struct TranscriptReconcilerTests {
             micTurns: mic,
             systemSegments: [],
             diarizationSegments: nil,
-            micDiarizationSegments: [
+            micDiarizationSegments: significant([
                 makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.0),
                 makeDiarSeg(speakerId: "room_b", start: 2.0, end: 6.0),
-            ]
+            ])
         )
 
         #expect(reconciled.micSegments.map(\.text) == ["Ahoj, paní Václavková.", "Ahoj, pane Václavku. Jak se máte?"])
@@ -172,10 +172,10 @@ struct TranscriptReconcilerTests {
 
     @Test("split mic turns get separate local speaker labels in the transcript")
     func splitMicTurnsGetSeparateLabels() {
-        let micDiarization = [
+        let micDiarization = significant([
             makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.1),
             makeDiarSeg(speakerId: "room_b", start: 2.1, end: 4.0),
-        ]
+        ])
         let reconciled = TranscriptReconciler.reconcile(
             micTurns: greetingSentences,
             systemSegments: [],
@@ -200,6 +200,7 @@ struct TranscriptReconcilerTests {
         micTurns: [SpeechSegment],
         micDiarization: [TimedSpeakerSegment]
     ) -> [String] {
+        let micDiarization = significant(micDiarization)
         let reconciled = TranscriptReconciler.reconcile(
             micTurns: micTurns,
             systemSegments: [],
@@ -274,6 +275,66 @@ struct TranscriptReconcilerTests {
         #expect(lines.count == 2)
         #expect(lines[0].hasSuffix("Local speaker 1: First. Second."))
         #expect(lines[1].hasSuffix("Local speaker 2: Third."))
+    }
+
+    @Test("a brief extra mic diarizer speaker does not split the mic channel")
+    func briefExtraMicSpeakerDoesNotSplit() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.0),
+                makeDiarSeg(speakerId: "room_b", start: 2.0, end: 2.4),
+                makeDiarSeg(speakerId: "room_a", start: 2.4, end: 60.0),
+            ]
+        )
+
+        #expect(reconciled.micSegments.count == 1)
+        #expect(reconciled.micDiarizationSegments == nil)
+    }
+
+    @Test("reconciled inputs carry only the significant local speakers")
+    func reconciledInputsCarryOnlySignificantLocalSpeakers() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: significant([
+                makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.1),
+                makeDiarSeg(speakerId: "room_b", start: 2.1, end: 4.0),
+            ]) + [makeDiarSeg(speakerId: "cough", start: 4.0, end: 4.3)]
+        )
+
+        #expect(Set(reconciled.micDiarizationSegments?.map(\.speakerId) ?? []) == ["room_a", "room_b"])
+    }
+
+    @Test("consecutive mic turns without diarization coverage still merge")
+    func consecutiveUncoveredMicTurnsMerge() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [
+                SpeechSegment(start: 30.0, end: 32.0, text: "Far away."),
+                SpeechSegment(start: 32.0, end: 34.0, text: "Still far."),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: significant([
+                makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.0),
+                makeDiarSeg(speakerId: "room_b", start: 2.0, end: 4.0),
+            ])
+        )
+
+        // Both resolve to no speaker (nil == nil), so they read as one unattributed turn.
+        #expect(reconciled.micSegments.map(\.text) == ["Far away. Still far."])
+    }
+
+    /// Adds far-away speech so every speaker passes the significance filter
+    /// without changing who the tested turns resolve to.
+    private func significant(_ segments: [TimedSpeakerSegment]) -> [TimedSpeakerSegment] {
+        let speakerIDs = Set(segments.map(\.speakerId)).sorted()
+        return segments + speakerIDs.enumerated().map { index, speakerID in
+            makeDiarSeg(speakerId: speakerID, start: 1_000 + Float(index) * 10, end: 1_010 + Float(index) * 10)
+        }
     }
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {

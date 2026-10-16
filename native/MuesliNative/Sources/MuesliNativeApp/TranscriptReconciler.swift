@@ -6,6 +6,8 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
+    /// Significant in-room speakers only; nil when the mic channel stays "You".
+    var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
 
 enum TranscriptReconciler {
@@ -37,7 +39,8 @@ enum TranscriptReconciler {
         diarizationSegments: [TimedSpeakerSegment]?,
         micDiarizationSegments: [TimedSpeakerSegment]? = nil
     ) -> ReconciledTranscriptInputs {
-        let micSpeaker = micSpeakerResolver(for: micDiarizationSegments)
+        let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+        let micSpeaker = micSpeakerResolver(for: localDiarization)
         // With several local speakers, attribute per sentence before merging back.
         let attributableMicTurns = micSpeaker == nil ? micTurns : MicTurnNormalizer.sentenceSegments(micTurns)
         let normalizedMicTurns = mergeReadableSegments(sortedSegments(attributableMicTurns), speakerOf: micSpeaker)
@@ -59,7 +62,8 @@ enum TranscriptReconciler {
         return ReconciledTranscriptInputs(
             micSegments: sortedSegments(keptMicTurns),
             systemSegments: sortedSegments(keptSystemTurns),
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micDiarizationSegments: localDiarization
         )
     }
 
@@ -172,12 +176,10 @@ enum TranscriptReconciler {
     /// Resolves the local (mic) speaker of a turn; nil when not attributable.
     typealias MicSpeakerResolver = (SpeechSegment) -> String?
 
-    /// Only splits the mic channel when the room actually had several voices,
-    /// mirroring the formatter's single-speaker "You" rule.
-    private static func micSpeakerResolver(for micDiarizationSegments: [TimedSpeakerSegment]?) -> MicSpeakerResolver? {
-        guard let micDiarizationSegments,
-              SpeakerAttribution.distinctSpeakerCount(in: micDiarizationSegments) > 1 else { return nil }
-        return { SpeakerAttribution.speakerID(for: $0, in: micDiarizationSegments) }
+    /// nil unless `SpeakerAttribution.localDiarization` found several in-room voices.
+    private static func micSpeakerResolver(for localDiarization: [TimedSpeakerSegment]?) -> MicSpeakerResolver? {
+        guard let localDiarization else { return nil }
+        return { SpeakerAttribution.speakerID(for: $0, in: localDiarization) }
     }
 
     private static func mergeReadableSegments(

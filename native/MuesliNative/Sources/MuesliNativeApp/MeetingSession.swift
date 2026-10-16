@@ -140,13 +140,14 @@ extension MeetingSessionResult {
 enum MeetingProcessingStage {
     case stoppingCapture
     case transcribingAudio
+    case diarizingSpeakers
     case cleaningAudio
     case generatingTitle
     case summarizingNotes
 
     var allowsDictation: Bool {
         switch self {
-        case .stoppingCapture, .transcribingAudio, .cleaningAudio:
+        case .stoppingCapture, .transcribingAudio, .diarizingSpeakers, .cleaningAudio:
             false
         case .generatingTitle, .summarizingNotes:
             true
@@ -162,6 +163,8 @@ private enum MeetingTranscriptRecoveryResult {
 
 final class MeetingSession {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+    /// Temp directory of the whole-meeting mic track; swept at launch after a crash.
+    static let micDiarizationDirectoryName = "muesli-meeting-mic-diarization"
 
     private let title: String
     private let calendarEventID: String?
@@ -186,6 +189,8 @@ final class MeetingSession {
     /// Whole-meeting cleaned mic track for in-room speaker diarization. Fed by
     /// the same funnel as the mic chunks, so its timeline matches mic segments.
     private var micDiarizationRecorder: PCMChunkRecorder?
+    /// Why the opt-in mic track was never recorded, for diagnostics.
+    private var micDiarizationSetupError: Error?
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
     /// VAD controller for speech-boundary chunk rotation
@@ -661,14 +666,17 @@ final class MeetingSession {
 
     private func discardPipeline() {
         Task { await screenContextCollector.stopAndDrain() }
-        let (rawRecorder, systemRecorder) = chunkRotationQueue.sync { () -> (PCMChunkRecorder?, PCMChunkRecorder?) in
+        let (rawRecorder, systemRecorder, micDiarizationRecorder) = chunkRotationQueue.sync {
+            () -> (PCMChunkRecorder?, PCMChunkRecorder?, PCMChunkRecorder?) in
             chunkTimingTracker.discard()
             systemChunkTimingTracker.discard()
             let rawRecorder = rawMicChunkRecorder
             let systemRecorder = systemChunkRecorder
+            let micDiarizationRecorder = self.micDiarizationRecorder
             rawMicChunkRecorder = nil
             systemChunkRecorder = nil
-            return (rawRecorder, systemRecorder)
+            self.micDiarizationRecorder = nil
+            return (rawRecorder, systemRecorder, micDiarizationRecorder)
         }
         // Same contract as stop(): the queue barrier above drains pending
         // sample callbacks; only then is episode state final.
@@ -685,7 +693,6 @@ final class MeetingSession {
         rawRecorder?.cancel()
         systemRecorder?.cancel()
         micDiarizationRecorder?.cancel()
-        micDiarizationRecorder = nil
         meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
@@ -844,15 +851,18 @@ final class MeetingSession {
         }
 
         var micDiarizationSegments: [TimedSpeakerSegment]?
+        var micDiarizationError = micDiarizationSetupError
         if let micDiarizationURL {
             // In-person meetings: split the room mic into local speakers. Best-effort;
             // on failure the mic channel keeps its single "You" label.
+            onProgress?(.diarizingSpeakers)
             do {
                 let segments = try await transcriptionCoordinator.diarizeRecordedAudio(at: micDiarizationURL)
                 let speakerCount = Set(segments.map(\.speakerId)).count
                 fputs("[meeting] mic diarization complete: \(segments.count) segments, \(speakerCount) speakers\n", stderr)
                 micDiarizationSegments = segments
             } catch {
+                micDiarizationError = error
                 fputs("[meeting] mic diarization failed, keeping single mic speaker: \(error)\n", stderr)
             }
         }
@@ -922,7 +932,7 @@ final class MeetingSession {
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
-            micDiarizationSegments: micDiarizationSegments,
+            micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
             meetingStart: meetingStart
         )
 
@@ -991,6 +1001,13 @@ final class MeetingSession {
             micChunks: micChunkHealthTracker.snapshot(),
             systemChunks: systemChunkHealthTracker.snapshot(),
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            micDiarization: config.diarizeMicrophoneAudio
+                ? MeetingSessionDiagnostics.MicDiarizationStats(
+                    rawSegments: micDiarizationSegments,
+                    localSegments: protectedTranscriptInputs.micDiarizationSegments,
+                    error: micDiarizationError
+                )
+                : nil,
             protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
         )
 
@@ -1218,10 +1235,12 @@ final class MeetingSession {
 
     private func setupMicDiarizationRecorderIfNeeded() {
         micDiarizationRecorder = nil
+        micDiarizationSetupError = nil
         guard config.diarizeMicrophoneAudio else { return }
         do {
-            micDiarizationRecorder = try PCMChunkRecorder(directoryName: "muesli-meeting-mic-diarization")
+            micDiarizationRecorder = try PCMChunkRecorder(directoryName: Self.micDiarizationDirectoryName)
         } catch {
+            micDiarizationSetupError = error
             fputs("[meeting] failed to prepare mic diarization recorder: \(error)\n", stderr)
         }
     }

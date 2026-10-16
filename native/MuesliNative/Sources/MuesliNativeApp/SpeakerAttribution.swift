@@ -6,9 +6,34 @@ import Foundation
 /// labels them), so both always agree on who spoke a segment.
 enum SpeakerAttribution {
     static let nearestSpeakerMaxGapSeconds: Float = 2.0
+    /// A room-mic diarizer regularly emits short extra IDs for coughs, doors or
+    /// AEC residue of the remote party; those must not split a one-voice call.
+    static let minimumLocalSpeakerSeconds: Float = 5
+    static let minimumLocalSpeakerShare: Float = 0.05
 
-    static func distinctSpeakerCount(in diarizationSegments: [TimedSpeakerSegment]) -> Int {
-        Set(diarizationSegments.map(\.speakerId)).count
+    /// Diarizer IDs that spoke long enough to count as a distinct in-room voice.
+    static func significantSpeakerIDs(in diarizationSegments: [TimedSpeakerSegment]) -> Set<String> {
+        var total: Float = 0
+        var durationBySpeaker: [String: Float] = [:]
+        for segment in diarizationSegments {
+            let duration = max(0, segment.endTimeSeconds - segment.startTimeSeconds)
+            durationBySpeaker[segment.speakerId, default: 0] += duration
+            total += duration
+        }
+        guard total > 0 else { return [] }
+        return Set(durationBySpeaker.filter { _, duration in
+            duration >= minimumLocalSpeakerSeconds && duration / total >= minimumLocalSpeakerShare
+        }.keys)
+    }
+
+    /// The single "is the room really multi-speaker" decision for the mic channel.
+    /// nil when the room effectively had one voice (the mic stays "You");
+    /// otherwise only the significant speakers' segments.
+    static func localDiarization(from micDiarizationSegments: [TimedSpeakerSegment]?) -> [TimedSpeakerSegment]? {
+        guard let micDiarizationSegments else { return nil }
+        let speakerIDs = significantSpeakerIDs(in: micDiarizationSegments)
+        guard speakerIDs.count > 1 else { return nil }
+        return micDiarizationSegments.filter { speakerIDs.contains($0.speakerId) }
     }
 
     /// Raw diarizer speaker ID with the largest total time overlap, falling back
