@@ -164,7 +164,10 @@ private enum MeetingTranscriptRecoveryResult {
 final class MeetingSession {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
     /// Temp directory of the whole-meeting mic track; swept at launch after a crash.
-    static let micDiarizationDirectoryName = "muesli-meeting-mic-diarization"
+    /// Scoped to the app identity: dev lanes and production share `$TMPDIR`, and one
+    /// app's launch sweep must not delete another app's track mid-meeting.
+    static let micDiarizationDirectoryName =
+        "muesli-meeting-mic-diarization-\(Bundle.main.bundleIdentifier ?? "unknown")"
 
     private let title: String
     private let calendarEventID: String?
@@ -596,7 +599,11 @@ final class MeetingSession {
         chunkRotationQueue.async(execute: DispatchWorkItem(block: operation))
     }
 
-    func testingFinishCapture() async -> (URL?, URL?, URL?) {
+    /// The in-progress mic diarization track, while capture is running.
+    var testingMicDiarizationFileURL: URL? { chunkRotationQueue.sync { micDiarizationRecorder?.currentFileURL } }
+
+    /// Mic chunk, system chunk, retained recording and mic diarization track.
+    func testingFinishCapture() async -> (URL?, URL?, URL?, URL?) {
         let result = await captureLifecycle.stop()
         for url in [result.microphone, result.systemAudio].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: url)
@@ -604,8 +611,10 @@ final class MeetingSession {
         return chunkRotationQueue.sync {
             captureLifecycle.finishMicrophoneDelivery()
             appendFlushedStreamingMicOnQueue()
-            let urls = (rawMicChunkRecorder?.stop(), systemChunkRecorder?.stop(), retainedRecordingWriter?.stop())
+            let urls = (rawMicChunkRecorder?.stop(), systemChunkRecorder?.stop(), retainedRecordingWriter?.stop(),
+                        micDiarizationRecorder?.stop())
             rawMicChunkRecorder = nil; systemChunkRecorder = nil; retainedRecordingWriter = nil
+            micDiarizationRecorder = nil
             return urls
         }
     }
@@ -1004,7 +1013,6 @@ final class MeetingSession {
             micDiarization: config.diarizeMicrophoneAudio
                 ? MeetingSessionDiagnostics.MicDiarizationStats(
                     rawSegments: micDiarizationSegments,
-                    localSegments: protectedTranscriptInputs.micDiarizationSegments,
                     error: micDiarizationError
                 )
                 : nil,

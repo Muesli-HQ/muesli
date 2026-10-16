@@ -192,10 +192,10 @@ final class MeetingSessionDiagnostics {
         let localSpeakers: Int
         let error: String?
 
-        init(rawSegments: [TimedSpeakerSegment]?, localSegments: [TimedSpeakerSegment]?, error: Error?) {
+        init(rawSegments: [TimedSpeakerSegment]?, error: Error?) {
             segments = rawSegments?.count ?? 0
             speakers = Set((rawSegments ?? []).map(\.speakerId)).count
-            localSpeakers = Set((localSegments ?? []).map(\.speakerId)).count
+            localSpeakers = SpeakerAttribution.significantSpeakerIDs(in: rawSegments ?? []).count
             self.error = error.map { String(describing: $0) }
         }
     }

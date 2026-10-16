@@ -28,6 +28,10 @@ final class PCMChunkRecorder {
         }
     }
 
+    var currentFileURL: URL? {
+        lock.withLock { $0.fileURL }
+    }
+
     func rotateFile() -> URL? {
         let newState: State
         do {

@@ -101,6 +101,16 @@ struct SpeakerAttributionTests {
         #expect(refiltered?.map(\.speakerId) == local?.map(\.speakerId))
     }
 
+    @Test("diagnostics count a single significant mic speaker as one")
+    func diagnosticsCountSingleSignificantSpeaker() {
+        let stats = MeetingSessionDiagnostics.MicDiarizationStats(rawSegments: [
+            makeDiarSeg(speakerId: "a", start: 0, end: 60),
+            makeDiarSeg(speakerId: "cough", start: 60, end: 60.4),
+        ], error: nil)
+        #expect(stats.speakers == 2)
+        #expect(stats.localSpeakers == 1)
+    }
+
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
             speakerId: speakerId,
