@@ -145,7 +145,9 @@ final class BrowserMeetingActivityCollector {
         }
         guard case .url(let url) = activeTabResult else {
             if case .timedOut = activeTabResult {
-                return observedFocusedNonMeetingDocumentURL ? .noMeeting : .inconclusive
+                // An ordinary focused page rules out a call only when background tabs are not
+                // searched; otherwise the timeout skipped the scan that could have found it.
+                return observedFocusedNonMeetingDocumentURL && !scansAllTabs ? .noMeeting : .inconclusive
             }
             return .noMeeting
         }
@@ -159,7 +161,9 @@ final class BrowserMeetingActivityCollector {
             case .noCall:
                 return .noMeeting
             case .timedOut:
-                return observedFocusedNonMeetingDocumentURL ? .noMeeting : .inconclusive
+                // The front tab is already known to be ordinary, so that says nothing about
+                // the background tabs the scan did not finish reading.
+                return .inconclusive
             }
         }
         return .meeting(normalized, isFocused: app.isActive)
