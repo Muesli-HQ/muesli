@@ -578,9 +578,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
