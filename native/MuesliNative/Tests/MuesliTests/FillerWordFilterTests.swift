@@ -13,7 +13,13 @@ struct FillerWordFilterTests {
 
     @Test("removes multiple fillers")
     func removeMultiple() {
-        #expect(FillerWordFilter.apply("Uh um er the thing is") == "The thing is")
+        #expect(FillerWordFilter.apply("Uh um err the thing is") == "The thing is")
+    }
+
+    @Test("keeps Norwegian verb er")
+    func keepsNorwegianEr() {
+        #expect(FillerWordFilter.apply("Det er kjemperelevant") == "Det er kjemperelevant")
+        #expect(FillerWordFilter.apply("Er det klart?") == "Er det klart?")
     }
 
     @Test("handles fillers at start")
