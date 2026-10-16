@@ -1,10 +1,58 @@
 import Testing
+import WhisperKit
 import Foundation
 import CoreAudio
 @testable import MuesliNativeApp
 
 @Suite("StreamingDictationController")
 struct StreamingDictationControllerTests {
+    @available(macOS 15, *)
+    @Test("stop includes recorder-drained audio but rejects callbacks after recorder stop", arguments: [3, 8, 11])
+    func recorderDrainReachesFinalTranscript(tailCount: Int) async {
+        let transcriber = DelayedStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber, recorder: recorder, chunkSamples: 8
+        )
+        #expect(controller.start())
+        let callback = recorder.onAudioBuffer
+        recorder.onStop = { callback?(Array(repeating: 0.25, count: tailCount)) }
+        let completion = AsyncStream<String>.makeStream()
+        controller.stop { completion.continuation.yield($0); completion.continuation.finish() }
+        // The session still awaits model initialization, but capture is closed.
+        callback?(Array(repeating: 0.75, count: 8))
+        await transcriber.releaseState()
+        for await text in completion.stream {
+            #expect(text == String(repeating: " hello", count: (tailCount + 7) / 8))
+        }
+        let chunks = await transcriber.receivedSamples
+        let speechSamples: [Float] = chunks.flatMap { $0 }.filter { $0 != 0 }
+        let expectedSamples = [Float](repeating: 0.25, count: tailCount)
+        #expect(speechSamples == expectedSamples)
+        #expect(recorder.stopCalls == 1)
+
+        #expect(controller.start())
+        // A callback retained by an old recorder must not feed a new session.
+        callback?(Array(repeating: 0.75, count: 8))
+        recorder.onStop = nil
+        #expect(await stop(controller) == "")
+    }
+
+    @available(macOS 15, *)
+    @Test("cancel rejects microphone callbacks delivered by recorder cancellation")
+    func cancelDiscardsRecorderTail() async {
+        let transcriber = DelayedStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(transcriber: transcriber, recorder: recorder, chunkSamples: 8)
+        #expect(controller.start())
+        let callback = recorder.onAudioBuffer
+        recorder.onCancel = { callback?(Array(repeating: 0.25, count: 8)) }
+        controller.cancel()
+        callback?(Array(repeating: 0.75, count: 8))
+        await transcriber.releaseState()
+        #expect(await stop(controller) == "")
+        #expect(await transcriber.transcribeCalls == 0)
+    }
 
     @available(macOS 15, *)
     @Test("retired audio callback cannot add chunks to a replacement streaming session")
@@ -449,6 +497,8 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
     var startedPreferredInputDeviceID: AudioObjectID?
     var stopURL: URL?
     var power: Float = -160
+    var onStop: (() -> Void)?
+    var onCancel: (() -> Void)?
 
     func prepare() throws {
         prepareCalls += 1
@@ -466,11 +516,13 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
 
     func stop() -> URL? {
         stopCalls += 1
+        onStop?()
         return stopURL
     }
 
     func cancel() {
         cancelCalls += 1
+        onCancel?()
     }
 
     func currentPower() -> Float {
@@ -483,6 +535,7 @@ private actor DelayedStreamingTranscriber: NemotronStreamingTranscribing {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
     private(set) var transcribeCalls = 0
+    private(set) var receivedSamples: [[Float]] = []
 
     func makeStreamState() async throws -> RNNTStreamState {
         if !released {
@@ -506,6 +559,7 @@ private actor DelayedStreamingTranscriber: NemotronStreamingTranscribing {
         state: inout RNNTStreamState
     ) async throws -> String {
         transcribeCalls += 1
+        receivedSamples.append(samples)
         return " hello"
     }
 }
@@ -882,6 +936,64 @@ struct Nemotron35BackendMetadataTests {
 @Suite("Nemotron35 language selection")
 struct Nemotron35LanguageTests {
 
+    // NVIDIA's 32 transcription-ready/broad-coverage locales, mapped through the
+    // FluidInference multilingual/2240ms metadata.json. Keep reserved prompts out.
+    // https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b#supported-languages
+    static let expectedPromptIDs: [String: Int32] = [
+        "ar": 7,
+        "bg": 30,
+        "zh": 4,
+        "hr": 29,
+        "cs": 22,
+        "da": 25,
+        "nl": 16,
+        "en": 0,
+        "en-gb": 1,
+        "et": 60,
+        "fi": 26,
+        "fr": 8,
+        "fr-ca": 100,
+        "de": 9,
+        "hi": 6,
+        "hu": 23,
+        "it": 15,
+        "ja": 10,
+        "ko": 14,
+        "nb": 103,
+        "pl": 17,
+        "pt": 13,
+        "pt-br": 12,
+        "ro": 20,
+        "ru": 11,
+        "sk": 28,
+        "es": 3,
+        "es-es": 2,
+        "sv": 24,
+        "tr": 18,
+        "uk": 19,
+        "vi": 33,
+    ]
+
+    @Test("catalog includes exactly the usable Nemotron locale prompts")
+    func supportedLocaleCoverage() {
+        let codes = Set(Nemotron35Language.allCases.filter { $0 != .auto }.map(\.rawValue))
+        #expect(codes == Set(Self.expectedPromptIDs.keys))
+        #expect(Set(Nemotron35Language.allCases.map(\.label)).count == Nemotron35Language.allCases.count)
+    }
+
+    @Test("every supported Nemotron locale persists its exact prompt",
+          arguments: Nemotron35LanguageTests.expectedPromptIDs.keys.sorted())
+    func supportedLocaleRoundTrip(code: String) throws {
+        let json = try JSONSerialization.data(withJSONObject: ["nemotron35_language": " \(code.uppercased()) "])
+        let config = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(config.nemotron35Language == code)
+        #expect(config.resolvedNemotron35Language.rawValue == code)
+        #expect(config.resolvedNemotron35Language.promptId == Self.expectedPromptIDs[code])
+        let persisted = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(persisted.nemotron35Language == code)
+        #expect(persisted.resolvedNemotron35Language.promptId == Self.expectedPromptIDs[code])
+    }
+
     @Test("prompt ids match the model's prompt_dictionary")
     func promptIds() {
         #expect(Nemotron35Language.auto.promptId == 101)
@@ -890,6 +1002,8 @@ struct Nemotron35LanguageTests {
         #expect(Nemotron35Language.spanish.promptId == 3)
         #expect(Nemotron35Language.chinese.promptId == 4)
         #expect(Nemotron35Language.japanese.promptId == 10)
+        #expect(Nemotron35Language.ukrainian.promptId == 19)
+        #expect(Nemotron35Language.resolved("uk") == .ukrainian)
     }
 
     @Test("default is auto-detect")
@@ -939,6 +1053,47 @@ struct Nemotron35LanguageTests {
 
 @Suite("WhisperKitLanguage")
 struct WhisperKitLanguageTests {
+
+    @Test("picker covers WhisperKit's actual language token codes without aliases")
+    func upstreamLanguageCoverage() {
+        let codes = WhisperKitLanguage.allCases.filter { $0 != .auto }.map(\.rawValue)
+        #expect(Set(codes) == Constants.languageCodes)
+        #expect(Set(codes).count == codes.count)
+    }
+
+    @Test("every Whisper language persists and pins multilingual decoding",
+          arguments: WhisperKitLanguage.allCases.filter { $0 != .auto })
+    func everyLanguagePinsDecoding(language: WhisperKitLanguage) throws {
+        let json = try JSONSerialization.data(withJSONObject: ["whisper_language": " \(language.rawValue.uppercased()) "])
+        let config = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(config.whisperLanguage == language.rawValue)
+        #expect(config.resolvedWhisperLanguage == language)
+        let persisted = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(persisted.resolvedWhisperLanguage == language)
+        let options = WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "large-v3-v20240930_626MB")
+        #expect(options.language == language.rawValue)
+        #expect(!options.detectLanguage)
+        #expect(WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "small.en").language == nil)
+    }
+
+    @Test("Cantonese is selectable only on models with its large-v3 language token",
+          arguments: ["tiny", "small", "large-v2", "large-v3-v20240930_626MB", "small.en"])
+    func cantoneseCheckpointAvailability(model: String) {
+        let supported = model.contains("large-v3")
+        #expect(WhisperKitLanguage.choices(for: model).contains(.cantonese) == supported)
+        let options = WhisperKitTranscriber.makeDecodeOptions(language: .cantonese, modelName: model)
+        #expect(options.language == (supported ? "yue" : nil))
+        if !supported && !WhisperKitLanguage.isEnglishOnlyModel(model) {
+            #expect(options.detectLanguage)
+        }
+        if model == "small.en" {
+            #expect(WhisperKitLanguage.choices(for: model) == [.auto])
+        } else {
+            #expect(WhisperKitLanguage.choices(for: model).count == (supported ? 101 : 100))
+            #expect(WhisperKitLanguage.choices(for: model).contains(.ukrainian))
+            #expect(WhisperKitLanguage.choices(for: model).contains(.tamil))
+        }
+    }
 
     @Test("default is auto-detect")
     func defaultIsAuto() {
@@ -1000,5 +1155,18 @@ struct WhisperKitLanguageTests {
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small") == .auto)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
+    }
+
+    @Test("Ukrainian persists and pins WhisperKit decoding instead of falling back to auto-detect")
+    func ukrainianPinsDecoding() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"whisper_language":"uk"}"#.utf8))
+        #expect(decoded.resolvedWhisperLanguage == .ukrainian)
+        #expect(decoded.whisperLanguage == "uk")
+        #expect(WhisperKitLanguage.ukrainian.label == "Ukrainian")
+
+        let options = WhisperKitTranscriber.makeDecodeOptions(language: .ukrainian, modelName: "large-v3-v20240930_626MB")
+        #expect(options.language == "uk")
+        #expect(!options.detectLanguage)
+        #expect(WhisperKitTranscriber.makeDecodeOptions(language: .ukrainian, modelName: "small.en").language == nil)
     }
 }

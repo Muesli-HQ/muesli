@@ -119,6 +119,9 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMicrophoneCaptureTests
+      MeetingMicrophoneDeliveryTests
+      StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
