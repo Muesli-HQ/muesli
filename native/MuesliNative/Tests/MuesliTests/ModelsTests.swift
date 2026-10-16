@@ -443,6 +443,20 @@ struct BackendOptionTests {
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
     }
 
+    @Test("Whisper decode options always skip special tokens")
+    func whisperDecodeOptionsSkipSpecialTokens() {
+        let cases: [(WhisperKitLanguage, String)] = [
+            (.auto, "small"),
+            (.english, "small"),
+            (.norwegian, "small"),
+            (.auto, "tiny.en"),
+        ]
+        for (language, model) in cases {
+            #expect(WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: model).skipSpecialTokens)
+        }
+        #expect(WhisperKitTranscriber.makeDecodeOptions(language: .norwegian, modelName: "small").language == "no")
+    }
+
     @Test("English-only and multilingual Whisper checkpoints are always in the catalog")
     func whisperCatalogIncludesEveryVariant() {
         #expect(BackendOption.whisperFamily == [

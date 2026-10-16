@@ -7,6 +7,21 @@ import MuesliCore
 
 @Suite("MuesliCLI", .serialized)
 struct MuesliCLITests {
+    @Test("summary output preference defaults off and round-trips into CLI configuration")
+    func summaryOutputPreference() throws {
+        for json in ["{}", #"{"meeting_summary_max_output_tokens":0}"#, #"{"meeting_summary_max_output_tokens":-1}"#] {
+            let app = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            let cli = try JSONDecoder().decode(CLISummaryConfig.self, from: Data(json.utf8))
+            #expect(app.meetingSummaryMaxOutputTokens == nil)
+            #expect(cli.meetingSummaryMaxOutputTokens == nil)
+        }
+        var app = AppConfig()
+        app.meetingSummaryMaxOutputTokens = 20_000
+        let data = try JSONEncoder().encode(app)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).meetingSummaryMaxOutputTokens == 20_000)
+        #expect(try JSONDecoder().decode(CLISummaryConfig.self, from: data).meetingSummaryMaxOutputTokens == 20_000)
+    }
+
     @Test("spec exposes the agent-facing command set")
     func specPayloadIncludesCommands() {
         let payload = MuesliCLI.specPayload()
