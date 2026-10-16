@@ -654,26 +654,31 @@ struct MuesliCKSyncEngineTests {
 
     @Test("CloudKit runtime requires both the private container and an explicit environment")
     func cloudEntitlementContractRejectsUnspecifiedEnvironment() {
-        let container = MuesliICloudSyncEngine.Schema.containerIdentifier
+        let container = "iCloud.com.example.mine"
         #expect(MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
             containers: [container],
-            environment: "Production"
+            environment: "Production",
+            container: container
         ))
         #expect(MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
             containers: container,
-            environment: "Development"
+            environment: "Development",
+            container: container
         ))
         #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
             containers: [container],
-            environment: ""
+            environment: "",
+            container: container
         ))
         #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
             containers: [container],
-            environment: "unspecified"
+            environment: "unspecified",
+            container: container
         ))
         #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
             containers: ["iCloud.example.wrong"],
-            environment: "Production"
+            environment: "Production",
+            container: container
         ))
     }
 
