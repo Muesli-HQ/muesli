@@ -11,8 +11,11 @@ private final class ObservationInvalidationFlag: @unchecked Sendable {
 @Suite("Meeting transcription selection observation")
 @MainActor
 struct MeetingTranscriptionSelectionObservationTests {
-    @Test("refreshing an unchanged meeting transcription selection does not invalidate observers")
-    func unchangedRefreshDoesNotInvalidateAppState() throws {
+    @Test(
+        "refreshing an unchanged meeting transcription selection does not invalidate observers",
+        arguments: [false, true]
+    )
+    func unchangedRefreshDoesNotInvalidateAppState(hasDownloadedMeetingModel: Bool) throws {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-meeting-selection-observation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -20,6 +23,9 @@ struct MeetingTranscriptionSelectionObservationTests {
 
         let store = DictationStore(databaseURL: supportDirectory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
+        // Inject availability so both normalizer branches run whatever models this
+        // machine has installed: no meeting model (fallback) and a resolved one.
+        let downloaded: [BackendOption] = hasDownloadedMeetingModel ? [.whisperSmall] : []
         let controller = MuesliController(
             runtime: RuntimePaths(
                 repoRoot: supportDirectory,
@@ -28,11 +34,17 @@ struct MeetingTranscriptionSelectionObservationTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: ConfigStore(supportDirectory: supportDirectory),
+            downloadedBackendOptions: { downloaded }
         )
 
         // The first refresh may legitimately settle the selection.
-        controller.refreshMeetingTranscriptionSelectionForAvailability()
+        let resolved = controller.refreshMeetingTranscriptionSelectionForAvailability()
+        if hasDownloadedMeetingModel {
+            #expect(resolved == .whisperSmall)
+        } else {
+            #expect(resolved == nil)
+        }
 
         // Settings calls this from onAppear. An unchanged refresh must not notify
         // observers, or SwiftUI keeps re-rendering the dashboard (#632).
