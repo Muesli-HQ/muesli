@@ -1,4 +1,5 @@
 import FluidAudio
+import Foundation
 import Testing
 import MuesliCore
 @testable import MuesliNativeApp
@@ -104,6 +105,95 @@ struct TranscriptReconcilerTests {
         )
 
         #expect(reconciled.systemSegments.map(\.text) == ["कि", "क"])
+    }
+
+    // MARK: - Microphone diarization
+
+    private var greetingSentences: [SpeechSegment] {
+        [
+            SpeechSegment(start: 0.0, end: 2.0, text: "Ahoj, paní Václavková."),
+            SpeechSegment(start: 2.0, end: 4.0, text: "Ahoj, pane Václavku."),
+        ]
+    }
+
+    @Test("contiguous mic sentences still merge without mic diarization")
+    func contiguousMicSentencesMergeWithoutMicDiarization() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.micSegments.map(\.text) == ["Ahoj, paní Václavková. Ahoj, pane Václavku."])
+    }
+
+    @Test("contiguous mic sentences from different local speakers stay separate")
+    func contiguousMicSentencesFromDifferentSpeakersStaySeparate() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.1),
+                makeDiarSeg(speakerId: "room_b", start: 2.1, end: 4.0),
+            ]
+        )
+
+        #expect(reconciled.micSegments.map(\.text) == ["Ahoj, paní Václavková.", "Ahoj, pane Václavku."])
+    }
+
+    @Test("contiguous mic sentences from the same local speaker still merge")
+    func contiguousMicSentencesFromSameSpeakerMerge() {
+        let mic = greetingSentences + [SpeechSegment(start: 4.0, end: 6.0, text: "Jak se máte?")]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.0),
+                makeDiarSeg(speakerId: "room_b", start: 2.0, end: 6.0),
+            ]
+        )
+
+        #expect(reconciled.micSegments.map(\.text) == ["Ahoj, paní Václavková.", "Ahoj, pane Václavku. Jak se máte?"])
+    }
+
+    @Test("single-speaker mic diarization keeps the existing merge")
+    func singleSpeakerMicDiarizationKeepsExistingMerge() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [makeDiarSeg(speakerId: "room_a", start: 0.0, end: 4.0)]
+        )
+
+        #expect(reconciled.micSegments.count == 1)
+    }
+
+    @Test("split mic turns get separate local speaker labels in the transcript")
+    func splitMicTurnsGetSeparateLabels() {
+        let micDiarization = [
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.1),
+            makeDiarSeg(speakerId: "room_b", start: 2.1, end: 4.0),
+        ]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: greetingSentences,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization
+        )
+        let transcript = TranscriptFormatter.merge(
+            micSegments: reconciled.micSegments,
+            systemSegments: reconciled.systemSegments,
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+        let lines = transcript.components(separatedBy: "\n")
+
+        #expect(lines.count == 2)
+        #expect(lines[0].hasSuffix("Local speaker 1: Ahoj, paní Václavková."))
+        #expect(lines[1].hasSuffix("Local speaker 2: Ahoj, pane Václavku."))
     }
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {

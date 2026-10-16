@@ -34,9 +34,11 @@ enum TranscriptReconciler {
     static func reconcile(
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
-        diarizationSegments: [TimedSpeakerSegment]?
+        diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil
     ) -> ReconciledTranscriptInputs {
-        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns))
+        let micSpeaker = micSpeakerResolver(for: micDiarizationSegments)
+        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns), speakerOf: micSpeaker)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
             micTurns: normalizedMicTurns,
@@ -47,7 +49,7 @@ enum TranscriptReconciler {
         var keptSystemTurns: [SpeechSegment] = []
 
         for window in windows {
-            let reconciledWindow = reconcile(window)
+            let reconciledWindow = reconcile(window, micSpeaker: micSpeaker)
             keptMicTurns.append(contentsOf: reconciledWindow.micTurns)
             keptSystemTurns.append(contentsOf: reconciledWindow.systemTurns)
         }
@@ -59,8 +61,8 @@ enum TranscriptReconciler {
         )
     }
 
-    private static func reconcile(_ window: OverlapWindow) -> OverlapWindow {
-        let mergedMicTurns = mergeReadableSegments(window.micTurns)
+    private static func reconcile(_ window: OverlapWindow, micSpeaker: MicSpeakerResolver?) -> OverlapWindow {
+        let mergedMicTurns = mergeReadableSegments(window.micTurns, speakerOf: micSpeaker)
         let keptSystemTurns = sortedSegments(dedupeSystemSegments(window.systemTurns))
 
         guard !mergedMicTurns.isEmpty, !keptSystemTurns.isEmpty else {
@@ -73,7 +75,8 @@ enum TranscriptReconciler {
         }
 
         let keptMicTurns = mergeReadableSegments(
-            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) }
+            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) },
+            speakerOf: micSpeaker
         )
 
         return OverlapWindow(
@@ -164,11 +167,28 @@ enum TranscriptReconciler {
         return !normalizedText(micTurn.text).isEmpty
     }
 
-    private static func mergeReadableSegments(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+    /// Resolves the local (mic) speaker of a turn; nil when not attributable.
+    typealias MicSpeakerResolver = (SpeechSegment) -> String?
+
+    /// Only splits the mic channel when the room actually had several voices,
+    /// mirroring the formatter's single-speaker "You" rule.
+    private static func micSpeakerResolver(for micDiarizationSegments: [TimedSpeakerSegment]?) -> MicSpeakerResolver? {
+        guard let micDiarizationSegments,
+              SpeakerAttribution.distinctSpeakerCount(in: micDiarizationSegments) > 1 else { return nil }
+        return { SpeakerAttribution.speakerID(for: $0, in: micDiarizationSegments) }
+    }
+
+    private static func mergeReadableSegments(
+        _ segments: [SpeechSegment],
+        speakerOf: MicSpeakerResolver? = nil
+    ) -> [SpeechSegment] {
         guard !segments.isEmpty else { return [] }
 
         let orderedSegments = sortedSegments(segments)
         var merged: [SpeechSegment] = [orderedSegments[0]]
+        // Speaker of the turn being accumulated, fixed by its first piece so a
+        // merged turn is never re-attributed as it grows.
+        var currentSpeaker = speakerOf?(orderedSegments[0])
 
         for segment in orderedSegments.dropFirst() {
             guard let previous = merged.last else {
@@ -177,7 +197,8 @@ enum TranscriptReconciler {
             }
 
             let gap = max(0, segment.start - previous.end)
-            if gap <= turnMergeGapSeconds {
+            let speaker = speakerOf?(segment)
+            if gap <= turnMergeGapSeconds && speaker == currentSpeaker {
                 merged[merged.count - 1] = SpeechSegment(
                     start: previous.start,
                     end: max(previous.end, segment.end),
@@ -185,6 +206,7 @@ enum TranscriptReconciler {
                 )
             } else {
                 merged.append(segment)
+                currentSpeaker = speaker
             }
         }
 
