@@ -2168,6 +2168,8 @@ struct AppConfig: Codable {
     var meetingLiveCaptionBackend: String = MeetingLiveCaptionBackend.defaultBackend.rawValue
     /// Reveals a compact live transcript beside the meeting waveform while the
     /// pointer is over either floating surface.
+    var enableMeetingOwnerRecognition: Bool = false
+    var meetingOwnerDisplayName: String = ""
     var showMeetingTranscriptOnIndicatorHover: Bool = true
     /// Allows experimental speaker names from meeting-app Accessibility evidence.
     /// Disabled by default until real app layouts and audio are validated.
@@ -2324,6 +2326,8 @@ struct AppConfig: Codable {
         case useCoreAudioTap = "use_core_audio_tap"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
+        case enableMeetingOwnerRecognition = "enable_meeting_owner_recognition"
+        case meetingOwnerDisplayName = "meeting_owner_display_name"
         case enableMeetingSpeakerAccessibility = "enable_meeting_speaker_accessibility"
         case showMeetingTranscriptOnIndicatorHover = "show_meeting_transcript_on_indicator_hover"
         case meetingHookEnabled = "meeting_hook_enabled"
@@ -2597,6 +2601,8 @@ struct AppConfig: Codable {
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend
             .resolved(try? c.decode(String.self, forKey: .meetingLiveCaptionBackend))
             .rawValue
+        enableMeetingOwnerRecognition = (try? c.decode(Bool.self, forKey: .enableMeetingOwnerRecognition)) ?? false
+        meetingOwnerDisplayName = (try? c.decode(String.self, forKey: .meetingOwnerDisplayName)) ?? ""
         enableMeetingSpeakerAccessibility = (try? c.decode(Bool.self, forKey: .enableMeetingSpeakerAccessibility)) ?? false
         showMeetingTranscriptOnIndicatorHover = (try? c.decode(Bool.self, forKey: .showMeetingTranscriptOnIndicatorHover)) ?? defaults.showMeetingTranscriptOnIndicatorHover
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled

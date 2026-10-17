@@ -143,7 +143,7 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(output == [1, 2, 3, 4, 5, 6, 9])
     }
 
-    @Test("session pause drains admitted PCM before chunk rotation and AEC reset",
+    @Test("session pause drains admitted PCM and aligns mic diarization through system-only gaps",
           arguments: ["stream", "queue", "fallback"], ["paused", "resume", "rapid", "stop", "discard"])
     func sessionPauseBoundary(backend: String, ending: String) async throws {
         let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback")
@@ -239,7 +239,7 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.2) == before.map { $0 / 2 } + [30_000] + after)
         // One track across chunk rotation, pause/resume and the final flush.
         #expect(urls.3 == diarizationURL)
-        #expect(try pcm(urls.3) == before + after)
+        #expect(try pcm(urls.3) == before + [Int16(0)] + after)
     }
 
     private static var micDiarizationConfig: AppConfig {

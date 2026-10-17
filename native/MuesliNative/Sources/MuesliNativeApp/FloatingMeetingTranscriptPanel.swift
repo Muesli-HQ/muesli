@@ -67,12 +67,12 @@ final class FloatingMeetingTranscriptModel {
     var isPresented = false
     var didCopy = false
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil) {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
         presentation.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState
+            speakerState: speakerState, microphoneLabel: microphoneLabel
         )
     }
 
@@ -80,7 +80,7 @@ final class FloatingMeetingTranscriptModel {
         let text = LiveTranscriptCopyContent.text(
             transcript: presentation.transcript,
             partialYou: presentation.partialYou,
-            partialOthers: presentation.partialOthers
+            partialOthers: presentation.partialOthers, microphoneLabel: presentation.microphoneLabel
         )
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -134,12 +134,12 @@ final class FloatingMeetingTranscriptPanelController {
         hostingView?.superview != nil && hostingView?.isHidden == false
     }
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil) {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
         model.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState
+            speakerState: speakerState, microphoneLabel: microphoneLabel
         )
     }
 
@@ -256,7 +256,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
         LiveTranscriptCopyContent.text(
             transcript: model.presentation.transcript,
             partialYou: model.presentation.partialYou,
-            partialOthers: model.presentation.partialOthers
+            partialOthers: model.presentation.partialOthers, microphoneLabel: model.presentation.microphoneLabel
         )
     }
 
@@ -337,7 +337,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
                 horizontalPadding: MuesliTheme.spacing12,
                 topPadding: MuesliTheme.spacing8,
                 bottomPadding: MuesliTheme.spacing8,
-                onOpen: onOpenNotes
+                onOpen: onOpenNotes, microphoneLabel: model.presentation.microphoneLabel
             )
         }
         .defaultScrollAnchor(.bottom)

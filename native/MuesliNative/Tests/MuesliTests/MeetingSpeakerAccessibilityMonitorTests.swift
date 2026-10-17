@@ -175,6 +175,19 @@ struct MeetingSpeakerAccessibilityMonitorTests {
         #expect(clock.elapsedTimeSeconds(isCapturing: true, now: 2.1) == 2.05)
     }
 
+    @Test func speakerAudioClockAdvancesSystemOnlyPaddingWithoutMarkingItAsFreshMicrophoneInput() {
+        let clock = MeetingSpeakerAudioTimelineClock()
+        clock.start()
+        clock.recordRecordedSamples(16_000, uptime: 1)
+
+        clock.breakContinuity()
+        clock.advanceTimeline(bySampleCount: 16_000)
+        #expect(clock.elapsedTimeSeconds(isCapturing: true, now: 1.1) == nil)
+
+        clock.recordRecordedSamples(800, uptime: 1.2)
+        #expect(clock.elapsedTimeSeconds(isCapturing: true, now: 1.3) == 2.05)
+    }
+
     @Test func startupEndingDuringAuthorizationNeverAcquiresRunningApplicationOwner() async {
         let fixture = SpeakerStartupFixture()
         let authorization = UUID()
@@ -195,6 +208,18 @@ struct MeetingSpeakerAccessibilityMonitorTests {
         #expect(!fixture.didAcquireOwner)
         #expect(!fixture.didStartMonitor)
         #expect(fixture.releaseCount == 0)
+    }
+
+    @Test func startupGateRetainsAuthorizationAfterEnding() {
+        let gate = MeetingSpeakerAccessibilityStartupGate()
+        let authorization = UUID()
+
+        #expect(gate.currentAuthorization == nil)
+        #expect(gate.authorize(authorization))
+        #expect(gate.currentAuthorization == authorization)
+        #expect(gate.end() == authorization)
+        #expect(gate.currentAuthorization == authorization)
+        #expect(!gate.isActive)
     }
 
     @Test func startupReleasesOwnerWhenShutdownWinsDuringAcquisition() async {

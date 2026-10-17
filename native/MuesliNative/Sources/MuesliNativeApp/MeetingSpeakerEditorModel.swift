@@ -2,6 +2,12 @@ import Foundation
 import MuesliCore
 import Observation
 
+struct MeetingSpeakerSearchInput: Equatable, Sendable {
+    let query: String
+    let version: MeetingTranscriptVersion?
+    let speakerRevision: Int64?
+}
+
 enum MeetingSpeakerEditorError: LocalizedError {
     case busy, invalidAction, conflict
     var errorDescription: String? {
@@ -54,19 +60,21 @@ final class MeetingSpeakerEditorModel {
         speakers.filter { $0.key != turn.speaker }
     }
 
-    func updateMatchingTurns(query: String, version: MeetingTranscriptVersion?) async {
+    func updateMatchingTurns(_ input: MeetingSpeakerSearchInput) async {
         let token = UUID()
         searchGeneration = token
         matchingTurns = []
         guard let snapshot else {
             return
         }
-        guard snapshot.version == version else { return }
+        guard snapshot.version == input.version, snapshot.state.revision == input.speakerRevision else { return }
         let state = snapshot.state
         let matches = await Task.detached(priority: .userInitiated) {
-            state.matchingTurns(query: query)
+            state.matchingTurns(query: input.query)
         }.value
-        guard searchGeneration == token, !Task.isCancelled, self.snapshot?.version == version else { return }
+        guard searchGeneration == token, !Task.isCancelled,
+              self.snapshot?.version == input.version,
+              self.snapshot?.state.revision == input.speakerRevision else { return }
         matchingTurns = matches
     }
 

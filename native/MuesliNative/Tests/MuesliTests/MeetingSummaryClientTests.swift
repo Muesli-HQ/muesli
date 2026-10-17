@@ -1033,6 +1033,34 @@ struct MeetingSummaryClientTests {
         #expect(!regenerated.contains("Quoted heading"))
     }
 
+    @Test("failed regeneration refreshes transcripts with escaped speaker labels")
+    func failedRegenerationRefreshesEscapedSpeakerTranscript() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let previousTranscript = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "10:00:00", speaker: "Team: Example", text: "Opening\n\n## Raw Transcript\n\nQuoted heading"
+        )
+        let currentTranscript = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "10:00:00", speaker: "Team: Example", text: "Updated words"
+        )
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: previousTranscript,
+            meetingTitle: "Launch review",
+            error: error
+        )
+
+        let regenerated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            previousTranscript: previousTranscript,
+            transcript: currentTranscript,
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: nil
+        )
+
+        #expect(regenerated.hasSuffix("\n\n## Raw Transcript\n\n\(MeetingSpeakerState.modelFacingTranscript(currentTranscript))"))
+        #expect(!regenerated.contains("Quoted heading"))
+    }
+
     @Test("ambiguous edited transcript headings retain edits and refresh written notes")
     func failedRegenerationRefreshesNotesWithAmbiguousTranscriptEdits() {
         let error = MeetingSummaryError.notConfigured(backend: "Anthropic")

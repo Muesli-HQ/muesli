@@ -447,16 +447,16 @@ enum MeetingSummaryClient {
         error: Error,
         manualNotes: String?
     ) -> String {
+        let modelFacingPreviousTranscript = MeetingSpeakerState.modelFacingTranscript(previousTranscript)
         if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let marker = "\n\n## Raw Transcript\n\n"
-            let readablePreviousTranscript = MeetingSpeakerState.modelFacingTranscript(previousTranscript)
             guard isSummaryFailureNotes(existingNotes) else {
                 return existingNotes
             }
             guard let markerRange = failureTranscriptBoundary(
                 in: existingNotes,
                 marker: marker,
-                previousTranscript: readablePreviousTranscript
+                previousTranscript: modelFacingPreviousTranscript
             ) else {
                 return refreshedAmbiguousFailureWrittenNotes(existingNotes, currentNotes: manualNotes, marker: marker)
             }
@@ -466,7 +466,7 @@ enum MeetingSummaryClient {
             )
             let previousTranscriptSection = String(existingNotes[markerRange.upperBound...])
             // Only replace an untouched transcript section; edits to it stay in the notes.
-            let transcriptSection = previousTranscriptSection == readablePreviousTranscript
+            let transcriptSection = previousTranscriptSection == modelFacingPreviousTranscript
                 ? MeetingSpeakerState.modelFacingTranscript(transcript)
                 : previousTranscriptSection
             return updatedPrefix + marker + transcriptSection

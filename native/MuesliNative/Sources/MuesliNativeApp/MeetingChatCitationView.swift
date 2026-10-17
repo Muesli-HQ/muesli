@@ -27,10 +27,19 @@ struct MeetingChatDocumentTarget {
     ) -> [NSRange] {
         let nsText = text as NSString
         if let speakerState, speakerState.isValid, speakerState.matchesTranscript(text) {
-            let isLegacyRender = speakerState.renderLegacy() == text
-            let labels = speakerState.labels
-            var searchLocation = 0
+            let isLegacyRender = speakerState.renderLegacy() == text && speakerState.render() != text
+            let prefix = isLegacyRender ? "" : (speakerState.renderedPrefix ?? "")
+            let prefixLength = (prefix as NSString).length
             var ranges: [NSRange] = []
+            if !prefix.isEmpty {
+                prefix.enumerateSubstrings(in: prefix.startIndex..<prefix.endIndex, options: .byLines) {
+                    line, lineRange, _, _ in
+                    guard let line, !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                    ranges.append(NSRange(lineRange, in: prefix))
+                }
+            }
+            let labels = speakerState.labels
+            var searchLocation = prefixLength
             for turn in speakerState.turns {
                 let speaker = labels[turn.speaker] ?? "Unknown speaker"
                 let renderedTurn = isLegacyRender

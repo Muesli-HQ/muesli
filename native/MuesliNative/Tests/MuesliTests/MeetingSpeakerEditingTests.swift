@@ -116,6 +116,30 @@ struct MeetingSpeakerEditingTests {
         #expect(decodedLegacyState.sampleRange(for: key) == nil)
     }
 
+    @Test func priorEligibilityKeepsNonMicrophoneSamplesButRejectsMicrophoneSamples() {
+        let epoch = UUID()
+        let microphone = MeetingSpeaker(key: .init(epoch: epoch, channel: .microphone, clusterID: "source"),
+            rank: 1, fallbackLabel: "Microphone")
+        let system = MeetingSpeaker(key: .init(epoch: epoch, channel: .system, clusterID: "remote"),
+            rank: 2, fallbackLabel: "Speaker 1")
+        let imported = MeetingSpeaker(key: .init(epoch: epoch, channel: .imported, clusterID: "imported"),
+            rank: 3, fallbackLabel: "Speaker 2")
+        let priorState = MeetingSpeakerState(
+            epoch: epoch,
+            speakers: [microphone, system, imported],
+            turns: [
+                .init(speaker: microphone.key, timestamp: "00:00:00", start: 0, end: 6, text: "Room words"),
+                .init(speaker: system.key, timestamp: "00:00:10", start: 10, end: 16, text: "Remote words"),
+                .init(speaker: imported.key, timestamp: "00:00:20", start: 20, end: 26, text: "Imported words"),
+            ],
+            sampleEligibilityVersion: 1
+        )
+
+        #expect(priorState.sampleRange(for: microphone.key) == nil)
+        #expect(priorState.sampleRange(for: system.key)?.duration == 6)
+        #expect(priorState.sampleRange(for: imported.key)?.duration == 6)
+    }
+
     private func fixture(text: String = "Original words") -> MeetingSpeakerState {
         let epoch = UUID()
         let speakers = (0..<3).map { index in MeetingSpeaker(key: .init(epoch: epoch, channel: .system, clusterID: "c\(index)"), rank: index + 1, fallbackLabel: "Speaker \(index + 1)") }
@@ -199,8 +223,38 @@ extension MeetingSpeakerEditingTests {
         let model = MeetingSpeakerEditorModel()
         model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
 
-        await model.updateMatchingTurns(query: "target", version: version)
+        await model.updateMatchingTurns(.init(query: "target", version: version, speakerRevision: state.revision))
 
         #expect(model.matchingTurns.map(\.text) == ["Search target"])
+    }
+
+    @MainActor @Test func editorSearchRefreshesAfterGenericSpeakerReassignment() async {
+        let epoch = UUID()
+        let originalKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner")
+        let reassignedKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "guest")
+        let version = MeetingTranscriptVersion(generation: 1, digest: "same-transcript")
+        var state = MeetingSpeakerState(epoch: epoch, speakers: [
+            .init(key: originalKey, rank: 1, fallbackLabel: "Microphone"),
+            .init(key: reassignedKey, rank: 2, fallbackLabel: "Microphone"),
+        ], turns: [
+            .init(speaker: originalKey, timestamp: "00:00:01", start: 1, end: 2, text: "Shared audio"),
+        ])
+        let model = MeetingSpeakerEditorModel()
+        model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
+
+        let originalSearch = MeetingSpeakerSearchInput(query: "Microphone", version: version, speakerRevision: state.revision)
+        await model.updateMatchingTurns(originalSearch)
+        #expect(model.matchingTurns.map(\.speaker) == [originalKey])
+
+        let reassigned = state.correct(.reassign(state.turns[0].id, to: reassignedKey))
+        #expect(reassigned)
+        state.revision += 1
+        model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
+
+        let updatedSearch = MeetingSpeakerSearchInput(query: "Microphone", version: version, speakerRevision: state.revision)
+        #expect(originalSearch != updatedSearch)
+        await model.updateMatchingTurns(updatedSearch)
+
+        #expect(model.matchingTurns.map(\.speaker) == [reassignedKey])
     }
 }
