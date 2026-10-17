@@ -25,6 +25,22 @@ struct MeetingChatExporterTests {
         #expect(!edited.contains("00:00:"))
         #expect(MeetingChatExporter.plainText(turn: turn(), session: session(), useEditedDraft: false).contains("Planning"))
     }
+
+    @Test func sourceExportsDecodeNewSpeakerLabelsWithoutChangingCitationExcerpt() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example", text: "Ship Friday."
+        )
+        var value = turn()
+        value.citations[0].kind = .transcript
+        value.citations[0].excerpt = stored
+
+        let markdown = MeetingChatExporter.markdown(turn: value, session: session(), useEditedDraft: false)
+
+        #expect(markdown.contains("    [00:00:01] Team: Example: Ship Friday."))
+        #expect(!markdown.contains(#"Team\: Example"#))
+        #expect(value.citations[0].excerpt == stored)
+    }
+
     @Test func quickPromptsPrepareEditableTextAndAskForUnknownIdentity() {
         let prompt = MeetingChatQuickAction.draftFollowUp.prepare(scope: .init(), now: Date(), calendar: .current, userDisplayName: nil)
         #expect(prompt.isDraft)

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import MuesliCore
 
 /// Canonical definitions for app controls and voice tools. Add a setting here
@@ -335,12 +336,34 @@ extension MuesliController {
             self.updatePostProcessorModel($0, for: .hosted(.openRouter))
         }
 
+        toggle("meeting_owner_recognition", "Recognize my voice in meetings (experimental)", \.enableMeetingOwnerRecognition,
+               unavailable: { enabled in enabled && !self.config.diarizeMicrophoneAudio ? "Enable microphone diarization first." : nil },
+               apply: { enabled in
+                   guard !enabled || self.config.diarizeMicrophoneAudio else { throw MuesliSettings.Failure.rejected("Enable microphone diarization first.") }
+                   self.updateConfig { $0.enableMeetingOwnerRecognition = enabled }
+               })
+        toggle("meeting_ax_speakers", "Meeting app speaker names (experimental)", \.enableMeetingSpeakerAccessibility,
+               unavailable: { enabled in enabled && !AXIsProcessTrusted() ? "Allow Accessibility in System Settings first." : nil },
+               apply: { enabled in
+                   guard !enabled || AXIsProcessTrusted() else { throw MuesliSettings.Failure.rejected("Allow Accessibility in System Settings first.") }
+                   self.updateConfig { $0.enableMeetingSpeakerAccessibility = enabled }
+               })
         toggle("meeting_hover_transcript", "Show meeting transcript on hover", \.showMeetingTranscriptOnIndicatorHover)
         toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
         toggle("auto_export_meetings", "Auto-export meetings", \.autoExportMarkdownEnabled)
         toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
+        toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio,
+               unavailable: { enabled in
+                   !enabled && self.config.enableMeetingOwnerRecognition ? "Turn off owner recognition first." : nil
+               },
+               apply: { enabled in
+                   guard enabled || !self.config.enableMeetingOwnerRecognition else {
+                       throw MuesliSettings.Failure.rejected("Turn off owner recognition first.")
+                   }
+                   self.updateConfig { $0.diarizeMicrophoneAudio = enabled }
+               })
         menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })
         menu("meeting_reminder_time", "Meeting reminder timing", ScheduledMeetingNotificationLeadTime.allCases, \.scheduledMeetingNotificationLeadTime,
              title: { $0 == .atStart ? "At start" : "\(Int($0.seconds / 60)) minutes before" })

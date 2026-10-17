@@ -53,7 +53,7 @@ struct MeetingMicrophoneDeliveryTests {
             backend: .parakeetEnglish,
             runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
                                   menuIcon: nil, appIcon: nil, bundlePath: nil),
-            config: AppConfig(),
+            config: Self.micDiarizationConfig,
             templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
             transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
             systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
@@ -73,7 +73,7 @@ struct MeetingMicrophoneDeliveryTests {
             expectedSystem += reference
         }
         let urls = await session.testingFinishCapture()
-        defer { for url in [urls.0, urls.1, urls.2].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
         func pcm(_ url: URL?) throws -> [Int16] {
             let url = try #require(url)
             return try Data(contentsOf: url).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
@@ -82,6 +82,7 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.1) == expectedSystem) // The actual system transcription chunk.
         let mixed = zip(expectedMic, expectedSystem).map { Int16((Int($0) + Int($1)) / 2) }
         #expect(try pcm(urls.2) == mixed) // Neither side lost from the retained recording.
+        #expect(try pcm(urls.3) == expectedMic) // Mic diarization shares the cleaned mic timeline.
     }
 
     @Test("steady microphone delivery never deduplicates consecutive PCM using timestamps",
@@ -159,7 +160,7 @@ struct MeetingMicrophoneDeliveryTests {
             backend: .parakeetEnglish,
             runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
                                   menuIcon: nil, appIcon: nil, bundlePath: nil),
-            config: AppConfig(),
+            config: Self.micDiarizationConfig,
             templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
             transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
             systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: processor))
@@ -178,6 +179,7 @@ struct MeetingMicrophoneDeliveryTests {
         }
         defer { delayed.release.signal(); pipeline.release.signal() }
         try await session.testingStartCapture()
+        let diarizationURL = try #require(session.testingMicDiarizationFileURL)
         try producer.emit([1, 2], at: 100)
         try await delayed.waitUntilEntered()
         try producer.emit([3], at: 102)
@@ -210,6 +212,7 @@ struct MeetingMicrophoneDeliveryTests {
                 #expect(micChunks.isEmpty && systemChunks.isEmpty)
                 #expect(processor.events == ["reset"]) // Late pause cannot resurrect a discarded pipeline.
             }
+            #expect(!FileManager.default.fileExists(atPath: diarizationURL.path)) // Discard deletes the mic track.
             return
         }
         if ending == "resume" || ending == "rapid" {
@@ -220,7 +223,7 @@ struct MeetingMicrophoneDeliveryTests {
             try producer.emit([4, 5], at: 200)
         }
         let urls = await session.testingFinishCapture()
-        defer { for url in [urls.0, urls.1, urls.2].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
         let before: [Int16] = [2047, 4095, 6143]
         let after: [Int16] = ending == "resume" || ending == "rapid" ? [8191, 10239] : []
         session.testingPipelineBarrier {
@@ -232,6 +235,15 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.0) == after)
         #expect(try pcm(urls.1).isEmpty)
         #expect(try pcm(urls.2) == before.map { $0 / 2 } + after)
+        // One track across chunk rotation, pause/resume and the final flush.
+        #expect(urls.3 == diarizationURL)
+        #expect(try pcm(urls.3) == before + after)
+    }
+
+    private static var micDiarizationConfig: AppConfig {
+        var config = AppConfig()
+        config.diarizeMicrophoneAudio = true
+        return config
     }
 
     @Test("delayed native resume recycles every active buffer without admitting paused audio",

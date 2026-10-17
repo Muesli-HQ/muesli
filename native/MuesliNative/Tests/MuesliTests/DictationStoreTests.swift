@@ -1237,6 +1237,214 @@ struct DictationStoreTests {
         #expect(try store.textRecordsNeedingSync().isEmpty)
     }
 
+    @Test("sync summary freshness follows explicit status, not note changes")
+    func syncedSummaryFreshnessUsesExplicitStatus() throws {
+        let store = try makeStore()
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Original transcript",
+            summaryText: "Original notes",
+            summaryIsCurrent: true,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-original"
+        )))
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes",
+            summaryIsCurrent: false,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(60),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-transcript"
+        )))
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.textRecordForSync(recordName: "meeting-summary-freshness")?.summaryIsCurrent == false)
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes with typo fixed",
+            summaryIsCurrent: false,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(120),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-note-edit"
+        )))
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes with typo fixed",
+            summaryIsCurrent: true,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(180),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-summary"
+        )))
+
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.textRecordForSync(recordName: "meeting-summary-freshness")?.summaryIsCurrent == true)
+    }
+
+    @Test("local summary freshness stays dirty when an older upload completes")
+    func localSummaryFreshnessChangeSurvivesOlderUpload() throws {
+        let store = try makeStore()
+        // Simulate a backwards clock adjustment after an upload captured this revision.
+        let timestamp = Date(timeIntervalSince1970: 2_000_000_000)
+        let meetingID = try store.insertMeeting(
+            title: "Summary freshness",
+            calendarEventID: nil,
+            startTime: timestamp,
+            endTime: timestamp.addingTimeInterval(60),
+            rawTranscript: "Meeting transcript",
+            formattedNotes: "Meeting notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let initial = try #require(try store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        try setMeetingDirtyTitle(
+            recordName: initial.id,
+            title: "Summary freshness",
+            updatedAt: timestamp,
+            store: store
+        )
+        let inFlight = try #require(try store.textRecordForSync(recordName: initial.id))
+        #expect(inFlight.updatedAt == timestamp)
+        #expect(try store.markTextRecordSynced(
+            kind: .meeting,
+            recordName: inFlight.id,
+            changeTag: "tag-before-summary",
+            recordUpdatedAt: inFlight.updatedAt,
+            syncedAt: timestamp
+        ))
+        #expect(try store.textRecordsNeedingSync().isEmpty)
+
+        let version = try #require(try store.meetingTranscriptVersion(id: meetingID))
+        try store.markMeetingSummaryStale(id: meetingID, expected: version)
+
+        let pending = try #require(try store.textRecordsNeedingSync().first { $0.id == inFlight.id })
+        #expect(pending.updatedAt > inFlight.updatedAt)
+        #expect(pending.summaryIsCurrent == false)
+        #expect(try !store.markTextRecordSynced(
+            kind: .meeting,
+            recordName: inFlight.id,
+            changeTag: "tag-before-summary",
+            recordUpdatedAt: inFlight.updatedAt,
+            syncedAt: timestamp.addingTimeInterval(60)
+        ))
+        #expect(try store.textRecordsNeedingSync().contains { $0.id == inFlight.id })
+    }
+
+    @Test("synced summary freshness reports only meetings whose stale state changes")
+    func syncedSummaryFreshnessChangesAreMeetingScoped() throws {
+        let store = try makeStore()
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+        let first = SyncTextRecord(
+            id: "meeting-scoped-freshness",
+            kind: .meeting,
+            title: "Fresh meeting",
+            text: "Original transcript",
+            summaryIsCurrent: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2
+        )
+        let initial = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([first])
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+        #expect(initial.freshnessChangedMeetingIDs.isEmpty)
+
+        var transcriptEdit = first
+        transcriptEdit.text = "Updated transcript"
+        transcriptEdit.summaryIsCurrent = nil
+        transcriptEdit.updatedAt = timestamp.addingTimeInterval(60)
+        let transcriptUpdate = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([transcriptEdit])
+        #expect(transcriptUpdate.freshnessChangedMeetingIDs == [meetingID])
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        var metadataEdit = transcriptEdit
+        metadataEdit.title = "Renamed meeting"
+        metadataEdit.updatedAt = timestamp.addingTimeInterval(120)
+        let metadataUpdate = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([metadataEdit])
+        #expect(metadataUpdate.freshnessChangedMeetingIDs.isEmpty)
+
+        var summaryRefresh = metadataEdit
+        summaryRefresh.summaryIsCurrent = true
+        summaryRefresh.updatedAt = timestamp.addingTimeInterval(180)
+        let freshnessUpdate = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([summaryRefresh])
+        #expect(freshnessUpdate.freshnessChangedMeetingIDs == [meetingID])
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+    }
+
+    @Test("synced meeting tombstones report the local meeting ID for revision cleanup")
+    func syncedMeetingTombstoneReportsDeletedMeetingID() throws {
+        let store = try makeStore()
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+        let record = SyncTextRecord(
+            id: "meeting-summary-freshness-tombstone",
+            kind: .meeting,
+            title: "Deleted meeting",
+            text: "Transcript",
+            summaryIsCurrent: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 1
+        )
+        _ = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([record])
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+
+        var tombstone = record
+        tombstone.isDeleted = true
+        tombstone.text = ""
+        tombstone.updatedAt = timestamp.addingTimeInterval(60)
+        let result = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([tombstone])
+
+        #expect(result.deletedMeetingIDs == [meetingID])
+        #expect(result.freshnessChangedMeetingIDs.isEmpty)
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+    }
+
     @Test("deleted unsynced local text records are not uploaded")
     func deletedUnsyncedLocalTextRecordsAreNotUploaded() throws {
         let store = try makeStore()
@@ -1510,6 +1718,31 @@ struct DictationStoreTests {
         #expect(cloud.recordID == recordID)
         #expect(cloud["text"] as? String == "Local dirty text")
         #expect(cloud["updatedAt"] as? Date == updatedAt)
+    }
+
+    @Test("sync cloud records preserve meeting summary freshness")
+    func syncCloudRecordPreservesSummaryFreshness() throws {
+        let updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let record = SyncTextRecord(
+            id: "meeting-summary-stale",
+            kind: .meeting,
+            title: "Stale summary",
+            text: "Edited transcript",
+            summaryText: "Notes with a typo fix",
+            summaryIsCurrent: false,
+            source: "macos",
+            meetingStatus: .completed,
+            createdAt: updatedAt.addingTimeInterval(-60),
+            updatedAt: updatedAt,
+            durationSeconds: 60,
+            wordCount: 2
+        )
+
+        let cloud = MuesliICloudSyncEngine.syncZoneCloudRecord(from: record)
+        let roundTripped = try #require(MuesliICloudSyncEngine.syncTextRecord(from: cloud))
+
+        #expect((cloud["summaryIsCurrent"] as? NSNumber)?.boolValue == false)
+        #expect(roundTripped.summaryIsCurrent == false)
     }
 
     @Test("sync cloud record restores persisted CKRecord system fields")
@@ -3747,6 +3980,26 @@ struct DictationStoreTests {
 
         let byNotes = try store.searchMeetings(query: "Prioritized")
         #expect(byNotes.count == 1)
+    }
+
+    @Test("searchMeetings matches escaped speaker labels in their readable form")
+    func searchMeetingsEscapedSpeakerLabel() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Speaker label search",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: MeetingSpeakerState.renderTranscriptTurn(
+                timestamp: "00:00:01", speaker: "Team: Example", text: "Ship Friday."
+            ),
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        #expect(try store.searchMeetings(query: "Team: Example").map(\.id) == [id])
     }
 
     @Test("searchMeetings matches manual notes")

@@ -1,6 +1,15 @@
 import Foundation
+import MuesliCore
 
 enum MeetingPreviewText {
+    static func transcriptSearchField(rawTranscript: String, matching query: String) -> String? {
+        let readableTranscript = MeetingSpeakerState.modelFacingTranscript(rawTranscript)
+        let normalizedQuery = query.lowercased()
+        guard readableTranscript.lowercased().contains(normalizedQuery)
+                || rawTranscript.lowercased().contains(normalizedQuery) else { return nil }
+        return plainText(from: rawTranscript)
+    }
+
     static func snippet(from source: String, limit: Int = 88) -> String {
         let compact = plainText(from: source)
             .split(whereSeparator: \.isWhitespace)
@@ -17,7 +26,7 @@ enum MeetingPreviewText {
         var lines: [String] = []
         var isInsideFence = false
 
-        for rawLine in markdown
+        for rawLine in MeetingSpeakerState.modelFacingTranscript(markdown)
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false) {
