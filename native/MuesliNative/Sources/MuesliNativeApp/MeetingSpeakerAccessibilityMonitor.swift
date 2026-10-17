@@ -6,10 +6,17 @@ import MuesliCore
 struct MeetingSpeakerAuthorizationCache {
     static let refreshInterval: TimeInterval = 2
 
-    private(set) var generation = UUID()
-    private var enabled: Bool?
-    private var trusted: Bool?
+    private(set) var generation: UUID
+    private(set) var enabled: Bool?
+    private(set) var trusted: Bool?
     private var checkedAt: Double?
+
+    init(generation: UUID = UUID(), enabled: Bool? = nil, trusted: Bool? = nil) {
+        self.generation = generation
+        self.enabled = enabled
+        self.trusted = trusted
+        self.checkedAt = nil
+    }
 
     mutating func authorization(
         enabled nextEnabled: Bool,

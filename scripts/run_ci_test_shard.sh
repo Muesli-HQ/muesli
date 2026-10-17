@@ -25,6 +25,7 @@ case "${shard}" in
       OwnerVoiceMatcherTests
       VoiceProfileStoreTests
       MeetingLiveSpeakerTests
+      MeetingDeferredSpeakerTests
       MeetingSpeakerStateTests
       MeetingSpeakerAccessibilityTests
       MeetingSpeakerAccessibilityMonitorTests

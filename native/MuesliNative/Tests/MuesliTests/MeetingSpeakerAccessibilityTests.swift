@@ -68,6 +68,28 @@ struct MeetingSpeakerAccessibilityTests {
         #expect(MeetingSpeakerTimeline(observations: observations, incomplete: true).assignments(activities: activity).names.isEmpty)
     }
 
+    @Test func boundedTimelinePreservesFrameAndAggregateDiagnostics() {
+        let frame = MeetingSpeakerFrame(scope: "window", app: .zoom, reason: .ambiguous,
+                                        diagnosticReasons: [.multipleWindows])
+        let timeline = MeetingSpeakerTimeline(
+            observations: [.init(time: 1, continuity: "one", frame: frame)],
+            diagnosticCounts: [.scopeChanged: 2]
+        )
+
+        let bounded = timeline.bounded()
+
+        #expect(bounded.observations.first?.frame.diagnosticReasons == [.multipleWindows])
+        #expect(bounded.diagnosticCounts[.scopeChanged] == 2)
+    }
+
+    @Test func timelineDiagnosticCountsRoundTripThroughCodable() throws {
+        let timeline = MeetingSpeakerTimeline(diagnosticCounts: [.scopeChanged: 2, .windowLimit: 1])
+
+        let decoded = try JSONDecoder().decode(MeetingSpeakerTimeline.self, from: JSONEncoder().encode(timeline))
+
+        #expect(decoded.diagnosticCounts == timeline.diagnosticCounts)
+    }
+
     @Test func votesAcceptPollIntervalsWithinSharedSamplingBudget() {
         let state = fixture()
         let key = state.speakers[0].key

@@ -97,6 +97,16 @@ struct MeetingSpeakerAccessibilityMonitorTests {
         #expect(checks == 2)
     }
 
+    @Test func restoredAuthorizationCacheKeepsItsGenerationUntilPermissionChanges() {
+        let persistedGeneration = UUID()
+        var cache = MeetingSpeakerAuthorizationCache(generation: persistedGeneration, enabled: true, trusted: true)
+
+        #expect(cache.authorization(enabled: true, now: 10, isTrusted: { true }) == persistedGeneration)
+        #expect(cache.generation == persistedGeneration)
+        #expect(cache.authorization(enabled: true, now: 11, forceRefresh: true, isTrusted: { false }) == nil)
+        #expect(cache.generation != persistedGeneration)
+    }
+
     @Test func runningApplicationSnapshotCanBeReadWithoutMainActorRefresh() {
         let store = MeetingSpeakerRunningAppsSnapshotStore()
         let apps = [RunningAppSnapshot(bundleID: "us.zoom.xos", appName: "Zoom", processIdentifier: 10, isActive: true)]

@@ -377,6 +377,46 @@ struct MeetingChatNavigationTests {
         #expect(MeetingTranscriptContentState(hasLoaded: true, messageCount: 1) == .messages)
     }
 
+    @Test func structuredTranscriptLocatorIncludesRowsBeforeResumedSpeakerTurns() {
+        let epoch = UUID(), key = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "source")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "Speaker 1")],
+            turns: [
+                .init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Current row one"),
+                .init(speaker: key, timestamp: "00:00:02", start: 2, end: 3, text: "Current row two")
+            ])
+        state.transcriptPrefix = "Earlier row one\nEarlier row two\n\n"
+        let transcript = state.render() as NSString
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Earlier row one"), speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Earlier row two"), speakerState: state) == 1)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Current row one"), speakerState: state) == 2)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Current row two"), speakerState: state) == 3)
+    }
+
+    @Test func legacyTranscriptLocatorIncludesTranscriptPrefixRows() {
+        let epoch = UUID(), key = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "source")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "Speaker 1")],
+            turns: [.init(speaker: key, timestamp: "00:00:03", start: 3, end: 4, text: "Current passage")])
+        #expect(state.assign(.init(name: "Team: Example", provenance: .manual), to: key))
+        state.transcriptPrefix = "Earlier row one\nEarlier row two\n\n"
+        state.renderedPrefix = "[00:00:02] Old rendered label: Prefix outside legacy output\n"
+        let transcript = state.renderLegacy() as NSString
+
+        #expect((transcript as String).contains("Prefix outside legacy output") == false)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Earlier row one"), speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Earlier row two"), speakerState: state) == 1)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript as String,
+            range: transcript.range(of: "Current passage"), speakerState: state) == 2)
+    }
+
     @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() async throws {
         let (_, store, _) = try controllerFixture()
         let folder = try store.createFolder(name: "Original project")

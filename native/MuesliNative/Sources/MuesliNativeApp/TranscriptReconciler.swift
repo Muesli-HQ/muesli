@@ -41,9 +41,13 @@ enum TranscriptReconciler {
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
         micDiarizationSegments: [TimedSpeakerSegment]? = nil,
-        preserveMicrophoneIdentityBoundaries: Bool = false
+        preserveMicrophoneIdentityBoundaries: Bool = false,
+        preserveTurnBoundaries: Bool = false
     ) -> ReconciledTranscriptInputs {
-        let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+        let localDiarization = SpeakerAttribution.localDiarization(
+            from: micDiarizationSegments,
+            preserveSingleSpeakerIdentity: preserveMicrophoneIdentityBoundaries
+        )
         let micSpeaker = micSpeakerResolver(for: preserveMicrophoneIdentityBoundaries
             ? micDiarizationSegments
             : localDiarization)
@@ -53,7 +57,10 @@ enum TranscriptReconciler {
         let attributableMicTurns = micSpeaker == nil || preserveMicrophoneIdentityBoundaries
             ? micTurns
             : MicTurnNormalizer.sentenceSegments(micTurns)
-        let normalizedMicTurns = mergeReadableSegments(sortedSegments(attributableMicTurns), speakerOf: micSpeaker)
+        let sortedMicTurns = sortedSegments(attributableMicTurns)
+        let normalizedMicTurns = preserveTurnBoundaries
+            ? sortedMicTurns
+            : mergeReadableSegments(sortedMicTurns, speakerOf: micSpeaker)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
             micTurns: normalizedMicTurns,
@@ -64,7 +71,7 @@ enum TranscriptReconciler {
         var keptSystemTurns: [SpeechSegment] = []
 
         for window in windows {
-            let reconciledWindow = reconcile(window, micSpeaker: micSpeaker)
+            let reconciledWindow = reconcile(window, micSpeaker: micSpeaker, preserveTurnBoundaries: preserveTurnBoundaries)
             keptMicTurns.append(contentsOf: reconciledWindow.micTurns)
             keptSystemTurns.append(contentsOf: reconciledWindow.systemTurns)
         }
@@ -78,8 +85,10 @@ enum TranscriptReconciler {
         )
     }
 
-    private static func reconcile(_ window: OverlapWindow, micSpeaker: MicSpeakerResolver?) -> OverlapWindow {
-        let mergedMicTurns = mergeReadableSegments(window.micTurns, speakerOf: micSpeaker)
+    private static func reconcile(_ window: OverlapWindow, micSpeaker: MicSpeakerResolver?, preserveTurnBoundaries: Bool) -> OverlapWindow {
+        let mergedMicTurns = preserveTurnBoundaries
+            ? sortedSegments(window.micTurns)
+            : mergeReadableSegments(window.micTurns, speakerOf: micSpeaker)
         let keptSystemTurns = sortedSegments(dedupeSystemSegments(window.systemTurns))
 
         guard !mergedMicTurns.isEmpty, !keptSystemTurns.isEmpty else {
@@ -91,10 +100,8 @@ enum TranscriptReconciler {
             )
         }
 
-        let keptMicTurns = mergeReadableSegments(
-            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) },
-            speakerOf: micSpeaker
-        )
+        let retainedMicTurns = mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) }
+        let keptMicTurns = preserveTurnBoundaries ? retainedMicTurns : mergeReadableSegments(retainedMicTurns, speakerOf: micSpeaker)
 
         return OverlapWindow(
             start: window.start,

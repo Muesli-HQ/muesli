@@ -253,6 +253,10 @@ final class AppState {
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var meetingSpeakerLabelingJobs: [Int64: MeetingSpeakerLabelingJob] = [:]
+    var meetingSpeakerLabelingRecovery: Set<Int64> = []
+    var meetingSpeakerRecoveryAudio: [Int64: [URL]] = [:]
+    var meetingSpeakerRecoveryDescriptors: [Int64: [MeetingSpeakerBacklogDescriptor]] = [:]
     var liveMeetingSpeakerState: MeetingSpeakerState? = nil
     var liveMeetingSpeakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil
     var liveMeetingMicrophoneLabel = "You"

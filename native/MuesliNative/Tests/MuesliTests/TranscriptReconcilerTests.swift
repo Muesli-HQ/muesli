@@ -107,6 +107,33 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.systemSegments.map(\.text) == ["कि", "क"])
     }
 
+    @Test("deferred reconciliation removes duplicate system segments while preserving turns for later labeling")
+    func deferredReconciliationPreservesTurnBoundaries() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [SpeechSegment(start: 0, end: 0.8, text: "First"),
+                       SpeechSegment(start: 0.8, end: 1.6, text: "Second")],
+            systemSegments: [SpeechSegment(start: 0.8, end: 1.2, text: "Remote"),
+                             SpeechSegment(start: 0.9, end: 1.1, text: "Remote")],
+            diarizationSegments: nil,
+            preserveTurnBoundaries: true
+        )
+        #expect(reconciled.micSegments.map(\.text) == ["First", "Second"])
+        #expect(reconciled.systemSegments.map(\.text) == ["Remote"])
+        let state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: reconciled.systemSegments,
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true,
+            consolidateSegments: false
+        )
+        #expect(state.turns.filter { $0.speaker.channel == .microphone }.count == 2)
+        let relabeled = state.relabeling(channels: [.microphone: [.init(clusterID: "room", start: 0, end: 1.6)]])
+        #expect(relabeled.turns.filter { $0.speaker.channel == .microphone }.count == 1)
+        #expect(relabeled.preservesSpeech(of: state))
+    }
+
     // MARK: - Microphone diarization
 
     private var greetingSentences: [SpeechSegment] {

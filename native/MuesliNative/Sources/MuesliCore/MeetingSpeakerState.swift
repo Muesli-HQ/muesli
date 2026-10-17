@@ -48,6 +48,8 @@ public struct MeetingSpeakerTurn: Codable, Equatable, Sendable, Identifiable {
     public let end: Double
     public var text: String
     public var sampleEligible: Bool? = nil
+    /// Offset from the channel-relative transcript clock to the saved mixed recording clock.
+    public var sampleTimeOffset: Double? = nil
     public var originalSpeaker: MeetingSpeakerKey? = nil
     public init(id: UUID = UUID(), speaker: MeetingSpeakerKey, timestamp: String, start: Double, end: Double, text: String) {
         self.id = id; self.speaker = speaker; self.timestamp = timestamp
@@ -70,6 +72,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     /// This lets the transcript UI parse manually assigned names without
     /// treating arbitrary edited text as a speaker heading.
     public var renderedPrefixSpeakerLabels: [String]? = nil
+    public var transcriptPrefix: String? = nil
     public var voiceProfileID: UUID? = nil
     public var correctionHistory: [MeetingSpeakerCorrectionUndo]? = nil
     public init(epoch: UUID = UUID(), revision: Int64 = 0, speakers: [MeetingSpeaker] = [], turns: [MeetingSpeakerTurn] = []) {
@@ -84,6 +87,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
             && turns.allSatisfy { turn in
                 turn.speaker.epoch == epoch && speakers.contains { $0.key == turn.speaker }
                     && turn.start.isFinite && turn.end.isFinite && turn.start >= 0 && turn.end >= turn.start
+                    && (turn.sampleTimeOffset.map { $0.isFinite && $0 >= 0 } ?? true)
                     && turn.timestamp.count == 8 && turn.timestamp.allSatisfy { $0.isNumber || $0 == ":" }
             }
     }
@@ -143,17 +147,17 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
             Self.renderTranscriptTurn(timestamp: $0.timestamp,
                 speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
         }.joined(separator: "\n")
-        guard let renderedPrefix, !renderedPrefix.isEmpty else { return renderedTurns }
-        return renderedPrefix + renderedTurns
+        return (transcriptPrefix ?? "") + (renderedPrefix ?? "") + renderedTurns
     }
 
     /// Renders the pre-escaping transcript format used by existing saved meetings.
     public func renderLegacy() -> String {
         let names = labels
-        return turns.map {
+        let renderedTurns = turns.map {
             Self.renderLegacyTranscriptTurn(timestamp: $0.timestamp,
                 speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
         }.joined(separator: "\n")
+        return (transcriptPrefix ?? "") + renderedTurns
     }
 
     public func matchesTranscript(_ transcript: String) -> Bool {
@@ -295,7 +299,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     }
 }
 
-public struct MeetingTranscriptVersion: Equatable, Sendable {
+public struct MeetingTranscriptVersion: Codable, Equatable, Sendable {
     public let generation: Int64
     public let digest: String
     public init(generation: Int64, digest: String) { self.generation = generation; self.digest = digest }

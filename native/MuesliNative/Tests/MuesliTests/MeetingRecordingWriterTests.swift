@@ -104,18 +104,26 @@ struct MeetingRecordingWriterTests {
         #expect(samples == [1000, 3000, 5000, 7000])
     }
 
-    @Test("pause boundary identifies the source channel whose recording position advances")
-    func pauseBoundaryReportsUnalignedSourceChannel() throws {
+    @Test("pause boundary reports sample positions and the unaligned source channel")
+    func pauseBoundaryReportsSampleTimelineAndUnalignedSource() throws {
         let micBehind = try MeetingRecordingWriter()
         micBehind.appendSystem([1000, 2000, 3000])
         micBehind.appendMic([1000])
-        #expect(micBehind.markPauseBoundary() == .microphone)
+        let micBoundary = micBehind.markPauseBoundary()
+        #expect(micBoundary.unalignedChannel == .microphone)
+        #expect(micBoundary.microphoneSampleCount == 1)
+        #expect(micBoundary.systemSampleCount == 3)
+        #expect(micBoundary.recordingSampleCount == 3)
         micBehind.cancel()
 
         let systemBehind = try MeetingRecordingWriter()
         systemBehind.appendMic([1000, 2000, 3000])
         systemBehind.appendSystem([1000])
-        #expect(systemBehind.markPauseBoundary() == .system)
+        let systemBoundary = systemBehind.markPauseBoundary()
+        #expect(systemBoundary.unalignedChannel == .system)
+        #expect(systemBoundary.microphoneSampleCount == 3)
+        #expect(systemBoundary.systemSampleCount == 1)
+        #expect(systemBoundary.recordingSampleCount == 3)
         systemBehind.cancel()
     }
 

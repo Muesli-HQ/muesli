@@ -32,9 +32,45 @@ public struct MeetingSpeakerSampleRange: Equatable, Sendable {
     public var duration: Double { end - start }
 }
 
+public struct MeetingSpeakerSampleTimeMapping: Equatable, Sendable {
+    public let channel: MeetingSpeakerKey.Channel
+    public let sourceTime: Double
+    public let recordingTime: Double
+
+    public init(channel: MeetingSpeakerKey.Channel, sourceTime: Double, recordingTime: Double) {
+        self.channel = channel
+        self.sourceTime = sourceTime
+        self.recordingTime = recordingTime
+    }
+}
+
 extension MeetingSpeakerState {
     public var activeSpeakers: [MeetingSpeaker] { speakers.filter { $0.mergedInto == nil && $0.isAssignable } }
     public var canUndoCorrection: Bool { !(correctionHistory ?? []).isEmpty }
+
+    public mutating func applySampleTimeMappings(_ mappings: [MeetingSpeakerSampleTimeMapping]) {
+        let valid = mappings.filter {
+            $0.sourceTime.isFinite && $0.recordingTime.isFinite
+                && $0.sourceTime >= 0 && $0.recordingTime >= $0.sourceTime
+        }
+        for index in turns.indices {
+            let turn = turns[index]
+            let channelMappings = valid.filter { $0.channel == turn.speaker.channel }
+            if channelMappings.contains(where: { $0.sourceTime > turn.start + 0.0001 && $0.sourceTime < turn.end - 0.0001 }) {
+                turns[index].sampleEligible = false
+                continue
+            }
+            let mapping = channelMappings
+                .filter { $0.sourceTime <= turn.start + 0.0001 }
+                .max { lhs, rhs in
+                    lhs.sourceTime == rhs.sourceTime
+                        ? lhs.recordingTime < rhs.recordingTime
+                        : lhs.sourceTime < rhs.sourceTime
+                }
+            let offset = mapping.map { $0.recordingTime - $0.sourceTime } ?? 0
+            turns[index].sampleTimeOffset = offset > 0 ? offset : nil
+        }
+    }
 
     public func canonicalKey(for key: MeetingSpeakerKey) -> MeetingSpeakerKey? {
         var cursor = key, seen: Set<MeetingSpeakerKey> = []
@@ -151,14 +187,28 @@ extension MeetingSpeakerState {
     }
 
     public func sampleRange(for key: MeetingSpeakerKey) -> MeetingSpeakerSampleRange? {
+        guard (transcriptPrefix ?? "").isEmpty else { return nil }
         guard activeSpeakers.contains(where: { $0.key == key }) else { return nil }
-        for turn in turns.sorted(by: { $0.start < $1.start }) where canonicalKey(for: turn.speaker) == key && turn.sampleEligible != false {
-            let end = min(turn.end, turn.start + 6)
-            guard turn.start.isFinite, end.isFinite, turn.start >= 0, end > turn.start else { continue }
+        func mappedBounds(_ turn: MeetingSpeakerTurn) -> (start: Double, end: Double)? {
+            let offset = turn.sampleTimeOffset ?? 0
+            let start = turn.start + offset
+            let end = turn.end + offset
+            guard start.isFinite, end.isFinite, start >= 0, end > start else { return nil }
+            return (start, end)
+        }
+        func sampleBounds(_ turn: MeetingSpeakerTurn) -> (start: Double, end: Double)? {
+            guard let mapped = mappedBounds(turn) else { return nil }
+            return (mapped.start, min(mapped.end, mapped.start + 6))
+        }
+        for turn in turns.sorted(by: { (sampleBounds($0)?.start ?? Double.infinity) < (sampleBounds($1)?.start ?? Double.infinity) })
+            where canonicalKey(for: turn.speaker) == key && turn.sampleEligible != false {
+            guard let bounds = sampleBounds(turn) else { continue }
             let overlaps = turns.contains { other in
-                canonicalKey(for: other.speaker) != key && min(other.end, end) > max(other.start, turn.start)
+                guard canonicalKey(for: other.speaker) != key,
+                      let otherBounds = mappedBounds(other) else { return false }
+                return min(otherBounds.end, bounds.end) > max(otherBounds.start, bounds.start)
             }
-            if !overlaps { return .init(start: turn.start, end: end) }
+            if !overlaps { return .init(start: bounds.start, end: bounds.end) }
         }
         return nil
     }

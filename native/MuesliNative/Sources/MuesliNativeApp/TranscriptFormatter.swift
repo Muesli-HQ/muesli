@@ -40,7 +40,8 @@ enum TranscriptFormatter {
         microphoneIdentitySegments: [TimedSpeakerSegment]? = nil,
         systemChannel: MeetingSpeakerKey.Channel = .system,
         preserveSegmentBoundaries: Bool = false,
-        accessibilitySpeakerNamingEnabled: Bool = false
+        accessibilitySpeakerNamingEnabled: Bool = false,
+        consolidateSegments: Bool = true
     ) -> MeetingSpeakerState {
         let useConservativeAttribution = conservativeSpeakerAttribution || accessibilitySpeakerNamingEnabled
         var identities: [String: MeetingSpeaker] = [:]
@@ -151,7 +152,9 @@ enum TranscriptFormatter {
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = consolidate(tagged, preserveSegmentBoundaries: preserveSegmentBoundaries)
+        let consolidated = consolidateSegments
+            ? consolidate(tagged, preserveSegmentBoundaries: preserveSegmentBoundaries)
+            : tagged
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
