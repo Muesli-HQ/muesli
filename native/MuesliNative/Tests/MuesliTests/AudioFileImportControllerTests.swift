@@ -350,6 +350,22 @@ struct AudioFileImportControllerTests {
 }
 
 extension AudioFileImportControllerTests {
+    @Test("imported ASR windows keep word boundaries for one speaker")
+    func importedASRWindowsKeepWordBoundariesForOneSpeaker() {
+        let transcription = SpeechTranscriptionResult(text: "Go now", segments: [
+            SpeechSegment(start: 0, end: 5, text: "Go"),
+            SpeechSegment(start: 5, end: 10, text: "now")
+        ])
+        let result = AudioFileImportController.structuredTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: [makeDiarSeg(speakerId: "cluster", start: 0, end: 10)],
+            meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
+        )
+
+        #expect(result.transcript.contains("Speaker 1: Go now"))
+        #expect(result.speakerState?.render() == result.transcript)
+    }
+
     @Test func emptyASRSegmentsDoNotDiscardImportedIdentity() {
         let transcription = SpeechTranscriptionResult(text: "Original words", segments: [
             SpeechSegment(start: 0, end: 1, text: "Original words"),

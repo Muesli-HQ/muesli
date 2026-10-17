@@ -512,15 +512,18 @@ final class FloatingIndicatorController: NSObject {
         setState(.recording, config: config)
     }
 
+    /// Current streaming callbacks expose source labels; pass state once the live diarization path supplies stable turn keys.
     func updateMeetingTranscript(
         transcript: String,
         partialYou: String,
-        partialOthers: String
+        partialOthers: String,
+        speakerState: MeetingSpeakerState? = nil
     ) {
         meetingTranscriptPanel.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            speakerState: speakerState
         )
     }
 

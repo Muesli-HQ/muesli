@@ -157,6 +157,8 @@ final class AppState {
     var timelineRows: [TimelineEntry] = []
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
+    // Entries are removed when a meeting is tombstoned or history is cleared.
+    private var meetingSummaryFreshnessRevisions: [Int64: UInt64] = [:]
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
     var directMeetingCountsByFolder: [Int64: Int] = [:]
@@ -167,6 +169,45 @@ final class AppState {
     var meetingsNavigationState: MeetingsNavigationState = .browser
     var meetingDetailReturnDestination: MeetingDetailReturnDestination = .meetings
     var meetingNotesFocusRequest = 0
+
+    func meetingSummaryFreshnessRevision(for meetingID: Int64) -> UInt64 {
+        meetingSummaryFreshnessRevisions[meetingID, default: 0]
+    }
+
+    func meetingSummaryFreshnessObservedMeetingIDs() -> Set<Int64> {
+        var meetingIDs = Set(meetingRows.map(\.id))
+        if let selectedMeetingID {
+            meetingIDs.insert(selectedMeetingID)
+        }
+        return meetingIDs
+    }
+
+    func noteMeetingSummaryFreshnessChanged(for meetingIDs: Set<Int64>) {
+        for meetingID in meetingIDs {
+            meetingSummaryFreshnessRevisions[meetingID, default: 0] &+= 1
+        }
+    }
+
+    func noteMeetingSummaryFreshnessChanged(
+        for meetingIDs: Set<Int64>,
+        existingMeetingIDs: Set<Int64>,
+        deletedMeetingIDs: Set<Int64> = []
+    ) {
+        for meetingID in meetingIDs
+            where existingMeetingIDs.contains(meetingID) && !deletedMeetingIDs.contains(meetingID) {
+            meetingSummaryFreshnessRevisions[meetingID, default: 0] &+= 1
+        }
+    }
+
+    func removeMeetingSummaryFreshnessRevisions(for meetingIDs: Set<Int64>) {
+        for meetingID in meetingIDs {
+            meetingSummaryFreshnessRevisions[meetingID] = nil
+        }
+    }
+
+    func clearMeetingSummaryFreshnessRevisions() {
+        meetingSummaryFreshnessRevisions.removeAll()
+    }
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,

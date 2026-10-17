@@ -105,11 +105,12 @@ struct MeetingSessionResult {
     let templateSnapshot: MeetingTemplateSnapshot
     var visualContext: String? = nil
     var speakerState: MeetingSpeakerState? = nil
-    var summaryIsCurrent: Bool = true
+    /// Nil means the resumed result could not read freshness and makes no sync assertion.
+    var summaryIsCurrent: Bool? = true
 }
 
 extension MeetingSessionResult {
-    /// Returns a copy with transcript, notes, and optional timing overrides.
+    /// Returns a copy with transcript, notes, optional timing overrides, and summary status.
     /// Used by the resume-recording flow to persist the merged transcript while
     /// keeping the original meeting date and accumulating only recorded duration.
     func overriding(
