@@ -1156,6 +1156,7 @@ struct SettingsView: View {
                 description: "Experimental and off by default. Keep disabled until consented voice fixtures and real meeting audio are verified on a Mac.",
                 controlWidth: meetingControlWidth
             ) {
+                settingsControl("meeting_live_speakers")
                 settingsControl("meeting_owner_recognition")
                 TextField("Your display name (optional)", text: Binding(
                     get: { appState.config.meetingOwnerDisplayName },

@@ -19,6 +19,7 @@ struct MeetingChunkTimingTracker: Sendable {
     private var currentChunkStartSampleIndex: Int64?
     private var currentChunkSampleCount: Int64 = 0
 
+    var elapsedSampleIndex: Int64? { currentChunkStartSampleIndex.map { $0 + currentChunkSampleCount } }
     var elapsedTimeSeconds: Double? {
         currentChunkStartSampleIndex.map { Double($0 + currentChunkSampleCount) / Double(Self.sampleRate) }
     }

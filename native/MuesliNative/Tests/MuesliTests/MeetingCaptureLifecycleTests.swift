@@ -216,7 +216,10 @@ struct MeetingCaptureLifecycleTests {
         start.cancel()
         do { try await start.value; Issue.record("Cancelled capture became ready") }
         catch { #expect(error is CancellationError) }
-        #expect(await Task.detached { otherStopped.wait(timeout: .now() + 1) == .success }.value)
+        let otherCaptureStopped = await Task.detached {
+            otherStopped.wait(timeout: .now() + 1) == .success
+        }.value
+        #expect(otherCaptureStopped)
         #expect(capture.phase == .stopping)
         #expect(!capture.setPaused(false))
         release.signal()

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MuesliCore
 import os
 
 /// Local-only recovery metadata stored beside retained audio until database
@@ -113,9 +114,13 @@ final class MeetingRecordingWriter {
         }
     }
 
-    func markPauseBoundary() {
+    func markPauseBoundary() -> MeetingSpeakerKey.Channel? {
         lock.withLock { state in
+            let unalignedChannel: MeetingSpeakerKey.Channel?
+            if state.pendingMic.count == state.pendingSystem.count { unalignedChannel = nil }
+            else { unalignedChannel = state.pendingMic.count < state.pendingSystem.count ? .microphone : .system }
             writeMixedSamples(state: &state, flushAll: true)
+            return unalignedChannel
         }
     }
 
