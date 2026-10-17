@@ -201,6 +201,20 @@ struct MeetingNeuralAecTests {
         #expect(aec.diagnosticsSnapshot.fullReferenceFrames > 0)
     }
 
+    @Test("resumed mic frames use the system reference after the pause-only tail")
+    func resumedMicReferenceFollowsSystemOnlyPauseTail() {
+        let processor = PassthroughAecProcessor(frameSize: 256)
+        let aec = MeetingNeuralAec(preloadedProcessor: processor)
+        aec.resetForStreaming()
+
+        aec.feedSystemSamples([Float](repeating: 0.1, count: 512))
+        aec.advanceMicrophoneTimeline(by: 512)
+        aec.feedSystemSamples([Float](repeating: 0.8, count: 256))
+        _ = aec.processStreamingMic([Float](repeating: 0.4, count: 256))
+
+        #expect(processor.firstReferenceFrameFirstSample == 0.8)
+    }
+
     @Test("LocalVQE uses timestamp aligned references")
     func localVQEUsesTimestampAlignedReferences() {
         let processor = PassthroughAecProcessor(name: "localvqe", frameSize: 256)

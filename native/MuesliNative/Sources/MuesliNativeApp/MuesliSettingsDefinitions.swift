@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import MuesliCore
 
 /// Canonical definitions for app controls and voice tools. Add a setting here
@@ -335,6 +336,12 @@ extension MuesliController {
             self.updatePostProcessorModel($0, for: .hosted(.openRouter))
         }
 
+        toggle("meeting_ax_speakers", "Meeting app speaker names (experimental)", \.enableMeetingSpeakerAccessibility,
+               unavailable: { enabled in enabled && !AXIsProcessTrusted() ? "Allow Accessibility in System Settings first." : nil },
+               apply: { enabled in
+                   guard !enabled || AXIsProcessTrusted() else { throw MuesliSettings.Failure.rejected("Allow Accessibility in System Settings first.") }
+                   self.updateConfig { $0.enableMeetingSpeakerAccessibility = enabled }
+               })
         toggle("meeting_hover_transcript", "Show meeting transcript on hover", \.showMeetingTranscriptOnIndicatorHover)
         toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
         toggle("auto_export_meetings", "Auto-export meetings", \.autoExportMarkdownEnabled)
