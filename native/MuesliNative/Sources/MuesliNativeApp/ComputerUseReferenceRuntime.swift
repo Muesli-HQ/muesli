@@ -25,6 +25,7 @@ final class ComputerUseReferenceRuntime {
     private let onEvent: ((ComputerUseTraceEvent) -> Void)?
     private let onStatus: (String) -> Void
     private var events: [ComputerUseTraceEvent] = []
+    private let session = "muesli-" + UUID().uuidString
 
     init(config: AppConfig, executable: String, maxSteps: Int?, timeout: TimeInterval,
          onEvent: ((ComputerUseTraceEvent) -> Void)?, onStatus: @escaping (String) -> Void) {
@@ -78,15 +79,21 @@ final class ComputerUseReferenceRuntime {
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
-        let driver = ComputerUseReferenceDriver()
+        let driver = ComputerUseReferenceDriver.shared
+        let owner: UUID
+        do { owner = try driver.claimCommand() }
+        catch { return finish(.failed, error.localizedDescription, kind: "failed") }
+        defer { driver.releaseCommand(owner) }
         append("transcript", command)
         let result: ComputerUsePlannerRuntimeResult
         do { result = try await execute(command: command, driver: driver) }
         catch is CancellationError { result = finish(.cancelled, "Cancelled", kind: "cancelled") }
         catch { result = finish(.failed, "trycua: \(error.localizedDescription)", kind: "failed") }
-        // Stop cancels the active request task and tears down its private daemon;
-        // a later voice command starts a new runtime with no stale target/session.
-        await driver.stop()
+        // End task-owned snapshots/cursors, but retain the healthy transport
+        // and upstream pooled Chrome connection. Cleanup must run even if the
+        // planner was cancelled. In-flight RPC cancellation invalidates the
+        // daemon in request(), so uncertain actions are never reused.
+        await Task { @MainActor in await driver.endCommand(session: session) }.value
         return result
     }
 
@@ -94,6 +101,11 @@ final class ComputerUseReferenceRuntime {
         guard !ComputerUseWindowIdentity.isScreenLocked else { return finish(.failed, "Unlock the Mac before CUA", kind: "failed") }
         onStatus("Starting trycua")
         try await driver.start(executable: executable)
+        let started = try await driver.call(name: "start_session", arguments: ["session": session])
+        guard (started["result"] as? [String: Any])?["isError"] as? Bool != true else {
+            return finish(.failed, "Could not start reference task session", kind: "failed")
+        }
+        append("backend", "persistent daemon pid=\(driver.processID ?? -1); task session=\(session)")
         append("backend", "trycua \(driver.serverVersion); agent cursor overlay enabled; native fallback disabled; model=\(ComputerUsePlannerClient.plannerModel(for: config))")
         let tools = Self.definitions(from: driver.tools)
         let names = Set(tools.compactMap { $0["name"] as? String })
@@ -140,7 +152,8 @@ final class ComputerUseReferenceRuntime {
                 return finish(.failed, "Foreground delivery and desktop pointer control are disabled for this background comparison; no action dispatched.", kind: "failed")
             }
             onStatus("trycua: \(call.name)")
-            let response = try await driver.call(name: call.name, arguments: arguments)
+            let response = try await driver.call(name: call.name,
+                arguments: ComputerUseReferenceDriver.scopedArguments(arguments, session: session))
             let observed = Self.observation(from: response)
             append("tool_result", "[trycua] \(observed.text)", step: step)
             image = observed.image // Never reuse an image after a different tool result.
