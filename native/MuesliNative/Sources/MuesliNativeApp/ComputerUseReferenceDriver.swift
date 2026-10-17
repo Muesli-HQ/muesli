@@ -1,10 +1,35 @@
 import AppKit
 import Darwin
 
-/// Local benchmark only. Launches the unmodified reference driver as a direct
+/// Local benchmark only. Launches the selected reference driver as a direct
 /// child so macOS can attribute permission checks to the dev host.
 @MainActor
 final class ComputerUseReferenceDriver {
+    static let shared = ComputerUseReferenceDriver()
+    private var commandOwner: UUID?
+    private var executablePath: String?
+    private var starting = false
+    private var shuttingDown = false
+    var processID: Int32? { daemon?.isRunning == true ? daemon?.processIdentifier : nil }
+
+    func claimCommand() throws -> UUID {
+        guard commandOwner == nil, !starting, !shuttingDown else { throw failure("Reference command already active or host shutting down") }
+        let owner = UUID()
+        commandOwner = owner
+        return owner
+    }
+
+    func releaseCommand(_ owner: UUID) {
+        if commandOwner == owner { commandOwner = nil }
+    }
+
+    static func scopedArguments(_ arguments: [String: Any], session: String) -> [String: Any] {
+        var scoped = arguments
+        scoped["session"] = session
+        scoped.removeValue(forKey: "_session_id")
+        return scoped
+    }
+
     static var selectedExecutable: String? {
         guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
               let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
@@ -24,8 +49,15 @@ final class ComputerUseReferenceDriver {
     private var directory: URL?
 
     func start(executable: String) async throws {
+        guard !starting, !shuttingDown else { throw failure("Reference host is starting or shutting down") }
+        if executablePath == executable, daemon?.isRunning == true, proxy?.isRunning == true, !tools.isEmpty {
+            return
+        }
+        starting = true
+        defer { starting = false }
+        if daemon != nil || proxy != nil { await stop() }
         guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
-              daemon == nil, FileManager.default.isExecutableFile(atPath: executable) else {
+              FileManager.default.isExecutableFile(atPath: executable) else {
             throw failure("Reference driver requires a dev host and an executable path")
         }
         // macOS Unix sockets have a short sun_path limit; the per-user
@@ -86,6 +118,7 @@ final class ComputerUseReferenceDriver {
                 throw failure("Incomplete reference tool catalog")
             }
             tools = definitions
+            executablePath = executable
             try save(catalog, name: "tools.json")
             try save(try await call(name: "check_permissions", arguments: ["prompt": false]), name: "permissions.json")
             try save(["pid": service.processIdentifier, "socket": socket, "executable": executable,
@@ -113,6 +146,10 @@ final class ComputerUseReferenceDriver {
         defer { busy = false }
         nextID += 1
         let id = nextID
+        // Once a request has been sent, cancellation/transport failure leaves
+        // its side effects uncertain. Invalidate the connection before reuse.
+        var completed = false
+        defer { if !completed { terminateImmediately() } }
         try send(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
@@ -123,6 +160,7 @@ final class ComputerUseReferenceDriver {
                 guard !line.isEmpty else { continue }
                 let message = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
                 if message["id"] as? Int == id {
+                    completed = true
                     if let error = message["error"] { throw failure("MCP error: \(error)") }
                     return message
                 }
@@ -153,6 +191,32 @@ final class ComputerUseReferenceDriver {
             .write(to: directory.appendingPathComponent(name), options: .atomic)
     }
 
+    private func terminateImmediately() {
+        for child in [proxy, daemon].compactMap({ $0 }) where child.isRunning {
+            kill(child.processIdentifier, SIGKILL)
+        }
+        executablePath = nil
+        tools = []
+    }
+
+    func shutdown() async {
+        shuttingDown = true
+        await stop()
+    }
+
+    func endCommand(session: String) async {
+        guard daemon?.isRunning == true, proxy?.isRunning == true else {
+            await stop()
+            return
+        }
+        do {
+            let response = try await call(name: "end_session", arguments: ["session": session])
+            if (response["result"] as? [String: Any])?["isError"] as? Bool == true {
+                await stop()
+            }
+        } catch { await stop() }
+    }
+
     func stop() async {
         try? input?.close(); input = nil
         let children = [proxy, daemon].compactMap { $0 }
@@ -164,6 +228,7 @@ final class ComputerUseReferenceDriver {
         try? output?.close(); output = nil
         try? log?.close(); log = nil
         proxy = nil; daemon = nil; buffer.removeAll()
+        executablePath = nil; tools = []; serverVersion = "unknown"
         if let directory { try? FileManager.default.removeItem(at: directory.appendingPathComponent("endpoint.json")) }
     }
 
