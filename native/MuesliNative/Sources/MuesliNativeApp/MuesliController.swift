@@ -981,8 +981,8 @@ public final class MuesliController: NSObject {
                 let ppOption = self.runtimePostProcessorOption()
                 if #available(macOS 15, *) {
                     await self.configureTranscriptCleanupForRuntime(option: ppOption)
-                    await self.transcriptionCoordinator.setNemotron35PromptId(
-                        self.config.resolvedNemotron35Language.promptId
+                    await self.transcriptionCoordinator.setNemotron35Language(
+                        self.config.resolvedNemotron35Language
                     )
                 }
                 guard self.dictationBackendPreparation.owns(preparation) else { return }
@@ -2994,7 +2994,7 @@ public final class MuesliController: NSObject {
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             // Push the selected Nemotron 3.5 language before preload so the loaded
             // transcriber is conditioned on the right prompt_id.
-            await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
+            await self.transcriptionCoordinator.setNemotron35Language(self.config.resolvedNemotron35Language)
             guard self.dictationBackendPreparation.owns(preparation) else { return }
             let ppOption = self.runtimePostProcessorOption()
             await self.configureTranscriptCleanupForRuntime(option: ppOption)
@@ -3047,7 +3047,7 @@ public final class MuesliController: NSObject {
         let option = selectedBackend
         Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
-            await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
+            await self.transcriptionCoordinator.setNemotron35Language(self.config.resolvedNemotron35Language)
             let prepared = await self.prepareDictationBackend(option, preparation: preparation)
             if prepared {
                 await self.preloadOptionalTranscriptionResources(
@@ -3156,7 +3156,7 @@ public final class MuesliController: NSObject {
     /// Update the Nemotron 3.5 dictation language and push the prompt_id to the runtime.
     func setNemotron35Language(_ language: Nemotron35Language) async {
         updateConfig { $0.nemotron35Language = language.rawValue }
-        await transcriptionCoordinator.setNemotron35PromptId(language.promptId)
+        await transcriptionCoordinator.setNemotron35Language(language)
     }
 
     func selectMeetingTranscriptionBackend(_ option: BackendOption, requireDownloaded: Bool = true) {
@@ -5979,7 +5979,7 @@ public final class MuesliController: NSObject {
                     appleSpeechLanguage: snapshot.resolvedAppleSpeechLanguage
                 )
                 await self.transcriptionCoordinator.preloadMeetingVAD()
-                await self.transcriptionCoordinator.setNemotron35PromptId(snapshot.resolvedNemotron35Language.promptId)
+                await self.transcriptionCoordinator.setNemotron35Language(snapshot.resolvedNemotron35Language)
                 try Task.checkCancellation()
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = .transcribing
                 let transcription = try await self.transcriptionCoordinator.transcribeRecordedAudio(
@@ -5990,6 +5990,7 @@ public final class MuesliController: NSObject {
                     bodhanOutputMode: snapshot.resolvedBodhanOutputMode,
                     whisperLanguage: snapshot.resolvedWhisperLanguage,
                     qwen3AsrLanguage: snapshot.resolvedQwen3AsrLanguage,
+                    nemotronLanguage: snapshot.resolvedNemotron35Language,
                     parakeetLanguage: snapshot.resolvedParakeetLanguage,
                     appleSpeechLanguage: snapshot.resolvedAppleSpeechLanguage,
                     progress: { [weak self] fraction, preview in
@@ -10653,6 +10654,7 @@ public final class MuesliController: NSObject {
     /// Streaming RNNT dictation backend (handsfree live text at cursor).
     private var isStreamingDictationBackend: Bool {
         selectedDictationProvider.usesStreamingBackend(selectedBackend)
+            && config.resolvedNemotron35Language.usesStreamingDictation
     }
 
     private func ensureDictationBackendReady() -> Bool {
@@ -11270,7 +11272,7 @@ public final class MuesliController: NSObject {
         Task {
             let transcriber: Nemotron35StreamingTranscriber
             do {
-                await transcriptionCoordinator.setNemotron35PromptId(config.resolvedNemotron35Language.promptId)
+                await transcriptionCoordinator.setNemotron35Language(config.resolvedNemotron35Language)
                 transcriber = try await transcriptionCoordinator.getLoadedNemotron35Transcriber()
             } catch {
                 await MainActor.run {

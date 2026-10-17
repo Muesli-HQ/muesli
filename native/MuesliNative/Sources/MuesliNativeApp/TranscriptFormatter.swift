@@ -14,7 +14,8 @@ enum TranscriptFormatter {
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
         meetingStart: Date,
-        conservativeSpeakerAttribution: Bool = false
+        conservativeSpeakerAttribution: Bool = false,
+        outputLanguage: String? = nil
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
@@ -46,7 +47,10 @@ enum TranscriptFormatter {
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = consolidate(tagged)
+        let consolidated = consolidate(
+            tagged,
+            preservingHanContext: ChineseTranscriptionOutput.isTraditional(outputLanguage)
+        )
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -67,7 +71,10 @@ enum TranscriptFormatter {
     /// so they interleave correctly with other speakers.
     private static let consolidationGapThreshold: TimeInterval = 2.0
 
-    private static func consolidate(_ segments: [TaggedSegment]) -> [TaggedSegment] {
+    private static func consolidate(
+        _ segments: [TaggedSegment],
+        preservingHanContext: Bool
+    ) -> [TaggedSegment] {
         guard !segments.isEmpty else { return [] }
 
         var result: [TaggedSegment] = []
@@ -80,7 +87,12 @@ enum TranscriptFormatter {
             let gap = max(0, seg.segment.start - currentEnd)
             if seg.speaker == currentSpeaker && gap <= consolidationGapThreshold {
                 // Same speaker, temporally close — accumulate text
-                currentText = appendText(currentText, seg.segment.text, gap: gap)
+                currentText = appendText(
+                    currentText,
+                    seg.segment.text,
+                    gap: gap,
+                    preservingHanContext: preservingHanContext
+                )
                 currentEnd = max(currentEnd, seg.segment.end)
             } else {
                 // Different speaker or too far apart — emit and start new segment
@@ -190,7 +202,15 @@ enum TranscriptFormatter {
         return 0
     }
 
-    private static func appendText(_ lhs: String, _ rhs: String, gap: TimeInterval) -> String {
+    private static func appendText(
+        _ lhs: String,
+        _ rhs: String,
+        gap: TimeInterval,
+        preservingHanContext: Bool
+    ) -> String {
+        if preservingHanContext && ChineseTranscriptionOutput.joinsHanBoundary(previous: lhs, next: rhs) {
+            return lhs + rhs
+        }
         if shouldConcatenateDirectly(lhs, rhs, gap: gap) {
             return lhs + rhs
         }

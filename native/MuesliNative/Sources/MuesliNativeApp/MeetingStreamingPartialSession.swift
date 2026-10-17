@@ -61,7 +61,7 @@ enum MeetingLiveCaptionModelStore {
 
     static func makeEngines(
         backend: MeetingLiveCaptionBackend,
-        nemotronPromptId: Int32,
+        nemotronLanguage: Nemotron35Language,
         appleSpeechLanguage: String
     ) async throws -> (mic: MeetingStreamingPartialEngine, system: MeetingStreamingPartialEngine) {
         switch backend {
@@ -105,10 +105,10 @@ enum MeetingLiveCaptionModelStore {
                 )
             }
             let transcriber = Nemotron35StreamingTranscriber()
-            await transcriber.setPromptId(nemotronPromptId)
+            await transcriber.setPromptId(nemotronLanguage.promptId)
             try await transcriber.loadModels()
-            let mic = Nemotron35MeetingPartialEngine(transcriber: transcriber, label: "You")
-            let system = Nemotron35MeetingPartialEngine(transcriber: transcriber, label: "Others")
+            let mic = Nemotron35MeetingPartialEngine(transcriber: transcriber, label: "You", language: nemotronLanguage)
+            let system = Nemotron35MeetingPartialEngine(transcriber: transcriber, label: "Others", language: nemotronLanguage)
             do {
                 try await mic.prepare()
                 try await system.prepare()
@@ -483,16 +483,67 @@ private actor ParakeetEOUMeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 }
 
+/// Caption previews retain a bounded raw tail, including context already displayed.
+/// Final meeting transcripts use the coordinator's full-context conversion instead.
+struct ChineseCaptionOutput {
+    let language: String?
+    private var committed = ""
+    private var tail = ""
+    private var contextCount = 0
+
+    init(language: String?) {
+        self.language = language
+    }
+
+    mutating func append(
+        _ text: String,
+        convert: (String, String?) -> String = { ChineseTranscriptionOutput.apply($0, language: $1) }
+    ) -> String {
+        guard ChineseTranscriptionOutput.isTraditional(language) else {
+            committed += text
+            return committed
+        }
+        tail += text
+        let source = Array(tail.unicodeScalars)
+        let converted = Array(convert(tail, language).unicodeScalars)
+        guard source.count == converted.count else {
+            // A length-changing transform cannot be sliced by source offsets.
+            committed += convert(String(String.UnicodeScalarView(source.dropFirst(contextCount))), language)
+            tail = ""
+            contextCount = 0
+            return committed
+        }
+        let visible = converted.dropFirst(contextCount)
+        let pendingCount = 128
+        if visible.count > pendingCount {
+            committed += String(String.UnicodeScalarView(visible.dropLast(pendingCount)))
+            // Keep 64 already-committed scalars as left context for the next update.
+            let retained = min(source.count, pendingCount + 64)
+            tail = String(String.UnicodeScalarView(source.suffix(retained)))
+            contextCount = retained - pendingCount
+            return committed + String(String.UnicodeScalarView(visible.suffix(pendingCount)))
+        }
+        return committed + String(String.UnicodeScalarView(visible))
+    }
+
+    mutating func reset() {
+        committed = ""
+        tail = ""
+        contextCount = 0
+    }
+}
+
 @available(macOS 15, *)
 private actor Nemotron35MeetingPartialEngine: MeetingStreamingPartialEngine {
     private let transcriber: Nemotron35StreamingTranscriber
     private let label: String
     private var streamState: Nemotron35StreamingTranscriber.StreamState?
     private var sampleBuffer: [Float] = []
-    private var transcript = ""
+    private var captionOutput: ChineseCaptionOutput
     private var partialHandler: (@Sendable (String) -> Void)?
 
-    init(transcriber: Nemotron35StreamingTranscriber, label: String) {
+    init(transcriber: Nemotron35StreamingTranscriber, label: String, language: Nemotron35Language) {
+        self.captionOutput = ChineseCaptionOutput(language: language.rawValue)
         self.transcriber = transcriber
         self.label = label
     }
@@ -518,8 +569,7 @@ private actor Nemotron35MeetingPartialEngine: MeetingStreamingPartialEngine {
             let text = try await transcriber.transcribeChunk(samples: chunk, state: &state)
             streamState = state
             guard !text.isEmpty else { continue }
-            transcript += text
-            partialHandler?(transcript)
+            partialHandler?(captionOutput.append(text))
         }
     }
 
@@ -536,15 +586,14 @@ private actor Nemotron35MeetingPartialEngine: MeetingStreamingPartialEngine {
             let text = try await transcriber.transcribeChunk(samples: chunk, state: &state)
             streamState = state
             if !text.isEmpty {
-                transcript += text
-                partialHandler?(transcript)
+                partialHandler?(captionOutput.append(text))
             }
         }
     }
 
     func shutdown() async {
         sampleBuffer.removeAll()
-        transcript = ""
+        captionOutput.reset()
         streamState = nil
         partialHandler = nil
         fputs("[meeting-partials] \(label) Nemotron 3.5 session stopped\n", stderr)

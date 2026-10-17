@@ -443,6 +443,43 @@ struct BackendOptionTests {
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
     }
 
+    @Test("Traditional Chinese is additive and maps to existing decoder languages")
+    func traditionalChineseLanguageChoices() throws {
+        #expect(WhisperKitLanguage.chinese.rawValue == "zh")
+        #expect(WhisperKitLanguage.chineseTraditional.rawValue == "zh-TW")
+        #expect(WhisperKitLanguage.chineseTraditional.label == "Chinese (Traditional)")
+        #expect(Nemotron35Language.chineseTraditional.promptId == Nemotron35Language.chinese.promptId)
+        #expect(CohereTranscribeLanguage.chineseTraditional.promptIds == CohereTranscribeLanguage.chinese.promptIds)
+        #expect(Qwen3AsrLanguage.chineseTraditional.pinnedCode == "zh")
+        for code in ["zh-TW", "zh-tw", " ZH-TW "] {
+            #expect(WhisperKitLanguage.resolved(code) == .chineseTraditional)
+            #expect(Nemotron35Language.resolved(code) == .chineseTraditional)
+            #expect(CohereTranscribeLanguage.resolved(code) == .chineseTraditional)
+            #expect(Qwen3AsrLanguage.resolved(code) == .chineseTraditional)
+        }
+        for code in ["zh", "zh-TW"] {
+            let json = "{\"whisper_language\":\"\(code)\",\"nemotron35_language\":\"\(code)\",\"cohere_language\":\"\(code)\",\"qwen3_asr_language\":\"\(code)\"}"
+            let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            let reloaded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(decoded))
+            #expect(reloaded.whisperLanguage == code)
+            #expect(reloaded.nemotron35Language == code)
+            #expect(reloaded.cohereLanguage == code)
+            #expect(reloaded.qwen3AsrLanguage == code)
+        }
+    }
+
+    @Test("Whisper Traditional output uses Chinese decoding and a Traditional prompt")
+    func traditionalWhisperDecodeOptions() {
+        let options = WhisperKitTranscriber.makeDecodeOptions(language: .chineseTraditional, modelName: "small", promptTokens: [11, 22])
+        #expect(options.language == "zh")
+        #expect(options.promptTokens == [11, 22])
+        #expect(options.skipSpecialTokens)
+        let english = WhisperKitTranscriber.makeDecodeOptions(language: .chineseTraditional, modelName: "tiny.en", promptTokens: [11])
+        #expect(english.promptTokens?.isEmpty != false)
+        #expect(Nemotron35Language.chineseTraditional.usesStreamingDictation == false)
+        #expect(Nemotron35Language.chinese.usesStreamingDictation)
+    }
+
     @Test("Whisper decode options always skip special tokens")
     func whisperDecodeOptionsSkipSpecialTokens() {
         let cases: [(WhisperKitLanguage, String)] = [

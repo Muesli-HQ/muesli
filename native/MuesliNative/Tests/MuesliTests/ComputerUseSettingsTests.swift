@@ -458,6 +458,15 @@ struct ComputerUseSettingsTests {
         #expect(configStore.load().resolvedWhisperLanguage == .tamil)
         try await controller.applySetting("nemotron_language", value: "nl")
         #expect(configStore.load().resolvedNemotron35Language == .dutch)
+        for id in ["whisper_language", "nemotron_language", "cohere_language", "qwen_language"] {
+            #expect(settings.first { $0.id == id }?.choices.contains { $0.id == "zh-TW" } == true)
+            try await controller.applySetting(id, value: "zh-TW")
+        }
+        let traditional = configStore.load()
+        #expect(traditional.resolvedWhisperLanguage == .chineseTraditional)
+        #expect(traditional.resolvedNemotron35Language == .chineseTraditional)
+        #expect(traditional.resolvedCohereLanguage == .chineseTraditional)
+        #expect(traditional.resolvedQwen3AsrLanguage == .chineseTraditional)
 
         #expect(settings.first { $0.id == "summary_anthropic_model" }?.choices.map(\.id) == SummaryModelPreset.anthropicModels.map(\.id))
         #expect(settings.first { $0.id == "summary_claude_code_model" }?.choices.map(\.id) == [""] + SummaryModelPreset.claudeCodeModels.map(\.id))

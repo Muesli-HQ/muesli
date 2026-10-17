@@ -131,6 +131,7 @@ enum CohereTranscribeLanguage: String, CaseIterable, Codable, Sendable {
     case arabic = "ar"
     case japanese = "ja"
     case chinese = "zh"
+    case chineseTraditional = "zh-TW"
     case vietnamese = "vi"
     case korean = "ko"
 
@@ -150,6 +151,7 @@ enum CohereTranscribeLanguage: String, CaseIterable, Codable, Sendable {
         case .arabic: return "Arabic"
         case .japanese: return "Japanese"
         case .chinese: return "Chinese"
+        case .chineseTraditional: return "Chinese (Traditional)"
         case .vietnamese: return "Vietnamese"
         case .korean: return "Korean"
         }
@@ -168,7 +170,7 @@ enum CohereTranscribeLanguage: String, CaseIterable, Codable, Sendable {
         case .greek: return 77
         case .arabic: return 28
         case .japanese: return 98
-        case .chinese: return 50
+        case .chinese, .chineseTraditional: return 50
         case .vietnamese: return 194
         case .korean: return 110
         }
@@ -190,6 +192,7 @@ enum CohereTranscribeLanguage: String, CaseIterable, Codable, Sendable {
     }
 
     static func resolved(_ rawValue: String?) -> Self {
+        if ChineseTranscriptionOutput.isTraditional(rawValue) { return .chineseTraditional }
         let normalized = rawValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()

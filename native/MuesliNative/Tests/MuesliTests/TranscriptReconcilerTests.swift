@@ -26,6 +26,23 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.systemSegments.count == 1)
     }
 
+    @Test("joins adjacent Han segments without inserting phrase-breaking spaces")
+    func joinsAdjacentHanSegments() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [
+                SpeechSegment(start: 0, end: 1, text: "头"),
+                SpeechSegment(start: 1, end: 2, text: "发"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.micSegments.count == 1)
+        #expect(reconciled.micSegments[0].text == "头发")
+        #expect(reconciled.micSegments[0].start == 0)
+        #expect(reconciled.micSegments[0].end == 2)
+    }
+
     @Test("keeps substantive mic interruptions over system audio")
     func keepsSubstantiveMicInterruption() {
         let mic = [
