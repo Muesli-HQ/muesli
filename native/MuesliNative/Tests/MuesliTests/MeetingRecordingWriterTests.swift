@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
@@ -28,6 +29,11 @@ struct MeetingRecordingWriterTests {
             let finalization = try #require(body.range(of: finish))
             #expect(flush.lowerBound < finalization.lowerBound)
         }
+        let pause = try #require(source.range(of: "func pause()"))
+        let pauseBody = source[pause.upperBound...]
+        let alignmentBoundary = try #require(pauseBody.range(of: "retainedRecordingWriter?.markPauseBoundary()"))
+        let speakerPause = try #require(pauseBody.range(of: "feed?.pause(samplesUnalignedAfter: sampleAlignmentBoundaries)"))
+        #expect(alignmentBoundary.lowerBound < speakerPause.lowerBound)
     }
 
     @Test("recording mixes delayed cleaned mic and retains partial AEC frames across pause and stop")
@@ -96,6 +102,29 @@ struct MeetingRecordingWriterTests {
         let samples = try readMonoPCM16WAVSamples(from: tempURL)
 
         #expect(samples == [1000, 3000, 5000, 7000])
+    }
+
+    @Test("pause boundary reports sample positions and the unaligned source channel")
+    func pauseBoundaryReportsSampleTimelineAndUnalignedSource() throws {
+        let micBehind = try MeetingRecordingWriter()
+        micBehind.appendSystem([1000, 2000, 3000])
+        micBehind.appendMic([1000])
+        let micBoundary = micBehind.markPauseBoundary()
+        #expect(micBoundary.unalignedChannel == .microphone)
+        #expect(micBoundary.microphoneSampleCount == 1)
+        #expect(micBoundary.systemSampleCount == 3)
+        #expect(micBoundary.recordingSampleCount == 3)
+        micBehind.cancel()
+
+        let systemBehind = try MeetingRecordingWriter()
+        systemBehind.appendMic([1000, 2000, 3000])
+        systemBehind.appendSystem([1000])
+        let systemBoundary = systemBehind.markPauseBoundary()
+        #expect(systemBoundary.unalignedChannel == .system)
+        #expect(systemBoundary.microphoneSampleCount == 3)
+        #expect(systemBoundary.systemSampleCount == 1)
+        #expect(systemBoundary.recordingSampleCount == 3)
+        systemBehind.cancel()
     }
 
     @Test("persistTemporaryRecording moves the temp wav when WAV is selected")

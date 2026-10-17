@@ -40,6 +40,38 @@ enum CompactMeetingFormattingPolicy {
     }
 }
 
+struct MeetingSpeakerLabelingControls: View {
+    let meetingID: Int64
+    let controller: MuesliController
+    let appState: AppState
+
+    @ViewBuilder
+    var body: some View {
+        if let job = appState.meetingSpeakerLabelingJobs[meetingID] {
+            HStack(spacing: 12) {
+                Text(job.status.message).font(.caption)
+                if job.status == .failed || job.status == .pending {
+                    Button("Retry labels") { controller.retryDeferredSpeakerLabeling(id: meetingID) }
+                }
+                if job.status != .expired {
+                    Button("Discard labeling audio") { controller.discardDeferredSpeakerLabeling(id: meetingID) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+        if appState.meetingSpeakerLabelingRecovery.contains(meetingID) {
+            HStack(spacing: 12) {
+                Text(MeetingSpeakerLabelingStatus.recovery.message).font(.caption)
+                Button("Reveal recovery audio") { controller.revealSpeakerLabelingRecovery(id: meetingID) }
+                Button("Discard recovery audio", role: .destructive) { controller.discardSpeakerLabelingRecovery(id: meetingID) }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+    }
+}
+
 struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
     let wideIdentifier: String
     let compactIdentifier: String
@@ -69,13 +101,40 @@ private struct LiveTranscriptSection: View {
 
     var body: some View {
         LiveTranscriptView(
-            transcript: MeetingResumePolicy.combinedResumeTranscript(
-                prior: transcriptPrefix,
-                new: appState.liveMeetingTranscript
-            ),
+            transcript: appState.liveMeetingSpeakerState == nil
+                ? MeetingResumePolicy.combinedResumeTranscript(prior: transcriptPrefix, new: appState.liveMeetingTranscript)
+                : "",
             partialYou: appState.liveMeetingPartialYou,
-            partialOthers: appState.liveMeetingPartialOthers
+            partialOthers: appState.liveMeetingPartialOthers,
+            speakerState: appState.liveMeetingSpeakerState,
+            speakerUpdate: appState.liveMeetingSpeakerUpdate,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
+    }
+}
+
+struct MeetingSpeakerLoadKey: Equatable {
+    let id: Int64
+    let transcript: String
+    let notes: String
+    let status: MeetingStatus
+    let summaryFreshnessRevision: UInt64
+    let speakerStateRevision: UInt64
+}
+
+struct MeetingSummaryFreshnessPresentationState: Equatable {
+    private(set) var meetingID: Int64? = nil
+    private(set) var isStale = false
+
+    mutating func update(meetingID: Int64, summaryIsStale: Bool?) {
+        if self.meetingID != meetingID {
+            isStale = false
+        }
+        self.meetingID = meetingID
+        if let summaryIsStale {
+            isStale = summaryIsStale
+        }
     }
 }
 
@@ -86,7 +145,11 @@ struct MeetingDetailView: View {
     let onBack: (() -> Void)?
     let backLabel: String
     @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
+    @State private var showSpeakerEditor = false
     @State private var isSummarizing = false
+    @State private var speakerSnapshot: MeetingSpeakerSnapshot?
+    @State private var speakerSnapshotMeetingID: Int64?
+    @State private var speakerSummaryFreshness = MeetingSummaryFreshnessPresentationState()
     private var isRetranscribing: Bool {
         guard let id = meeting?.id else { return false }
         return appState.meetingRetranscriptions[id]?.isRunning == true
@@ -136,7 +199,7 @@ struct MeetingDetailView: View {
         let initialTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         _editableTitle = State(initialValue: meeting?.title ?? "")
         _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0, citation: sourceTarget?.citation) } ?? "")
-        _editableTranscript = State(initialValue: meeting?.rawTranscript ?? "")
+        _editableTranscript = State(initialValue: meeting.map { MeetingSpeakerState.transcriptForEditing($0.rawTranscript) } ?? "")
         _editableManualNotes = State(initialValue: meeting?.manualNotes ?? "")
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
@@ -154,6 +217,8 @@ struct MeetingDetailView: View {
                     header(meeting)
 
                     retranscriptionStatus(for: meeting)
+                    MeetingSpeakerLabelingControls(meetingID: meeting.id, controller: controller, appState: appState)
+                        .padding(.horizontal, 40)
 
                     if meeting.status != .recording && meeting.status != .processing {
                         HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
@@ -162,7 +227,7 @@ struct MeetingDetailView: View {
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
-                            Text(target.citation.excerpt).textSelection(.enabled)
+                            Text(MeetingChatDocumentTarget.readableExcerpt(target.citation.excerpt)).textSelection(.enabled)
                             if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
                                 Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
                             }
@@ -175,6 +240,19 @@ struct MeetingDetailView: View {
                     content(for: meeting)
                 }
                 .background(MuesliTheme.backgroundBase)
+                .task(id: MeetingSpeakerLoadKey(id: meeting.id, transcript: meeting.rawTranscript,
+                                               notes: meeting.formattedNotes, status: meeting.status,
+                                               summaryFreshnessRevision: appState.meetingSummaryFreshnessRevision(for: meeting.id),
+                                               speakerStateRevision: appState.meetingSpeakerStateRevision(for: meeting.id))) {
+                    let presentation = await controller.loadMeetingSpeakerPresentation(id: meeting.id)
+                    guard !Task.isCancelled else { return }
+                    speakerSnapshot = presentation.snapshot
+                    speakerSnapshotMeetingID = meeting.id
+                    speakerSummaryFreshness.update(
+                        meetingID: meeting.id,
+                        summaryIsStale: presentation.summaryIsStale
+                    )
+                }
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
                     if controller.canUseSummaryProvider(.openRouter) {
@@ -208,6 +286,9 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(MuesliTheme.backgroundBase)
             }
+        }
+        .sheet(isPresented: $showSpeakerEditor) {
+            if let meeting { MeetingSpeakerEditorView(meeting: meeting, controller: controller, appState: appState) }
         }
         .alert("Couldn't Save Summary", isPresented: summaryErrorBinding) {
             Button("OK", role: .cancel) {
@@ -713,6 +794,12 @@ struct MeetingDetailView: View {
             let sourceTarget = citationTarget(for: meeting)
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
+                if speakerSnapshotMeetingID == meeting.id,
+                   speakerSummaryFreshness.meetingID == meeting.id,
+                   speakerSummaryFreshness.isStale {
+                    Text("The transcript changed. Generate notes again to update speaker names in the summary.")
+                        .font(.caption).foregroundStyle(MuesliTheme.textSecondary)
+                }
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
@@ -721,7 +808,7 @@ struct MeetingDetailView: View {
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript, highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? $0.locate(in: meeting.rawTranscript) : nil })
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, speakerState: speakerSnapshotMeetingID == meeting.id ? speakerSnapshot?.state : nil, highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? $0.locate(in: meeting.rawTranscript) : nil })
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -852,12 +939,13 @@ struct MeetingDetailView: View {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
             transcriptSaveTask = nil
+            let storedTranscript = MeetingSpeakerState.storedTranscript(fromEditingTranscript: editableTranscript)
             let shouldPromptForResummary = Self.shouldPromptForTranscriptResummary(
                 hadStructuredNotes: transcriptEditHadStructuredNotes,
                 originalTranscript: transcriptEditOriginalTranscript,
-                editedTranscript: editableTranscript
+                editedTranscript: storedTranscript
             )
-            controller.updateMeetingTranscript(id: meeting.id, transcript: editableTranscript)
+            controller.updateMeetingTranscript(id: meeting.id, transcript: storedTranscript)
             isEditingTranscript = false
             transcriptEditOriginalTranscript = nil
             transcriptEditHadStructuredNotes = false
@@ -865,7 +953,7 @@ struct MeetingDetailView: View {
                 transcriptResummaryPromptMeetingID = meeting.id
             }
         } else if documentMode == .transcript {
-            editableTranscript = meeting.rawTranscript
+            editableTranscript = MeetingSpeakerState.transcriptForEditing(meeting.rawTranscript)
             transcriptEditOriginalTranscript = meeting.rawTranscript
             transcriptEditHadStructuredNotes = meeting.notesState == .structuredNotes
             isEditingTranscript = true
@@ -995,6 +1083,8 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func contentToolbar(for meeting: MeetingRecord) -> some View {
         HStack {
+            Button("Speakers", systemImage: "person.2") { showSpeakerEditor = true }
+                .disabled(meeting.status == .recording || meeting.status == .processing)
             Spacer()
 
             Button(action: {
@@ -1753,7 +1843,11 @@ struct MeetingDetailView: View {
                 }
             }
         case .transcript:
-            body = editedText ?? meeting.rawTranscript
+            if let editedText {
+                body = MeetingSpeakerState.displayTranscript(fromEditingTranscript: editedText)
+            } else {
+                body = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            }
         }
         let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
         return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
@@ -1798,7 +1892,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -1831,7 +1926,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -1873,7 +1969,7 @@ struct MeetingDetailView: View {
 
     private func debounceSaveTranscript(meetingID: Int64) {
         transcriptSaveTask?.cancel()
-        let transcript = editableTranscript
+        let transcript = MeetingSpeakerState.storedTranscript(fromEditingTranscript: editableTranscript)
         let c = controller
         let item = DispatchWorkItem { c.updateMeetingTranscript(id: meetingID, transcript: transcript) }
         transcriptSaveTask = item
@@ -1993,7 +2089,7 @@ struct MeetingDetailView: View {
             editableNotes = meeting.map { Self.notesContent(for: $0, citation: citationTarget(for: $0)?.citation) } ?? ""
         }
         if meetingChanged || !isEditingTranscript {
-            editableTranscript = meeting?.rawTranscript ?? ""
+            editableTranscript = meeting.map { MeetingSpeakerState.transcriptForEditing($0.rawTranscript) } ?? ""
         }
         if meetingChanged {
             editableManualNotes = meeting?.manualNotes ?? ""
@@ -2199,17 +2295,48 @@ private struct TitleContentWidthPreferenceKey: PreferenceKey {
     }
 }
 
-struct TranscriptChatMessage: Identifiable, Equatable {
+private struct TranscriptPresentationInput: Equatable, Sendable {
+    let transcript: String
+    let state: MeetingSpeakerState?
+}
+
+struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     let id: Int
     let timestamp: String?
     let speaker: String?
     let text: String
+    var speakerKey: MeetingSpeakerKey? = nil
+    var structuredSelf: Bool? = nil
+    var speakerPaletteIsSelf: Bool? = nil
+    var speakerIsPerson: Bool? = nil
 
     var isUser: Bool {
-        speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame
+        structuredSelf ?? (speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame)
     }
 
-    static func messages(from transcript: String, startingAt firstID: Int = 0) -> [TranscriptChatMessage] {
+    static func messages(from transcript: String, startingAt firstID: Int = 0,
+                         speakerState: MeetingSpeakerState? = nil,
+                         knownSpeakerLabels: Set<String> = []) -> [TranscriptChatMessage] {
+        if let speakerState, speakerState.isValid, speakerState.matchesTranscript(transcript) {
+            let isLegacyRender = speakerState.renderLegacy() == transcript && speakerState.render() != transcript
+            let transcriptPrefixMessages = Self.messages(from: speakerState.transcriptPrefix ?? "", startingAt: firstID)
+            let renderedPrefixMessages = (isLegacyRender ? nil : speakerState.renderedPrefix).map {
+                Self.messages(from: $0, startingAt: firstID + transcriptPrefixMessages.count,
+                    knownSpeakerLabels: Set(speakerState.renderedPrefixSpeakerLabels ?? []))
+            } ?? []
+            let prefixMessages = transcriptPrefixMessages + renderedPrefixMessages
+            let labels = speakerState.labels
+            let currentMessages = speakerState.turns.enumerated().map { index, turn in
+                let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
+                let speaker = speakerState.speakers.first { $0.key == key }
+                return TranscriptChatMessage(id: firstID + prefixMessages.count + index, timestamp: turn.timestamp,
+                    speaker: labels[key], text: turn.text, speakerKey: key,
+                    structuredSelf: speaker?.isSelf ?? false,
+                    speakerPaletteIsSelf: speaker?.paletteIsSelf ?? speaker?.isSelf,
+                    speakerIsPerson: speaker?.isAssignable ?? false)
+            }
+            return prefixMessages + currentMessages
+        }
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
         let rawLines = normalized
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -2219,21 +2346,31 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         for rawLine in rawLines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
-            let parsed = parseLine(line, id: firstID + messages.count)
+            let parsed = parseLine(line, id: firstID + messages.count, knownSpeakerLabels: knownSpeakerLabels)
             messages.append(parsed)
         }
 
         return messages
     }
 
-    private static func parseLine(_ line: String, id: Int) -> TranscriptChatMessage {
+    private static func parseLine(_ line: String, id: Int, knownSpeakerLabels: Set<String>) -> TranscriptChatMessage {
         if line.hasPrefix("["),
            let timestampEnd = line.firstIndex(of: "]") {
             let timestamp = String(line[line.index(after: line.startIndex)..<timestampEnd])
             let remainderStart = line.index(after: timestampEnd)
-            let remainder = line[remainderStart...]
+            var remainder = line[remainderStart...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let speakerText = splitSpeakerAndText(remainder)
+            let hasEscapedSpeakerLabel = remainder.hasPrefix(MeetingSpeakerState.transcriptSpeakerLabelMarker)
+            if hasEscapedSpeakerLabel { remainder.removeFirst() }
+            let allowsCustomSpeakerLabel = timestamp.range(
+                of: #"^\d{2}:\d{2}:\d{2}$"#, options: .regularExpression
+            ) != nil
+            let speakerText = splitSpeakerAndText(
+                remainder,
+                allowCustomLabel: allowsCustomSpeakerLabel,
+                decodeEscapedSpeakerLabel: hasEscapedSpeakerLabel,
+                knownSpeakerLabels: knownSpeakerLabels
+            )
             return TranscriptChatMessage(
                 id: id,
                 timestamp: timestamp.isEmpty ? nil : timestamp,
@@ -2242,7 +2379,7 @@ struct TranscriptChatMessage: Identifiable, Equatable {
             )
         }
 
-        let speakerText = splitSpeakerAndText(line)
+        let speakerText = splitSpeakerAndText(line, knownSpeakerLabels: knownSpeakerLabels)
         return TranscriptChatMessage(
             id: id,
             timestamp: nil,
@@ -2251,56 +2388,141 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         )
     }
 
-    private static func splitSpeakerAndText(_ text: String) -> (speaker: String?, text: String) {
-        guard let separator = text.firstIndex(of: ":") else {
+    private static func splitSpeakerAndText(
+        _ text: String,
+        allowCustomLabel: Bool = false,
+        decodeEscapedSpeakerLabel: Bool = false,
+        knownSpeakerLabels: Set<String> = []
+    ) -> (speaker: String?, text: String) {
+        let orderedKnownLabels = knownSpeakerLabels.sorted(by: { $0.count > $1.count })
+        if let knownLabel = orderedKnownLabels.first(where: {
+            text.hasPrefix(MeetingSpeakerState.escapedTranscriptSpeakerLabel($0) + ":")
+        }) {
+            let encodedLabel = MeetingSpeakerState.escapedTranscriptSpeakerLabel(knownLabel)
+            let bodyStart = text.index(text.startIndex, offsetBy: encodedLabel.count + 1)
+            let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return (knownLabel, body.isEmpty ? text : body)
+        }
+        if let knownLabel = orderedKnownLabels.first(where: { text.hasPrefix($0 + ":") }) {
+            let bodyStart = text.index(text.startIndex, offsetBy: knownLabel.count + 1)
+            let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return (knownLabel, body.isEmpty ? text : body)
+        }
+
+        var candidate = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if decodeEscapedSpeakerLabel, character == "\\" {
+                let escapedIndex = text.index(after: index)
+                if escapedIndex < text.endIndex {
+                    let escaped = text[escapedIndex]
+                    if escaped == ":" || escaped == "\\" {
+                        candidate.append(escaped)
+                        index = text.index(after: escapedIndex)
+                        continue
+                    }
+                }
+            }
+            if allowCustomLabel, character == "\\" {
+                var slashEnd = index
+                var slashCount = 0
+                while slashEnd < text.endIndex, text[slashEnd] == "\\" {
+                    slashCount += 1
+                    slashEnd = text.index(after: slashEnd)
+                }
+                candidate.append(String(repeating: "\\", count: slashCount))
+                if slashEnd < text.endIndex, text[slashEnd] == ":", !slashCount.isMultiple(of: 2) {
+                    candidate.append(":")
+                    index = text.index(after: slashEnd)
+                } else {
+                    index = slashEnd
+                }
+                continue
+            }
+            if character == ":" { break }
+            candidate.append(character)
+            index = text.index(after: index)
+        }
+
+        guard index < text.endIndex, text[index] == ":" else { return (nil, text) }
+        let label = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isLikelySpeakerLabel(label, allowCustomLabel: allowCustomLabel,
+            knownSpeakerLabels: knownSpeakerLabels) else {
             return (nil, text)
         }
 
-        let candidate = text[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isLikelySpeakerLabel(candidate) else {
-            return (nil, text)
-        }
-
-        let bodyStart = text.index(after: separator)
+        let bodyStart = text.index(after: index)
         let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return (candidate, body.isEmpty ? text : body)
+        return (label, body.isEmpty ? text : body)
     }
 
-    private static func isLikelySpeakerLabel(_ label: String) -> Bool {
-        guard !label.isEmpty, label.count <= 32 else { return false }
+    private static func isLikelySpeakerLabel(_ label: String, allowCustomLabel: Bool = false,
+                                             knownSpeakerLabels: Set<String> = []) -> Bool {
+        guard !label.isEmpty else { return false }
+        if knownSpeakerLabels.contains(label) { return true }
+        if allowCustomLabel {
+            return MeetingSpeakerState.safeLabel(label) == label
+        }
+        guard label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Microphone") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }
         if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
+        // In-room speakers from microphone diarization; unnumbered when not attributable.
+        if label.range(of: #"^Local speaker(\s+\d+)?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
         return false
+    }
+}
+
+enum MeetingTranscriptContentState: Equatable {
+    case loading, empty, messages
+
+    init(hasLoaded: Bool, messageCount: Int) {
+        if !hasLoaded { self = .loading }
+        else if messageCount == 0 { self = .empty }
+        else { self = .messages }
     }
 }
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    var speakerState: MeetingSpeakerState? = nil
     var highlightedRange: NSRange? = nil
     @State private var messages: [TranscriptChatMessage]
+    @State private var messageRanges: [NSRange]?
+    @State private var didFinishLoadingMessages = false
 
-    init(transcript: String, highlightedRange: NSRange? = nil) {
+    init(transcript: String, speakerState: MeetingSpeakerState? = nil, highlightedRange: NSRange? = nil) {
         self.transcript = transcript
+        self.speakerState = speakerState
         self.highlightedRange = highlightedRange
-        _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
+        _messages = State(initialValue: [])
+        _messageRanges = State(initialValue: nil)
     }
 
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                if messages.isEmpty {
+                switch MeetingTranscriptContentState(hasLoaded: didFinishLoadingMessages, messageCount: messages.count) {
+                case .loading:
+                    ProgressView()
+                        .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
+                        .padding(MuesliTheme.spacing24)
+                case .empty:
                     Text("No transcript available")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
                         .padding(MuesliTheme.spacing24)
-                } else {
+                case .messages:
                     ForEach(messages) { message in
                         TranscriptChatBubble(message: message)
                             .background(message.id == highlightedMessageID ? MuesliTheme.surfaceSelected : Color.clear)
@@ -2313,17 +2535,47 @@ private struct MeetingTranscriptView: View {
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
-        .onChange(of: highlightedRange) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
-        .onChange(of: transcript) { _, newTranscript in
-            messages = TranscriptChatMessage.messages(from: newTranscript)
+        .onAppear { scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: highlightedRange) { _, _ in scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: didFinishLoadingMessages) { _, loaded in if loaded { scrollToHighlightedMessage(using: proxy) } }
+        .task(id: TranscriptPresentationInput(transcript: transcript, state: speakerState)) {
+            didFinishLoadingMessages = false
+            messageRanges = nil
+            let input = TranscriptPresentationInput(transcript: transcript, state: speakerState)
+            let loaded = await Task.detached(priority: .userInitiated) {
+                (
+                    messages: TranscriptChatMessage.messages(from: input.transcript, speakerState: input.state),
+                    ranges: MeetingChatDocumentTarget.transcriptMessageRanges(
+                        in: input.transcript,
+                        speakerState: input.state
+                    )
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            messages = loaded.messages
+            messageRanges = loaded.ranges
+            didFinishLoadingMessages = true
         }
         }
     }
+
+    private func scrollToHighlightedMessage(using proxy: ScrollViewProxy) {
+        guard didFinishLoadingMessages else { return }
+        guard let id = MeetingChatDocumentTarget.loadedTranscriptScrollTarget(
+            messages: messages, highlightedMessageID: highlightedMessageID
+        ) else { return }
+        proxy.scrollTo(id, anchor: .center)
+    }
+
     private var highlightedMessageID: Int? {
-        guard let range = highlightedRange else { return nil }
-        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range)
+        guard let range = highlightedRange, let messageRanges else { return nil }
+        return MeetingChatDocumentTarget.transcriptMessageID(
+            in: transcript,
+            range: range,
+            messageRanges: messageRanges
+        )
     }
+
 }
 
 struct TranscriptChatBubble: View {
@@ -2339,7 +2591,7 @@ struct TranscriptChatBubble: View {
                 if let metadata = metadata {
                     Text(metadata)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .foregroundStyle(speakerTint)
                         .textSelection(.enabled)
                 }
                 Text(message.text)
@@ -2350,11 +2602,11 @@ struct TranscriptChatBubble: View {
             }
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 8)
-            .background(message.isUser ? MuesliTheme.accent.opacity(0.18) : MuesliTheme.surfacePrimary)
+            .background(MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(message.isUser ? MuesliTheme.accent.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .strokeBorder(speakerTint.opacity(0.45), lineWidth: 1)
             )
             .frame(maxWidth: 680, alignment: message.isUser ? .trailing : .leading)
 
@@ -2363,6 +2615,11 @@ struct TranscriptChatBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
+    }
+
+    private var speakerTint: Color {
+        MeetingSpeakerStyle.colour(for: message.speakerKey, isSelf: message.speakerPaletteIsSelf ?? message.isUser,
+                                  isPerson: message.speakerIsPerson ?? false)
     }
 
     private var metadata: String? {

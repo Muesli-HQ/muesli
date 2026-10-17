@@ -1144,6 +1144,29 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
+                "Meeting app speaker names",
+                description: "Experimental and off by default. Real Zoom, Teams, Meet and Slack layouts are unverified on Mac; keep this off until verified. Requires Accessibility access and active system audio. Mic-only meetings receive no names; names require consistent active-speaker evidence.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("meeting_ax_speakers")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Meeting owner recognition",
+                description: "Experimental and off by default. Keep disabled until consented voice fixtures and real meeting audio are verified on a Mac.",
+                controlWidth: meetingControlWidth
+            ) {
+                Button("Open speaker labeling recovery folder") { controller.openSpeakerLabelingRecoveryFolder() }
+                settingsControl("meeting_live_speakers")
+                settingsControl("meeting_owner_recognition")
+                TextField("Your display name (optional)", text: Binding(
+                    get: { appState.config.meetingOwnerDisplayName },
+                    set: { value in controller.updateConfig { $0.meetingOwnerDisplayName = value } }))
+                OwnerVoiceSettingsView(voice: controller.ownerVoice,
+                    captureActive: appState.isMeetingRecording || appState.dictationState != .idle)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
                 "Show transcript on hover",
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth
@@ -2075,6 +2098,11 @@ struct SettingsView: View {
                     }
                     settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Identify in-room speakers") {
+                    settingsControl("diarize_microphone")
+                }
+                settingsDescription("For in-person meetings: splits microphone audio into Local speaker 1, 2, … after the meeting ends. Takes longer to process.")
             }
 
             settingsSection("Auto Export") {

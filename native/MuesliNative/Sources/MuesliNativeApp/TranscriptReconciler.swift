@@ -6,6 +6,11 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
+    /// Raw microphone cluster IDs retained for owner recognition, even when
+    /// significance filtering leaves the displayed mic channel generic.
+    let micIdentitySegments: [TimedSpeakerSegment]?
+    /// Significant in-room speakers used for local diarization labels.
+    var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
 
 enum TranscriptReconciler {
@@ -34,9 +39,28 @@ enum TranscriptReconciler {
     static func reconcile(
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
-        diarizationSegments: [TimedSpeakerSegment]?
+        diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
+        preserveMicrophoneIdentityBoundaries: Bool = false,
+        preserveTurnBoundaries: Bool = false
     ) -> ReconciledTranscriptInputs {
-        let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns))
+        let localDiarization = SpeakerAttribution.localDiarization(
+            from: micDiarizationSegments,
+            preserveSingleSpeakerIdentity: preserveMicrophoneIdentityBoundaries
+        )
+        let micSpeaker = micSpeakerResolver(for: preserveMicrophoneIdentityBoundaries
+            ? micDiarizationSegments
+            : localDiarization)
+        // Sentence timing is interpolated from text length, so it cannot establish
+        // owner identity inside a mixed chunk. Preserve the original range for the
+        // owner path; the formatter leaves ranges crossing speakers generic.
+        let attributableMicTurns = micSpeaker == nil || preserveMicrophoneIdentityBoundaries
+            ? micTurns
+            : MicTurnNormalizer.sentenceSegments(micTurns)
+        let sortedMicTurns = sortedSegments(attributableMicTurns)
+        let normalizedMicTurns = preserveTurnBoundaries
+            ? sortedMicTurns
+            : mergeReadableSegments(sortedMicTurns, speakerOf: micSpeaker)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
             micTurns: normalizedMicTurns,
@@ -47,7 +71,7 @@ enum TranscriptReconciler {
         var keptSystemTurns: [SpeechSegment] = []
 
         for window in windows {
-            let reconciledWindow = reconcile(window)
+            let reconciledWindow = reconcile(window, micSpeaker: micSpeaker, preserveTurnBoundaries: preserveTurnBoundaries)
             keptMicTurns.append(contentsOf: reconciledWindow.micTurns)
             keptSystemTurns.append(contentsOf: reconciledWindow.systemTurns)
         }
@@ -55,12 +79,16 @@ enum TranscriptReconciler {
         return ReconciledTranscriptInputs(
             micSegments: sortedSegments(keptMicTurns),
             systemSegments: sortedSegments(keptSystemTurns),
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micIdentitySegments: micDiarizationSegments,
+            micDiarizationSegments: localDiarization
         )
     }
 
-    private static func reconcile(_ window: OverlapWindow) -> OverlapWindow {
-        let mergedMicTurns = mergeReadableSegments(window.micTurns)
+    private static func reconcile(_ window: OverlapWindow, micSpeaker: MicSpeakerResolver?, preserveTurnBoundaries: Bool) -> OverlapWindow {
+        let mergedMicTurns = preserveTurnBoundaries
+            ? sortedSegments(window.micTurns)
+            : mergeReadableSegments(window.micTurns, speakerOf: micSpeaker)
         let keptSystemTurns = sortedSegments(dedupeSystemSegments(window.systemTurns))
 
         guard !mergedMicTurns.isEmpty, !keptSystemTurns.isEmpty else {
@@ -72,9 +100,8 @@ enum TranscriptReconciler {
             )
         }
 
-        let keptMicTurns = mergeReadableSegments(
-            mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) }
-        )
+        let retainedMicTurns = mergedMicTurns.filter { shouldKeepMicTurn($0, overlappingSystemTurns: keptSystemTurns) }
+        let keptMicTurns = preserveTurnBoundaries ? retainedMicTurns : mergeReadableSegments(retainedMicTurns, speakerOf: micSpeaker)
 
         return OverlapWindow(
             start: window.start,
@@ -164,11 +191,24 @@ enum TranscriptReconciler {
         return !normalizedText(micTurn.text).isEmpty
     }
 
-    private static func mergeReadableSegments(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+    /// Resolves the local (mic) speaker of a turn; nil when not attributable.
+    typealias MicSpeakerResolver = (SpeechSegment) -> String?
+
+    /// nil unless `SpeakerAttribution.localDiarization` found several in-room voices.
+    private static func micSpeakerResolver(for localDiarization: [TimedSpeakerSegment]?) -> MicSpeakerResolver? {
+        guard let localDiarization else { return nil }
+        return { SpeakerAttribution.speakerID(for: $0, in: localDiarization) }
+    }
+
+    private static func mergeReadableSegments(
+        _ segments: [SpeechSegment],
+        speakerOf: MicSpeakerResolver? = nil
+    ) -> [SpeechSegment] {
         guard !segments.isEmpty else { return [] }
 
         let orderedSegments = sortedSegments(segments)
         var merged: [SpeechSegment] = [orderedSegments[0]]
+        var currentSpeaker = speakerOf?(orderedSegments[0])
 
         for segment in orderedSegments.dropFirst() {
             guard let previous = merged.last else {
@@ -177,14 +217,20 @@ enum TranscriptReconciler {
             }
 
             let gap = max(0, segment.start - previous.end)
-            if gap <= turnMergeGapSeconds {
-                merged[merged.count - 1] = SpeechSegment(
-                    start: previous.start,
-                    end: max(previous.end, segment.end),
-                    text: joinText(previous.text, segment.text)
-                )
+            let speaker = speakerOf?(segment)
+            let combined = SpeechSegment(
+                start: previous.start,
+                end: max(previous.end, segment.end),
+                text: joinText(previous.text, segment.text)
+            )
+            // Later passes and the formatter re-attribute the merged range, so a
+            // merge must not change who that range resolves to.
+            let keepsSpeaker = speakerOf.map { speaker == currentSpeaker && $0(combined) == currentSpeaker } ?? true
+            if gap <= turnMergeGapSeconds && keepsSpeaker {
+                merged[merged.count - 1] = combined
             } else {
                 merged.append(segment)
+                currentSpeaker = speaker
             }
         }
 

@@ -20,6 +20,18 @@ case "${shard}" in
       ConfigStoreTests
       InsightsTests
       DictationStoreTests
+      MeetingSpeakerSelfTests
+      OwnerVoiceEnrollmentTests
+      OwnerVoiceMatcherTests
+      VoiceProfileStoreTests
+      MeetingLiveSpeakerTests
+      MeetingDeferredSpeakerTests
+      MeetingSpeakerStateTests
+      MeetingSpeakerAccessibilityTests
+      MeetingSpeakerAccessibilityMonitorTests
+      MeetingSpeakerEditingTests
+      MeetingSpeakerPaletteTests
+      MeetingSpeakerStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
       ComputerUseLocalPlannerBenchmarkTests
@@ -169,7 +181,10 @@ case "${shard}" in
       MeetingsNavigationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
+      TranscriptChatMessageTests
       TranscriptFormatterTests
+      TranscriptReconcilerTests
+      SpeakerAttributionTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests

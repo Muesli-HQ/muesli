@@ -216,7 +216,10 @@ struct MeetingCaptureLifecycleTests {
         start.cancel()
         do { try await start.value; Issue.record("Cancelled capture became ready") }
         catch { #expect(error is CancellationError) }
-        #expect(await Task.detached { otherStopped.wait(timeout: .now() + 1) == .success }.value)
+        let otherCaptureStopped = await Task.detached {
+            otherStopped.wait(timeout: .now() + 1) == .success
+        }.value
+        #expect(otherCaptureStopped)
         #expect(capture.phase == .stopping)
         #expect(!capture.setPaused(false))
         release.signal()
@@ -289,6 +292,46 @@ struct MeetingCaptureLifecycleTests {
         #expect(mic.pauseCount == 1 && mic.resumeCount == 1)
         #expect(system.pauseCount == 1 && system.resumeCount == 1)
         #expect(mic.startCount == 1 && system.startCount == 1)
+    }
+
+    @Test("system recording callbacks stay on the file timeline across pause")
+    func systemSamplesRemainDeliverableUntilTheRecordingBarrier() async throws {
+        let capture = MeetingCaptureLifecycle(
+            microphone: LifetimeMicrophone(), systemAudio: LifetimeSystemAudio()
+        )
+        let queue = DispatchQueue(label: "test.capture.system-timeline")
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        func emitRecordedSamples(_ sample: Int16) {
+            capture.enqueueSystemSamples(on: queue) { received.withLock { $0.append(sample) } }
+        }
+        func drain() { queue.sync {} }
+
+        try await capture.start()
+        emitRecordedSamples(1)
+        drain()
+
+        #expect(capture.setPaused(true))
+        // The native recorder can deliver a callback it already wrote while
+        // its pause operation is still taking effect.
+        emitRecordedSamples(2)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2])
+
+        #expect(capture.setPaused(false))
+        emitRecordedSamples(3)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3])
+
+        let shutdown = capture.requestStop()
+        emitRecordedSamples(4)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        _ = await shutdown.value
+
+        capture.finishMicrophoneDelivery()
+        emitRecordedSamples(5)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
     }
 
     @Test("failed system startup releases prepared microphone without starting it")
