@@ -10,13 +10,24 @@ enum MicTurnNormalizer {
     static func normalize(
         result: SpeechTranscriptionResult,
         startTime: TimeInterval,
-        endTime: TimeInterval
+        endTime: TimeInterval,
+        preserveReliableSpeakerTimings: Bool = false
     ) -> [SpeechSegment] {
         let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return [] }
 
         let clampedEndTime = max(endTime, startTime + 0.1)
         let timedSegments = timedSegments(from: result, startTime: startTime, endTime: clampedEndTime)
+
+        if preserveReliableSpeakerTimings {
+            // Interpolating sentence times from text length can assign a guest's
+            // words to the owner's audio. Keep reliable backend turns intact and
+            // make untimed or fragmented chunks generic across speaker changes.
+            guard !timedSegments.isEmpty, !isFragmented(timedSegments) else {
+                return [SpeechSegment(start: startTime, end: clampedEndTime, text: trimmedText)]
+            }
+            return timedSegments
+        }
 
         guard !timedSegments.isEmpty else {
             return sentenceSplit(text: trimmedText, startTime: startTime, endTime: clampedEndTime)
@@ -32,6 +43,15 @@ enum MicTurnNormalizer {
         }
 
         return mergedSegments
+    }
+
+    /// Splits each turn into sentences with times interpolated inside the turn.
+    /// Mic diarization needs these boundaries: upstream paths (timed-segment
+    /// merging, finalized streaming chunks) can hand over a whole chunk as one turn.
+    static func sentenceSegments(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+        segments.flatMap { segment in
+            sentenceSplit(text: segment.text, startTime: segment.start, endTime: max(segment.end, segment.start + 0.1))
+        }
     }
 
     private static func timedSegments(
