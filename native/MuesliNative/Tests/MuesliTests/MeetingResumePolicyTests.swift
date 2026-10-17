@@ -89,7 +89,7 @@ struct MeetingResumePolicyTests {
         #expect(combined?.hasPrefix("p") == true)
     }
 
-    private func makeResult(start: Date, end: Date) -> MeetingSessionResult {
+    private func makeResult(start: Date, end: Date, summaryIsCurrent: Bool = true) -> MeetingSessionResult {
         MeetingSessionResult(
             title: "M",
             originalTitle: "M",
@@ -102,7 +102,8 @@ struct MeetingResumePolicyTests {
             retainedRecordingURL: nil,
             retainedRecordingError: nil,
             systemRecordingURL: nil,
-            templateSnapshot: MeetingTemplates.auto.snapshot
+            templateSnapshot: MeetingTemplates.auto.snapshot,
+            summaryIsCurrent: summaryIsCurrent
         )
     }
 
@@ -148,7 +149,7 @@ struct MeetingResumePolicyTests {
         let preserved = result.overriding(rawTranscript: "combined", formattedNotes: "retained")
         let refreshed = result.overriding(rawTranscript: "combined", formattedNotes: "fresh", summaryIsCurrent: true)
 
-        #expect(!preserved.summaryIsCurrent)
-        #expect(refreshed.summaryIsCurrent)
+        #expect(preserved.summaryIsCurrent == false)
+        #expect(refreshed.summaryIsCurrent == true)
     }
 }

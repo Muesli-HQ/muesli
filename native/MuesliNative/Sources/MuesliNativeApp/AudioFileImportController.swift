@@ -244,13 +244,13 @@ enum AudioFileImportController {
             summaryIsCurrent = true
         } catch {
             fputs("[import] summary generation failed: \(error)\n", stderr)
+            summaryIsCurrent = false
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: diarizedTranscript,
                 meetingTitle: generatedTitle,
                 error: error,
                 manualNotes: ""
             )
-            summaryIsCurrent = false
         }
 
         try Task.checkCancellation()
@@ -471,7 +471,8 @@ enum AudioFileImportController {
             diarizationSegments: diarizationSegments,
             meetingStart: meetingStart,
             conservativeSpeakerAttribution: true,
-            systemChannel: .imported
+            systemChannel: .imported,
+            preserveSegmentBoundaries: true
         )
         let formatted = state.render()
         return formatted.isEmpty ? (rawText, nil) : (formatted, state)
