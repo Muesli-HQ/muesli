@@ -2065,6 +2065,14 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Identify Phone app callers (experimental)") {
+                    settingsControl("identify_phone_callers")
+                }
+                settingsDescription("Uses Accessibility to read the number or email shown for an active call in the macOS 26 Phone app when Phone is frontmost as recording starts. Stays on this Mac.")
+                if appState.config.identifyPhoneCallers && !accessibilityGranted {
+                    settingsDescription("Grant Accessibility access in System Settings → Privacy & Security.")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
