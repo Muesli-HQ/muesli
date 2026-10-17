@@ -1083,6 +1083,7 @@ struct AppConfigTests {
         #expect(config.userName.isEmpty)
         #expect(config.customMeetingTemplates.isEmpty)
         #expect(config.meetingHookEnabled == false)
+        #expect(config.diarizeMicrophoneAudio == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
         #expect(config.autoExportMarkdownEnabled == false)
@@ -1283,6 +1284,7 @@ struct AppConfigTests {
             )
         ]
         config.meetingHookEnabled = true
+        config.diarizeMicrophoneAudio = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
         config.autoExportMarkdownEnabled = true
@@ -1376,6 +1378,7 @@ struct AppConfigTests {
         #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
         #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
         #expect(decoded.meetingHookEnabled == true)
+        #expect(decoded.diarizeMicrophoneAudio == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
         #expect(decoded.autoExportMarkdownEnabled == true)
@@ -1517,6 +1520,7 @@ struct AppConfigTests {
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
         #expect(json["custom_meeting_templates"] != nil)
         #expect(json["meeting_hook_enabled"] != nil)
+        #expect(json["diarize_microphone_audio"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
         #expect(json["auto_export_markdown_enabled"] != nil)

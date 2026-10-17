@@ -167,6 +167,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var bridgeRefreshForceRequested = false
     private var targetZoneFetchProcessingFailed = false
     private let bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)?
+    private let meetingSummaryFreshnessDidChange: (@MainActor @Sendable (Set<Int64>, Set<Int64>) -> Void)?
     private let syncZoneFetchDidSucceed: (@MainActor @Sendable () -> Void)?
     private let engineCancellationObserver: @Sendable () async -> Void
 
@@ -183,6 +184,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)? = nil,
         legacyScopeMigration: MuesliCKSyncLegacyScopeMigration? = MuesliCKSyncEngine.productionLegacyScopeMigration,
         bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil,
+        meetingSummaryFreshnessDidChange: (@MainActor @Sendable (Set<Int64>, Set<Int64>) -> Void)? = nil,
         syncZoneFetchDidSucceed: (@MainActor @Sendable () -> Void)? = nil,
         engineCancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
@@ -191,6 +193,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         self.legacyAccountRecordVerifier = legacyAccountRecordVerifier
         self.legacyScopeMigration = legacyScopeMigration
         self.bridgeRefreshDidFinish = bridgeRefreshDidFinish
+        self.meetingSummaryFreshnessDidChange = meetingSummaryFreshnessDidChange
         self.syncZoneFetchDidSucceed = syncZoneFetchDidSucceed
         self.engineCancellationObserver = engineCancellationObserver
     }
@@ -348,7 +351,10 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             if let existing = self.preflight {
                 preflight = existing
             } else {
-                let created = MuesliICloudSyncEngine(container: resolvedContainer())
+                let created = MuesliICloudSyncEngine(
+                    container: resolvedContainer(),
+                    meetingSummaryFreshnessDidChange: meetingSummaryFreshnessDidChange
+                )
                 self.preflight = created
                 preflight = created
             }
@@ -669,7 +675,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             case .fetchedRecordZoneChanges(let changes):
                 guard !accountBoundaryBlocked else { break }
                 do {
-                    try handleFetchedRecords(
+                    try await handleFetchedRecords(
                         changes.modifications.map(\.record),
                         state: syncEngine.state
                     )
@@ -682,7 +688,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
             case .sentRecordZoneChanges(let changes):
                 guard !accountBoundaryBlocked else { break }
-                try handleSentRecordChanges(
+                try await handleSentRecordChanges(
                     savedRecords: changes.savedRecords,
                     failedRecordSaves: changes.failedRecordSaves.map {
                         MuesliCKSyncFailedRecordSave(record: $0.record, error: $0.error)
@@ -753,14 +759,35 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     func handleFetchedRecords(
         _ cloudRecords: [CKRecord],
         state: any MuesliCKSyncPendingState
-    ) throws {
+    ) async throws {
         let records = cloudRecords
             .filter {
                 $0.recordID.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID
                     && $0.recordType == MuesliICloudSyncEngine.Schema.textRecordType
             }
             .compactMap(MuesliICloudSyncEngine.syncTextRecord(from:))
-        let appliedRecordIDs = Set(try store.upsertSyncedTextRecords(records).map(\.id))
+        var jobsByDeletedName: [String: [MeetingSpeakerLabelingJob]] = [:]
+        var recoveriesByDeletedName: [String: MeetingSpeakerRecoveryRecord] = [:]
+        let recoveryRecords = MeetingSpeakerBacklogAudio().recoveryRecords()
+        for record in records where record.kind == .meeting && record.isDeleted {
+            jobsByDeletedName[record.id] = try store.meetingSpeakerLabelingJobs(forCloudRecordNames: [record.id])
+            if let meetingID = try store.meetingID(forCloudRecordName: record.id),
+               let recovery = recoveryRecords.first(where: { $0.meetingID == meetingID }) {
+                recoveriesByDeletedName[record.id] = recovery
+            }
+        }
+        let result = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness(records)
+        if !result.freshnessChangedMeetingIDs.isEmpty || !result.deletedMeetingIDs.isEmpty {
+            await meetingSummaryFreshnessDidChange?(
+                result.freshnessChangedMeetingIDs,
+                result.deletedMeetingIDs
+            )
+        }
+        let appliedRecordIDs = Set(result.appliedRecords.map(\.id))
+        retireDeletedSpeakerLabelingJobs(result.appliedRecords.filter { $0.kind == .meeting && $0.isDeleted }
+            .flatMap { jobsByDeletedName[$0.id] ?? [] })
+        retireDeletedSpeakerRecoveryRecords(result.appliedRecords.filter { $0.kind == .meeting && $0.isDeleted }
+            .compactMap { recoveriesByDeletedName[$0.id] })
         for record in records {
             if !appliedRecordIDs.contains(record.id) {
                 try store.updateTextRecordCloudMetadata(
@@ -785,7 +812,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         savedRecords: [CKRecord],
         failedRecordSaves: [MuesliCKSyncFailedRecordSave],
         state: any MuesliCKSyncPendingState
-    ) throws {
+    ) async throws {
         for savedRecord in savedRecords {
             guard let syncRecord = MuesliICloudSyncEngine.syncTextRecord(from: savedRecord) else { continue }
             if try store.markTextRecordSynced(
@@ -813,7 +840,13 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 // The serverRecordChanged error itself proves the saved version is
                 // stale, so last-write-wins depends only on Muesli's updatedAt field.
                 if remote.updatedAt > local.updatedAt {
-                    _ = try store.upsertSyncedTextRecord(remote)
+                    let result = try store.upsertSyncedTextRecordsTrackingMeetingSummaryFreshness([remote])
+                    if !result.freshnessChangedMeetingIDs.isEmpty || !result.deletedMeetingIDs.isEmpty {
+                        await meetingSummaryFreshnessDidChange?(
+                            result.freshnessChangedMeetingIDs,
+                            result.deletedMeetingIDs
+                        )
+                    }
                     state.remove(pendingRecordZoneChanges: [pending])
                 } else {
                     conflictBaseRecords[recordID] = serverRecord
@@ -919,7 +952,10 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 )
             } else {
                 let resolved = self.preflight
-                    ?? MuesliICloudSyncEngine(container: resolvedContainer())
+                    ?? MuesliICloudSyncEngine(
+                        container: resolvedContainer(),
+                        meetingSummaryFreshnessDidChange: meetingSummaryFreshnessDidChange
+                    )
                 self.preflight = resolved
                 matchingRecordNames = try await resolved.matchingSyncZoneTextRecordNames(
                     named: legacyRecordNames

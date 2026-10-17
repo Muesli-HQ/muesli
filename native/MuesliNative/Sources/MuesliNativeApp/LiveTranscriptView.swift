@@ -4,9 +4,10 @@
 import AppKit
 import Observation
 import SwiftUI
+import MuesliCore
 
 enum LiveTranscriptCopyContent {
-    static func text(transcript: String, partialYou: String, partialOthers: String) -> String {
+    static func text(transcript: String, partialYou: String, partialOthers: String, microphoneLabel: String = "You") -> String {
         var sections: [String] = []
         let committed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !committed.isEmpty {
@@ -18,7 +19,7 @@ enum LiveTranscriptCopyContent {
         }
         let you = partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
         if !you.isEmpty {
-            sections.append("You: \(you)")
+            sections.append("\(microphoneLabel): \(you)")
         }
         return sections.joined(separator: "\n")
     }
@@ -30,6 +31,9 @@ struct LiveTranscriptBubble: View {
     let lines: [String]
     let isUser: Bool
     let isPartial: Bool
+    var speakerKey: MeetingSpeakerKey? = nil
+    var speakerIsPerson: Bool = false
+    var speakerPaletteIsSelf: Bool? = nil
     var onOpen: (() -> Void)? = nil
     @State private var isHovered = false
     @State private var didCopy = false
@@ -42,7 +46,7 @@ struct LiveTranscriptBubble: View {
                 if let speaker {
                     Text(speaker + (timestamp.map { "  \($0)" } ?? ""))
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .foregroundStyle(speakerTint)
                 }
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line)
@@ -59,7 +63,7 @@ struct LiveTranscriptBubble: View {
             .overlay {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(
-                        isPartial ? MuesliTheme.surfaceBorder : committedBorder,
+                        committedBorder,
                         style: StrokeStyle(lineWidth: 1, dash: isPartial ? [4, 3] : [])
                     )
             }
@@ -98,16 +102,14 @@ struct LiveTranscriptBubble: View {
         }
     }
 
-    private var bubbleBackground: Color {
-        if isPartial {
-            return isUser ? MuesliTheme.accent.opacity(0.06) : MuesliTheme.surfacePrimary.opacity(0.5)
-        }
-        return isUser ? MuesliTheme.accent.opacity(0.15) : MuesliTheme.surfacePrimary
+    private var speakerTint: Color {
+        MeetingSpeakerStyle.colour(for: speakerKey, isSelf: speakerPaletteIsSelf ?? isUser, isPerson: speakerIsPerson)
     }
 
-    private var committedBorder: Color {
-        isUser ? MuesliTheme.accent.opacity(0.2) : MuesliTheme.surfaceBorder
-    }
+    // Opaque standard surfaces keep name contrast independent of the user's accent colour.
+    private var bubbleBackground: Color { MuesliTheme.surfacePrimary }
+    private var committedBorder: Color { speakerTint.opacity(0.45) }
+
 }
 
 @MainActor
@@ -116,27 +118,141 @@ final class LiveTranscriptPresentationModel {
     var transcript = ""
     var partialYou = ""
     var partialOthers = ""
+    var microphoneLabel = "You"
     var messages: [TranscriptChatMessage] = []
 
-    func update(transcript: String, partialYou: String, partialOthers: String) {
-        guard self.transcript != transcript ||
-                self.partialYou != partialYou ||
-                self.partialOthers != partialOthers else { return }
+    private var speakerState: MeetingSpeakerState?
+    private var speakerStateVersion: LiveSpeakerStateVersion?
+    private var transcriptPrefix = ""
+    private var structuredMessageOffset = 0
 
-        if transcript != self.transcript {
-            if transcript.hasPrefix(self.transcript) {
-                let appended = String(transcript.dropFirst(self.transcript.count))
-                messages.append(contentsOf: TranscriptChatMessage.messages(
-                    from: appended,
-                    startingAt: messages.count
-                ))
-            } else {
-                messages = TranscriptChatMessage.messages(from: transcript)
+    var hasCommittedTranscript: Bool {
+        if let speakerState {
+            return !speakerState.turns.isEmpty
+                || !(speakerState.renderedPrefix ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !transcriptPrefix.isEmpty
+        }
+        return !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var transcriptForCopy: String {
+        guard let speakerState else { return transcript }
+        let rendered = speakerState.render()
+        if let renderedPrefix = speakerState.renderedPrefix, !renderedPrefix.isEmpty { return rendered }
+        guard !transcriptPrefix.isEmpty else { return rendered }
+        return MeetingResumePolicy.combinedResumeTranscript(prior: transcriptPrefix, new: rendered)
+    }
+
+    func update(transcript: String, partialYou: String, partialOthers: String,
+                speakerState: MeetingSpeakerState? = nil,
+                speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil,
+                microphoneLabel: String = "You", transcriptPrefix: String = "") {
+        let nextVersion = speakerState.map { LiveSpeakerStateVersion(epoch: $0.epoch, revision: $0.revision) }
+        let stateChanged = speakerUpdate == nil
+            ? self.speakerState != speakerState
+            : self.speakerStateVersion != nextVersion
+        let sameSpeakerEpoch = nextVersion != nil && nextVersion?.epoch == self.speakerStateVersion?.epoch
+        let prefixChanged = sameSpeakerEpoch ? false : self.transcriptPrefix != transcriptPrefix
+        guard self.transcript != transcript || self.partialYou != partialYou ||
+                self.partialOthers != partialOthers || self.microphoneLabel != microphoneLabel ||
+                prefixChanged || stateChanged else { return }
+
+        if let speakerState, let speakerUpdate,
+           speakerUpdate.state.epoch == speakerState.epoch,
+           speakerUpdate.state.revision == speakerState.revision {
+            if stateChanged || prefixChanged {
+                if !apply(speakerUpdate, state: speakerState) {
+                    rebuildMessages(state: speakerState, transcriptPrefix: transcriptPrefix)
+                }
+                self.speakerState = speakerState
+                self.speakerStateVersion = nextVersion
             }
             self.transcript = transcript
+        } else if transcript != self.transcript || stateChanged || prefixChanged {
+            if let speakerState, speakerState.isValid, speakerState.matchesTranscript(transcript) {
+                messages = TranscriptChatMessage.messages(from: transcript, speakerState: speakerState)
+            } else if let speakerState, speakerState.isValid,
+                      (transcriptPrefix.isEmpty ? speakerState.render() : MeetingResumePolicy.combinedResumeTranscript(prior: transcriptPrefix, new: speakerState.render())) == transcript {
+                rebuildMessages(state: speakerState, transcriptPrefix: transcriptPrefix)
+            } else if !stateChanged && self.speakerState == nil && transcript.hasPrefix(self.transcript) {
+                let appended = String(transcript.dropFirst(self.transcript.count))
+                messages.append(contentsOf: TranscriptChatMessage.messages(from: appended, startingAt: messages.count))
+            } else {
+                messages = TranscriptChatMessage.messages(from: transcript)
+                structuredMessageOffset = 0
+            }
+            self.transcript = transcript
+            self.speakerState = speakerState
+            self.speakerStateVersion = nextVersion
         }
+        self.transcriptPrefix = transcriptPrefix
+        self.microphoneLabel = microphoneLabel
         self.partialYou = partialYou
         self.partialOthers = partialOthers
+    }
+
+    private func apply(_ update: MeetingLiveSpeakerPresentationUpdate, state: MeetingSpeakerState) -> Bool {
+        guard let currentVersion = speakerStateVersion,
+              currentVersion.epoch == state.epoch,
+              currentVersion.revision == update.fromRevision,
+              messages.count == structuredMessageOffset + (speakerState?.turns.count ?? 0) else { return false }
+
+        var expectedMessageCount = messages.count
+        var previousIndex = -1
+        for change in update.changedTurns {
+            guard state.turns.indices.contains(change.index), change.index > previousIndex else { return false }
+            previousIndex = change.index
+            let target = structuredMessageOffset + change.index
+            guard target <= expectedMessageCount else { return false }
+            if target == expectedMessageCount { expectedMessageCount += 1 }
+        }
+        guard expectedMessageCount == structuredMessageOffset + state.turns.count else { return false }
+
+        for change in update.changedTurns {
+            let message = TranscriptChatMessage(
+                id: structuredMessageOffset + change.index,
+                timestamp: change.turn.timestamp,
+                speaker: change.speakerLabel,
+                text: change.turn.text,
+                speakerKey: change.speakerKey,
+                structuredSelf: change.isSelf,
+                speakerPaletteIsSelf: change.paletteIsSelf,
+                speakerIsPerson: change.isPerson
+            )
+            let target = structuredMessageOffset + change.index
+            if target < messages.count {
+                messages[target] = message
+            } else {
+                messages.append(message)
+            }
+        }
+        return true
+    }
+
+    private func rebuildMessages(state: MeetingSpeakerState, transcriptPrefix: String) {
+        let prefix = transcriptPrefix.isEmpty ? (state.renderedPrefix ?? "") : transcriptPrefix
+        let knownLabels = Set(state.renderedPrefixSpeakerLabels ?? [])
+        let prior = TranscriptChatMessage.messages(from: prefix, knownSpeakerLabels: knownLabels)
+        let separator = prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? []
+            : TranscriptChatMessage.messages(from: MeetingResumePolicy.resumeSeparator, startingAt: prior.count)
+        structuredMessageOffset = prior.count + separator.count
+        let labels = state.labels
+        let current = state.turns.enumerated().map { index, turn in
+            let key = state.canonicalKey(for: turn.speaker) ?? turn.speaker
+            let speaker = state.speakers.first { $0.key == key }
+            return TranscriptChatMessage(
+                id: structuredMessageOffset + index,
+                timestamp: turn.timestamp,
+                speaker: labels[key],
+                text: turn.text,
+                speakerKey: key,
+                structuredSelf: speaker?.isSelf ?? false,
+                speakerPaletteIsSelf: speaker?.paletteIsSelf ?? speaker?.isSelf,
+                speakerIsPerson: speaker?.isAssignable ?? false
+            )
+        }
+        messages = prior + separator + current
     }
 
     func reset() {
@@ -144,7 +260,16 @@ final class LiveTranscriptPresentationModel {
         partialYou = ""
         partialOthers = ""
         messages = []
+        speakerState = nil
+        speakerStateVersion = nil
+        transcriptPrefix = ""
+        structuredMessageOffset = 0
     }
+}
+
+private struct LiveSpeakerStateVersion: Equatable {
+    let epoch: UUID
+    let revision: Int64
 }
 
 struct LiveTranscriptFeedView: View {
@@ -157,6 +282,7 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
+    var microphoneLabel: String = "You"
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -182,6 +308,9 @@ struct LiveTranscriptFeedView: View {
                         lines: [message.text],
                         isUser: message.isUser,
                         isPartial: false,
+                        speakerKey: message.speakerKey,
+                        speakerIsPerson: message.speakerIsPerson ?? false,
+                        speakerPaletteIsSelf: message.speakerPaletteIsSelf,
                         onOpen: onOpen
                     )
                 }
@@ -197,10 +326,10 @@ struct LiveTranscriptFeedView: View {
                 }
                 if !trimmedPartialYou.isEmpty {
                     LiveTranscriptBubble(
-                        speaker: "You",
+                        speaker: microphoneLabel,
                         timestamp: nil,
                         lines: [trimmedPartialYou],
-                        isUser: true,
+                        isUser: microphoneLabel == "You",
                         isPartial: true,
                         onOpen: onOpen
                     )
@@ -222,15 +351,22 @@ struct LiveTranscriptView: View {
     /// outside the durable transcript until their chunk is committed.
     var partialYou: String = ""
     var partialOthers: String = ""
+    /// Structured speaker snapshots arrive with the turn changes for their revision.
+    var speakerState: MeetingSpeakerState? = nil
+    var speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil
+    var microphoneLabel: String = "You"
+    var transcriptPrefix: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
 
-    private var copyText: String {
-        LiveTranscriptCopyContent.text(
-            transcript: transcript,
-            partialYou: partialYou,
-            partialOthers: partialOthers
-        )
+    private var speakerStateRevision: LiveSpeakerStateVersion? {
+        speakerState.map { LiveSpeakerStateVersion(epoch: $0.epoch, revision: $0.revision) }
+    }
+
+    private var canCopy: Bool {
+        presentation.hasCommittedTranscript
+            || !partialYou.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !partialOthers.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -243,7 +379,7 @@ struct LiveTranscriptView: View {
                         partialOthers: presentation.partialOthers,
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
+                        bottomPadding: MuesliTheme.spacing8, microphoneLabel: microphoneLabel
                     )
                     .textSelection(.enabled)
                 }
@@ -251,7 +387,9 @@ struct LiveTranscriptView: View {
                     presentation.update(
                         transcript: newTranscript,
                         partialYou: partialYou,
-                        partialOthers: partialOthers
+                        partialOthers: partialOthers,
+                        speakerState: speakerState, speakerUpdate: speakerUpdate,
+                        microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.15)) {
@@ -267,7 +405,9 @@ struct LiveTranscriptView: View {
                     presentation.update(
                         transcript: transcript,
                         partialYou: new,
-                        partialOthers: partialOthers
+                        partialOthers: partialOthers,
+                        speakerState: speakerState, speakerUpdate: speakerUpdate,
+                        microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -278,18 +418,29 @@ struct LiveTranscriptView: View {
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
-                        partialOthers: new
+                        partialOthers: new,
+                        speakerState: speakerState, speakerUpdate: speakerUpdate,
+                        microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         scrollToBottom(proxy)
                     }
                 }
+                .onChange(of: speakerStateRevision) { _, _ in
+                    presentation.update(transcript: transcript, partialYou: partialYou,
+                                        partialOthers: partialOthers, speakerState: speakerState,
+                                        speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel,
+                                        transcriptPrefix: transcriptPrefix)
+                    scrollToBottom(proxy)
+                }
                 .onAppear {
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
-                        partialOthers: partialOthers
+                        partialOthers: partialOthers,
+                        speakerState: speakerState, speakerUpdate: speakerUpdate,
+                        microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     DispatchQueue.main.async {
                         proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
@@ -315,13 +466,19 @@ struct LiveTranscriptView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(copyText.isEmpty)
+            .disabled(!canCopy)
             .padding(.top, MuesliTheme.spacing8)
             .padding(.trailing, MuesliTheme.spacing16)
         }
     }
 
     private func copyTranscript() {
+        let copyText = LiveTranscriptCopyContent.text(
+            transcript: presentation.transcriptForCopy,
+            partialYou: presentation.partialYou,
+            partialOthers: presentation.partialOthers,
+            microphoneLabel: presentation.microphoneLabel
+        )
         guard !copyText.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(copyText, forType: .string)

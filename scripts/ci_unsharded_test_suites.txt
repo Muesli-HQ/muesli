@@ -58,9 +58,7 @@ SoundControllerTests
 StreamingVadControllerTests
 SystemTurnNormalizerTests
 TelemetryRuntimeConfigurationTests
-TranscriptChatMessageTests
 TranscriptCleanupBackendOptionTests
-TranscriptReconcilerTests
 UpcomingMeetingsWindowTests
 UpdateActionRoutingTests
 WhisperKitTranscriberTests
