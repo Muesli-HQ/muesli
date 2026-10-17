@@ -291,6 +291,46 @@ struct MeetingCaptureLifecycleTests {
         #expect(mic.startCount == 1 && system.startCount == 1)
     }
 
+    @Test("system recording callbacks stay on the file timeline across pause")
+    func systemSamplesRemainDeliverableUntilTheRecordingBarrier() async throws {
+        let capture = MeetingCaptureLifecycle(
+            microphone: LifetimeMicrophone(), systemAudio: LifetimeSystemAudio()
+        )
+        let queue = DispatchQueue(label: "test.capture.system-timeline")
+        let received = OSAllocatedUnfairLock(initialState: [Int16]())
+        func emitRecordedSamples(_ sample: Int16) {
+            capture.enqueueSystemSamples(on: queue) { received.withLock { $0.append(sample) } }
+        }
+        func drain() { queue.sync {} }
+
+        try await capture.start()
+        emitRecordedSamples(1)
+        drain()
+
+        #expect(capture.setPaused(true))
+        // The native recorder can deliver a callback it already wrote while
+        // its pause operation is still taking effect.
+        emitRecordedSamples(2)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2])
+
+        #expect(capture.setPaused(false))
+        emitRecordedSamples(3)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3])
+
+        let shutdown = capture.requestStop()
+        emitRecordedSamples(4)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        _ = await shutdown.value
+
+        capture.finishMicrophoneDelivery()
+        emitRecordedSamples(5)
+        drain()
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+    }
+
     @Test("failed system startup releases prepared microphone without starting it")
     func failedStart() async {
         let mic = LifetimeMicrophone()

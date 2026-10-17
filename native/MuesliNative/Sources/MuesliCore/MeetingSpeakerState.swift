@@ -55,6 +55,8 @@ public struct MeetingSpeakerTurn: Codable, Equatable, Sendable, Identifiable {
 
 /// Device-local rendering evidence. No voice vectors or address-book identifiers belong here.
 public struct MeetingSpeakerState: Codable, Equatable, Sendable {
+    /// Reserved prefix for newly escaped labels in timestamped transcript lines.
+    public static let transcriptSpeakerLabelMarker = "\u{2063}"
     public let schemaVersion: Int
     public let epoch: UUID
     public var revision: Int64
@@ -124,7 +126,133 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
 
     public func render() -> String {
         let names = labels
-        return turns.map { "[\($0.timestamp)] \(names[$0.speaker] ?? "Unknown speaker"): \($0.text)" }.joined(separator: "\n")
+        return turns.map {
+            Self.renderTranscriptTurn(timestamp: $0.timestamp,
+                speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
+        }.joined(separator: "\n")
+    }
+
+    /// Renders the pre-escaping transcript format used by existing saved meetings.
+    public func renderLegacy() -> String {
+        let names = labels
+        return turns.map {
+            Self.renderLegacyTranscriptTurn(timestamp: $0.timestamp,
+                speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
+        }.joined(separator: "\n")
+    }
+
+    public func matchesTranscript(_ transcript: String) -> Bool {
+        render() == transcript || renderLegacy() == transcript
+    }
+
+    public func matchesTranscriptDigest(_ digest: String) -> Bool {
+        Self.digest(render()) == digest || Self.digest(renderLegacy()) == digest
+    }
+
+    public static func renderTranscriptTurn(timestamp: String, speaker: String, text: String) -> String {
+        let encodedLabel = transcriptLabel(speaker)
+        let marker = encodedLabel == speaker ? "" : transcriptSpeakerLabelMarker
+        return "[\(timestamp)] \(marker)\(encodedLabel): \(text)"
+    }
+
+    public static func renderLegacyTranscriptTurn(timestamp: String, speaker: String, text: String) -> String {
+        "[\(timestamp)] \(speaker): \(text)"
+    }
+
+    public static func escapedTranscriptSpeakerLabel(_ label: String) -> String {
+        transcriptLabel(label)
+    }
+
+    /// Adds an invisible in-editor boundary after newly escaped speaker labels.
+    public static func transcriptForEditing(_ transcript: String) -> String {
+        transcript.components(separatedBy: "\n").map { line in
+            guard let parsed = encodedSpeakerLabel(in: line) else { return line }
+            return String(line[..<parsed.labelBoundary]) + parsed.label
+                + transcriptSpeakerLabelMarker + String(line[parsed.separator...])
+        }.joined(separator: "\n")
+    }
+
+    /// Restores stored escaping from the editor's invisible speaker boundary.
+    public static func storedTranscript(fromEditingTranscript transcript: String) -> String {
+        transcript.components(separatedBy: "\n").map { line in
+            guard let parsed = editingSpeakerLabel(in: line) else { return line }
+            let label = safeLabel(String(line[parsed.labelBoundary..<parsed.marker]))
+            let encodedLabel = transcriptLabel(label)
+            let marker = encodedLabel == label ? "" : transcriptSpeakerLabelMarker
+            return String(line[..<parsed.labelBoundary]) + marker + encodedLabel + String(line[parsed.separator...])
+        }.joined(separator: "\n")
+    }
+
+    /// Removes the editor's invisible boundary for clipboard output.
+    public static func displayTranscript(fromEditingTranscript transcript: String) -> String {
+        transcript.components(separatedBy: "\n").map { line in
+            guard let parsed = editingSpeakerLabel(in: line) else { return line }
+            let label = String(line[parsed.labelBoundary..<parsed.marker])
+            return String(line[..<parsed.labelBoundary]) + label + String(line[parsed.separator...])
+        }.joined(separator: "\n")
+    }
+
+    /// Removes only the escaping added to timestamped speaker labels. Speech text remains byte-for-byte intact.
+    public static func modelFacingTranscript(_ transcript: String) -> String {
+        transcript.components(separatedBy: "\n").map { line in
+            guard let parsed = encodedSpeakerLabel(in: line) else { return line }
+            return String(line[..<parsed.labelBoundary]) + parsed.label + String(line[parsed.separator...])
+        }.joined(separator: "\n")
+    }
+
+    private static func encodedSpeakerLabel(in line: String) -> (labelBoundary: String.Index, separator: String.Index, label: String)? {
+        guard let labelBoundary = timestampLabelBoundary(in: line),
+              line[labelBoundary...].hasPrefix(transcriptSpeakerLabelMarker) else { return nil }
+        let labelStart = line.index(labelBoundary, offsetBy: transcriptSpeakerLabelMarker.count)
+        var cursor = labelStart
+        var precedingBackslashes = 0
+        var separator: String.Index?
+        while cursor < line.endIndex {
+            if line[cursor] == ":", precedingBackslashes.isMultiple(of: 2) {
+                let next = line.index(after: cursor)
+                if next < line.endIndex, line[next] == " " { separator = cursor; break }
+            }
+            precedingBackslashes = line[cursor] == "\\" ? precedingBackslashes + 1 : 0
+            cursor = line.index(after: cursor)
+        }
+        guard let separator else { return nil }
+        let encodedLabel = String(line[labelStart..<separator])
+        var decoded = ""
+        var index = encodedLabel.startIndex
+        while index < encodedLabel.endIndex {
+            if encodedLabel[index] == "\\" {
+                let next = encodedLabel.index(after: index)
+                if next < encodedLabel.endIndex, encodedLabel[next] == "\\" || encodedLabel[next] == ":" {
+                    decoded.append(encodedLabel[next])
+                    index = encodedLabel.index(after: next)
+                    continue
+                }
+            }
+            decoded.append(encodedLabel[index])
+            index = encodedLabel.index(after: index)
+        }
+        guard transcriptLabel(decoded) == encodedLabel else { return nil }
+        return (labelBoundary, separator, decoded)
+    }
+
+    private static func editingSpeakerLabel(in line: String) -> (labelBoundary: String.Index, marker: String.Index, separator: String.Index)? {
+        guard let labelBoundary = timestampLabelBoundary(in: line),
+              let marker = line[labelBoundary...].firstIndex(of: "\u{2063}") else { return nil }
+        let separator = line.index(after: marker)
+        guard separator < line.endIndex, line[separator] == ":" else { return nil }
+        let body = line.index(after: separator)
+        guard body < line.endIndex, line[body] == " " else { return nil }
+        return (labelBoundary, marker, separator)
+    }
+
+    private static func timestampLabelBoundary(in line: String) -> String.Index? {
+        guard line.first == "[", let timestampEnd = line.firstIndex(of: "]") else { return nil }
+        let timestamp = line[line.index(after: line.startIndex)..<timestampEnd]
+        guard timestamp.count == 8, timestamp.allSatisfy({ $0.isNumber || $0 == ":" }) else { return nil }
+        let space = line.index(after: timestampEnd)
+        guard space < line.endIndex, line[space] == " " else { return nil }
+        let boundary = line.index(after: space)
+        return boundary < line.endIndex ? boundary : nil
     }
 
     public static func digest(_ text: String) -> String {
@@ -135,11 +263,16 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
         label.precomposedStringWithCanonicalMapping.lowercased()
     }
 
+    private static func transcriptLabel(_ label: String) -> String {
+        label.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ":", with: "\\:")
+    }
+
     public static func safeLabel(_ name: String) -> String {
         let scalars = name.unicodeScalars.map { scalar -> String in
             // Foundation's control set includes format characters; retain joiners used by scripts/emoji.
             if scalar.value == 0x200C || scalar.value == 0x200D { return String(scalar) }
-            if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar)
+            if scalar.value == 0x2063 || CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar)
                 || (0x202A...0x202E).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value) { return " " }
             return String(scalar)
         }.joined()

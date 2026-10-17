@@ -1173,6 +1173,13 @@ struct MeetingsNavigationTests {
         ) == nil)
     }
 
+    @Test func unreadableSpeakerStateExplainsWhyRetranscriptionStopped() {
+        let error = MeetingRetranscriptionError.failedToReadSpeakerState(underlying: CocoaError(.fileReadUnknown))
+
+        #expect(error.localizedDescription.contains("stopped before changing this meeting"))
+        #expect(error.localizedDescription.contains("speaker identities could not be checked"))
+    }
+
     @Test("retranscribe save failures restore original meeting status")
     func retranscribeSaveFailuresRestoreOriginalMeetingStatus() {
         #expect(MuesliController.retranscriptionFailureStatus(

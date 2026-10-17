@@ -11,12 +11,31 @@ struct MeetingSpeakerStoreTests {
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
         let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
         var renamed = snapshot.state
-        _ = renamed.assign(.init(name: "長い名前: Example", provenance: .manual), to: state.speakers[0].key)
+        _ = renamed.assign(.init(name: "長い名前: Example\\Host", provenance: .manual), to: state.speakers[0].key)
         #expect(try store.updateMeetingSpeakerState(id: id, state: renamed, expected: snapshot) == .updated)
-        #expect(try store.meeting(id: id)?.rawTranscript == "[00:00:01] 長い名前: Example: Original words")
+        #expect(try store.meeting(id: id)?.rawTranscript == MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "長い名前: Example\\Host", text: "Original words"
+        ))
         #expect(try store.meetingSpeakerSnapshot(id: id)?.summaryIsStale == true)
         #expect(try store.updateMeetingSpeakerState(id: id, state: state, expected: snapshot) == .conflict)
         #expect(try store.meetingSpeakerSnapshot(id: id)?.state.turns == state.turns)
+    }
+
+    @Test func legacyColonTranscriptCanInstallAndRestoreStructuredSpeakerState() throws {
+        let (store, id, original) = try fixture()
+        var state = original
+        _ = state.assign(.init(name: "Team: Example", provenance: .manual), to: state.speakers[0].key)
+        let legacy = state.renderLegacy()
+        try store.updateMeetingTranscript(id: id, rawTranscript: legacy)
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state.matchesTranscript(legacy) == true)
+
+        try store.updateMeetingStatus(id: id, status: .processing)
+        let retryVersion = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.restoreMeetingSpeakerState(id: id, state: state, expected: retryVersion) == .updated)
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state.matchesTranscript(legacy) == true)
     }
 
     @Test func changedTextEditInvalidatesAuthority() throws {

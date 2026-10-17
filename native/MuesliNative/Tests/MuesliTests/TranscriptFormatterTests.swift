@@ -560,6 +560,29 @@ struct TranscriptFormatterTests {
 }
 
 extension TranscriptFormatterTests {
+    @Test func accessibilitySpeakerNamingWithholdsMixedSpeakerASRBlocks() throws {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [SpeechSegment(start: 0, end: 6, text: "Words from two speakers")]
+        let diarization = [
+            makeDiarSeg(speakerId: "speaker-a", start: 0, end: 2),
+            makeDiarSeg(speakerId: "speaker-b", start: 2, end: 6),
+        ]
+
+        let defaultState = TranscriptFormatter.structured(
+            micSegments: [], systemSegments: system, diarizationSegments: diarization, meetingStart: meetingStart
+        )
+        #expect(defaultState.turns.first?.speaker.clusterID == "speaker-b")
+
+        let namedState = TranscriptFormatter.structured(
+            micSegments: [], systemSegments: system, diarizationSegments: diarization,
+            meetingStart: meetingStart, accessibilitySpeakerNamingEnabled: true
+        )
+        let mixedTurn = try #require(namedState.turns.first)
+        #expect(mixedTurn.speaker.clusterID == "aggregate:Multiple speakers")
+        #expect(namedState.labels[mixedTurn.speaker] == "Multiple speakers")
+        #expect(mixedTurn.sampleEligible == false)
+    }
+
     @Test func structuredStateRetainsChannelAndClusterKeys() {
         let epoch = UUID()
         let mic = [SpeechSegment(start: 0, end: 1, text: "Local words")]

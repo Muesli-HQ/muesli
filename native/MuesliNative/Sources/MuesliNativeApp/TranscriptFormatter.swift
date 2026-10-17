@@ -26,8 +26,10 @@ enum TranscriptFormatter {
         diarizationSegments: [TimedSpeakerSegment]?, meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(),
         systemChannel: MeetingSpeakerKey.Channel = .system,
-        preserveSegmentBoundaries: Bool = false
+        preserveSegmentBoundaries: Bool = false,
+        accessibilitySpeakerNamingEnabled: Bool = false
     ) -> MeetingSpeakerState {
+        let useConservativeAttribution = conservativeSpeakerAttribution || accessibilitySpeakerNamingEnabled
         var identities: [String: MeetingSpeaker] = [:]
         let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "source")
         if !micSegments.isEmpty {
@@ -55,7 +57,7 @@ enum TranscriptFormatter {
             }
 
             taggedSystem = systemSegments.map { segment in
-                let speaker = conservativeSpeakerAttribution
+                let speaker = useConservativeAttribution
                     ? recordedSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
                     : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
                 let overlappingSpeakers = Set(diarizationSegments.filter {

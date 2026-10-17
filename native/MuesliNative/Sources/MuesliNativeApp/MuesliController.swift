@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CloudKit
 import CoreAudio
@@ -242,6 +243,7 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
     case recordingUnavailable
     case noDownloadedTranscriptionModel
     case emptyTranscript
+    case failedToReadSpeakerState(underlying: Error)
     case failedToSave(underlying: Error)
 
     var errorDescription: String? {
@@ -256,6 +258,8 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
             return "Download a transcription model before re-transcribing this meeting."
         case .emptyTranscript:
             return "Re-transcription finished, but no speech was detected in the saved recording."
+        case .failedToReadSpeakerState(let underlying):
+            return "Re-transcription stopped before changing this meeting because its saved speaker identities could not be checked. Please retry. \(underlying.localizedDescription)"
         case .failedToSave(let underlying):
             return "The re-transcribed meeting could not be saved. \(underlying.localizedDescription)"
         }
@@ -1621,6 +1625,16 @@ public final class MuesliController: NSObject {
         normalizeMeetingTranscriptionSelectionForAvailability()
     }
 
+    private var meetingSpeakerAuthorizationCache = MeetingSpeakerAuthorizationCache()
+    func currentMeetingSpeakerAuthorization(forceRefresh: Bool = false) -> UUID? {
+        meetingSpeakerAuthorizationCache.authorization(
+            enabled: config.enableMeetingSpeakerAccessibility,
+            now: ProcessInfo.processInfo.systemUptime,
+            forceRefresh: forceRefresh,
+            isTrusted: AXIsProcessTrusted
+        )
+    }
+
     func updateConfig(
         iCloudDisableCompletionStatus: String? = nil,
         _ mutate: (inout AppConfig) -> Void
@@ -1639,7 +1653,11 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousSpeakerAccessibility = config.enableMeetingSpeakerAccessibility
         mutate(&config)
+        if previousSpeakerAccessibility != config.enableMeetingSpeakerAccessibility {
+            _ = currentMeetingSpeakerAuthorization()
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()
@@ -5984,7 +6002,12 @@ public final class MuesliController: NSObject {
                     throw MeetingRetranscriptionError.noDownloadedTranscriptionModel
                 }
 
-                priorSpeakerSnapshot = try? self.dictationStore.meetingSpeakerSnapshot(id: meeting.id)
+                do {
+                    // The failed-retry path must restore speaker edit history before returning the meeting to its prior state.
+                    priorSpeakerSnapshot = try self.dictationStore.meetingSpeakerSnapshot(id: meeting.id)
+                } catch {
+                    throw MeetingRetranscriptionError.failedToReadSpeakerState(underlying: error)
+                }
                 try self.updateMeetingStatusAndScheduleSyncThrowing(id: meeting.id, status: .processing)
                 didSetProcessing = true
                 let transcriptVersion = try self.dictationStore.meetingTranscriptVersion(id: meeting.id)
@@ -7560,6 +7583,9 @@ public final class MuesliController: NSObject {
         let session = MeetingSession(title: title, calendarEventID: calendarEventID,
             backend: backend, runtime: runtime, config: config, templateSnapshot: templateSnapshot,
             transcriptionCoordinator: transcriptionCoordinator, meetingMicRecorder: microphone)
+        session.speakerAccessibilityAuthorizationProvider = { [weak self] in
+            await MainActor.run { self?.currentMeetingSpeakerAuthorization() }
+        }
         let owner = ObjectIdentifier(session)
         session.onCaptureQuiesced = { [weak self] in
             Task { @MainActor [weak self] in self?.completeMeetingCaptureShutdown(owner: owner) }
@@ -8492,6 +8518,7 @@ public final class MuesliController: NSObject {
         existingMeetingID: Int64? = nil,
         preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
+        let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization(forceRefresh: true))
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error
@@ -8566,7 +8593,7 @@ public final class MuesliController: NSObject {
             return
         }
 
-        if let state, version.digest == MeetingSpeakerState.digest(state.render()) {
+        if let state, state.matchesTranscriptDigest(version.digest) {
             do {
                 _ = try dictationStore.installMeetingSpeakerState(id: meetingID, state: state, expected: version)
             } catch {

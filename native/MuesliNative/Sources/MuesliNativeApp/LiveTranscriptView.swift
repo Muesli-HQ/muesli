@@ -127,7 +127,7 @@ final class LiveTranscriptPresentationModel {
         guard self.transcript != transcript || self.partialYou != partialYou ||
                 self.partialOthers != partialOthers || stateChanged else { return }
         if transcript != self.transcript || stateChanged {
-            if let speakerState, speakerState.isValid, speakerState.render() == transcript {
+            if let speakerState, speakerState.isValid, speakerState.matchesTranscript(transcript) {
                 messages = TranscriptChatMessage.messages(from: transcript, speakerState: speakerState)
             } else if !stateChanged && self.speakerState == nil && transcript.hasPrefix(self.transcript) {
                 let appended = String(transcript.dropFirst(self.transcript.count))

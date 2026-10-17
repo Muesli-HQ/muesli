@@ -63,4 +63,35 @@ extension TranscriptChatMessageTests {
         #expect(!messages[1].isUser)
         #expect(TranscriptChatMessage.messages(from: "Edited text", speakerState: state)[0].speakerKey == nil)
     }
+
+    @Test func savedColonNamesRemainDistinctFromSpeechWithoutSpeakerState() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "colon-name")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "Speaker 1",
+                assignment: .init(name: "Team: Example\\Host", provenance: .manual))],
+            turns: [.init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Product: unchanged")])
+
+        let messages = TranscriptChatMessage.messages(from: state.render())
+
+        #expect(messages.count == 1)
+        #expect(messages[0].speaker == "Team: Example\\Host")
+        #expect(messages[0].text == "Product: unchanged")
+    }
+
+    @Test func savedLongNamesRemainSpeakerLabelsWithoutSpeakerState() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "long-name")
+        let name = String(repeating: "L", count: 180)
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "Speaker 1",
+                assignment: .init(name: name, provenance: .manual))],
+            turns: [.init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Still speech")])
+
+        let messages = TranscriptChatMessage.messages(from: state.render())
+
+        #expect(messages.count == 1)
+        #expect(messages[0].speaker == name)
+        #expect(messages[0].text == "Still speech")
+    }
 }

@@ -23,6 +23,17 @@ struct MeetingSpeakerStateTests {
         #expect(restored.speakers[0].history.count == 1)
     }
 
+    @Test func legacyTranscriptRenderingMatchesSavedColonLabels() {
+        var state = fixture()
+        let key = state.speakers[0].key
+        _ = state.assign(.init(name: "Team: Example", provenance: .manual), to: key)
+        let legacy = state.renderLegacy()
+
+        #expect(legacy == "[00:00:01] Team: Example: Keep these words.")
+        #expect(state.matchesTranscript(legacy))
+        #expect(state.matchesTranscriptDigest(MeetingSpeakerState.digest(legacy)))
+    }
+
     @Test func duplicateReservedAndSuffixNamesStayDistinct() {
         var state = fixture()
         let names = ["Example", "Example", "Example (2)", "You", "you", "Speaker 1", "👩‍💻: 長い名前"]
@@ -39,13 +50,60 @@ struct MeetingSpeakerStateTests {
     }
 
     @Test func controlNamesCannotInjectRecords() {
-        for scalar in ["\n", "\r", "\u{2028}", "\u{2029}", "\u{0000}", "\u{202E}"] {
+        for scalar in ["\n", "\r", "\u{2028}", "\u{2029}", "\u{0000}", "\u{202E}", "\u{2063}"] {
             var state = fixture()
             _ = state.assign(.init(name: "A\(scalar)B", provenance: .manual), to: state.speakers[0].key)
             #expect(state.render().split(separator: "\n").count == 1)
             #expect(!state.labels.values.joined().contains(scalar))
             #expect(state.turns[0].text == "Keep these words.")
         }
+    }
+
+    @Test func modelFacingTranscriptUnescapesOnlySpeakerLabels() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example\\Host", text: #"Keep \: speech\\literal"#
+        )
+        let readable = #"[00:00:01] Team: Example\Host: Keep \: speech\\literal"#
+
+        #expect(MeetingSpeakerState.modelFacingTranscript(stored) == readable)
+        #expect(MeetingSpeakerState.modelFacingTranscript(readable) == readable)
+    }
+
+    @Test func modelFacingTranscriptPreservesLegacyLiteralBackslashBeforeColon() {
+        let legacy = MeetingSpeakerState.renderLegacyTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team\\: Room", text: "Keep these words."
+        )
+
+        #expect(MeetingSpeakerState.modelFacingTranscript(legacy) == legacy)
+    }
+
+    @Test func transcriptEditingShowsReadableNamesAndPreservesTheirBoundary() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let editor = MeetingSpeakerState.transcriptForEditing(stored)
+        let display = "[00:00:01] Team: Example: Ship Friday."
+        #expect(editor == "[00:00:01] Team: Example\u{2063}: Ship Friday.")
+        #expect(MeetingSpeakerState.displayTranscript(fromEditingTranscript: editor) == display)
+        #expect(MeetingSpeakerState.storedTranscript(fromEditingTranscript: editor) == stored)
+
+        let renamedEditor = editor.replacingOccurrences(of: "Team: Example", with: "Team: Product")
+        #expect(MeetingSpeakerState.storedTranscript(fromEditingTranscript: renamedEditor) ==
+            MeetingSpeakerState.renderTranscriptTurn(
+                timestamp: "00:00:01", speaker: "Team: Product", text: "Ship Friday."
+            ))
+
+        let editedWords = editor.replacingOccurrences(of: "Ship Friday.", with: "Ship Monday.")
+        #expect(MeetingSpeakerState.storedTranscript(fromEditingTranscript: editedWords) ==
+            MeetingSpeakerState.renderTranscriptTurn(
+                timestamp: "00:00:01", speaker: "Team: Example", text: "Ship Monday."
+            ))
+    }
+
+    @Test func modelFacingTranscriptLeavesNonCanonicalBackslashTextAlone() {
+        let speech = #"[00:00:01] Transcript text\q: words"#
+
+        #expect(MeetingSpeakerState.modelFacingTranscript(speech) == speech)
     }
 
     @Test func aggregatesCannotBeNamed() {

@@ -221,13 +221,14 @@ enum MeetingSummaryClient {
         previousMeetingNotes: String? = nil,
         openRouterAPIKeyOverride: String? = nil
     ) async throws -> String {
+        let modelTranscript = MeetingSpeakerState.modelFacingTranscript(transcript)
         let isClaudeCode = config.meetingSummaryBackend.lowercased() == MeetingSummaryBackendOption.claudeCode.backend
         return try await withSummaryRetries(
             maxRetries: config.meetingSummaryRetryCount,
             timeBudget: isClaudeCode ? claudeCodeSummaryTimeBudget : nil
         ) { remainingTime in
             try await summarizeOnce(
-                transcript: transcript,
+                transcript: modelTranscript,
                 meetingTitle: meetingTitle,
                 config: config,
                 template: template,
@@ -434,7 +435,7 @@ enum MeetingSummaryClient {
         if !trimmedManualNotes.isEmpty {
             sections.append("### Written notes\n\n\(trimmedManualNotes)")
         }
-        sections.append("## Raw Transcript\n\n\(transcript)")
+        sections.append("## Raw Transcript\n\n\(MeetingSpeakerState.modelFacingTranscript(transcript))")
         return sections.joined(separator: "\n\n")
     }
 
@@ -448,13 +449,14 @@ enum MeetingSummaryClient {
     ) -> String {
         if !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let marker = "\n\n## Raw Transcript\n\n"
+            let readablePreviousTranscript = MeetingSpeakerState.modelFacingTranscript(previousTranscript)
             guard isSummaryFailureNotes(existingNotes) else {
                 return existingNotes
             }
             guard let markerRange = failureTranscriptBoundary(
                 in: existingNotes,
                 marker: marker,
-                previousTranscript: previousTranscript
+                previousTranscript: readablePreviousTranscript
             ) else {
                 return refreshedAmbiguousFailureWrittenNotes(existingNotes, currentNotes: manualNotes, marker: marker)
             }
@@ -464,8 +466,8 @@ enum MeetingSummaryClient {
             )
             let previousTranscriptSection = String(existingNotes[markerRange.upperBound...])
             // Only replace an untouched transcript section; edits to it stay in the notes.
-            let transcriptSection = previousTranscriptSection == previousTranscript
-                ? transcript
+            let transcriptSection = previousTranscriptSection == readablePreviousTranscript
+                ? MeetingSpeakerState.modelFacingTranscript(transcript)
                 : previousTranscriptSection
             return updatedPrefix + marker + transcriptSection
         }
@@ -1624,7 +1626,7 @@ enum MeetingSummaryClient {
     }
 
     static func titlePrompt(transcript: String, manualNotes: String? = nil) -> String {
-        let excerpt = titleTranscriptExcerpt(from: transcript)
+        let excerpt = titleTranscriptExcerpt(from: MeetingSpeakerState.modelFacingTranscript(transcript))
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedManualNotes.isEmpty else { return excerpt }
 

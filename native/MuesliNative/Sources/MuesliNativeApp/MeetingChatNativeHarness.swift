@@ -141,7 +141,8 @@ enum MeetingChatNativeHarness {
                     activity(tool, true)
                     let passages = result.evidence.passages.filter { !previous.contains($0.sourceKey) }.map { passage -> [String: Any] in
                         ["id": passage.sourceKey, "meeting_id": passage.meetingID, "title": MeetingChatClient.utf8Prefix(passage.title, limit: 300),
-                         "kind": passage.kind.label, "date": passage.startDate.ISO8601Format(), "excerpt": passage.excerpt, "timestamp": passage.timestamp ?? ""]
+                         "kind": passage.kind.label, "date": passage.startDate.ISO8601Format(),
+                         "excerpt": MeetingSpeakerState.modelFacingTranscript(passage.excerpt), "timestamp": passage.timestamp ?? ""]
                     }
                     let resultObject: [String: Any] = ["new_passages": passages,
                         "note": "Earlier source passages remain available; unchanged passages are not repeated.",

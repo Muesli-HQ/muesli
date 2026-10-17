@@ -142,6 +142,26 @@ struct MeetingChatNavigationTests {
         #expect(target.locate(in: "Unrelated new transcript") == nil)
         #expect(target.locate(in: "Preface\n[00:00:01] You: Launch Friday.")?.location == 8)
     }
+
+    @Test func citationDisplaysDecodeNewLabelsWithoutChangingLookupExcerpt() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let citation = MeetingChatCitation(
+            sourceKey: "S1", meetingID: 1, title: "Launch", startDate: Date(), kind: .transcript,
+            excerpt: stored, range: .init(location: 0, length: (stored as NSString).length),
+            timestamp: "00:00:01", revision: "r1"
+        )
+        let target = MeetingChatDocumentTarget(citation: citation, sessionID: UUID())
+        let readable = "[00:00:01] Team: Example: Ship Friday."
+        let passage = MeetingChatSourceGroup.Passage(number: 1, citation: citation)
+
+        #expect(MeetingChatDocumentTarget.readableExcerpt(citation.excerpt) == readable)
+        #expect(passage.preview == readable)
+        #expect(target.locate(in: stored) != nil)
+        #expect(citation.excerpt == stored)
+    }
+
     @Test func meetingEntryResumesAnchoredChatAndPreservesAdditionalContext() async throws {
         let (controller, store, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
@@ -246,6 +266,45 @@ struct MeetingChatNavigationTests {
 
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: bRange, speakerState: state) == 0)
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: cRange, speakerState: state) == 1)
+    }
+
+    @Test func structuredTranscriptCitationMatchesEscapedColonNames() {
+        let epoch = UUID()
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Speaker 1",
+                             assignment: .init(name: "Team: Example", provenance: .manual)),
+                       .init(key: second, rank: 2, fallbackLabel: "Speaker 2")],
+            turns: [.init(speaker: first, timestamp: "00:00:01", start: 1, end: 2, text: "First passage"),
+                    .init(speaker: second, timestamp: "00:00:03", start: 3, end: 4, text: "Second passage")])
+        let transcript = state.render()
+        let nsTranscript = transcript as NSString
+        let firstRange = nsTranscript.range(of: "First passage")
+        let secondRange = nsTranscript.range(of: "Second passage")
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: firstRange, speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: secondRange, speakerState: state) == 1)
+    }
+
+    @Test func legacyTranscriptCitationUsesTurnIDsAcrossEmbeddedNewlines() {
+        let epoch = UUID()
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Speaker 1",
+                             assignment: .init(name: "Team: Example", provenance: .manual)),
+                       .init(key: second, rank: 2, fallbackLabel: "Speaker 2")],
+            turns: [.init(speaker: first, timestamp: "00:00:01", start: 1, end: 2, text: "A\nB"),
+                    .init(speaker: second, timestamp: "00:00:03", start: 3, end: 4, text: "C")])
+        let transcript = state.renderLegacy()
+        let cRange = (transcript as NSString).range(of: "C")
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: cRange, speakerState: state) == 1)
+        let messages = TranscriptChatMessage.messages(from: transcript, speakerState: state)
+        #expect(messages.count == 2)
+        #expect(messages[0].speaker == "Team: Example")
+        #expect(messages[0].text == "A\nB")
     }
 
     @Test func transcriptCitationWaitsForItsMessageRowToLoad() {

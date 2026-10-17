@@ -1144,6 +1144,14 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
+                "Meeting app speaker names",
+                description: "Experimental and off by default. Real Zoom, Teams, Meet and Slack layouts are unverified on Mac; keep this off until verified. Requires Accessibility access and active system audio. Mic-only meetings receive no names; names require consistent active-speaker evidence.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("meeting_ax_speakers")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
                 "Show transcript on hover",
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth

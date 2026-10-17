@@ -164,7 +164,7 @@ struct MeetingDetailView: View {
         let initialTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         _editableTitle = State(initialValue: meeting?.title ?? "")
         _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0, citation: sourceTarget?.citation) } ?? "")
-        _editableTranscript = State(initialValue: meeting?.rawTranscript ?? "")
+        _editableTranscript = State(initialValue: meeting.map { MeetingSpeakerState.transcriptForEditing($0.rawTranscript) } ?? "")
         _editableManualNotes = State(initialValue: meeting?.manualNotes ?? "")
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
@@ -190,7 +190,7 @@ struct MeetingDetailView: View {
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
-                            Text(target.citation.excerpt).textSelection(.enabled)
+                            Text(MeetingChatDocumentTarget.readableExcerpt(target.citation.excerpt)).textSelection(.enabled)
                             if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
                                 Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
                             }
@@ -901,12 +901,13 @@ struct MeetingDetailView: View {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
             transcriptSaveTask = nil
+            let storedTranscript = MeetingSpeakerState.storedTranscript(fromEditingTranscript: editableTranscript)
             let shouldPromptForResummary = Self.shouldPromptForTranscriptResummary(
                 hadStructuredNotes: transcriptEditHadStructuredNotes,
                 originalTranscript: transcriptEditOriginalTranscript,
-                editedTranscript: editableTranscript
+                editedTranscript: storedTranscript
             )
-            controller.updateMeetingTranscript(id: meeting.id, transcript: editableTranscript)
+            controller.updateMeetingTranscript(id: meeting.id, transcript: storedTranscript)
             isEditingTranscript = false
             transcriptEditOriginalTranscript = nil
             transcriptEditHadStructuredNotes = false
@@ -914,7 +915,7 @@ struct MeetingDetailView: View {
                 transcriptResummaryPromptMeetingID = meeting.id
             }
         } else if documentMode == .transcript {
-            editableTranscript = meeting.rawTranscript
+            editableTranscript = MeetingSpeakerState.transcriptForEditing(meeting.rawTranscript)
             transcriptEditOriginalTranscript = meeting.rawTranscript
             transcriptEditHadStructuredNotes = meeting.notesState == .structuredNotes
             isEditingTranscript = true
@@ -1804,7 +1805,11 @@ struct MeetingDetailView: View {
                 }
             }
         case .transcript:
-            body = editedText ?? meeting.rawTranscript
+            if let editedText {
+                body = MeetingSpeakerState.displayTranscript(fromEditingTranscript: editedText)
+            } else {
+                body = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            }
         }
         let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
         return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
@@ -1849,7 +1854,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -1882,7 +1888,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -1924,7 +1931,7 @@ struct MeetingDetailView: View {
 
     private func debounceSaveTranscript(meetingID: Int64) {
         transcriptSaveTask?.cancel()
-        let transcript = editableTranscript
+        let transcript = MeetingSpeakerState.storedTranscript(fromEditingTranscript: editableTranscript)
         let c = controller
         let item = DispatchWorkItem { c.updateMeetingTranscript(id: meetingID, transcript: transcript) }
         transcriptSaveTask = item
@@ -2044,7 +2051,7 @@ struct MeetingDetailView: View {
             editableNotes = meeting.map { Self.notesContent(for: $0, citation: citationTarget(for: $0)?.citation) } ?? ""
         }
         if meetingChanged || !isEditingTranscript {
-            editableTranscript = meeting?.rawTranscript ?? ""
+            editableTranscript = meeting.map { MeetingSpeakerState.transcriptForEditing($0.rawTranscript) } ?? ""
         }
         if meetingChanged {
             editableManualNotes = meeting?.manualNotes ?? ""
@@ -2270,7 +2277,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     }
 
     static func messages(from transcript: String, startingAt firstID: Int = 0, speakerState: MeetingSpeakerState? = nil) -> [TranscriptChatMessage] {
-        if let speakerState, speakerState.isValid, speakerState.render() == transcript {
+        if let speakerState, speakerState.isValid, speakerState.matchesTranscript(transcript) {
             let labels = speakerState.labels
             return speakerState.turns.enumerated().map { index, turn in
                 let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
@@ -2303,12 +2310,18 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
            let timestampEnd = line.firstIndex(of: "]") {
             let timestamp = String(line[line.index(after: line.startIndex)..<timestampEnd])
             let remainderStart = line.index(after: timestampEnd)
-            let remainder = line[remainderStart...]
+            var remainder = line[remainderStart...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasEscapedSpeakerLabel = remainder.hasPrefix(MeetingSpeakerState.transcriptSpeakerLabelMarker)
+            if hasEscapedSpeakerLabel { remainder.removeFirst() }
             let allowsCustomSpeakerLabel = timestamp.range(
                 of: #"^\d{2}:\d{2}:\d{2}$"#, options: .regularExpression
             ) != nil
-            let speakerText = splitSpeakerAndText(remainder, allowCustomLabel: allowsCustomSpeakerLabel)
+            let speakerText = splitSpeakerAndText(
+                remainder,
+                allowCustomLabel: allowsCustomSpeakerLabel,
+                decodeEscapedSpeakerLabel: hasEscapedSpeakerLabel
+            )
             return TranscriptChatMessage(
                 id: id,
                 timestamp: timestamp.isEmpty ? nil : timestamp,
@@ -2328,26 +2341,44 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
 
     private static func splitSpeakerAndText(
         _ text: String,
-        allowCustomLabel: Bool = false
+        allowCustomLabel: Bool = false,
+        decodeEscapedSpeakerLabel: Bool = false
     ) -> (speaker: String?, text: String) {
-        guard let separator = text.firstIndex(of: ":") else {
+        var candidate = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if decodeEscapedSpeakerLabel, character == "\\" {
+                let escapedIndex = text.index(after: index)
+                if escapedIndex < text.endIndex {
+                    let escaped = text[escapedIndex]
+                    if escaped == ":" || escaped == "\\" {
+                        candidate.append(escaped)
+                        index = text.index(after: escapedIndex)
+                        continue
+                    }
+                }
+            }
+            if character == ":" { break }
+            candidate.append(character)
+            index = text.index(after: index)
+        }
+
+        guard index < text.endIndex, text[index] == ":" else { return (nil, text) }
+        let label = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isLikelySpeakerLabel(label, allowCustomLabel: allowCustomLabel) else {
             return (nil, text)
         }
 
-        let candidate = text[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isLikelySpeakerLabel(candidate, allowCustomLabel: allowCustomLabel) else {
-            return (nil, text)
-        }
-
-        let bodyStart = text.index(after: separator)
+        let bodyStart = text.index(after: index)
         let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return (candidate, body.isEmpty ? text : body)
+        return (label, body.isEmpty ? text : body)
     }
 
     private static func isLikelySpeakerLabel(_ label: String, allowCustomLabel: Bool = false) -> Bool {
         guard !label.isEmpty else { return false }
         if allowCustomLabel {
-            return label.count <= 96 && MeetingSpeakerState.safeLabel(label) == label
+            return MeetingSpeakerState.safeLabel(label) == label
         }
         guard label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
