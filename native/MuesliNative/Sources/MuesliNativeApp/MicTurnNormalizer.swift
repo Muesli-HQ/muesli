@@ -10,13 +10,24 @@ enum MicTurnNormalizer {
     static func normalize(
         result: SpeechTranscriptionResult,
         startTime: TimeInterval,
-        endTime: TimeInterval
+        endTime: TimeInterval,
+        preserveReliableSpeakerTimings: Bool = false
     ) -> [SpeechSegment] {
         let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return [] }
 
         let clampedEndTime = max(endTime, startTime + 0.1)
         let timedSegments = timedSegments(from: result, startTime: startTime, endTime: clampedEndTime)
+
+        if preserveReliableSpeakerTimings {
+            // Interpolating sentence times from text length can assign a guest's
+            // words to the owner's audio. Keep reliable backend turns intact and
+            // make untimed or fragmented chunks generic across speaker changes.
+            guard !timedSegments.isEmpty, !isFragmented(timedSegments) else {
+                return [SpeechSegment(start: startTime, end: clampedEndTime, text: trimmedText)]
+            }
+            return timedSegments
+        }
 
         guard !timedSegments.isEmpty else {
             return sentenceSplit(text: trimmedText, startTime: startTime, endTime: clampedEndTime)

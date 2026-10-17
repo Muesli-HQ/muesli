@@ -9,6 +9,7 @@ struct MeetingSpeakerStoreTests {
         let (store, id, state) = try fixture()
         let version = try #require(try store.meetingTranscriptVersion(id: id))
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        #expect(try store.speakerStateMeetingIDs().contains(id))
         let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
         var renamed = snapshot.state
         _ = renamed.assign(.init(name: "長い名前: Example\\Host", provenance: .manual), to: state.speakers[0].key)
@@ -19,6 +20,19 @@ struct MeetingSpeakerStoreTests {
         #expect(try store.meetingSpeakerSnapshot(id: id)?.summaryIsStale == true)
         #expect(try store.updateMeetingSpeakerState(id: id, state: state, expected: snapshot) == .conflict)
         #expect(try store.meetingSpeakerSnapshot(id: id)?.state.turns == state.turns)
+    }
+
+    @Test func ownerVoiceCandidateQuerySkipsStatesWithoutAProfileID() throws {
+        let (store, id, state) = try fixture()
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        #expect(try store.speakerStateMeetingIDsWithOwnerVoiceEvidence().isEmpty)
+
+        let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+        var stateWithOwnerProfile = snapshot.state
+        stateWithOwnerProfile.voiceProfileID = UUID()
+        #expect(try store.updateMeetingSpeakerState(id: id, state: stateWithOwnerProfile, expected: snapshot) == .updated)
+        #expect(try store.speakerStateMeetingIDsWithOwnerVoiceEvidence() == [id])
     }
 
     @Test func legacyColonTranscriptCanInstallAndRestoreStructuredSpeakerState() throws {
@@ -185,6 +199,114 @@ struct MeetingSpeakerStoreTests {
         #expect(try store.restoreMeetingSpeakerState(id: id, snapshot: savedSnapshot, expected: currentVersion) == .invalidated)
         #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
         #expect(try store.meeting(id: id)?.rawTranscript == "Changed by another edit")
+    }
+
+    @Test func failedRetranscriptionDoesNotRestoreRevokedVoiceEvidence() throws {
+        let (store, id, initial) = try fixture()
+        let profileID = UUID()
+        let ownerKey = MeetingSpeakerKey(epoch: initial.epoch, channel: .microphone, clusterID: "owner")
+        var state = MeetingSpeakerState(epoch: initial.epoch,
+            speakers: [.init(key: ownerKey, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: ownerKey, timestamp: "00:00:01", start: 1, end: 2, text: "Original words")])
+        state.speakers[0].isSelf = true
+        state.speakers[0].selfProvenance = .voice
+        state.speakers[0].assignment = .init(name: "Example", provenance: .voice)
+        state.voiceProfileID = profileID
+        try store.updateMeetingTranscript(id: id, rawTranscript: state.render())
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+
+        try store.updateMeetingStatus(id: id, status: .processing)
+        let retryVersion = try #require(try store.meetingTranscriptVersion(id: id))
+
+        #expect(try store.restoreMeetingSpeakerStateIfTranscriptUnchanged(
+            id: id, snapshot: snapshot, permittedVoiceProfileID: nil))
+        #expect(try store.restoreMeetingSpeakerState(
+            id: id,
+            snapshot: snapshot,
+            expected: retryVersion
+        ) == .conflict)
+        let restored = try #require(try store.meetingSpeakerSnapshot(id: id))
+        #expect(restored.state.voiceProfileID == nil)
+        #expect(restored.state.speakers[0].selfProvenance == nil)
+        #expect(restored.state.speakers[0].assignment == nil)
+        #expect(!restored.state.speakers[0].isSelf)
+        #expect(try store.meeting(id: id)?.rawTranscript == "[00:00:01] Microphone: Original words")
+        #expect(restored.summaryIsStale)
+    }
+
+    @Test func failedRetranscriptionRestoresLegacySpeakerStateWithColonName() throws {
+        let (store, id, initial) = try fixture()
+        let speakerKey = MeetingSpeakerKey(epoch: initial.epoch, channel: .system, clusterID: "speaker")
+        let state = MeetingSpeakerState(epoch: initial.epoch,
+            speakers: [.init(key: speakerKey, rank: 1, fallbackLabel: "Speaker 1",
+                             assignment: .init(name: "Team: Room", provenance: .manual))],
+            turns: [.init(speaker: speakerKey, timestamp: "00:00:01", start: 1, end: 2, text: "Original words")])
+        let legacyTranscript = state.renderLegacy()
+        try store.updateMeetingTranscript(id: id, rawTranscript: legacyTranscript)
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+
+        try store.updateMeetingStatus(id: id, status: .processing)
+
+        #expect(try store.restoreMeetingSpeakerStateIfTranscriptUnchanged(id: id, snapshot: snapshot))
+        let restored = try #require(try store.meetingSpeakerSnapshot(id: id))
+        #expect(restored.state == state)
+        #expect(try store.meeting(id: id)?.rawTranscript == legacyTranscript)
+    }
+
+    @Test func profileRevocationScrubsVoiceEvidenceAfterConcurrentSpeakerCorrection() throws {
+        let (store, id, initial) = try fixture()
+        let ownerKey = MeetingSpeakerKey(epoch: initial.epoch, channel: .microphone, clusterID: "owner")
+        let guestKey = MeetingSpeakerKey(epoch: initial.epoch, channel: .microphone, clusterID: "guest")
+        let profileID = UUID()
+        var state = MeetingSpeakerState(epoch: initial.epoch,
+            speakers: [.init(key: ownerKey, rank: 1, fallbackLabel: "Microphone"),
+                       .init(key: guestKey, rank: 2, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: ownerKey, timestamp: "00:00:01", start: 1, end: 2, text: "Owner words"),
+                    .init(speaker: guestKey, timestamp: "00:00:03", start: 3, end: 4, text: "Guest words")])
+        state.speakers[0].isSelf = true
+        state.speakers[0].selfProvenance = .voice
+        state.speakers[0].assignment = .init(name: "Owner", provenance: .voice)
+        state.voiceProfileID = profileID
+        try store.updateMeetingTranscript(id: id, rawTranscript: state.render())
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let staleSweepSnapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+
+        var corrected = staleSweepSnapshot.state
+        #expect(corrected.assign(.init(name: "Guest", provenance: .manual), to: guestKey))
+        #expect(try store.updateMeetingSpeakerState(id: id, state: corrected, expected: staleSweepSnapshot) == .updated)
+
+        var staleCleanup = staleSweepSnapshot.state
+        staleCleanup.removeSelfEvidence()
+        #expect(try store.updateMeetingSpeakerState(id: id, state: staleCleanup, expected: staleSweepSnapshot) == .conflict)
+        #expect(try store.revokeMeetingSpeakerSelfEvidence(id: id, permittedVoiceProfileID: nil))
+
+        let cleaned = try #require(try store.meetingSpeakerSnapshot(id: id))
+        #expect(cleaned.state.voiceProfileID == nil)
+        #expect(cleaned.state.speakers.first { $0.key == ownerKey }?.selfProvenance == nil)
+        #expect(cleaned.state.speakers.first { $0.key == ownerKey }?.assignment == nil)
+        #expect(cleaned.state.speakers.first { $0.key == ownerKey }?.isSelf == false)
+        #expect(cleaned.state.speakers.first { $0.key == guestKey }?.assignment == .init(name: "Guest", provenance: .manual))
+        #expect(try store.meeting(id: id)?.rawTranscript == cleaned.state.render())
+    }
+
+    @Test func failedRetranscriptionDoesNotRestoreMappingAfterTranscriptChange() throws {
+        let (store, id, state) = try fixture()
+        let initialVersion = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: initialVersion) == .updated)
+        let prior = try #require(try store.meetingSpeakerSnapshot(id: id))
+
+        try store.updateMeetingStatus(id: id, status: .processing)
+        let retryVersion = try #require(try store.meetingTranscriptVersion(id: id))
+        try store.updateMeetingStatus(id: id, status: .completed)
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Replacement transcript")
+
+        #expect(!(try store.restoreMeetingSpeakerStateIfTranscriptUnchanged(id: id, snapshot: prior)))
+        #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
     }
 
     @Test func deletingMeetingScrubsLocalSpeakerState() throws {

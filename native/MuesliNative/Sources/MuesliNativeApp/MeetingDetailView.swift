@@ -76,7 +76,8 @@ private struct LiveTranscriptSection: View {
                 new: appState.liveMeetingTranscript
             ),
             partialYou: appState.liveMeetingPartialYou,
-            partialOthers: appState.liveMeetingPartialOthers
+            partialOthers: appState.liveMeetingPartialOthers,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel
         )
     }
 }
@@ -88,6 +89,7 @@ struct MeetingSpeakerLoadKey: Equatable {
     let status: MeetingStatus
     let summaryFreshnessRevision: UInt64
     let speakerSnapshotRevision: UInt64
+    let speakerStateRevision: UInt64
 }
 
 struct MeetingSummaryFreshnessPresentationState: Equatable {
@@ -209,7 +211,8 @@ struct MeetingDetailView: View {
                 .task(id: MeetingSpeakerLoadKey(id: meeting.id, transcript: meeting.rawTranscript,
                                                notes: meeting.formattedNotes, status: meeting.status,
                                                summaryFreshnessRevision: appState.meetingSummaryFreshnessRevision(for: meeting.id),
-                                               speakerSnapshotRevision: speakerSnapshotReloadRevision)) {
+                                               speakerSnapshotRevision: speakerSnapshotReloadRevision,
+                                               speakerStateRevision: appState.meetingSpeakerStateRevision(for: meeting.id))) {
                     let presentation = await controller.loadMeetingSpeakerPresentation(id: meeting.id)
                     guard !Task.isCancelled else { return }
                     speakerSnapshot = presentation.snapshot
@@ -2324,14 +2327,20 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         structuredSelf ?? (speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame)
     }
 
-    static func messages(from transcript: String, startingAt firstID: Int = 0, speakerState: MeetingSpeakerState? = nil) -> [TranscriptChatMessage] {
-        parseMessages(from: transcript, startingAt: firstID, speakerState: speakerState, cancellationRequested: { false })
+    static func messages(from transcript: String, startingAt firstID: Int = 0,
+                         speakerState: MeetingSpeakerState? = nil,
+                         knownSpeakerLabels: Set<String> = []) -> [TranscriptChatMessage] {
+        parseMessages(from: transcript, startingAt: firstID, speakerState: speakerState,
+            knownSpeakerLabels: knownSpeakerLabels, cancellationRequested: { false })
     }
 
-    static func cancellableMessages(from transcript: String, startingAt firstID: Int = 0, speakerState: MeetingSpeakerState? = nil) async -> [TranscriptChatMessage] {
+    static func cancellableMessages(from transcript: String, startingAt firstID: Int = 0,
+                                    speakerState: MeetingSpeakerState? = nil,
+                                    knownSpeakerLabels: Set<String> = []) async -> [TranscriptChatMessage] {
         await withTaskGroup(of: [TranscriptChatMessage].self) { group in
             group.addTask(priority: .userInitiated) {
-                Self.parseMessages(from: transcript, startingAt: firstID, speakerState: speakerState) {
+                Self.parseMessages(from: transcript, startingAt: firstID, speakerState: speakerState,
+                    knownSpeakerLabels: knownSpeakerLabels) {
                     withUnsafeCurrentTask { $0?.isCancelled ?? false }
                 }
             }
@@ -2343,27 +2352,38 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         from transcript: String,
         startingAt firstID: Int,
         speakerState: MeetingSpeakerState?,
+        knownSpeakerLabels: Set<String>,
         cancellationRequested: @Sendable () -> Bool
     ) -> [TranscriptChatMessage] {
         guard !cancellationRequested() else { return [] }
         if let speakerState, speakerState.isValid,
            speakerState.matchesTranscript(transcript, cancellationRequested: cancellationRequested) {
             guard !cancellationRequested() else { return [] }
+            let prefixMessages: [TranscriptChatMessage]
+            if let prefix = speakerState.renderedPrefix, !prefix.isEmpty {
+                prefixMessages = parseMessages(from: prefix, startingAt: firstID, speakerState: nil,
+                    knownSpeakerLabels: Set(speakerState.renderedPrefixSpeakerLabels ?? []),
+                    cancellationRequested: cancellationRequested)
+            } else {
+                prefixMessages = []
+            }
+            guard !cancellationRequested() else { return [] }
             let labels = speakerState.labels
-            var messages: [TranscriptChatMessage] = []
-            messages.reserveCapacity(speakerState.turns.count)
+            var currentMessages: [TranscriptChatMessage] = []
+            currentMessages.reserveCapacity(speakerState.turns.count)
             for (index, turn) in speakerState.turns.enumerated() {
                 if index.isMultiple(of: 32), cancellationRequested() { return [] }
                 let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
                 let speaker = speakerState.speakers.first { $0.key == key }
-                let message = TranscriptChatMessage(id: firstID + index, timestamp: turn.timestamp,
-                    speaker: labels[key], text: turn.text, speakerKey: key,
+                currentMessages.append(TranscriptChatMessage(
+                    id: firstID + prefixMessages.count + index,
+                    timestamp: turn.timestamp, speaker: labels[key], text: turn.text, speakerKey: key,
                     structuredSelf: speaker?.isSelf ?? false,
                     speakerPaletteIsSelf: speaker?.paletteIsSelf ?? speaker?.isSelf,
-                    speakerIsPerson: speaker?.isAssignable ?? false)
-                messages.append(message)
+                    speakerIsPerson: speaker?.isAssignable ?? false
+                ))
             }
-            return messages
+            return prefixMessages + currentMessages
         }
         guard !cancellationRequested() else { return [] }
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
@@ -2376,14 +2396,14 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
             if index.isMultiple(of: 32), cancellationRequested() { return [] }
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
-            let parsed = parseLine(line, id: firstID + messages.count)
+            let parsed = parseLine(line, id: firstID + messages.count, knownSpeakerLabels: knownSpeakerLabels)
             messages.append(parsed)
         }
 
         return messages
     }
 
-    private static func parseLine(_ line: String, id: Int) -> TranscriptChatMessage {
+    private static func parseLine(_ line: String, id: Int, knownSpeakerLabels: Set<String>) -> TranscriptChatMessage {
         if line.hasPrefix("["),
            let timestampEnd = line.firstIndex(of: "]") {
             let timestamp = String(line[line.index(after: line.startIndex)..<timestampEnd])
@@ -2398,7 +2418,8 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
             let speakerText = splitSpeakerAndText(
                 remainder,
                 allowCustomLabel: allowsCustomSpeakerLabel,
-                decodeEscapedSpeakerLabel: hasEscapedSpeakerLabel
+                decodeEscapedSpeakerLabel: hasEscapedSpeakerLabel,
+                knownSpeakerLabels: knownSpeakerLabels
             )
             return TranscriptChatMessage(
                 id: id,
@@ -2408,7 +2429,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
             )
         }
 
-        let speakerText = splitSpeakerAndText(line)
+        let speakerText = splitSpeakerAndText(line, knownSpeakerLabels: knownSpeakerLabels)
         return TranscriptChatMessage(
             id: id,
             timestamp: nil,
@@ -2420,8 +2441,24 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     private static func splitSpeakerAndText(
         _ text: String,
         allowCustomLabel: Bool = false,
-        decodeEscapedSpeakerLabel: Bool = false
+        decodeEscapedSpeakerLabel: Bool = false,
+        knownSpeakerLabels: Set<String> = []
     ) -> (speaker: String?, text: String) {
+        let orderedKnownLabels = knownSpeakerLabels.sorted(by: { $0.count > $1.count })
+        if let knownLabel = orderedKnownLabels.first(where: {
+            text.hasPrefix(MeetingSpeakerState.escapedTranscriptSpeakerLabel($0) + ":")
+        }) {
+            let encodedLabel = MeetingSpeakerState.escapedTranscriptSpeakerLabel(knownLabel)
+            let bodyStart = text.index(text.startIndex, offsetBy: encodedLabel.count + 1)
+            let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return (knownLabel, body.isEmpty ? text : body)
+        }
+        if let knownLabel = orderedKnownLabels.first(where: { text.hasPrefix($0 + ":") }) {
+            let bodyStart = text.index(text.startIndex, offsetBy: knownLabel.count + 1)
+            let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return (knownLabel, body.isEmpty ? text : body)
+        }
+
         var candidate = ""
         var index = text.startIndex
         while index < text.endIndex {
@@ -2437,6 +2474,22 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
                     }
                 }
             }
+            if allowCustomLabel, character == "\\" {
+                var slashEnd = index
+                var slashCount = 0
+                while slashEnd < text.endIndex, text[slashEnd] == "\\" {
+                    slashCount += 1
+                    slashEnd = text.index(after: slashEnd)
+                }
+                candidate.append(String(repeating: "\\", count: slashCount))
+                if slashEnd < text.endIndex, text[slashEnd] == ":", !slashCount.isMultiple(of: 2) {
+                    candidate.append(":")
+                    index = text.index(after: slashEnd)
+                } else {
+                    index = slashEnd
+                }
+                continue
+            }
             if character == ":" { break }
             candidate.append(character)
             index = text.index(after: index)
@@ -2444,7 +2497,8 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
 
         guard index < text.endIndex, text[index] == ":" else { return (nil, text) }
         let label = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isLikelySpeakerLabel(label, allowCustomLabel: allowCustomLabel) else {
+        guard isLikelySpeakerLabel(label, allowCustomLabel: allowCustomLabel,
+            knownSpeakerLabels: knownSpeakerLabels) else {
             return (nil, text)
         }
 
@@ -2453,13 +2507,16 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         return (label, body.isEmpty ? text : body)
     }
 
-    private static func isLikelySpeakerLabel(_ label: String, allowCustomLabel: Bool = false) -> Bool {
+    private static func isLikelySpeakerLabel(_ label: String, allowCustomLabel: Bool = false,
+                                             knownSpeakerLabels: Set<String> = []) -> Bool {
         guard !label.isEmpty else { return false }
+        if knownSpeakerLabels.contains(label) { return true }
         if allowCustomLabel {
             return MeetingSpeakerState.safeLabel(label) == label
         }
         guard label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Microphone") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }

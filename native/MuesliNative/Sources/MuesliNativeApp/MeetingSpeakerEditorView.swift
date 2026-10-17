@@ -1,11 +1,6 @@
 import MuesliCore
 import SwiftUI
 
-private struct MeetingSpeakerSearchInput: Equatable {
-    let query: String
-    let version: MeetingTranscriptVersion?
-}
-
 struct MeetingSpeakerEditorView: View {
     let meeting: MeetingRecord
     let controller: MuesliController
@@ -99,8 +94,16 @@ struct MeetingSpeakerEditorView: View {
         }
         .padding(20).frame(minWidth: 680, minHeight: 620)
         .task(id: meeting.id) { await model.load(id: meeting.id, controller: controller) }
-        .task(id: MeetingSpeakerSearchInput(query: query, version: model.snapshot?.version)) {
-            await model.updateMatchingTurns(query: query, version: model.snapshot?.version)
+        .task(id: MeetingSpeakerSearchInput(
+            query: query,
+            version: model.snapshot?.version,
+            speakerRevision: model.snapshot?.state.revision
+        )) {
+            await model.updateMatchingTurns(MeetingSpeakerSearchInput(
+                query: query,
+                version: model.snapshot?.version,
+                speakerRevision: model.snapshot?.state.revision
+            ))
         }
         .onChange(of: captureActive) { _, active in if active { player.stop(); model.cancelPendingPresentation() } }
         .onDisappear { player.stop(); model.cancelPendingPresentation() }
@@ -144,8 +147,8 @@ struct MeetingSpeakerEditorView: View {
                 TextField("Name for \(speaker.fallbackLabel)", text: Binding(
                     get: { names[speaker.key] ?? speaker.assignment?.name ?? "" }, set: { names[speaker.key] = $0 }))
                 Button("Apply name") { apply(.rename(speaker.key, names[speaker.key] ?? speaker.assignment?.name ?? "")) }.disabled(blocked)
-                Button("Reset name") { apply(.resetName(speaker.key)) }.disabled(blocked || speaker.assignment == nil)
-                if let assignment = speaker.assignment, assignment.provenance != .manual {
+                Button("Reset name") { apply(.resetName(speaker.key)) }.disabled(blocked || (speaker.assignment == nil && speaker.selfProvenance == nil))
+                if speaker.selfProvenance != nil || (speaker.assignment != nil && speaker.assignment?.provenance != .manual) {
                     Button("Reject suggestion") { apply(.declineName(speaker.key)) }.disabled(blocked)
                 }
             }

@@ -25,6 +25,8 @@ public struct MeetingSpeaker: Codable, Equatable, Sendable, Identifiable {
     public let rank: Int
     public let fallbackLabel: String
     public var isAssignable: Bool
+    public var selfProvenance: MeetingSpeakerAssignment.Provenance? = nil
+    public var declinedSelf: Bool? = nil
     public var isSelf: Bool
     public var paletteIsSelf: Bool? = nil
     public var assignment: MeetingSpeakerAssignment?
@@ -64,6 +66,13 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     public var speakers: [MeetingSpeaker]
     public var turns: [MeetingSpeakerTurn]
     public var sampleEligibilityVersion: Int? = nil
+    /// Plain transcript text that precedes these structured turns after resume.
+    public var renderedPrefix: String? = nil
+    /// Exact labels emitted by structured speaker state inside `renderedPrefix`.
+    /// This lets the transcript UI parse manually assigned names without
+    /// treating arbitrary edited text as a speaker heading.
+    public var renderedPrefixSpeakerLabels: [String]? = nil
+    public var voiceProfileID: UUID? = nil
     public var correctionHistory: [MeetingSpeakerCorrectionUndo]? = nil
     public init(epoch: UUID = UUID(), revision: Int64 = 0, speakers: [MeetingSpeaker] = [], turns: [MeetingSpeakerTurn] = [],
                 sampleEligibilityVersion: Int? = nil) {
@@ -110,16 +119,20 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
         let reserved = Set((active.map(\.fallbackLabel) + ["You", "Others", "Multiple speakers", "Unknown speaker", "Microphone"]).map(Self.collisionKey))
         let requested = Set(active.compactMap { $0.assignment.map { Self.collisionKey(Self.safeLabel($0.name)) } })
         for speaker in active.sorted(by: { $0.rank == $1.rank ? $0.key.clusterID < $1.key.clusterID : $0.rank < $1.rank }) {
-            let base = speaker.assignment.map { Self.safeLabel($0.name) }.flatMap { $0.isEmpty ? nil : $0 } ?? speaker.fallbackLabel
+            let resolvedName = speaker.assignment.map { Self.safeLabel($0.name) }.flatMap { $0.isEmpty ? nil : $0 }
+            let base = speaker.isSelf ? resolvedName.map { "\($0) (You)" } ?? "You" : resolvedName ?? speaker.fallbackLabel
+            let sharesMicrophoneFallback = !speaker.isSelf && speaker.assignment == nil
+                && speaker.fallbackLabel == "Microphone"
             var label = base
             var suffix = 2
             let namedReserved = speaker.assignment != nil && reserved.contains(Self.collisionKey(base))
-            if namedReserved || used.contains(Self.collisionKey(label)) {
+            if !sharesMicrophoneFallback && (namedReserved || used.contains(Self.collisionKey(label))) {
                 repeat {
                     label = "\(base) (\(suffix))"; suffix += 1
                 } while used.contains(Self.collisionKey(label)) || requested.contains(Self.collisionKey(label)) || reserved.contains(Self.collisionKey(label))
             }
-            used.insert(Self.collisionKey(label)); result[speaker.key] = label
+            if !sharesMicrophoneFallback { used.insert(Self.collisionKey(label)) }
+            result[speaker.key] = label
         }
         for speaker in speakers where speaker.mergedInto != nil {
             if let key = canonicalKey(for: speaker.key) { result[speaker.key] = result[key] }
@@ -140,7 +153,9 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
             rendered.append(Self.renderTranscriptTurn(timestamp: turn.timestamp,
                 speaker: names[turn.speaker] ?? "Unknown speaker", text: turn.text))
         }
-        return rendered.joined(separator: "\n")
+        let renderedTurns = rendered.joined(separator: "\n")
+        guard let renderedPrefix, !renderedPrefix.isEmpty else { return renderedTurns }
+        return renderedPrefix + renderedTurns
     }
 
     /// Renders the pre-escaping transcript format used by existing saved meetings.

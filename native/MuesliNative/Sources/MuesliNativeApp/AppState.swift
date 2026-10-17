@@ -159,6 +159,7 @@ final class AppState {
     var meetingRows: [MeetingRecord] = []
     // Entries are removed when a meeting is tombstoned or history is cleared.
     private var meetingSummaryFreshnessRevisions: [Int64: UInt64] = [:]
+    private var meetingSpeakerStateRevisions: [Int64: UInt64] = [:]
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
     var directMeetingCountsByFolder: [Int64: Int] = [:]
@@ -172,6 +173,10 @@ final class AppState {
 
     func meetingSummaryFreshnessRevision(for meetingID: Int64) -> UInt64 {
         meetingSummaryFreshnessRevisions[meetingID, default: 0]
+    }
+
+    func meetingSpeakerStateRevision(for meetingID: Int64) -> UInt64 {
+        meetingSpeakerStateRevisions[meetingID, default: 0]
     }
 
     func meetingSummaryFreshnessObservedMeetingIDs() -> Set<Int64> {
@@ -188,6 +193,10 @@ final class AppState {
         }
     }
 
+    func noteMeetingSpeakerStateChanged(for meetingID: Int64) {
+        meetingSpeakerStateRevisions[meetingID, default: 0] &+= 1
+    }
+
     func noteMeetingSummaryFreshnessChanged(
         for meetingIDs: Set<Int64>,
         existingMeetingIDs: Set<Int64>,
@@ -202,11 +211,13 @@ final class AppState {
     func removeMeetingSummaryFreshnessRevisions(for meetingIDs: Set<Int64>) {
         for meetingID in meetingIDs {
             meetingSummaryFreshnessRevisions[meetingID] = nil
+            meetingSpeakerStateRevisions[meetingID] = nil
         }
     }
 
     func clearMeetingSummaryFreshnessRevisions() {
         meetingSummaryFreshnessRevisions.removeAll()
+        meetingSpeakerStateRevisions.removeAll()
     }
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
@@ -242,6 +253,7 @@ final class AppState {
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var liveMeetingMicrophoneLabel = "You"
     var liveMeetingPartialYou: String = ""
     var liveMeetingPartialOthers: String = ""
     var activeMeetingAudioWarning: ActiveMeetingAudioWarning?

@@ -142,7 +142,7 @@ struct MeetingHookIntegrationTests {
         #expect(record.rawTranscript == "Speaker 1: Discussed the imported call.")
         #expect(record.formattedNotes == "## Summary\nImported recording.")
         #expect(record.source == .audioImport)
-        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
     }
 
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
