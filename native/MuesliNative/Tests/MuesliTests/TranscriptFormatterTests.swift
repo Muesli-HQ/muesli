@@ -392,6 +392,31 @@ struct TranscriptFormatterTests {
         #expect(state.sampleRange(for: turn.speaker) == nil)
     }
 
+    @Test("inline samples compare diarization after pause alignment")
+    func inlineSamplesUseRecordingTimelineAfterPause() throws {
+        let mappings = [
+            MeetingSpeakerSampleTimeMapping(channel: .microphone, sourceTime: 3, recordingTime: 3),
+            MeetingSpeakerSampleTimeMapping(channel: .system, sourceTime: 1, recordingTime: 3),
+        ]
+        let micDiarization = [makeDiarSeg(speakerId: "owner", start: 3, end: 4)]
+        var state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 3, end: 4, text: "Local words")],
+            systemSegments: [],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 1, end: 2)],
+            micDiarizationSegments: micDiarization,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: micDiarization,
+            sampleTimeMappings: mappings
+        )
+        state.applySampleTimeMappings(mappings)
+        let turn = try #require(state.turns.first)
+
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
     @Test("microphone-only diarization enables isolated speaker samples")
     func microphoneOnlyDiarizationEnablesSamples() throws {
         let state = TranscriptFormatter.structured(
@@ -437,9 +462,9 @@ struct TranscriptFormatterTests {
             systemSegments: [],
             diarizationSegments: nil,
             micDiarizationSegments: [
-                makeDiarSeg(speakerId: "room_a", start: 0, end: 10),
-                makeDiarSeg(speakerId: "room_b", start: 10, end: 15),
-                makeDiarSeg(speakerId: "room_a", start: 15, end: 25),
+                makeDiarSeg(speakerId: "room_a", start: 0, end: 5),
+                makeDiarSeg(speakerId: "room_b", start: 5, end: 10),
+                makeDiarSeg(speakerId: "room_a", start: 10, end: 25),
             ],
             meetingStart: Date(timeIntervalSince1970: 0),
             microphoneIdentityRequired: false

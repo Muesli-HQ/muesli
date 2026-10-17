@@ -28,7 +28,8 @@ struct MeetingChatDocumentTarget {
         let nsText = text as NSString
         if let speakerState, speakerState.isValid, speakerState.matchesTranscript(text) {
             let isLegacyRender = speakerState.renderLegacy() == text && speakerState.render() != text
-            let prefix = isLegacyRender ? "" : (speakerState.renderedPrefix ?? "")
+            let prefix = (speakerState.transcriptPrefix ?? "")
+                + (isLegacyRender ? "" : (speakerState.renderedPrefix ?? ""))
             let prefixLength = (prefix as NSString).length
             var ranges: [NSRange] = []
             if !prefix.isEmpty {

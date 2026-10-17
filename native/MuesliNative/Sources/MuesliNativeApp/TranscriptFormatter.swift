@@ -40,7 +40,9 @@ enum TranscriptFormatter {
         microphoneIdentitySegments: [TimedSpeakerSegment]? = nil,
         systemChannel: MeetingSpeakerKey.Channel = .system,
         preserveSegmentBoundaries: Bool = false,
-        accessibilitySpeakerNamingEnabled: Bool = false
+        accessibilitySpeakerNamingEnabled: Bool = false,
+        consolidateSegments: Bool = true,
+        sampleTimeMappings: [MeetingSpeakerSampleTimeMapping]? = nil
     ) -> MeetingSpeakerState {
         let useConservativeAttribution = conservativeSpeakerAttribution || accessibilitySpeakerNamingEnabled
         var identities: [String: MeetingSpeaker] = [:]
@@ -151,7 +153,9 @@ enum TranscriptFormatter {
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = consolidate(tagged, preserveSegmentBoundaries: preserveSegmentBoundaries)
+        let consolidated = consolidateSegments
+            ? consolidate(tagged, preserveSegmentBoundaries: preserveSegmentBoundaries)
+            : tagged
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -183,26 +187,47 @@ enum TranscriptFormatter {
             } else {
                 microphoneSampleHasIdentityEvidence = identity.key.channel != .microphone
             }
-            let includesOtherMicrophoneVoice = sampleMicDiarizationSegments?.contains(where: { diarization in
-                let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
-                    > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
-                guard overlaps else { return false }
-                if identity.key.channel == .microphone {
-                    return diarization.speakerId != identity.key.clusterID
+            let sampleRanges = MeetingSpeakerSampleTimeMapping.recordingRanges(
+                channel: identity.key.channel,
+                start: taggedSegment.segment.start,
+                end: min(taggedSegment.segment.end,
+                    taggedSegment.segment.start + MeetingSpeakerState.maximumSampleDuration),
+                using: sampleTimeMappings ?? []
+            )
+            func overlapsSample(_ diarization: TimedSpeakerSegment, channel: MeetingSpeakerKey.Channel) -> Bool {
+                let diarizationRanges = MeetingSpeakerSampleTimeMapping.recordingRanges(
+                    channel: channel,
+                    start: Double(diarization.startTimeSeconds),
+                    end: Double(diarization.endTimeSeconds),
+                    using: sampleTimeMappings ?? []
+                )
+                return sampleRanges.contains { sampleRange in
+                    diarizationRanges.contains { diarizationRange in
+                        min(diarizationRange.end, sampleRange.end) > max(diarizationRange.start, sampleRange.start)
+                    }
                 }
-                return identity.key.channel == systemChannel
+            }
+            let includesOtherMicrophoneVoice = sampleMicDiarizationSegments?.contains(where: { diarization in
+                let isOtherSpeaker = identity.key.channel == .microphone
+                    ? diarization.speakerId != identity.key.clusterID
+                    : identity.key.channel == systemChannel
+                return isOtherSpeaker && overlapsSample(diarization, channel: .microphone)
             }) == true
             let includesOtherSystemSpeaker = diarizationSegments?.contains(where: { diarization in
-                let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
-                    > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
-                guard overlaps else { return false }
-                if identity.key.channel == .microphone { return true }
-                return identity.key.channel == systemChannel && diarization.speakerId != identity.key.clusterID
+                let isOtherSpeaker = identity.key.channel == .microphone
+                    || (identity.key.channel == systemChannel && diarization.speakerId != identity.key.clusterID)
+                return isOtherSpeaker && overlapsSample(diarization, channel: systemChannel)
             }) == true
+            let microphoneIdentityIsPending = identity.key.channel == .microphone
+                && !microphoneSampleHasIdentityEvidence
+                && (sampleMicDiarizationSegments?.isEmpty ?? true)
+                && !includesOtherMicrophoneVoice
+                && !includesOtherSystemSpeaker
             guard microphoneSampleHasIdentityEvidence,
                   !includesOtherMicrophoneVoice,
                   !includesOtherSystemSpeaker else {
-                return TaggedSegment(segment: taggedSegment.segment, speaker: taggedSegment.speaker, sampleEligible: false)
+                return TaggedSegment(segment: taggedSegment.segment, speaker: taggedSegment.speaker,
+                    sampleEligible: false, sampleIdentityPending: microphoneIdentityIsPending)
             }
             return taggedSegment
         }
@@ -213,6 +238,7 @@ enum TranscriptFormatter {
                 start: taggedSegment.segment.start, end: taggedSegment.segment.end,
                 text: taggedSegment.segment.text.trimmingCharacters(in: .whitespaces))
             if !taggedSegment.sampleEligible { turn.sampleEligible = false }
+            if taggedSegment.sampleIdentityPending { turn.sampleIdentityPending = true }
             return turn
         }
         let hasSampleDiarizationEvidence = diarizationSegments?.isEmpty == false
@@ -293,6 +319,7 @@ enum TranscriptFormatter {
         var currentEnd = segments[0].segment.end
         var currentText = segments[0].segment.text
         var currentSampleEligible = segments[0].sampleEligible
+        var currentSampleIdentityPending = segments[0].sampleIdentityPending
 
         for seg in segments.dropFirst() {
             let gap = max(0, seg.segment.start - currentEnd)
@@ -303,25 +330,29 @@ enum TranscriptFormatter {
                     : appendText(currentText, seg.segment.text, gap: gap)
                 currentEnd = max(currentEnd, seg.segment.end)
                 currentSampleEligible = currentSampleEligible && seg.sampleEligible
+                currentSampleIdentityPending = currentSampleIdentityPending && seg.sampleIdentityPending
             } else {
                 // Different speaker or too far apart — emit and start new segment
                 result.append(TaggedSegment(
                     segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
                     speaker: currentSpeaker,
-                    sampleEligible: currentSampleEligible
+                    sampleEligible: currentSampleEligible,
+                    sampleIdentityPending: currentSampleIdentityPending
                 ))
                 currentSpeaker = seg.speaker
                 currentStart = seg.segment.start
                 currentEnd = seg.segment.end
                 currentText = seg.segment.text
                 currentSampleEligible = seg.sampleEligible
+                currentSampleIdentityPending = seg.sampleIdentityPending
             }
         }
         // Emit last segment
         result.append(TaggedSegment(
             segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
             speaker: currentSpeaker,
-            sampleEligible: currentSampleEligible
+            sampleEligible: currentSampleEligible,
+            sampleIdentityPending: currentSampleIdentityPending
         ))
 
         return result
@@ -410,10 +441,12 @@ private struct TaggedSegment {
     let segment: SpeechSegment
     let speaker: String
     let sampleEligible: Bool
+    let sampleIdentityPending: Bool
 
-    init(segment: SpeechSegment, speaker: String, sampleEligible: Bool = true) {
+    init(segment: SpeechSegment, speaker: String, sampleEligible: Bool = true, sampleIdentityPending: Bool = false) {
         self.segment = segment
         self.speaker = speaker
         self.sampleEligible = sampleEligible
+        self.sampleIdentityPending = sampleIdentityPending
     }
 }

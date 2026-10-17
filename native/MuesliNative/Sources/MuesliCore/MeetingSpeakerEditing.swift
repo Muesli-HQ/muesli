@@ -32,9 +32,85 @@ public struct MeetingSpeakerSampleRange: Equatable, Sendable {
     public var duration: Double { end - start }
 }
 
+public struct MeetingSpeakerSampleTimeMapping: Codable, Equatable, Sendable {
+    public let channel: MeetingSpeakerKey.Channel
+    public let sourceTime: Double
+    public let recordingTime: Double
+
+    public init(channel: MeetingSpeakerKey.Channel, sourceTime: Double, recordingTime: Double) {
+        self.channel = channel
+        self.sourceTime = sourceTime
+        self.recordingTime = recordingTime
+    }
+
+    public static func recordingRanges(
+        channel: MeetingSpeakerKey.Channel,
+        start: Double,
+        end: Double,
+        using mappings: [Self]
+    ) -> [(start: Double, end: Double)] {
+        guard start.isFinite, end.isFinite, start >= 0, end > start else { return [] }
+        let validMappings = mappings.filter {
+            $0.channel == channel && $0.sourceTime.isFinite && $0.recordingTime.isFinite
+                && $0.sourceTime >= 0 && $0.recordingTime >= $0.sourceTime
+        }.sorted {
+            $0.sourceTime == $1.sourceTime
+                ? $0.recordingTime < $1.recordingTime
+                : $0.sourceTime < $1.sourceTime
+        }
+        var checkpoints: [Self] = []
+        for mapping in validMappings {
+            if checkpoints.last?.sourceTime == mapping.sourceTime {
+                checkpoints[checkpoints.count - 1] = mapping
+            } else {
+                checkpoints.append(mapping)
+            }
+        }
+
+        var cursor = start
+        var offset = checkpoints.last(where: { $0.sourceTime <= start + 0.0001 })
+            .map { $0.recordingTime - $0.sourceTime } ?? 0
+        var ranges: [(start: Double, end: Double)] = []
+        for checkpoint in checkpoints where checkpoint.sourceTime > cursor + 0.0001 && checkpoint.sourceTime < end - 0.0001 {
+            let mappedEnd = checkpoint.sourceTime + offset
+            if mappedEnd > cursor + offset { ranges.append((cursor + offset, mappedEnd)) }
+            cursor = checkpoint.sourceTime
+            offset = checkpoint.recordingTime - checkpoint.sourceTime
+        }
+        let mappedEnd = end + offset
+        if mappedEnd > cursor + offset { ranges.append((cursor + offset, mappedEnd)) }
+        return ranges
+    }
+}
+
 extension MeetingSpeakerState {
     public var activeSpeakers: [MeetingSpeaker] { speakers.filter { $0.mergedInto == nil && $0.isAssignable } }
     public var canUndoCorrection: Bool { !(correctionHistory ?? []).isEmpty }
+
+    public mutating func applySampleTimeMappings(_ mappings: [MeetingSpeakerSampleTimeMapping]) {
+        let valid = mappings.filter {
+            $0.sourceTime.isFinite && $0.recordingTime.isFinite
+                && $0.sourceTime >= 0 && $0.recordingTime >= $0.sourceTime
+        }
+        for index in turns.indices {
+            let turn = turns[index]
+            let channelMappings = valid.filter { $0.channel == turn.speaker.channel }
+            if channelMappings.contains(where: { $0.sourceTime > turn.start + 0.0001 && $0.sourceTime < turn.end - 0.0001 }) {
+                turns[index].sampleEligible = false
+                turns[index].sampleIdentityPending = nil
+                continue
+            }
+            let mapping = channelMappings
+                .filter { $0.sourceTime <= turn.start + 0.0001 }
+                .max { lhs, rhs in
+                    lhs.sourceTime == rhs.sourceTime
+                        ? lhs.recordingTime < rhs.recordingTime
+                        : lhs.sourceTime < rhs.sourceTime
+                }
+            let offset = mapping.map { $0.recordingTime - $0.sourceTime } ?? 0
+            turns[index].sampleTimeOffset = offset > 0 ? offset : nil
+        }
+    }
 
     public func canonicalKey(for key: MeetingSpeakerKey) -> MeetingSpeakerKey? {
         var cursor = key, seen: Set<MeetingSpeakerKey> = []
@@ -155,14 +231,28 @@ extension MeetingSpeakerState {
             || (key.channel != .microphone
                 && sampleEligibilityVersion == Self.legacyNonMicrophoneSampleEligibilityVersion)
         guard eligibilityVersionIsValid,
+              (transcriptPrefix ?? "").isEmpty,
               activeSpeakers.contains(where: { $0.key == key }) else { return nil }
-        for turn in turns.sorted(by: { $0.start < $1.start }) where canonicalKey(for: turn.speaker) == key && turn.sampleEligible != false {
-            let end = min(turn.end, turn.start + Self.maximumSampleDuration)
-            guard turn.start.isFinite, end.isFinite, turn.start >= 0, end > turn.start else { continue }
+        func mappedBounds(_ turn: MeetingSpeakerTurn) -> (start: Double, end: Double)? {
+            let offset = turn.sampleTimeOffset ?? 0
+            let start = turn.start + offset
+            let end = turn.end + offset
+            guard start.isFinite, end.isFinite, start >= 0, end > start else { return nil }
+            return (start, end)
+        }
+        func sampleBounds(_ turn: MeetingSpeakerTurn) -> (start: Double, end: Double)? {
+            guard let mapped = mappedBounds(turn) else { return nil }
+            return (mapped.start, min(mapped.end, mapped.start + Self.maximumSampleDuration))
+        }
+        for turn in turns.sorted(by: { (sampleBounds($0)?.start ?? Double.infinity) < (sampleBounds($1)?.start ?? Double.infinity) })
+            where canonicalKey(for: turn.speaker) == key && turn.sampleEligible != false {
+            guard let bounds = sampleBounds(turn) else { continue }
             let overlaps = turns.contains { other in
-                canonicalKey(for: other.speaker) != key && min(other.end, end) > max(other.start, turn.start)
+                guard canonicalKey(for: other.speaker) != key,
+                      let otherBounds = mappedBounds(other) else { return false }
+                return min(otherBounds.end, bounds.end) > max(otherBounds.start, bounds.start)
             }
-            if !overlaps { return .init(start: turn.start, end: end) }
+            if !overlaps { return .init(start: bounds.start, end: bounds.end) }
         }
         return nil
     }

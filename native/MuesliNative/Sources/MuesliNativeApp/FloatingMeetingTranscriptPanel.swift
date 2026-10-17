@@ -68,12 +68,14 @@ final class FloatingMeetingTranscriptModel {
     var didCopy = false
 
     func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil,
-                speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil, microphoneLabel: String = "You") {
+                speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil, microphoneLabel: String = "You",
+                transcriptPrefix: String = "") {
         presentation.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel
+            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 
@@ -138,12 +140,13 @@ final class FloatingMeetingTranscriptPanelController {
     func update(transcript: String, partialYou: String, partialOthers: String,
                 speakerState: MeetingSpeakerState? = nil,
                 speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil,
-                microphoneLabel: String = "You") {
+                microphoneLabel: String = "You", transcriptPrefix: String = "") {
         model.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel
+            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 

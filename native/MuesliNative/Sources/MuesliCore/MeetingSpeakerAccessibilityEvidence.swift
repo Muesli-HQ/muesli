@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MeetingSpeakerApp: String, CaseIterable, Sendable {
+public enum MeetingSpeakerApp: String, CaseIterable, Codable, Sendable {
     case zoom, teams, meet, slack
     public var tileMarker: String {
         switch self { case .zoom: "zoom participant"; case .teams: "teams participant"
@@ -18,10 +18,7 @@ public enum MeetingSpeakerAccessibilitySamplingPolicy {
     public static let totalReadDuration = maximumReadDuration
     public static let perWindowReadDuration = 0.25
 }
-public enum MeetingSpeakerEvidenceReason: String, CaseIterable, Sendable {
-    case clear, rosterOnly, unrecognized, truncated, ambiguous, multipleHosts, multipleWindows, unavailable, windowLimit
-}
-public enum MeetingSpeakerAccessibilityDiagnosticReason: String, CaseIterable, Sendable {
+public enum MeetingSpeakerAccessibilityDiagnosticReason: String, CaseIterable, Codable, Sendable {
     case noSystemAudio = "no_system_audio"
     case readOverBudget = "read_over_budget"
     case authorizationChanged = "authorization_changed"
@@ -36,6 +33,9 @@ public enum MeetingSpeakerAccessibilityDiagnosticReason: String, CaseIterable, S
     case windowLimit = "window_limit"
     case scopeChanged = "scope_changed"
     case rosterOnly = "roster_only"
+}
+public enum MeetingSpeakerEvidenceReason: String, CaseIterable, Codable, Sendable {
+    case clear, rosterOnly, unrecognized, truncated, ambiguous, multipleHosts, multipleWindows, unavailable, windowLimit
 }
 public struct MeetingSpeakerAXNode: Sendable {
     public let id: String
@@ -57,13 +57,13 @@ public struct MeetingSpeakerAXWindow: Sendable {
         self.scope = scope; self.app = app; self.documentURL = documentURL; self.root = root; self.truncated = truncated
     }
 }
-public struct MeetingSpeakerParticipant: Sendable, Equatable {
+public struct MeetingSpeakerParticipant: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let isSelf: Bool
     public init(id: String, name: String, isSelf: Bool = false) { self.id = id; self.name = name; self.isSelf = isSelf }
 }
-public struct MeetingSpeakerFrame: Sendable {
+public struct MeetingSpeakerFrame: Codable, Equatable, Sendable {
     public let scope: String
     public let app: MeetingSpeakerApp
     public let participants: [MeetingSpeakerParticipant]
@@ -151,7 +151,7 @@ public enum MeetingSpeakerSources {
         return meetURLs
     }
 }
-public struct MeetingSpeakerObservation: Sendable {
+public struct MeetingSpeakerObservation: Codable, Equatable, Sendable {
     public let time: Double
     public let continuity: String
     public let microphoneTime: Double?
@@ -172,12 +172,29 @@ public struct MeetingSpeakerActivity: Sendable {
     public let start: Double
     public let end: Double
     public init(key: MeetingSpeakerKey, start: Double, end: Double) { self.key = key; self.start = start; self.end = end }
+
+    public static func fromTracks(
+        channels: [MeetingSpeakerKey.Channel: [MeetingLiveSpeakerSegment]],
+        epoch: UUID
+    ) -> [Self] {
+        channels.keys.sorted { $0.rawValue < $1.rawValue }.flatMap { channel in
+            (channels[channel] ?? []).compactMap { segment in
+                guard !segment.clusterID.isEmpty, segment.start.isFinite, segment.end.isFinite,
+                      segment.start >= 0, segment.end > segment.start else { return nil }
+                return Self(
+                    key: MeetingSpeakerKey(epoch: epoch, channel: channel, clusterID: segment.clusterID),
+                    start: segment.start,
+                    end: segment.end
+                )
+            }
+        }
+    }
 }
 public struct MeetingSpeakerEvidenceAssignments: Sendable {
     public var names: [MeetingSpeakerKey: MeetingSpeakerAssignment] = [:]
     public var explicitSelf: Set<MeetingSpeakerKey> = []
 }
-public struct MeetingSpeakerTimeline: Sendable {
+public struct MeetingSpeakerTimeline: Codable, Equatable, Sendable {
     public var observations: [MeetingSpeakerObservation]
     /// Caller-supplied global truncation guard. The monitor's bounded ring is intentionally rolling:
     /// expired early frames do not make the retained, ordered window incomplete.
@@ -185,13 +202,27 @@ public struct MeetingSpeakerTimeline: Sendable {
     public var diagnosticCounts: [MeetingSpeakerAccessibilityDiagnosticReason: Int]
     public init(observations: [MeetingSpeakerObservation] = [], incomplete: Bool = false,
                 diagnosticCounts: [MeetingSpeakerAccessibilityDiagnosticReason: Int] = [:]) {
-        self.observations = observations; self.incomplete = incomplete; self.diagnosticCounts = diagnosticCounts
+        self.observations = Array(observations.suffix(MeetingSpeakerAccessibilitySamplingPolicy.maximumObservations))
+        self.incomplete = incomplete || observations.count > MeetingSpeakerAccessibilitySamplingPolicy.maximumObservations
+        self.diagnosticCounts = diagnosticCounts
     }
     public var diagnosticSummary: String {
         MeetingSpeakerAccessibilityDiagnosticReason.allCases.compactMap { reason in
             guard let count = diagnosticCounts[reason], count > 0 else { return nil }
             return "\(reason.rawValue)=\(count)"
         }.joined(separator: ",")
+    }
+    public func bounded() -> Self {
+        let retained = observations.suffix(MeetingSpeakerAccessibilitySamplingPolicy.maximumObservations).map { observation in
+            let active = observation.frame.active
+            let frame = MeetingSpeakerFrame(scope: observation.frame.scope, app: observation.frame.app,
+                                            participants: active.map { [$0] } ?? [],
+                                            activeID: observation.frame.activeID, reason: observation.frame.reason,
+                                            diagnosticReasons: observation.frame.diagnosticReasons)
+            return MeetingSpeakerObservation(time: observation.time, continuity: observation.continuity,
+                                             frame: frame, microphoneTime: observation.microphoneTime)
+        }
+        return .init(observations: Array(retained), incomplete: incomplete, diagnosticCounts: diagnosticCounts)
     }
     public func assignments(
         activities: [MeetingSpeakerActivity],

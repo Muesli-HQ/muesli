@@ -37,6 +37,7 @@ struct MeetingSpeakerEditorView: View {
                     .keyboardShortcut("z", modifiers: [.command, .option])
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).disabled(model.isBusy)
             }
+            MeetingSpeakerLabelingControls(meetingID: meeting.id, controller: controller, appState: appState)
             if model.isBusy { ProgressView().controlSize(.small) }
             if captureActive { Text("Finish audio capture and processing before correcting speakers.").foregroundStyle(.secondary) }
             if let error = model.error ?? player.error { Text(error).foregroundStyle(.red) }

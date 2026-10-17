@@ -34,13 +34,6 @@ struct MeetingChunkTimingTracker: Sendable {
         currentChunkSampleCount += Int64(sampleCount)
     }
 
-    /// Advances later chunk offsets over audio that exists only on the system track.
-    /// This changes the next start index without inflating the current mic chunk duration.
-    mutating func advanceStart(by sampleCount: Int64) {
-        guard sampleCount > 0, let startSampleIndex = currentChunkStartSampleIndex else { return }
-        currentChunkStartSampleIndex = startSampleIndex + sampleCount
-    }
-
     mutating func rotate() -> MeetingChunkTimingSnapshot? {
         guard let currentChunkStartSampleIndex else { return nil }
         let snapshot = MeetingChunkTimingSnapshot(
@@ -69,8 +62,8 @@ struct MeetingChunkTimingTracker: Sendable {
     }
 }
 
-/// Counts each active/pause interval independently so microphone transcript offsets
-/// preserve any system-only tail that the combined recording writes before the next interval.
+/// Counts each active/pause interval so retained-recording boundaries can map
+/// microphone source time across system-only samples.
 struct MeetingMicrophoneTimelineAlignment: Sendable {
     private var microphoneSampleCount: Int64 = 0
     private var systemSampleCount: Int64 = 0

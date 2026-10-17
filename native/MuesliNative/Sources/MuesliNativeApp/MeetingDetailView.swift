@@ -41,6 +41,38 @@ enum CompactMeetingFormattingPolicy {
     }
 }
 
+struct MeetingSpeakerLabelingControls: View {
+    let meetingID: Int64
+    let controller: MuesliController
+    let appState: AppState
+
+    @ViewBuilder
+    var body: some View {
+        if let job = appState.meetingSpeakerLabelingJobs[meetingID] {
+            HStack(spacing: 12) {
+                Text(job.status.message).font(.caption)
+                if job.status == .failed || job.status == .pending {
+                    Button("Retry labels") { controller.retryDeferredSpeakerLabeling(id: meetingID) }
+                }
+                if job.status != .expired {
+                    Button("Discard labeling audio") { controller.discardDeferredSpeakerLabeling(id: meetingID) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+        if appState.meetingSpeakerLabelingRecovery.contains(meetingID) {
+            HStack(spacing: 12) {
+                Text(MeetingSpeakerLabelingStatus.recovery.message).font(.caption)
+                Button("Reveal recovery audio") { controller.revealSpeakerLabelingRecovery(id: meetingID) }
+                Button("Discard recovery audio", role: .destructive) { controller.discardSpeakerLabelingRecovery(id: meetingID) }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+    }
+}
+
 struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
     let wideIdentifier: String
     let compactIdentifier: String
@@ -188,6 +220,8 @@ struct MeetingDetailView: View {
                     header(meeting)
 
                     retranscriptionStatus(for: meeting)
+                    MeetingSpeakerLabelingControls(meetingID: meeting.id, controller: controller, appState: appState)
+                        .padding(.horizontal, 40)
 
                     if meeting.status != .recording && meeting.status != .processing {
                         HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
@@ -2363,14 +2397,22 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         if let speakerState, speakerState.isValid,
            speakerState.matchesTranscript(transcript, cancellationRequested: cancellationRequested) {
             guard !cancellationRequested() else { return [] }
-            let prefixMessages: [TranscriptChatMessage]
-            if let prefix = speakerState.renderedPrefix, !prefix.isEmpty {
-                prefixMessages = parseMessages(from: prefix, startingAt: firstID, speakerState: nil,
+            let transcriptPrefixMessages = parseMessages(
+                from: speakerState.transcriptPrefix ?? "", startingAt: firstID, speakerState: nil,
+                knownSpeakerLabels: [], cancellationRequested: cancellationRequested
+            )
+            let isLegacyRender = speakerState.renderLegacy(cancellationRequested: cancellationRequested) == transcript
+                && speakerState.render(cancellationRequested: cancellationRequested) != transcript
+            let renderedPrefixMessages: [TranscriptChatMessage]
+            if !isLegacyRender, let prefix = speakerState.renderedPrefix, !prefix.isEmpty {
+                renderedPrefixMessages = parseMessages(from: prefix,
+                    startingAt: firstID + transcriptPrefixMessages.count, speakerState: nil,
                     knownSpeakerLabels: Set(speakerState.renderedPrefixSpeakerLabels ?? []),
                     cancellationRequested: cancellationRequested)
             } else {
-                prefixMessages = []
+                renderedPrefixMessages = []
             }
+            let prefixMessages = transcriptPrefixMessages + renderedPrefixMessages
             guard !cancellationRequested() else { return [] }
             let labels = speakerState.labels
             var currentMessages: [TranscriptChatMessage] = []
@@ -2793,6 +2835,12 @@ struct MeetingTranscriptEditor: NSViewRepresentable {
                 guard selected.location != NSNotFound,
                       selected.length > 0,
                       NSMaxRange(selected) <= source.length else { return false }
+                let selectionEnd = NSMaxRange(selected)
+                let startsAtLineStart = selected.location == 0 || source.character(at: selected.location - 1) == 0x0A
+                let endsAtLineEnd = selectionEnd == source.length
+                    || source.character(at: selectionEnd) == 0x0A
+                    || (selectionEnd > 0 && source.character(at: selectionEnd - 1) == 0x0A)
+                guard startsAtLineStart, endsAtLineEnd else { return false }
                 pasteboard.setString(source.substring(with: selected), forType: type)
                 return true
             }

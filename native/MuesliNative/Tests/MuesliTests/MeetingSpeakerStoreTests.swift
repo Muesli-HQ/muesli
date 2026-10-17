@@ -61,13 +61,89 @@ struct MeetingSpeakerStoreTests {
 
         try store.updateMeetingTranscript(id: id, rawTranscript: "Changed words")
 
+        #expect(try rawSpeakerStateCount(meetingID: id, store: store) == 1)
         #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
         #expect(try store.updateMeetingSpeakerState(id: id, state: state, expected: snapshot) == .invalidated)
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .conflict)
         #expect(try store.meeting(id: id)?.rawTranscript == "Changed words")
     }
 
-    @Test func sameValueTranscriptWriteRetainsAuthority() throws {
+    @Test func clearingMeetingsErasesSerializedSpeakerTranscript() throws {
+        let (store, id, state) = try fixture()
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        #expect(try rawSpeakerStateCount(meetingID: id, store: store) == 1)
+
+        try store.clearMeetings()
+
+        #expect(try rawSpeakerStateCount(meetingID: id, store: store) == 0)
+    }
+
+    @Test func syncedMeetingTombstoneErasesDeferredSpeakerJob() throws {
+        let (store, id, state) = try fixture()
+        let recordName = "speaker-job-delete-fixture"
+        try setCloudRecordName(recordName, meetingID: id, store: store)
+        let pending = MeetingSpeakerPendingLabeling(audio: .init(channels: [.system]), state: state)
+        try store.completeLiveMeeting(id: id, title: "Fixture", calendarEventID: nil, startTime: Date(), endTime: Date(),
+                                      rawTranscript: state.render(), formattedNotes: "Notes", micAudioPath: nil,
+                                      systemAudioPath: nil, deferredSpeakerLabeling: pending)
+        #expect(try store.meetingSpeakerLabelingJobs().count == 1)
+        let updatedAt = Date().addingTimeInterval(60)
+        let tombstone = SyncTextRecord(id: recordName, kind: .meeting, title: "Deleted Meeting", text: "",
+                                       speakerTranscript: "", createdAt: updatedAt, updatedAt: updatedAt,
+                                       startedAt: updatedAt, endedAt: updatedAt, durationSeconds: 0,
+                                       wordCount: 0, isDeleted: true)
+        #expect(try store.upsertSyncedTextRecord(tombstone))
+        #expect(try store.meetingSpeakerLabelingJobs().isEmpty)
+    }
+
+    @Test func metadataOnlySyncPreservesSpeakerMappingButTranscriptSyncInvalidatesIt() throws {
+        let (store, id, state) = try fixture()
+        let recordName = "speaker-sync-fixture"
+        try setCloudRecordName(recordName, meetingID: id, store: store)
+        let base = Date()
+        let transcript = state.render()
+
+        func syncedRecord(title: String, transcript: String, updatedAt: Date) -> SyncTextRecord {
+            SyncTextRecord(
+                id: recordName,
+                kind: .meeting,
+                title: title,
+                text: transcript,
+                speakerTranscript: transcript,
+                summaryText: "Notes for \(title)",
+                source: "ios",
+                meetingStatus: .completed,
+                createdAt: base,
+                updatedAt: updatedAt,
+                startedAt: base,
+                endedAt: base.addingTimeInterval(60),
+                durationSeconds: 60,
+                wordCount: 2
+            )
+        }
+
+        #expect(try store.upsertSyncedTextRecord(syncedRecord(
+            title: "Remote title", transcript: transcript, updatedAt: base.addingTimeInterval(60)
+        )))
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let installed = try #require(try store.meetingSpeakerSnapshot(id: id))
+
+        #expect(try store.upsertSyncedTextRecord(syncedRecord(
+            title: "Updated title", transcript: transcript, updatedAt: base.addingTimeInterval(120)
+        )))
+
+        #expect(try store.meeting(id: id)?.title == "Updated title")
+        #expect(try store.meeting(id: id)?.formattedNotes == "Notes for Updated title")
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state == installed.state)
+
+        #expect(try store.upsertSyncedTextRecord(syncedRecord(
+            title: "Transcript changed", transcript: "Changed transcript", updatedAt: base.addingTimeInterval(180)
+        )))
+    }
+
+    @Test func sameValueExplicitTranscriptWriteInvalidatesAuthority() throws {
         let (store, id, state) = try fixture()
         let version = try #require(try store.meetingTranscriptVersion(id: id))
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
@@ -97,13 +173,36 @@ struct MeetingSpeakerStoreTests {
         try store.migrateIfNeeded()
 
         try store.updateMeetingTranscript(id: id, rawTranscript: transcript)
-        let retainedVersion = try #require(try store.meetingTranscriptVersion(id: id))
-        #expect(retainedVersion == version)
-        let retained = try #require(try store.meetingSpeakerSnapshot(id: id))
-        #expect(retained.state == snapshot.state)
-        #expect(retained.version == snapshot.version)
-        #expect(retained.summaryIsStale == snapshot.summaryIsStale)
-        #expect(try store.updateMeetingSpeakerState(id: id, state: snapshot.state, expected: snapshot) == .updated)
+        let invalidatedVersion = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(invalidatedVersion.generation == version.generation + 1)
+        #expect(invalidatedVersion.digest == version.digest)
+        #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
+        #expect(try store.meetingSummaryIsStale(id: id) == snapshot.summaryIsStale)
+        #expect(try store.updateMeetingSpeakerState(id: id, state: snapshot.state, expected: snapshot) == .invalidated)
+    }
+
+    @Test func sampleRangeUsesRecordingTimelineAfterUnequalPause() throws {
+        let epoch = UUID()
+        let mic = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "mic")
+        let system = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "system")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: mic, rank: 1, fallbackLabel: "Local speaker 1"),
+                       .init(key: system, rank: 2, fallbackLabel: "Speaker 1")],
+            turns: [.init(speaker: mic, timestamp: "00:00:02", start: 2.5, end: 3.5, text: "Local words"),
+                    .init(speaker: system, timestamp: "00:00:03", start: 3.75, end: 4.25, text: "Remote words")],
+            sampleEligibilityVersion: MeetingSpeakerState.currentSampleEligibilityVersion)
+        let mappings = [
+            MeetingSpeakerSampleTimeMapping(channel: .microphone, sourceTime: 2, recordingTime: 3),
+            MeetingSpeakerSampleTimeMapping(channel: .system, sourceTime: 3, recordingTime: 3)
+        ]
+
+        state.applySampleTimeMappings(mappings)
+        #expect(state.sampleRange(for: mic) == nil)
+
+        state.turns[1] = .init(speaker: system, timestamp: "00:00:05", start: 5, end: 5.5, text: "Later words")
+        let sample = try #require(state.sampleRange(for: mic))
+        #expect(sample.start == 3.5)
+        #expect(sample.end == 4.5)
     }
 
     @Test func sqlCloudLikeEditCannotBeUndoneByStaleEpoch() throws {
@@ -534,6 +633,26 @@ struct MeetingSpeakerStoreTests {
         let id = try store.insertMeeting(title: "Fixture", calendarEventID: nil, startTime: Date(), endTime: Date(),
                                         rawTranscript: state.render(), formattedNotes: "Summary", micAudioPath: nil, systemAudioPath: nil)
         return (store, id, state)
+    }
+
+    private func setCloudRecordName(_ recordName: String, meetingID: Int64, store: DictationStore) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(store.resolvedDatabaseURL.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let db else {
+            throw NSError(domain: "MeetingSpeakerStoreTests", code: 4)
+        }
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET cloud_record_name = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw NSError(domain: "MeetingSpeakerStoreTests", code: 5)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else {
+            throw NSError(domain: "MeetingSpeakerStoreTests", code: 6)
+        }
     }
 
     private func rawSpeakerStateCount(meetingID: Int64, store: DictationStore) throws -> Int {

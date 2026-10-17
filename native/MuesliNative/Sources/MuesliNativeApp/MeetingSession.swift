@@ -125,6 +125,8 @@ struct MeetingSessionResult {
     var speakerState: MeetingSpeakerState? = nil
     /// Nil means the resumed result could not read freshness and makes no sync assertion.
     var summaryIsCurrent: Bool? = true
+    var pendingSpeakerLabeling: MeetingSpeakerPendingLabeling? = nil
+    var speakerLabelingRecoveryURLs: [URL] = []
     var speakerAuthorizationFallbackTranscript: String? = nil
     var ownerRecognitionAuthorization: UUID? = nil
     var speakerAccessibilityAuthorization: UUID? = nil
@@ -136,6 +138,7 @@ extension MeetingSessionResult {
         guard let token = ownerRecognitionAuthorization, token != current else { return self }
         var copy = self
         copy.speakerState?.removeSelfEvidence()
+        copy.pendingSpeakerLabeling?.ownerProfileID = nil
         let transcriptWithoutOwnerEvidence = copy.speakerState?.render()
             ?? copy.speakerAuthorizationFallbackTranscript
             ?? copy.rawTranscript
@@ -150,9 +153,10 @@ extension MeetingSessionResult {
         return copy
     }
     func validatingAccessibilityAuthorization(_ current: UUID?) -> Self {
-        guard let authorization = speakerAccessibilityAuthorization, authorization != current else { return self }
-        let fallbackTranscript = nameFreeTranscriptAfterAccessibilityRevocation()
         var copy = self
+        copy.pendingSpeakerLabeling = pendingSpeakerLabeling?.validatingAccessibilityAuthorization(current)
+        guard let authorization = speakerAccessibilityAuthorization, authorization != current else { return copy }
+        let fallbackTranscript = nameFreeTranscriptAfterAccessibilityRevocation()
         if var state = copy.speakerState {
             state.removeAccessibilityAssignments()
             copy.speakerState = state
@@ -199,6 +203,18 @@ extension MeetingSessionResult {
         } else {
             mergedAccessibilityFallback = nil
         }
+        let mergedSpeakerState = (newSpeakerState ?? speakerState).flatMap { source -> MeetingSpeakerState? in
+            if source.render() == rawTranscript { return source }
+            var turnState = source
+            turnState.transcriptPrefix = nil
+            let renderedSuffix = turnState.render()
+            guard !renderedSuffix.isEmpty, rawTranscript.utf8.count >= renderedSuffix.utf8.count,
+                  Array(rawTranscript.utf8.suffix(renderedSuffix.utf8.count)) == Array(renderedSuffix.utf8) else { return nil }
+            var merged = source
+            merged.transcriptPrefix = String(rawTranscript.dropLast(renderedSuffix.count))
+            guard merged.render() == rawTranscript else { return nil }
+            return merged
+        }
         return MeetingSessionResult(
             title: title,
             originalTitle: originalTitle,
@@ -213,8 +229,10 @@ extension MeetingSessionResult {
             systemRecordingURL: systemRecordingURL,
             templateSnapshot: templateSnapshot,
             visualContext: newVisualContext ?? visualContext,
-            speakerState: newSpeakerState,
+            speakerState: mergedSpeakerState,
             summaryIsCurrent: newSummaryIsCurrent ?? summaryIsCurrent,
+            pendingSpeakerLabeling: pendingSpeakerLabeling,
+            speakerLabelingRecoveryURLs: speakerLabelingRecoveryURLs,
             speakerAuthorizationFallbackTranscript: fallbackTranscript ?? speakerAuthorizationFallbackTranscript,
             ownerRecognitionAuthorization: ownerRecognitionAuthorization,
             speakerAccessibilityAuthorization: speakerAccessibilityAuthorization,
@@ -302,6 +320,7 @@ final class MeetingSession {
     private var microphoneTimelineAlignment = MeetingMicrophoneTimelineAlignment()
     private let speakerAudioTimelineClock = MeetingSpeakerAudioTimelineClock()
     private let microphoneSpeakerAudioTimelineClock = MeetingSpeakerAudioTimelineClock()
+    private var speakerSampleTimeMappings: [MeetingSpeakerSampleTimeMapping] = []
     var usesLiveSpeakerLabels: Bool { config.enableLiveSpeakerLabels }
     private var liveSpeakerFeed: MeetingLiveSpeakerFeed?
     private var liveSpeakerEpochStartup: Task<Void, Never>?
@@ -760,6 +779,7 @@ final class MeetingSession {
             startTime = Date()
             chunkTimingTracker.start()
             systemChunkTimingTracker.start()
+            microphoneTimelineAlignment.start()
             speakerAudioTimelineClock.start()
             microphoneSpeakerAudioTimelineClock.start()
             try prepareRealtimeAudioPipeline(vadManager: nil)
@@ -806,12 +826,14 @@ final class MeetingSession {
                 self.rotateChunkOnQueue(atPauseBoundary: true)
                 self.rotateSystemChunkOnQueue(atPauseBoundary: true)
                 var boundaries: [MeetingSpeakerKey.Channel: Double] = [:]
-                if let unalignedChannel = self.retainedRecordingWriter?.markPauseBoundary() {
-                    let sourceSampleIndex = unalignedChannel == .microphone
-                        ? self.chunkTimingTracker.elapsedSampleIndex
-                        : self.systemChunkTimingTracker.elapsedSampleIndex
-                    if let sourceSampleIndex {
-                        boundaries[unalignedChannel] = Double(sourceSampleIndex) / Double(MeetingChunkTimingTracker.sampleRate)
+                if let boundary = self.retainedRecordingWriter?.markPauseBoundary() {
+                    let sampleRate = Double(MeetingChunkTimingTracker.sampleRate)
+                    self.speakerSampleTimeMappings.append(contentsOf: boundary.speakerSampleTimeMappings)
+                    if let unalignedChannel = boundary.unalignedChannel {
+                        let sourceSampleCount = unalignedChannel == .microphone
+                            ? boundary.microphoneSampleCount
+                            : boundary.systemSampleCount
+                        boundaries[unalignedChannel] = Double(sourceSampleCount) / sampleRate
                     }
                 }
                 _ = self.closeMicrophoneTimelineIntervalOnQueue()
@@ -833,10 +855,13 @@ final class MeetingSession {
 
     func resume() {
         let shouldResume = captureLifecycle.setPaused(false) { [weak self] in
-            self?.chunkRotationQueue.sync {
-                guard let self, self.captureLifecycle.isMicrophoneDeliveryOpen else { return }
+            guard let self else { return }
+            self.chunkRotationQueue.sync {
+                guard self.captureLifecycle.isMicrophoneDeliveryOpen else { return }
                 self.appendFlushedStreamingMicOnQueue()
-                self.retainedRecordingWriter?.markPauseBoundary()
+                if let boundary = self.retainedRecordingWriter?.markPauseBoundary() {
+                    self.speakerSampleTimeMappings.append(contentsOf: boundary.speakerSampleTimeMappings)
+                }
                 let systemOnlySamples = self.closeMicrophoneTimelineIntervalOnQueue()
                 self.neuralAec.advanceMicrophoneTimeline(by: systemOnlySamples)
                 self.resumePartialSessions()
@@ -960,8 +985,10 @@ final class MeetingSession {
         meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
+        var speakerBacklog: MeetingSpeakerBacklogDescriptor?
+        var speakerLabelingRetentionFailed = false
         var micDiarizationURL: URL?
-        let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
+        let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL, sampleTimeMappings) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?, [MeetingSpeakerSampleTimeMapping]) in
             captureLifecycle.finishMicrophoneDelivery()
 
             // Flush partial AEC frame before stopping chunk recorder
@@ -976,10 +1003,10 @@ final class MeetingSession {
             micDiarizationRecorder = nil
             let lastChunkTiming = chunkTimingTracker.finish()
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
-            return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
+            return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL, speakerSampleTimeMappings)
         }
         defer {
-            if let micDiarizationURL {
+            if let micDiarizationURL, !speakerLabelingRetentionFailed {
                 try? FileManager.default.removeItem(at: micDiarizationURL)
             }
         }
@@ -997,6 +1024,17 @@ final class MeetingSession {
         onProgress?(.transcribingAudio)
         let rawStreamingMicURL = stoppedCapture.microphone
         let systemAudioURL = stoppedCapture.systemAudio
+        var labelingSources: [MeetingSpeakerKey.Channel: URL] = [:]
+        if let systemAudioURL { labelingSources[.system] = systemAudioURL }
+        if let micDiarizationURL { labelingSources[.microphone] = micDiarizationURL }
+        if !labelingSources.isEmpty,
+           let diarizer = await transcriptionCoordinator.getDiarizerManager(),
+           MeetingSpeakerLabelingPolicy.shouldStage(diarizerAvailable: diarizer.isAvailable, sourceCount: labelingSources.count) {
+            do { speakerBacklog = try MeetingSpeakerBacklogAudio().stage(labelingSources) }
+            catch { speakerLabelingRetentionFailed = true }
+        } else if !labelingSources.isEmpty {
+            fputs("[meeting] diarizer unavailable; skipping deferred speaker labeling\n", stderr)
+        }
         defer {
             if let rawStreamingMicURL {
                 try? FileManager.default.removeItem(at: rawStreamingMicURL)
@@ -1076,31 +1114,6 @@ final class MeetingSession {
             try? FileManager.default.removeItem(at: lastSystemChunkURL)
         }
 
-        var diarizationSegments: [TimedSpeakerSegment]?
-        if let systemAudioURL {
-            // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult.segments
-            }
-        }
-
-        var micDiarizationSegments: [TimedSpeakerSegment]?
-        var micDiarizationError = micDiarizationSetupError
-        if let micDiarizationURL {
-            // In-person meetings: split the room mic into local speakers. Best-effort;
-            // on failure the mic channel keeps its single "You" label.
-            onProgress?(.diarizingSpeakers)
-            do {
-                let segments = try await transcriptionCoordinator.diarizeRecordedAudio(at: micDiarizationURL)
-                let speakerCount = Set(segments.map(\.speakerId)).count
-                fputs("[meeting] mic diarization complete: \(segments.count) segments, \(speakerCount) speakers\n", stderr)
-                micDiarizationSegments = segments
-            } catch {
-                micDiarizationError = error
-                fputs("[meeting] mic diarization failed, keeping single mic speaker: \(error)\n", stderr)
-            }
-        }
-
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
         micSegments.sort { lhs, rhs in
             if lhs.start == rhs.start {
@@ -1154,12 +1167,31 @@ final class MeetingSession {
         fputs("[meeting] \(micSegments.count) mic chunks transcribed during meeting\n", stderr)
         fputs("[meeting] \(systemSegments.count) system chunks transcribed during meeting\n", stderr)
 
+        var labelingTracks: MeetingSpeakerLabelingTracks?
+        if let descriptor = speakerBacklog {
+            let coordinator = transcriptionCoordinator, owner = ownerRecognitionContext
+            let outcome = await MeetingSpeakerLabelingService.shared.wait(id: descriptor.id, timeout: .seconds(15), operation: {
+                try await coordinator.labelMeetingAudio(MeetingSpeakerBacklogAudio().urls(descriptor), owner: owner)
+            })
+            if case .complete(let tracks) = outcome { labelingTracks = tracks }
+        }
+        let labelingDeferred = speakerBacklog != nil && labelingTracks == nil
+        func timed(_ channel: MeetingSpeakerKey.Channel) -> [TimedSpeakerSegment]? {
+            labelingTracks?.channels[channel]?.map { .init(speakerId: $0.clusterID, embedding: [], startTimeSeconds: Float($0.start), endTimeSeconds: Float($0.end), qualityScore: 0) }
+        }
+        let diarizationSegments = timed(.system)
+        let micDiarizationSegments = timed(.microphone)
+        let micDiarizationError: Error? = labelingDeferred ? OwnerVoiceEnrollmentError.unavailable : micDiarizationSetupError
+        if let descriptor = speakerBacklog, !labelingDeferred {
+            await MeetingSpeakerLabelingService.shared.retire(id: descriptor.id, cleanup: { MeetingSpeakerBacklogAudio().discard(descriptor) })
+        }
         let reconciledTranscriptInputs = TranscriptReconciler.reconcile(
             micTurns: micSegments,
             systemSegments: systemSegments,
             diarizationSegments: diarizationSegments,
             micDiarizationSegments: micDiarizationSegments,
-            preserveMicrophoneIdentityBoundaries: config.enableMeetingOwnerRecognition
+            preserveMicrophoneIdentityBoundaries: config.enableMeetingOwnerRecognition,
+            preserveTurnBoundaries: labelingDeferred
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
         let currentSpeakerAuthorization = await speakerAccessibilityAuthorizationProvider?()
@@ -1173,8 +1205,12 @@ final class MeetingSession {
             microphoneIdentityRequired: config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio,
             microphoneOwnerRecognitionEnabled: config.enableMeetingOwnerRecognition,
             microphoneIdentitySegments: protectedTranscriptInputs.micIdentitySegments,
-            accessibilitySpeakerNamingEnabled: speakerAuthorization != nil
+            preserveSegmentBoundaries: labelingDeferred,
+            accessibilitySpeakerNamingEnabled: speakerAuthorization != nil,
+            consolidateSegments: !labelingDeferred,
+            sampleTimeMappings: sampleTimeMappings
         )
+        speakerState.applySampleTimeMappings(sampleTimeMappings)
 
         let activities = (protectedTranscriptInputs.diarizationSegments ?? []).map {
             MeetingSpeakerActivity(key: .init(epoch: speakerState.epoch, channel: .system, clusterID: $0.speakerId), start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
@@ -1185,15 +1221,11 @@ final class MeetingSession {
             accessibilityTimeline.apply(assignments, to: &speakerState)
         }
         if let context = ownerRecognitionContext, let profile = context.profile,
-           await ownerRecognitionProvider?()?.token == context.token, let micDiarizationURL,
-           let segments = micDiarizationSegments {
-            let voice = try? await transcriptionCoordinator.ownerMicrophoneCluster(at: micDiarizationURL, segments: segments, profile: profile)
-            if await ownerRecognitionProvider?()?.token == context.token, let voice {
-                let key = MeetingSpeakerKey(epoch: speakerState.epoch, channel: .microphone, clusterID: voice)
-                let micActivities = segments.map { MeetingSpeakerActivity(key: .init(epoch: speakerState.epoch, channel: .microphone, clusterID: $0.speakerId), start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
-                let selfKeys = accessibilityTimeline.assignments(activities: micActivities, channel: .microphone).explicitSelf
-                speakerState.applySelfEvidence(accessibility: selfKeys, voice: [key], ownerName: context.name, profileID: profile.id)
-            }
+           await ownerRecognitionProvider?()?.token == context.token, let voice = labelingTracks?.ownerCluster {
+            let key = MeetingSpeakerKey(epoch: speakerState.epoch, channel: .microphone, clusterID: voice)
+            let micActivities = (micDiarizationSegments ?? []).map { MeetingSpeakerActivity(key: .init(epoch: speakerState.epoch, channel: .microphone, clusterID: $0.speakerId), start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
+            let selfKeys = accessibilityTimeline.assignments(activities: micActivities, channel: .microphone).explicitSelf
+            speakerState.applySelfEvidence(accessibility: selfKeys, voice: [key], ownerName: context.name, profileID: profile.id)
         }
         var fallbackState = speakerState; fallbackState.removeSelfEvidence(); fallbackState.removeAccessibilityAssignments()
         var rawTranscript = speakerState.render()
@@ -1325,6 +1357,13 @@ final class MeetingSession {
             visualContext: visualContext.isEmpty ? nil : visualContext,
             speakerState: speakerState,
             summaryIsCurrent: summaryIsCurrent,
+            pendingSpeakerLabeling: labelingDeferred ? speakerBacklog.map {
+                MeetingSpeakerPendingLabeling(audio: $0, state: fallbackState, ownerProfileID: ownerRecognitionContext?.profile?.id,
+                                              accessibilityTimeline: accessibilityTimeline,
+                                              accessibilityAuthorizationID: speakerAuthorization,
+                                              sampleTimeMappings: sampleTimeMappings)
+            } : nil,
+            speakerLabelingRecoveryURLs: speakerLabelingRetentionFailed ? Array(labelingSources.values) : [],
             speakerAuthorizationFallbackTranscript: fallbackState.render(),
             ownerRecognitionAuthorization: ownerRecognitionContext?.token,
             speakerAccessibilityAuthorization: speakerAuthorization,
@@ -1683,7 +1722,8 @@ final class MeetingSession {
         microphoneSpeakerAudioTimelineClock.recordRecordedSamples(
             cleanedInt16.count, uptime: ProcessInfo.processInfo.systemUptime
         )
-        liveSpeakerFeed?.appendPCM(cleanedFloat, channel: .microphone, startSample: chunkTimingTracker.elapsedSampleIndex ?? 0)
+        let speakerStart = chunkTimingTracker.elapsedSampleIndex ?? 0
+        liveSpeakerFeed?.appendPCM(cleanedFloat, channel: .microphone, startSample: speakerStart)
         chunkTimingTracker.append(sampleCount: cleanedInt16.count)
         microphoneTimelineAlignment.appendMicrophoneSamples(cleanedInt16.count)
         diagnostics?.appendCleanedMicSamples(cleanedInt16)
@@ -1691,7 +1731,6 @@ final class MeetingSession {
 
     private func closeMicrophoneTimelineIntervalOnQueue() -> Int64 {
         let systemOnlySamples = microphoneTimelineAlignment.closeInterval()
-        chunkTimingTracker.advanceStart(by: systemOnlySamples)
         microphoneSpeakerAudioTimelineClock.advanceTimeline(bySampleCount: systemOnlySamples)
         appendMicDiarizationSilenceOnQueue(sampleCount: systemOnlySamples)
         return systemOnlySamples

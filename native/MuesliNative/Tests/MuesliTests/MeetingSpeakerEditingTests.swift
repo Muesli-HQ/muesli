@@ -140,6 +140,17 @@ struct MeetingSpeakerEditingTests {
         #expect(priorState.sampleRange(for: imported.key)?.duration == 6)
     }
 
+    @Test func sampleOverlapUsesTheOtherSpeakerFullTurn() {
+        let epoch = UUID()
+        let selected = MeetingSpeaker(key: .init(epoch: epoch, channel: .system, clusterID: "selected"), rank: 1, fallbackLabel: "Speaker 1")
+        let other = MeetingSpeaker(key: .init(epoch: epoch, channel: .system, clusterID: "other"), rank: 2, fallbackLabel: "Speaker 2")
+        let state = MeetingSpeakerState(epoch: epoch, speakers: [selected, other], turns: [
+            .init(speaker: selected.key, timestamp: "00:00:10", start: 10, end: 12, text: "Selected sample"),
+            .init(speaker: other.key, timestamp: "00:00:00", start: 0, end: 30, text: "Long overlapping turn")
+        ], sampleEligibilityVersion: MeetingSpeakerState.currentSampleEligibilityVersion)
+        #expect(state.sampleRange(for: selected.key) == nil)
+    }
+
     private func fixture(text: String = "Original words") -> MeetingSpeakerState {
         let epoch = UUID()
         let speakers = (0..<3).map { index in MeetingSpeaker(key: .init(epoch: epoch, channel: .system, clusterID: "c\(index)"), rank: index + 1, fallbackLabel: "Speaker \(index + 1)") }

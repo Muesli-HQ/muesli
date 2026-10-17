@@ -68,6 +68,28 @@ struct MeetingSpeakerAccessibilityTests {
         #expect(MeetingSpeakerTimeline(observations: observations, incomplete: true).assignments(activities: activity).names.isEmpty)
     }
 
+    @Test func boundedTimelinePreservesFrameAndAggregateDiagnostics() {
+        let frame = MeetingSpeakerFrame(scope: "window", app: .zoom, reason: .ambiguous,
+                                        diagnosticReasons: [.multipleWindows])
+        let timeline = MeetingSpeakerTimeline(
+            observations: [.init(time: 1, continuity: "one", frame: frame)],
+            diagnosticCounts: [.scopeChanged: 2]
+        )
+
+        let bounded = timeline.bounded()
+
+        #expect(bounded.observations.first?.frame.diagnosticReasons == [.multipleWindows])
+        #expect(bounded.diagnosticCounts[.scopeChanged] == 2)
+    }
+
+    @Test func timelineDiagnosticCountsRoundTripThroughCodable() throws {
+        let timeline = MeetingSpeakerTimeline(diagnosticCounts: [.scopeChanged: 2, .windowLimit: 1])
+
+        let decoded = try JSONDecoder().decode(MeetingSpeakerTimeline.self, from: JSONEncoder().encode(timeline))
+
+        #expect(decoded.diagnosticCounts == timeline.diagnosticCounts)
+    }
+
     @Test func votesAcceptPollIntervalsWithinSharedSamplingBudget() {
         let state = fixture()
         let key = state.speakers[0].key
@@ -139,6 +161,41 @@ struct MeetingSpeakerAccessibilityTests {
         let timeline = MeetingSpeakerTimeline(observations: (0...7).map { .init(time: Double($0), continuity: "one", frame: frame()) })
         #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 4), .init(key: other, start: 3, end: 7)]).names.isEmpty)
         #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 3), .init(key: other, start: 4, end: 7)]).names.isEmpty)
+    }
+
+    @Test func deferredAttributionRequiresCoverageOfTheFullMicrophoneTrack() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "voice")
+        let timeline = MeetingSpeakerTimeline(observations: (0...3).map {
+            MeetingSpeakerObservation(time: Double($0), continuity: "one", frame: frame(), microphoneTime: Double($0))
+        })
+        let tracks: [MeetingSpeakerKey.Channel: [MeetingLiveSpeakerSegment]] = [
+            .microphone: [.init(clusterID: "voice", start: 0, end: 10)]
+        ]
+        let fullTrackActivities = MeetingSpeakerActivity.fromTracks(channels: tracks, epoch: epoch)
+
+        #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 3)], channel: .microphone)
+            .names[key]?.name == "Example")
+        #expect(timeline.assignments(activities: fullTrackActivities, channel: .microphone).names[key] == nil)
+    }
+
+    @Test func deferredAttributionIncludesUntranscribedCompetingMicrophoneTracks() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "voice")
+        let timeline = MeetingSpeakerTimeline(observations: (0...4).map {
+            MeetingSpeakerObservation(time: Double($0), continuity: "one", frame: frame(), microphoneTime: Double($0))
+        })
+        let candidate = MeetingLiveSpeakerSegment(clusterID: "voice", start: 0, end: 4)
+        let untranscribedCompetitor = MeetingLiveSpeakerSegment(clusterID: "other", start: 2, end: 3)
+        let tracks: [MeetingSpeakerKey.Channel: [MeetingLiveSpeakerSegment]] = [
+            .microphone: [candidate, untranscribedCompetitor]
+        ]
+        let fullTrackActivities = MeetingSpeakerActivity.fromTracks(channels: tracks, epoch: epoch)
+
+        #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 4)], channel: .microphone)
+            .names[key]?.name == "Example")
+        #expect(fullTrackActivities.count == 2)
+        #expect(timeline.assignments(activities: fullTrackActivities, channel: .microphone).names.isEmpty)
     }
 
     @Test func duplicateDisplayNamesFromDifferentParticipantsWithholdAssignments() {

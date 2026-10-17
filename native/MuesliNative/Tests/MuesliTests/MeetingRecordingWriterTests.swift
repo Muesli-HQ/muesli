@@ -21,7 +21,6 @@ struct MeetingRecordingWriterTests {
         #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
         for (start, finish) in [
             ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),
-            ("func resume()", "retainedRecordingWriter?.markPauseBoundary()"),
             ("func stop(onRecordingReady:", "retainedRecordingWriter?.stop()")
         ] {
             let startRange = try #require(source.range(of: start))
@@ -35,6 +34,45 @@ struct MeetingRecordingWriterTests {
         let alignmentBoundary = try #require(pauseBody.range(of: "retainedRecordingWriter?.markPauseBoundary()"))
         let speakerPause = try #require(pauseBody.range(of: "feed?.pause(samplesUnalignedAfter: sampleAlignmentBoundaries)"))
         #expect(alignmentBoundary.lowerBound < speakerPause.lowerBound)
+    }
+
+    @Test("live mic diarization audio and transcript turns share the microphone source clock")
+    func microphoneTranscriptTimingUsesSourceClock() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MuesliNativeApp/MeetingSession.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(!source.contains("chunkTimingTracker.advanceStart(by:"))
+        #expect(!source.contains("microphoneSpeakerTimelineTracker"))
+        let speakerStart = try #require(source.range(of: "let speakerStart = chunkTimingTracker.elapsedSampleIndex ?? 0"))
+        let append = try #require(source.range(of: "liveSpeakerFeed?.appendPCM(cleanedFloat, channel: .microphone, startSample: speakerStart)"))
+        #expect(speakerStart.lowerBound < append.lowerBound)
+    }
+
+    @Test("resume boundaries record sample mappings for both audio tracks")
+    func resumeBoundaryRecordsSpeakerSampleMappings() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MuesliNativeApp/MeetingSession.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let resumeStart = try #require(source.range(of: "func resume()"))
+        let resumeEnd = try #require(source[resumeStart.upperBound...].range(of: "/// Abandon the recording"))
+        let resumeBody = source[resumeStart.lowerBound..<resumeEnd.lowerBound]
+        #expect(resumeBody.contains("speakerSampleTimeMappings.append(contentsOf: boundary.speakerSampleTimeMappings)"))
+    }
+
+    @Test("pause boundaries map both source clocks to the retained recording clock")
+    func pauseBoundaryProvidesSpeakerSampleMappings() {
+        let boundary = MeetingRecordingWriterPauseBoundary(
+            microphoneSampleCount: 16_000,
+            systemSampleCount: 16_320,
+            recordingSampleCount: 16_320
+        )
+
+        #expect(boundary.speakerSampleTimeMappings == [
+            .init(channel: .microphone, sourceTime: 1, recordingTime: 1.02),
+            .init(channel: .system, sourceTime: 1.02, recordingTime: 1.02)
+        ])
     }
 
     @Test("recording mixes delayed cleaned mic and retains partial AEC frames across pause and stop")
@@ -123,18 +161,26 @@ struct MeetingRecordingWriterTests {
         #expect(samples == [2000, 2000, 5000, 6000, 2000])
     }
 
-    @Test("pause boundary identifies the source channel whose recording position advances")
-    func pauseBoundaryReportsUnalignedSourceChannel() throws {
+    @Test("pause boundary reports sample positions and the unaligned source channel")
+    func pauseBoundaryReportsSampleTimelineAndUnalignedSource() throws {
         let micBehind = try MeetingRecordingWriter()
         micBehind.appendSystem([1000, 2000, 3000])
         micBehind.appendMic([1000])
-        #expect(micBehind.markPauseBoundary() == .microphone)
+        let micBoundary = micBehind.markPauseBoundary()
+        #expect(micBoundary.unalignedChannel == .microphone)
+        #expect(micBoundary.microphoneSampleCount == 1)
+        #expect(micBoundary.systemSampleCount == 3)
+        #expect(micBoundary.recordingSampleCount == 3)
         micBehind.cancel()
 
         let systemBehind = try MeetingRecordingWriter()
         systemBehind.appendMic([1000, 2000, 3000])
         systemBehind.appendSystem([1000])
-        #expect(systemBehind.markPauseBoundary() == .system)
+        let systemBoundary = systemBehind.markPauseBoundary()
+        #expect(systemBoundary.unalignedChannel == .system)
+        #expect(systemBoundary.microphoneSampleCount == 3)
+        #expect(systemBoundary.systemSampleCount == 1)
+        #expect(systemBoundary.recordingSampleCount == 3)
         systemBehind.cancel()
     }
 

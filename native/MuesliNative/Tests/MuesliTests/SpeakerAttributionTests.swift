@@ -90,6 +90,17 @@ struct SpeakerAttributionTests {
         #expect(local?.map(\.speakerId) == ["a", "b"])
     }
 
+    @Test("owner recognition can preserve a single significant mic speaker")
+    func localDiarizationCanPreserveSingleSpeakerIdentity() {
+        let segments = [makeDiarSeg(speakerId: "owner", start: 0, end: 60)]
+
+        #expect(SpeakerAttribution.localDiarization(from: segments) == nil)
+        #expect(SpeakerAttribution.localDiarization(
+            from: segments,
+            preserveSingleSpeakerIdentity: true
+        )?.map(\.speakerId) == ["owner"])
+    }
+
     @Test("filtering local diarization is idempotent")
     func localDiarizationIsIdempotent() {
         let local = SpeakerAttribution.localDiarization(from: [

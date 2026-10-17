@@ -1147,6 +1147,22 @@ actor TranscriptionCoordinator {
         return result
     }
 
+    func labelMeetingAudio(_ urls: [MeetingSpeakerKey.Channel: URL], owner: MeetingOwnerRecognitionContext? = nil) async throws -> MeetingSpeakerLabelingTracks {
+        var channels: [MeetingSpeakerKey.Channel: [MeetingLiveSpeakerSegment]] = [:]
+        var mic: [TimedSpeakerSegment] = []
+        for channel in [MeetingSpeakerKey.Channel.system, .microphone] {
+            guard let url = urls[channel] else { continue }
+            let segments = try await diarizeRecordedAudio(at: url)
+            if channel == .microphone { mic = segments }
+            channels[channel] = segments.map { .init(clusterID: $0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
+        }
+        var ownerCluster: String?
+        if let profile = owner?.profile, let url = urls[.microphone] {
+            ownerCluster = try? await ownerMicrophoneCluster(at: url, segments: mic, profile: profile)
+        }
+        return .init(channels: channels, ownerCluster: ownerCluster)
+    }
+
     func beginLiveSpeakerEpoch(_ epoch: UUID) async {
         await liveSpeakerInferenceWorker.begin(epoch)
     }

@@ -151,6 +151,33 @@ struct MeetingResumePolicyTests {
         #expect(merged.formattedNotes == "merged")
     }
 
+    @Test("resume override preserves speaker mappings behind the opaque prior transcript")
+    func resumeOverrideKeepsSpeakerStateWithCombinedPrefix() {
+        let start = Date(timeIntervalSince1970: 3_000_000)
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "resume-mic")
+        let state = MeetingSpeakerState(
+            epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: key, timestamp: "00:00:00", start: 0, end: 1, text: "new 🌿 segment")]
+        )
+        let resumed = MeetingSessionResult(
+            title: "M", originalTitle: "M", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(1), durationSeconds: 1,
+            rawTranscript: state.render(), formattedNotes: "notes",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot, speakerState: state
+        )
+        let prior = "earlier transcript"
+        let combined = MeetingResumePolicy.combinedResumeTranscript(prior: prior, new: state.render())
+
+        let merged = resumed.overriding(rawTranscript: combined, formattedNotes: "merged")
+
+        #expect(merged.speakerState?.transcriptPrefix == prior + MeetingResumePolicy.resumeSeparator)
+        #expect(merged.speakerState?.render() == combined)
+        #expect(merged.speakerState?.turns.map(\.text) == state.turns.map(\.text))
+    }
+
     @Test("override without a start time leaves timing untouched")
     func overrideWithoutStartKeepsTiming() {
         let start = Date(timeIntervalSince1970: 2_000_000)

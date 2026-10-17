@@ -118,4 +118,25 @@ extension MeetingSpeakerPaletteTests {
                 isPerson: message.speakerIsPerson ?? false) == original)
         }
     }
+
+    @Test @MainActor func floatingTranscriptKeepsResumedPrefixForDisplayAndCopy() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "local")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: key, rank: 1, fallbackLabel: "You", isSelf: true)],
+            turns: [.init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Current speech")])
+        let prefix = "[10:00:00] You: Earlier speech"
+        let resumedPrior = MeetingResumePolicy.transcriptForResume(prefix, speakerState: nil)
+        let resumedTranscript = MeetingResumePolicy.combinedResumeTranscript(
+            prior: resumedPrior.text, new: state.render())
+        let floating = FloatingMeetingTranscriptModel()
+
+        floating.update(transcript: resumedTranscript, partialYou: "", partialOthers: "",
+            speakerState: state, transcriptPrefix: resumedPrior.text)
+
+        #expect(resumedPrior.text == prefix)
+        #expect(floating.presentation.messages.contains { $0.text == "Earlier speech" })
+        #expect(floating.presentation.messages.contains { $0.text == "Current speech" })
+        #expect(floating.presentation.transcriptForCopy == resumedTranscript)
+    }
 }
