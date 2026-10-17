@@ -9324,10 +9324,28 @@ public final class MuesliController: NSObject {
     }
 
     private func showMeetingCompletionNotification(_ notification: PendingMeetingCompletionNotification) {
+        let completionSession = notification.meetingID.map { meetingID in
+            MeetingCompletionContactSession(
+                meetingID: meetingID,
+                loadParticipants: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.meetingParticipants(meetingID: meetingID)
+                },
+                resolveContact: { await MeetingContactResolver().resolve($0) },
+                attachParticipant: { [weak self] participant in
+                    guard let self else { throw CancellationError() }
+                    try await self.attachMeetingParticipant(meetingID: meetingID, participant: participant)
+                },
+                participantsDidChange: {
+                    NotificationCenter.default.post(name: .meetingParticipantsDidChange, object: meetingID)
+                }
+            )
+        }
         meetingNotification.show(
             title: "Transcription complete",
             subtitle: notification.title,
             actionLabel: "View Notes",
+            completionSession: completionSession,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 if let meetingID = notification.meetingID {
