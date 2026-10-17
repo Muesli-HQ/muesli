@@ -48,9 +48,10 @@ enum TranscriptReconciler {
             from: micDiarizationSegments,
             preserveSingleSpeakerIdentity: preserveMicrophoneIdentityBoundaries
         )
-        let micSpeaker = micSpeakerResolver(for: preserveMicrophoneIdentityBoundaries
-            ? micDiarizationSegments
-            : localDiarization)
+        let micSpeaker = micSpeakerResolver(
+            for: preserveMicrophoneIdentityBoundaries ? micDiarizationSegments : localDiarization,
+            requireOverlap: preserveMicrophoneIdentityBoundaries
+        )
         // Sentence timing is interpolated from text length, so it cannot establish
         // owner identity inside a mixed chunk. Preserve the original range for the
         // owner path; the formatter leaves ranges crossing speakers generic.
@@ -195,9 +196,12 @@ enum TranscriptReconciler {
     typealias MicSpeakerResolver = (SpeechSegment) -> String?
 
     /// nil unless `SpeakerAttribution.localDiarization` found several in-room voices.
-    private static func micSpeakerResolver(for localDiarization: [TimedSpeakerSegment]?) -> MicSpeakerResolver? {
+    private static func micSpeakerResolver(
+        for localDiarization: [TimedSpeakerSegment]?,
+        requireOverlap: Bool
+    ) -> MicSpeakerResolver? {
         guard let localDiarization else { return nil }
-        return { SpeakerAttribution.speakerID(for: $0, in: localDiarization) }
+        return { SpeakerAttribution.speakerID(for: $0, in: localDiarization, requireOverlap: requireOverlap) }
     }
 
     private static func mergeReadableSegments(

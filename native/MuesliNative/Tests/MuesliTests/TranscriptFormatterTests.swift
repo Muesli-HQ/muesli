@@ -719,6 +719,40 @@ struct TranscriptFormatterTests {
         #expect(state.render().contains("Microphone: Uncovered words"))
     }
 
+    @Test("nearby uncovered mic speech is not attributed to the owner")
+    func nearbyUncoveredMicSpeechIsNotAttributedToOwner() {
+        let epoch = UUID()
+        let micDiarization = [makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 6)]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [
+                SpeechSegment(start: 0, end: 6, text: "Covered owner words"),
+                SpeechSegment(start: 6.1, end: 7, text: "Uncovered guest words"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            preserveMicrophoneIdentityBoundaries: true
+        )
+        var state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: [],
+            diarizationSegments: reconciled.diarizationSegments,
+            micDiarizationSegments: reconciled.micDiarizationSegments,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: reconciled.micIdentitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner_cluster")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Enrolled owner", profileID: UUID())
+
+        #expect(state.turns.count == 2)
+        #expect(state.labels[state.turns[0].speaker] == "Enrolled owner (You)")
+        #expect(state.labels[state.turns[1].speaker] == "Microphone")
+        #expect(state.turns[1].speaker != ownerKey)
+    }
+
     @Test("empty mic diarization keeps the You label")
     func emptyMicDiarizationKeepsYou() {
         let meetingStart = Date(timeIntervalSince1970: 0)

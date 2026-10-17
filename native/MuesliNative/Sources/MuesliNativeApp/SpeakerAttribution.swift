@@ -40,7 +40,8 @@ enum SpeakerAttribution {
     /// to the nearest diarized speech within `nearestSpeakerMaxGapSeconds`.
     static func speakerID(
         for segment: SpeechSegment,
-        in diarizationSegments: [TimedSpeakerSegment]
+        in diarizationSegments: [TimedSpeakerSegment],
+        requireOverlap: Bool = false
     ) -> String? {
         let segStart = Float(segment.start)
         let segEnd = Float(max(segment.end, segment.start + 0.1)) // ensure non-zero duration
@@ -61,6 +62,7 @@ enum SpeakerAttribution {
         if let best = overlapBySpeaker.max(by: { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }) {
             return best.key
         }
+        guard !requireOverlap else { return nil }
         return nearestSpeakerID(segmentStart: segStart, segmentEnd: segEnd, in: diarizationSegments)
     }
 

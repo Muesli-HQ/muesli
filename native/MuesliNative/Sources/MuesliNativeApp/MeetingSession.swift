@@ -1279,6 +1279,7 @@ final class MeetingSession {
                     existingNotes: nil,
                     manualNotesToRetain: manualNotes,
                     participantNames: participantNames,
+                    speakerOwnership: MeetingSummarySpeakerOwnership(state: speakerState, transcript: rawTranscript),
                     visualContext: visualContext.isEmpty ? nil : visualContext,
                     previousMeetingNotes: previousMeetingNotes
                 )

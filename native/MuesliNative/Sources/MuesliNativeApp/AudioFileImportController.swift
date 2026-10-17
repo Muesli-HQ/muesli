@@ -239,7 +239,8 @@ enum AudioFileImportController {
                 config: config,
                 template: templateSnapshot,
                 existingNotes: nil,
-                manualNotesToRetain: ""
+                manualNotesToRetain: "",
+                speakerOwnership: MeetingSummarySpeakerOwnership(state: speakerState, transcript: diarizedTranscript)
             )
             summaryIsCurrent = true
         } catch {

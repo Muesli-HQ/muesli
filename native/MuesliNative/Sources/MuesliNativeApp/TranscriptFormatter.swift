@@ -115,7 +115,8 @@ enum TranscriptFormatter {
                 }
                 taggedMic = displayMicSegments.map { segment in
                     let speaker = findSpeaker(for: segment, in: localDiarization,
-                        labelMap: micSpeakerLabelMap, fallback: "Local speaker")
+                        labelMap: micSpeakerLabelMap, fallback: "Local speaker",
+                        requiresMatchingDiarizationCoverage: microphoneIdentityRequired)
                     return TaggedSegment(segment: segment, speaker: speaker)
                 }
             } else {
@@ -325,12 +326,17 @@ enum TranscriptFormatter {
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment],
         labelMap: [String: String],
-        fallback: String
+        fallback: String,
+        requiresMatchingDiarizationCoverage: Bool = false
     ) -> String {
-        if labelMap.count == 1 {
+        if labelMap.count == 1, !requiresMatchingDiarizationCoverage {
             return labelMap.values.first ?? fallback
         }
-        guard let speakerID = SpeakerAttribution.speakerID(for: segment, in: diarizationSegments) else {
+        guard let speakerID = SpeakerAttribution.speakerID(
+            for: segment,
+            in: diarizationSegments,
+            requireOverlap: requiresMatchingDiarizationCoverage
+        ) else {
             return fallback
         }
         return labelMap[speakerID] ?? fallback

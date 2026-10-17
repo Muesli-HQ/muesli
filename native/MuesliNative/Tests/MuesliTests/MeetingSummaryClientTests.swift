@@ -445,7 +445,7 @@ struct MeetingSummaryClientTests {
             existingNotes: "## Notes\n- User added detail"
         )
 
-        #expect(prompt.contains("Current generated notes to preserve and reformat:"))
+        #expect(prompt.contains("Current generated notes for factual context; old owner mentions are not ownership evidence:"))
         #expect(prompt.contains("User added detail"))
         #expect(prompt.contains("Raw transcript:\nTranscript body"))
     }
@@ -459,7 +459,7 @@ struct MeetingSummaryClientTests {
             manualNotes: "- User typed decision"
         )
 
-        #expect(prompt.contains("Current generated notes to preserve and reformat:"))
+        #expect(prompt.contains("Current generated notes for factual context; old owner mentions are not ownership evidence:"))
         #expect(prompt.contains("First-class meeting context from written notes typed by the user during the meeting"))
         #expect(prompt.contains("identify the meeting's topic, decisions, action items, risks, and outcomes"))
         #expect(prompt.contains("- User typed decision"))

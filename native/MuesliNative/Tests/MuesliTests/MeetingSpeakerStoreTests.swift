@@ -236,6 +236,44 @@ struct MeetingSpeakerStoreTests {
         #expect(try !store.meetingSummaryIsStale(id: id))
     }
 
+    @Test func unchangedSyncedTranscriptPreservesSpeakerCorrections() throws {
+        let (store, id, state) = try fixture()
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+        let recordName = "meeting-speaker-sync-\(UUID().uuidString)"
+        let localUpdatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET cloud_record_name = '\(recordName)', updated_at = \(localUpdatedAt.timeIntervalSince1970), sync_dirty = 0 WHERE id = \(id)"
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+
+        var record = SyncTextRecord(
+            id: recordName,
+            kind: .meeting,
+            title: "Updated title",
+            text: "Raw text",
+            speakerTranscript: state.render(),
+            summaryText: "Updated notes",
+            meetingStatus: .completed,
+            createdAt: localUpdatedAt,
+            updatedAt: localUpdatedAt.addingTimeInterval(60),
+            durationSeconds: 1,
+            wordCount: 3
+        )
+        #expect(try store.upsertSyncedTextRecord(record))
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state == snapshot.state)
+        #expect(try store.meetingTranscriptVersion(id: id) == version)
+
+        record.text = "Changed words"
+        record.speakerTranscript = "[00:00:01] Speaker 1: Changed words"
+        record.updatedAt = localUpdatedAt.addingTimeInterval(120)
+        #expect(try store.upsertSyncedTextRecord(record))
+        #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
+        #expect(try store.meetingTranscriptVersion(id: id)?.digest != version.digest)
+    }
+
     @Test func processingInvalidatesPriorIdentityBeforeNewInference() throws {
         let (store, id, state) = try fixture()
         let before = try #require(try store.meetingTranscriptVersion(id: id))
