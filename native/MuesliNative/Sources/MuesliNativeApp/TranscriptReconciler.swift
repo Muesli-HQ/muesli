@@ -9,7 +9,7 @@ struct ReconciledTranscriptInputs {
     /// Raw microphone cluster IDs retained for owner recognition, even when
     /// significance filtering leaves the displayed mic channel generic.
     let micIdentitySegments: [TimedSpeakerSegment]?
-    /// Significant in-room speakers only; nil when the mic channel stays "You".
+    /// Significant in-room speakers used for local diarization labels.
     var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
 

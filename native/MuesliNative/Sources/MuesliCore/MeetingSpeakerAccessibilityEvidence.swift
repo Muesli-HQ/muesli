@@ -197,7 +197,6 @@ public struct MeetingSpeakerTimeline: Sendable {
         activities: [MeetingSpeakerActivity],
         channel: MeetingSpeakerKey.Channel = .system
     ) -> MeetingSpeakerEvidenceAssignments {
-        if channel == .microphone, observations.contains(where: { $0.microphoneTime == nil }) { return .init() }
         let observations = channel == .microphone
             ? self.observations.map {
                 MeetingSpeakerObservation(time: $0.microphoneTime ?? .nan,

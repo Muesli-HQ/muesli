@@ -69,15 +69,16 @@ private struct LiveTranscriptSection: View {
     let transcriptPrefix: String
 
     var body: some View {
-        // Active capture still exposes source labels only; stable turn keys arrive with the streaming-speaker follow-up.
         LiveTranscriptView(
-            transcript: MeetingResumePolicy.combinedResumeTranscript(
-                prior: transcriptPrefix,
-                new: appState.liveMeetingTranscript
-            ),
+            transcript: appState.liveMeetingSpeakerState == nil
+                ? MeetingResumePolicy.combinedResumeTranscript(prior: transcriptPrefix, new: appState.liveMeetingTranscript)
+                : "",
             partialYou: appState.liveMeetingPartialYou,
             partialOthers: appState.liveMeetingPartialOthers,
-            microphoneLabel: appState.liveMeetingMicrophoneLabel
+            speakerState: appState.liveMeetingSpeakerState,
+            speakerUpdate: appState.liveMeetingSpeakerUpdate,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 }

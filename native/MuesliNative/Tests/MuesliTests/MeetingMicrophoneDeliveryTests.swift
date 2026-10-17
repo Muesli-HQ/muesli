@@ -85,6 +85,78 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.3) == expectedMic) // Mic diarization shares the cleaned mic timeline.
     }
 
+    @Test("new meeting capture starts while an older live speaker inference is blocked")
+    func captureStartsBeforeWaitingForLiveSpeakerWorker() async throws {
+        let inferenceStarted = DispatchSemaphore(value: 0)
+        let releaseInference = DispatchSemaphore(value: 0)
+        let worker = LiveSpeakerInferenceWorker(
+            modelLoader: { _ in throw CancellationError() },
+            inferenceOverride: { _ in
+                inferenceStarted.signal()
+                guard releaseInference.wait(timeout: .now() + 30) == .success else {
+                    throw CancellationError()
+                }
+                return []
+            }
+        )
+        let coordinator = TranscriptionCoordinator(liveSpeakerInferenceWorker: worker)
+        let oldEpoch = UUID()
+        await coordinator.beginLiveSpeakerEpoch(oldEpoch)
+        var audio = MeetingSpeakerPCMQueue()
+        audio.append([Float](repeating: 0.01, count: 80_000), channel: .system, startSample: 0)
+        let poppedWindow = audio.pop()
+        let oldWindow = try #require(poppedWindow)
+        let oldInference = Task {
+            try? await coordinator.inferLiveSpeakers(epoch: oldEpoch, window: oldWindow)
+        }
+        let oldInferenceDidStart = await waitForSignal(inferenceStarted, timeout: 5)
+        #expect(oldInferenceDidStart == .success)
+        guard oldInferenceDidStart == .success else {
+            releaseInference.signal()
+            _ = await oldInference.value
+            return
+        }
+
+        let producer = ContractProducer(useQueue: true)
+        let captureStarted = DispatchSemaphore(value: 0)
+        producer.onStarted = { captureStarted.signal() }
+        let microphone = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
+        var config = AppConfig()
+        config.enableLiveSpeakerLabels = true
+        let session = MeetingSession(title: "speaker inference restart regression", calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                  menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: config,
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: coordinator, meetingMicRecorder: microphone,
+            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+        let startReturned = DispatchSemaphore(value: 0)
+        let start = Task {
+            defer { startReturned.signal() }
+            try await session.start()
+        }
+        let captureStartedBeforeInferenceFinished = await waitForSignal(captureStarted, timeout: 3)
+        let startReturnedBeforeInferenceFinished = await waitForSignal(startReturned, timeout: 3)
+        releaseInference.signal()
+        do { try await start.value } catch { Issue.record(error) }
+        #expect(captureStartedBeforeInferenceFinished == .success)
+        #expect(startReturnedBeforeInferenceFinished == .success)
+        _ = await oldInference.value
+        session.discard()
+        await session.testingWaitForDiscard()
+        await coordinator.shutdown()
+    }
+
+    private func waitForSignal(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> DispatchTimeoutResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout))
+            }
+        }
+    }
+
     @Test("steady microphone delivery never deduplicates consecutive PCM using timestamps",
           arguments: [0, -80, -4096, 800])
     func sameSourceJitter(offset: Int) {
@@ -814,6 +886,7 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
     var onAudioBuffer: (([Float]) -> Void)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
+    var onStarted: (() -> Void)?
     var preferredInputDeviceID: AudioObjectID?
     var shouldAdmitSamples: (() -> Bool)? {
         get { child.shouldAdmitSamples }
@@ -845,6 +918,7 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         child.onRecordingFailed = { [weak self] in self?.onRecordingFailed?($0) }
         if let streaming { tap = try streaming.testing_startWithTap(format: AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!) }
         else { try child.start() }
+        onStarted?()
     }
     func emit(_ values: [Int], at frame: Int64, stale: Bool = false, timed: Bool = true) throws {
         let samples = values.map { Float($0) / 16 }

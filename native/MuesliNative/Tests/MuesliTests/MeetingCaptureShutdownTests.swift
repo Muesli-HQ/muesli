@@ -68,11 +68,13 @@ extension MeetingCaptureShutdownTests {
             systemAudio: { systemCompleted.signal(); return systemURL },
             onQuiesced: { quiesced.signal() }
         )
-        #expect(systemCompleted.wait(timeout: .now()) == .success)
+        let systemFinishedWithoutWaiting = systemCompleted.wait(timeout: .now()) == .success
+        #expect(systemFinishedWithoutWaiting)
         #expect(result.timedOut)
         #expect(result.microphone == nil)
         #expect(result.systemAudio == systemURL)
-        #expect(quiesced.wait(timeout: .now()) == .timedOut)
+        let stillBlockedBeforeRelease = quiesced.wait(timeout: .now()) == .timedOut
+        #expect(stillBlockedBeforeRelease)
         release.signal()
         let didQuiesce = try? await MeetingCaptureLifecycle.onDriverQueue {
             quiesced.wait(timeout: .now() + 5) == .success
@@ -80,6 +82,7 @@ extension MeetingCaptureShutdownTests {
         #expect(didQuiesce == true)
         #expect(!FileManager.default.fileExists(atPath: lateMicURL.path))
         #expect(FileManager.default.fileExists(atPath: systemURL.path))
-        #expect(quiesced.wait(timeout: .now()) == .timedOut)
+        let stillBlockedAfterRelease = quiesced.wait(timeout: .now()) == .timedOut
+        #expect(stillBlockedAfterRelease)
     }
 }

@@ -48,6 +48,33 @@ struct MeetingSpeakerSelfTests {
         let timeline = MeetingSpeakerTimeline(observations: (0...3).map { .init(time: Double($0) + 50, continuity: "one", frame: frame, microphoneTime: Double($0)) })
         #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 3)], channel: .microphone).explicitSelf == [key])
     }
+
+    @Test func missingMicrophoneTimestampDoesNotDiscardLaterEvidence() {
+        let state = fixture(), key = state.speakers[0].key
+        let person = MeetingSpeakerParticipant(id: "window/tile", name: "Example", isSelf: true)
+        let frame = MeetingSpeakerFrame(scope: "window", app: .zoom, participants: [person], activeID: person.id)
+        let observations = (0...5).map { index in
+            MeetingSpeakerObservation(time: Double(index), continuity: "one", frame: frame,
+                microphoneTime: index == 3 ? nil : Double(index))
+        }
+        let timeline = MeetingSpeakerTimeline(observations: observations)
+
+        #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 5)], channel: .microphone).explicitSelf == [key])
+    }
+
+    @Test func missingMicrophoneTimestampDoesNotJoinPollsAcrossGap() {
+        let state = fixture(), key = state.speakers[0].key
+        let person = MeetingSpeakerParticipant(id: "window/tile", name: "Example", isSelf: true)
+        let frame = MeetingSpeakerFrame(scope: "window", app: .zoom, participants: [person], activeID: person.id)
+        let timestamps: [Double?] = [0, 1, nil, 3, 4]
+        let observations = timestamps.enumerated().map { index, microphoneTime in
+            MeetingSpeakerObservation(time: Double(index), continuity: "one", frame: frame,
+                microphoneTime: microphoneTime)
+        }
+        let timeline = MeetingSpeakerTimeline(observations: observations)
+
+        #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 4)], channel: .microphone).names[key] == nil)
+    }
     @Test func resumeKeepsRevocationAndUntouchedPriorText() {
         let state = fixture(), token = UUID()
         var named = state
@@ -81,6 +108,66 @@ struct MeetingSpeakerSelfTests {
         #expect(revoked.formattedNotes == result.formattedNotes)
         #expect(revoked.summaryIsCurrent == true)
         #expect(revoked.ownerRecognitionAuthorization == nil)
+    }
+
+    @Test func newlyGrantedAuthorizationsDoNotInvalidateEvidenceThatWasNotCaptured() {
+        let captured = UUID()
+        #expect(MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: nil,
+            currentAccessibility: UUID(),
+            capturedOwnerRecognition: nil,
+            currentOwnerRecognition: UUID()
+        ))
+        #expect(MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: captured,
+            currentAccessibility: captured,
+            capturedOwnerRecognition: captured,
+            currentOwnerRecognition: captured
+        ))
+        #expect(!MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: captured,
+            currentAccessibility: nil,
+            capturedOwnerRecognition: nil,
+            currentOwnerRecognition: nil
+        ))
+        #expect(!MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: nil,
+            currentAccessibility: nil,
+            capturedOwnerRecognition: captured,
+            currentOwnerRecognition: UUID()
+        ))
+    }
+
+    @Test func resumeSummaryOverrideTracksCombinedSummaryOutcome() {
+        let result = MeetingSessionResult(title: "Generated", originalTitle: "Manual", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), durationSeconds: 3, rawTranscript: "New speech", formattedNotes: "Session notes",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil, templateSnapshot: MeetingTemplates.auto.snapshot,
+            summaryIsCurrent: false)
+
+        let regenerated = result.overriding(rawTranscript: "Prior and new speech", formattedNotes: "Combined notes", summaryIsCurrent: true)
+        let failed = result.overriding(rawTranscript: "Prior and new speech", formattedNotes: "Failure notes", summaryIsCurrent: false)
+
+        #expect(regenerated.summaryIsCurrent == true)
+        #expect(failed.summaryIsCurrent == false)
+    }
+    @Test @MainActor func liveTranscriptKeepsSpeakerIdentityAfterResumePrefix() {
+        let epoch = UUID()
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Local speaker 1"),
+                       .init(key: second, rank: 2, fallbackLabel: "Local speaker 2")],
+            turns: [.init(speaker: first, timestamp: "10:30:00", start: 0, end: 2, text: "First live words"),
+                    .init(speaker: second, timestamp: "10:30:03", start: 3, end: 5, text: "Second live words")])
+        let prefix = "[10:00:00] Prior speaker: Prior words"
+        let transcript = MeetingResumePolicy.combinedResumeTranscript(prior: prefix, new: state.render())
+        let model = LiveTranscriptPresentationModel()
+
+        model.update(transcript: transcript, partialYou: "", partialOthers: "", speakerState: state,
+                     microphoneLabel: "Microphone", transcriptPrefix: prefix)
+
+        #expect(model.messages.map(\.text) == ["Prior words", "— Resumed —", "First live words", "Second live words"])
+        #expect(model.messages.suffix(2).map(\.speakerKey) == [first, second])
     }
     @Test @MainActor func provisionalMicrophoneIsNeutral() {
         let model = LiveTranscriptPresentationModel()
