@@ -96,6 +96,18 @@ struct MeetingOwnerRecognitionContext: Sendable {
     let name: String
 }
 
+enum MeetingSpeakerAuthorizationSnapshot {
+    static func matches(
+        capturedAccessibility: UUID?,
+        currentAccessibility: UUID?,
+        capturedOwnerRecognition: UUID?,
+        currentOwnerRecognition: UUID?
+    ) -> Bool {
+        (capturedAccessibility == nil || capturedAccessibility == currentAccessibility)
+            && (capturedOwnerRecognition == nil || capturedOwnerRecognition == currentOwnerRecognition)
+    }
+}
+
 struct MeetingSessionResult {
     var title: String
     let originalTitle: String
@@ -290,6 +302,10 @@ final class MeetingSession {
     private var microphoneTimelineAlignment = MeetingMicrophoneTimelineAlignment()
     private let speakerAudioTimelineClock = MeetingSpeakerAudioTimelineClock()
     private let microphoneSpeakerAudioTimelineClock = MeetingSpeakerAudioTimelineClock()
+    var usesLiveSpeakerLabels: Bool { config.enableLiveSpeakerLabels }
+    private var liveSpeakerFeed: MeetingLiveSpeakerFeed?
+    private var liveSpeakerEpochStartup: Task<Void, Never>?
+    var onLiveSpeakerState: (@Sendable (MeetingLiveSpeakerPresentationUpdate) -> Void)?
     private var ownerRecognitionContext: MeetingOwnerRecognitionContext?
     var ownerRecognitionProvider: (() async -> MeetingOwnerRecognitionContext?)?
     private let speakerAccessibilityMonitor = MeetingSpeakerAccessibilityMonitor()
@@ -300,9 +316,14 @@ final class MeetingSession {
         let accessibility = await speakerAccessibilityAuthorizationProvider?()
         let owner = await ownerRecognitionProvider?()?.token
         let capturedAccessibility = speakerAccessibilityStartupGate.currentAuthorization
-        return accessibility == capturedAccessibility && owner == ownerRecognitionContext?.token
+        return MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: capturedAccessibility,
+            currentAccessibility: accessibility,
+            capturedOwnerRecognition: ownerRecognitionContext?.token,
+            currentOwnerRecognition: owner
+        )
     }
-    private var microphoneLabel: String { config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio ? "Microphone" : "You" }
+    private var microphoneLabel: String { config.enableLiveSpeakerLabels || config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio ? "Microphone" : "You" }
     private func speakerAudioClock(microphone: Bool = false) -> Double? {
         let clock = microphone ? microphoneSpeakerAudioTimelineClock : speakerAudioTimelineClock
         return clock.elapsedTimeSeconds(isCapturing: capturePhase == .capturing, now: ProcessInfo.processInfo.systemUptime)
@@ -503,6 +524,17 @@ final class MeetingSession {
 
         try Task.checkCancellation()
         guard !captureLifecycle.isEnding else { throw CancellationError() }
+        if config.enableLiveSpeakerLabels {
+            let epoch = UUID()
+            let epochStartup = Task { await transcriptionCoordinator.beginLiveSpeakerEpoch(epoch) }
+            liveSpeakerEpochStartup = epochStartup
+            liveSpeakerFeed = MeetingLiveSpeakerFeed(epoch: epoch,
+                infer: { [transcriptionCoordinator] window in
+                    await epochStartup.value
+                    return try await transcriptionCoordinator.inferLiveSpeakers(epoch: epoch, window: window)
+                },
+                publish: { [weak self] update in self?.onLiveSpeakerState?(update) })
+        }
         // The controller owns failure disposition; an explicit Stop may already
         // be saving this session when a cancelled startup continuation returns.
         try chunkRotationQueue.sync {
@@ -765,18 +797,29 @@ final class MeetingSession {
     #endif
 
     func pause() {
-        let shouldPause = captureLifecycle.setPaused(true) { [weak self] in
+        let feed = liveSpeakerFeed
+        let shouldPause = captureLifecycle.setPaused(true) { [weak self, feed] in
             guard let self else { return }
-            self.chunkRotationQueue.sync {
-                guard self.captureLifecycle.isMicrophoneDeliveryOpen else { return }
+            let sampleAlignmentBoundaries = self.chunkRotationQueue.sync { () -> [MeetingSpeakerKey.Channel: Double] in
+                guard self.captureLifecycle.isMicrophoneDeliveryOpen else { return [:] }
                 self.appendFlushedStreamingMicOnQueue()
                 self.rotateChunkOnQueue(atPauseBoundary: true)
                 self.rotateSystemChunkOnQueue(atPauseBoundary: true)
-                self.retainedRecordingWriter?.markPauseBoundary()
+                var boundaries: [MeetingSpeakerKey.Channel: Double] = [:]
+                if let unalignedChannel = self.retainedRecordingWriter?.markPauseBoundary() {
+                    let sourceSampleIndex = unalignedChannel == .microphone
+                        ? self.chunkTimingTracker.elapsedSampleIndex
+                        : self.systemChunkTimingTracker.elapsedSampleIndex
+                    if let sourceSampleIndex {
+                        boundaries[unalignedChannel] = Double(sourceSampleIndex) / Double(MeetingChunkTimingTracker.sampleRate)
+                    }
+                }
                 _ = self.closeMicrophoneTimelineIntervalOnQueue()
                 self.neuralAec.resetForStreaming()
                 self.suspendPartialSessions()
+                return boundaries
             }
+            Task { await feed?.pause(samplesUnalignedAfter: sampleAlignmentBoundaries) }
         }
         guard shouldPause else { return }
         speakerAudioTimelineClock.breakContinuity()
@@ -828,6 +871,14 @@ final class MeetingSession {
     }
 
     private func discardPipeline() {
+        if let feed = liveSpeakerFeed {
+            let epochStartup = liveSpeakerEpochStartup
+            Task {
+                await feed.finish()
+                if let epochStartup { await epochStartup.value }
+                await transcriptionCoordinator.endLiveSpeakerEpoch(feed.epoch)
+            }
+        }
         Task { _ = await speakerAccessibilityMonitor.stop() }
         let runningApplicationsOwner = speakerRunningApplicationsOwner
         Task { @MainActor in
@@ -870,6 +921,14 @@ final class MeetingSession {
     }
 
     func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        if let feed = liveSpeakerFeed {
+            await feed.finish()
+            let epochStartup = liveSpeakerEpochStartup
+            Task {
+                if let epochStartup { await epochStartup.value }
+                await transcriptionCoordinator.endLiveSpeakerEpoch(feed.epoch)
+            }
+        }
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let speakerAuthorization = speakerAccessibilityStartupGate.end()
@@ -1367,6 +1426,7 @@ final class MeetingSession {
                 self.commitMicPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
                 self.onChunkTranscribed?(resolvedSegments, self.microphoneLabel)
+                await self.appendLiveSpeakerTurns(resolvedSegments, channel: .microphone)
             }
         } else {
             task.cancel()
@@ -1460,6 +1520,7 @@ final class MeetingSession {
                 self.commitSystemPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
                 self.onChunkTranscribed?(resolvedSegments, "Others")
+                await self.appendLiveSpeakerTurns(resolvedSegments, channel: .system)
             }
         } else {
             task.cancel()
@@ -1584,6 +1645,8 @@ final class MeetingSession {
             self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
+            let speakerStart = self.systemChunkTimingTracker.elapsedSampleIndex ?? 0
+            self.liveSpeakerFeed?.appendPCM(samples.map { Float($0) / 32767 }, channel: .system, startSample: speakerStart)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
             self.microphoneTimelineAlignment.appendSystemSamples(samples.count)
 
@@ -1620,6 +1683,7 @@ final class MeetingSession {
         microphoneSpeakerAudioTimelineClock.recordRecordedSamples(
             cleanedInt16.count, uptime: ProcessInfo.processInfo.systemUptime
         )
+        liveSpeakerFeed?.appendPCM(cleanedFloat, channel: .microphone, startSample: chunkTimingTracker.elapsedSampleIndex ?? 0)
         chunkTimingTracker.append(sampleCount: cleanedInt16.count)
         microphoneTimelineAlignment.appendMicrophoneSamples(cleanedInt16.count)
         diagnostics?.appendCleanedMicSamples(cleanedInt16)
@@ -1647,6 +1711,18 @@ final class MeetingSession {
             )
             remaining -= Int64(count)
         }
+    }
+
+    private func appendLiveSpeakerTurns(_ segments: [SpeechSegment], channel: MeetingSpeakerKey.Channel) async {
+        guard let feed = liveSpeakerFeed, let startTime else { return }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "HH:mm:ss"
+        let turns = segments.compactMap { segment -> MeetingSpeakerTurn? in
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return .init(speaker: .init(epoch: feed.epoch, channel: channel, clusterID: "pending"),
+                timestamp: formatter.string(from: startTime.addingTimeInterval(segment.start)), start: segment.start, end: segment.end, text: text)
+        }
+        await feed.appendTurns(turns, channel: channel)
     }
 
     private func transcribeMicChunk(

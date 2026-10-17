@@ -67,18 +67,19 @@ final class FloatingMeetingTranscriptModel {
     var isPresented = false
     var didCopy = false
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil,
+                speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil, microphoneLabel: String = "You") {
         presentation.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState, microphoneLabel: microphoneLabel
+            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel
         )
     }
 
     func copyToPasteboard() {
         let text = LiveTranscriptCopyContent.text(
-            transcript: presentation.transcript,
+            transcript: presentation.transcriptForCopy,
             partialYou: presentation.partialYou,
             partialOthers: presentation.partialOthers, microphoneLabel: presentation.microphoneLabel
         )
@@ -134,12 +135,15 @@ final class FloatingMeetingTranscriptPanelController {
         hostingView?.superview != nil && hostingView?.isHidden == false
     }
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
+    func update(transcript: String, partialYou: String, partialOthers: String,
+                speakerState: MeetingSpeakerState? = nil,
+                speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil,
+                microphoneLabel: String = "You") {
         model.update(
             transcript: transcript,
             partialYou: partialYou,
             partialOthers: partialOthers,
-            speakerState: speakerState, microphoneLabel: microphoneLabel
+            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel
         )
     }
 
@@ -252,12 +256,10 @@ private struct FloatingMeetingTranscriptPanelView: View {
         model.presentation.messages
     }
 
-    private var copyText: String {
-        LiveTranscriptCopyContent.text(
-            transcript: model.presentation.transcript,
-            partialYou: model.presentation.partialYou,
-            partialOthers: model.presentation.partialOthers, microphoneLabel: model.presentation.microphoneLabel
-        )
+    private var canCopy: Bool {
+        model.presentation.hasCommittedTranscript
+            || !partialYou.isEmpty
+            || !partialOthers.isEmpty
     }
 
     var body: some View {
@@ -321,7 +323,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(copyText.isEmpty)
+            .disabled(!canCopy)
             .help("Copy transcript")
         }
         .padding(.horizontal, MuesliTheme.spacing16)
