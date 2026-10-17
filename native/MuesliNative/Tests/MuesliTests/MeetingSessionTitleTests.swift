@@ -7,6 +7,7 @@ struct MeetingProcessingStageTests {
     func audioProcessingBlocksDictation() {
         #expect(!MeetingProcessingStage.stoppingCapture.allowsDictation)
         #expect(!MeetingProcessingStage.transcribingAudio.allowsDictation)
+        #expect(!MeetingProcessingStage.diarizingSpeakers.allowsDictation)
         #expect(!MeetingProcessingStage.cleaningAudio.allowsDictation)
     }
 

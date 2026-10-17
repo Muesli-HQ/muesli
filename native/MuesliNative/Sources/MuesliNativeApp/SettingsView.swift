@@ -2083,6 +2083,11 @@ struct SettingsView: View {
                     }
                     settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Identify in-room speakers") {
+                    settingsControl("diarize_microphone")
+                }
+                settingsDescription("For in-person meetings: splits microphone audio into Local speaker 1, 2, … after the meeting ends. Takes longer to process.")
             }
 
             settingsSection("Auto Export") {

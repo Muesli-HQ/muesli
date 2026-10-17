@@ -13,6 +13,18 @@ struct TranscriptChatMessageTests {
         #expect(messages.allSatisfy { !$0.isUser })
     }
 
+    @Test("in-room microphone speakers keep their local labels")
+    func localSpeakers() {
+        let messages = TranscriptChatMessage.messages(from: """
+        [10:00:00] Local speaker 1: Ahoj.
+        [10:00:02] Local speaker 12: Dobrý den.
+        [10:00:05] Local speaker: Ano.
+        """)
+        #expect(messages.map(\.speaker) == ["Local speaker 1", "Local speaker 12", "Local speaker"])
+        #expect(messages.map(\.text) == ["Ahoj.", "Dobrý den.", "Ano."])
+        #expect(messages.allSatisfy { !$0.isUser })
+    }
+
     @Test("timestamped speaker lines become chat messages")
     func timestampedSpeakerLinesBecomeChatMessages() {
         let messages = TranscriptChatMessage.messages(from: """
