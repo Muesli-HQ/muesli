@@ -6,6 +6,9 @@ struct MeetingChatDocumentTarget {
     let citation: MeetingChatCitation
     let sessionID: UUID
     var showsTranscript: Bool { citation.kind == .transcript }
+    static func readableExcerpt(_ excerpt: String) -> String {
+        MeetingSpeakerState.modelFacingTranscript(excerpt)
+    }
     func locate(in text: String) -> NSRange? {
         let ns = text as NSString; let range = citation.range.nsRange
         if range.location >= 0, range.length >= 0, range.location <= ns.length, range.length <= ns.length - range.location,
@@ -23,18 +26,26 @@ struct MeetingChatDocumentTarget {
         speakerState: MeetingSpeakerState? = nil
     ) -> [NSRange] {
         let nsText = text as NSString
-        if let speakerState, speakerState.isValid, speakerState.render() == text {
+        if let speakerState, speakerState.isValid, speakerState.matchesTranscript(text) {
+            let isLegacyRender = speakerState.renderLegacy() == text
             let labels = speakerState.labels
-            var location = 0
+            var searchLocation = 0
             var ranges: [NSRange] = []
-            for (index, turn) in speakerState.turns.enumerated() {
-                let renderedTurn = "[\(turn.timestamp)] \(labels[turn.speaker] ?? "Unknown speaker"): \(turn.text)"
-                let renderedLength = (renderedTurn as NSString).length
-                ranges.append(NSRange(location: location, length: renderedLength))
-                location += renderedLength
-                if index < speakerState.turns.count - 1 { location += 1 }
+            for turn in speakerState.turns {
+                let speaker = labels[turn.speaker] ?? "Unknown speaker"
+                let renderedTurn = isLegacyRender
+                    ? MeetingSpeakerState.renderLegacyTranscriptTurn(timestamp: turn.timestamp, speaker: speaker, text: turn.text)
+                    : MeetingSpeakerState.renderTranscriptTurn(timestamp: turn.timestamp, speaker: speaker, text: turn.text)
+                let searchRange = NSRange(location: searchLocation, length: nsText.length - searchLocation)
+                let renderedRange = nsText.range(of: renderedTurn, options: [], range: searchRange)
+                guard renderedRange.location != NSNotFound else { return [] }
+                ranges.append(renderedRange)
+                searchLocation = NSMaxRange(renderedRange)
+                if searchLocation < nsText.length, nsText.character(at: searchLocation) == 10 {
+                    searchLocation += 1
+                }
             }
-            return location <= nsText.length ? ranges : []
+            return ranges
         }
 
         var ranges: [NSRange] = []
@@ -91,7 +102,7 @@ struct MeetingChatCitationView: View {
             Text("\(citation.startDate.formatted(date: .abbreviated, time: .shortened)) · \(citation.kind.label)\(citation.timestamp.map { " · \($0)" } ?? "")")
                 .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
             ScrollView {
-                Text(citation.excerpt).font(MuesliTheme.reading()).lineSpacing(5).textSelection(.enabled)
+                Text(MeetingChatDocumentTarget.readableExcerpt(citation.excerpt)).font(MuesliTheme.reading()).lineSpacing(5).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(14)
             }.frame(maxHeight: 300).background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))
             if changed { Text("This source changed since the answer was written.").font(.caption).foregroundStyle(.orange) }
@@ -115,7 +126,8 @@ struct MeetingChatSourceGroup: Identifiable {
         let citation: MeetingChatCitation
         var id: String { citation.sourceKey }
         var preview: String {
-            citation.excerpt.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            MeetingChatDocumentTarget.readableExcerpt(citation.excerpt)
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
         }
     }
     let id: Int64

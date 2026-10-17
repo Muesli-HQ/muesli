@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import MuesliCore
 
 @available(macOS 13.0, *)
 struct GetLastMeetingIntent: AppIntent {
@@ -19,7 +20,9 @@ struct GetLastMeetingIntent: AppIntent {
             let notes = meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
             if !notes.isEmpty { return .result(value: notes) }
             let transcript = meeting.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !transcript.isEmpty { return .result(value: transcript) }
+            if !transcript.isEmpty {
+                return .result(value: MeetingSpeakerState.modelFacingTranscript(transcript))
+            }
         }
         throw MuesliShortcutsError.noMeetings
     }

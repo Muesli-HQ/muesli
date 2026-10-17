@@ -3,7 +3,7 @@ import ApplicationServices
 import Foundation
 import ScriptingBridge
 
-struct RunningAppSnapshot: Sendable {
+struct RunningAppSnapshot: Sendable, Equatable {
     let bundleID: String
     let appName: String
     let processIdentifier: pid_t

@@ -20,6 +20,7 @@ struct MeetingRecordingWriterTests {
         #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
         for (start, finish) in [
             ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),
+            ("func resume()", "retainedRecordingWriter?.markPauseBoundary()"),
             ("func stop(onRecordingReady:", "retainedRecordingWriter?.stop()")
         ] {
             let startRange = try #require(source.range(of: start))
@@ -96,6 +97,24 @@ struct MeetingRecordingWriterTests {
         let samples = try readMonoPCM16WAVSamples(from: tempURL)
 
         #expect(samples == [1000, 3000, 5000, 7000])
+    }
+
+    @Test("resume boundary flushes pause-transition system audio before mic samples")
+    func resumeBoundaryFlushesSystemTailBeforeMicSamples() throws {
+        let writer = try MeetingRecordingWriter()
+        writer.appendMic([1000, 1000])
+        writer.appendSystem([3000, 3000])
+        writer.markPauseBoundary()
+
+        writer.appendSystem([5000, 6000])
+        writer.markPauseBoundary()
+        writer.appendMic([1000])
+        writer.appendSystem([3000])
+
+        let tempURL = try #require(writer.stop())
+        let samples = try readMonoPCM16WAVSamples(from: tempURL)
+
+        #expect(samples == [2000, 2000, 5000, 6000, 2000])
     }
 
     @Test("persistTemporaryRecording moves the temp wav when WAV is selected")
