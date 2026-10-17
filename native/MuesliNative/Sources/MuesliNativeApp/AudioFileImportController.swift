@@ -167,7 +167,7 @@ enum AudioFileImportController {
         try Task.checkCancellation()
 
         // VAD runs per replay window, not against the whole imported file.
-        await transcriptionCoordinator.setNemotron35PromptId(config.resolvedNemotron35Language.promptId)
+        await transcriptionCoordinator.setNemotron35Language(config.resolvedNemotron35Language)
 
         progress("Transcribing audio...")
         let transcription = try await transcriptionCoordinator.transcribeRecordedAudio(
@@ -177,6 +177,8 @@ enum AudioFileImportController {
             bodhanLanguage: config.resolvedBodhanLanguage,
             bodhanOutputMode: config.resolvedBodhanOutputMode,
             whisperLanguage: config.resolvedWhisperLanguage,
+            qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+            nemotronLanguage: config.resolvedNemotron35Language,
             parakeetLanguage: config.resolvedParakeetLanguage,
             appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
             progress: { fraction, _ in

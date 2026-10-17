@@ -2,6 +2,7 @@ import Testing
 import WhisperKit
 import Foundation
 import CoreAudio
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("StreamingDictationController")
@@ -943,6 +944,7 @@ struct Nemotron35LanguageTests {
         "ar": 7,
         "bg": 30,
         "zh": 4,
+        "zh-TW": 4,
         "hr": 29,
         "cs": 22,
         "da": 25,
@@ -1021,15 +1023,28 @@ struct Nemotron35LanguageTests {
         #expect(Nemotron35Language.resolvedCode(nil) == "auto")
     }
 
-    @Test("every language has a non-empty label and is unique by prompt id sense")
+    @Test("every language has a non-empty label and only zh-TW aliases a prompt id")
     func labelsAndCoverage() {
-        var promptIds: Set<Int32> = []
         for lang in Nemotron35Language.allCases {
             #expect(!lang.label.isEmpty)
-            #expect(promptIds.insert(lang.promptId).inserted, "Duplicate prompt id \(lang.promptId) for \(lang)")
         }
+        let duplicatePromptIDs = Dictionary(grouping: Nemotron35Language.allCases, by: \.promptId)
+            .filter { $0.value.count > 1 }
+        #expect(duplicatePromptIDs.count == 1)
+        #expect(duplicatePromptIDs[4]?.map(\.rawValue).sorted() == ["zh", "zh-TW"])
         // Hindi requires the multilingual track — it must be offered.
         #expect(Nemotron35Language.allCases.contains(.hindi))
+    }
+
+    @available(macOS 15, *)
+    @Test("full-file Nemotron requests keep their captured prompt configuration")
+    func fullFileRequestPromptIsCaptured() {
+        let traditionalRequest = Nemotron35StreamingTranscriber.requestConfig(language: .chineseTraditional)
+        let laterEnglishRequest = Nemotron35StreamingTranscriber.requestConfig(language: .english)
+
+        #expect(traditionalRequest.promptId == Nemotron35Language.chineseTraditional.promptId)
+        #expect(laterEnglishRequest.promptId == Nemotron35Language.english.promptId)
+        #expect(traditionalRequest.promptId != laterEnglishRequest.promptId)
     }
 
     @Test("config persists the selected language via snake_case key")
@@ -1054,9 +1069,9 @@ struct Nemotron35LanguageTests {
 @Suite("WhisperKitLanguage")
 struct WhisperKitLanguageTests {
 
-    @Test("picker covers WhisperKit's actual language token codes without aliases")
+    @Test("picker maps output preferences onto WhisperKit language token codes")
     func upstreamLanguageCoverage() {
-        let codes = WhisperKitLanguage.allCases.filter { $0 != .auto }.map(\.rawValue)
+        let codes = WhisperKitLanguage.allCases.filter { $0 != .auto && $0 != .chineseTraditional }.map(\.rawValue)
         #expect(Set(codes) == Constants.languageCodes)
         #expect(Set(codes).count == codes.count)
     }
@@ -1071,7 +1086,7 @@ struct WhisperKitLanguageTests {
         let persisted = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
         #expect(persisted.resolvedWhisperLanguage == language)
         let options = WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "large-v3-v20240930_626MB")
-        #expect(options.language == language.rawValue)
+        #expect(options.language == language.decoderCode)
         #expect(!options.detectLanguage)
         #expect(WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "small.en").language == nil)
     }
@@ -1089,7 +1104,7 @@ struct WhisperKitLanguageTests {
         if model == "small.en" {
             #expect(WhisperKitLanguage.choices(for: model) == [.auto])
         } else {
-            #expect(WhisperKitLanguage.choices(for: model).count == (supported ? 101 : 100))
+            #expect(WhisperKitLanguage.choices(for: model).count == (supported ? 102 : 101))
             #expect(WhisperKitLanguage.choices(for: model).contains(.ukrainian))
             #expect(WhisperKitLanguage.choices(for: model).contains(.tamil))
         }

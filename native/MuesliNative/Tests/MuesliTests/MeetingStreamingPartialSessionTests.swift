@@ -7,6 +7,149 @@ import Testing
 
 @Suite("Meeting streaming partial session")
 struct MeetingStreamingPartialSessionTests {
+    @Test("Traditional live meeting chunks display converted copies and retain raw text")
+    func traditionalLiveChunkDisplayCopy() {
+        let raw = [
+            SpeechSegment(start: 1, end: 2, text: "头"),
+            SpeechSegment(start: 2, end: 3, text: "发"),
+        ]
+
+        let display = MeetingSession.liveDisplaySegments(raw, language: "zh-TW")
+
+        #expect(display.map(\.text) == ["頭", "髮"])
+        #expect(raw.map(\.text) == ["头", "发"])
+        #expect(display.map(\.start) == [1, 2])
+        #expect(display.map(\.end) == [2, 3])
+    }
+
+    @Test("Nemotron captions remain previews while Apple Speech supplies native final text")
+    func nativeStreamingFinalTranscriptSelection() {
+        #expect(MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: true,
+            backend: .appleSpeech,
+            outputLanguage: "zh-TW",
+            hasBatchSegments: false
+        ))
+        #expect(!MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: true,
+            backend: .nemotron35,
+            outputLanguage: "zh-TW",
+            hasBatchSegments: false
+        ))
+        #expect(MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: true,
+            backend: .nemotron35,
+            outputLanguage: "zh",
+            hasBatchSegments: false
+        ))
+        #expect(!MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: false,
+            backend: .appleSpeech,
+            outputLanguage: "zh-TW",
+            hasBatchSegments: false
+        ))
+    }
+
+    @Test("Nemotron Traditional language governs streaming selection and final conversion")
+    func nemotronTraditionalLiveCaptionLanguage() {
+        let outputLanguage = MeetingSession.outputLanguageForLiveCaptions(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .nemotron35,
+            nemotronLanguage: .chineseTraditional,
+            transcriptionOutputLanguage: nil
+        )
+
+        #expect(outputLanguage == "zh-TW")
+        #expect(!MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: true,
+            backend: .nemotron35,
+            outputLanguage: outputLanguage,
+            hasBatchSegments: false
+        ))
+        #expect(SpeechTranscriptionResult(text: "头发", segments: []).convertingChineseOutput(language: outputLanguage).text == "頭髮")
+    }
+
+    @Test("Other live-caption backends retain the transcription language")
+    func otherLiveCaptionBackendOutputLanguage() {
+        #expect(MeetingSession.outputLanguageForLiveCaptions(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .parakeetRealtimeEOU,
+            nemotronLanguage: .chineseTraditional,
+            transcriptionOutputLanguage: "zh-TW"
+        ) == "zh-TW")
+        #expect(MeetingSession.outputLanguageForLiveCaptions(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .appleSpeech,
+            nemotronLanguage: .chineseTraditional,
+            transcriptionOutputLanguage: nil
+        ) == nil)
+    }
+
+    @Test("Disabled Nemotron captions retain the transcription language")
+    func disabledNemotronCaptionsRetainTranscriptionLanguage() {
+        #expect(MeetingSession.outputLanguageForLiveCaptions(
+            liveCaptionsEnabled: false,
+            liveCaptionBackend: .nemotron35,
+            nemotronLanguage: .auto,
+            transcriptionOutputLanguage: "zh-TW"
+        ) == "zh-TW")
+    }
+
+    @Test("Traditional transcription output survives a non-Traditional Nemotron preview")
+    func traditionalTranscriberLanguageWinsForFinalTranscript() {
+        let outputLanguage = MeetingSession.outputLanguageForFinalTranscript(
+            transcriptionOutputLanguage: "zh-TW",
+            liveCaptionOutputLanguage: "auto"
+        )
+
+        #expect(outputLanguage == "zh-TW")
+        #expect(!MeetingSession.shouldUseStreamingTextAsFinal(
+            enabled: true,
+            backend: .nemotron35,
+            outputLanguage: outputLanguage,
+            hasBatchSegments: false
+        ))
+        #expect(ChineseTranscriptionOutput.apply("头发", language: outputLanguage) == "頭髮")
+    }
+
+    @Test("Traditional Nemotron language supplies final conversion when no transcription language exists")
+    func traditionalCaptionLanguageIsFinalFallback() {
+        #expect(MeetingSession.outputLanguageForFinalTranscript(
+            transcriptionOutputLanguage: nil,
+            liveCaptionOutputLanguage: "zh-TW"
+        ) == "zh-TW")
+        #expect(MeetingSession.outputLanguageForFinalTranscript(
+            transcriptionOutputLanguage: "zh",
+            liveCaptionOutputLanguage: "auto"
+        ) == "zh")
+    }
+
+    @Test("a unified live caption model supplies the batch finalization backend")
+    func unifiedCaptionBackendSuppliesFinalTranscription() {
+        let fallback = BackendOption.whisperSmallEnglish
+
+        #expect(MeetingSession.transcriptBackend(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .nemotron35,
+            fallbackBackend: fallback
+        ) == .nemotron35Multilingual)
+        #expect(MeetingSession.transcriptBackend(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .appleSpeech,
+            fallbackBackend: fallback
+        ) == .appleSpeechAnalyzer)
+        #expect(MeetingSession.transcriptBackend(
+            liveCaptionsEnabled: true,
+            liveCaptionBackend: .parakeetRealtimeEOU,
+            fallbackBackend: fallback
+        ) == fallback)
+        #expect(MeetingSession.transcriptBackend(
+            liveCaptionsEnabled: false,
+            liveCaptionBackend: .nemotron35,
+            fallbackBackend: fallback
+        ) == fallback)
+    }
+
     @Test("successful streaming text and silence never invoke recorded-audio transcription")
     func streamingSuccessSkipsBatch() async {
         let timing = MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 16_000)

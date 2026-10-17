@@ -31,6 +31,195 @@ struct SpeechTranscriptionResultTests {
         #expect(result.segments.count == 2)
     }
 
+    @Test("Traditional output preserves native glyphs and converts mixed ASR phrases")
+    func traditionalChineseOutput() {
+        for (input, expected) in [
+            ("头发发展，后台软件，干杯。", "頭髮發展，後台軟件，乾杯。"),
+            ("頭发", "頭髮"), ("头髮", "頭髮"), ("發展软件", "發展軟件"),
+            ("剃髮", "剃髮"), ("他們了解這件事", "他們了解這件事"),
+            ("Hello, world. 日本語の発表です。", "Hello, world. 日本語の発表です。"),
+            ("  开会\nOK ✅", "  開會\nOK ✅"), ("", ""),
+        ] {
+            let output = ChineseTranscriptionOutput.apply(input, language: "zh-TW")
+            #expect(output == expected)
+            #expect(ChineseTranscriptionOutput.apply(output, language: "zh-TW") == output)
+        }
+    }
+
+    @Test("mixed Han probes preserve native Traditional glyphs across a contextual run")
+    func mixedHanRunPreservesTraditionalGlyphs() {
+        #expect(ChineseTranscriptionOutput.apply("了解头发", language: "zh-TW") == "了解頭髮")
+        #expect(ChineseTranscriptionOutput.apply("頭发剃髮發展软件", language: "zh-TW") == "頭髮剃髮發展軟件")
+        #expect(ChineseTranscriptionOutput.apply("他們了解這件事头发剃髮", language: "zh-TW") == "他們了解這件事頭髮剃髮")
+    }
+
+    @Test("output conversion is opt-in for every generated Unicode string")
+    func otherLanguagesAreIdentity() {
+        // Deterministic generated coverage across the Unicode scalar domain; no new dependency.
+        var seed: UInt64 = 0x17_10_2026
+        for _ in 0..<256 {
+            var input = ""
+            for _ in 0..<32 {
+                seed = seed &* 6364136223846793005 &+ 1
+                if let scalar = Unicode.Scalar(UInt32(seed % 0x110000)) { input.unicodeScalars.append(scalar) }
+            }
+            let codes: [String?] = [nil, "auto", "zh", "en", "ja", "zh-CN"]
+            for code in codes {
+                #expect(ChineseTranscriptionOutput.apply(input, language: code) == input)
+            }
+        }
+    }
+
+    @Test("foreign words do not disable conversion of separate Chinese phrases")
+    func mixedChineseAndForeignWords() {
+        for suffix in ["カ", "한글", "日本語の発表です", "👩🏽‍💻", "e\u{301}", "\0", "\u{20000}"] {
+            let input = "头发，" + suffix
+            #expect(ChineseTranscriptionOutput.apply(input, language: "zh-TW") == "頭髮，" + suffix)
+        }
+    }
+
+    @Test("Traditional replay joins an adjacent Han boundary without spaces")
+    func joinsHanBoundary() {
+        #expect(ChineseTranscriptionOutput.joinsHanBoundary(previous: "头", next: "发"))
+        #expect(!ChineseTranscriptionOutput.joinsHanBoundary(previous: "Hello", next: "world"))
+        #expect(!ChineseTranscriptionOutput.joinsHanBoundary(previous: "头", next: "かな"))
+    }
+
+    @Test("generated mixed Chinese phrases are stable after one conversion")
+    func generatedChineseIdempotence() {
+        let phrases = ["头发", "頭髮", "發展软件", "後臺", "剃髮", "他們了解這件事", "，", " ", "OK"]
+        var seed: UInt64 = 771
+        for _ in 0..<128 {
+            let input = (0..<12).map { _ in
+                seed = seed &* 6364136223846793005 &+ 1
+                return phrases[Int(seed % UInt64(phrases.count))]
+            }.joined()
+            let once = ChineseTranscriptionOutput.apply(input, language: "zh-TW")
+            #expect(ChineseTranscriptionOutput.apply(once, language: "zh-TW") == once)
+        }
+    }
+
+    @Test("segment partitioning does not change contextual conversion")
+    func allSegmentPartitions() {
+        let text = "头发，頭发 OK ✅"
+        let scalars = Array(text.unicodeScalars)
+        for split in 0...scalars.count {
+            let left = String(String.UnicodeScalarView(scalars[..<split]))
+            let right = String(String.UnicodeScalarView(scalars[split...]))
+            let result = SpeechTranscriptionResult(text: text, segments: [
+                SpeechSegment(start: -0.0, end: 2, text: left),
+                SpeechSegment(start: 2, end: 3, text: right),
+            ]).convertingChineseOutput(language: "zh-TW")
+            #expect(result.segments.map(\.text).joined() == result.text)
+            #expect(result.segments[0].start.bitPattern == (-0.0 as Double).bitPattern)
+        }
+    }
+
+    @Test("Traditional output preserves artifact cleanup spacing and paste spacing")
+    func traditionalFiltersAndSpacing() {
+        let cleaned = FillerWordFilter.apply(TranscriptionEngineArtifactsFilter.apply("头发<|zh|>发展。"))
+        let output = ChineseTranscriptionOutput.apply(cleaned, language: "zh-TW")
+        #expect(cleaned == "头发 发展。")
+        #expect(output == "頭髮 發展。")
+        #expect(DictationPasteSpacing.trailingSeparator(after: output) == "")
+        #expect(ChineseTranscriptionOutput.apply(cleaned, language: "zh") == "头发 发展。")
+    }
+
+    @Test("live-caption conversion work stays bounded as the meeting grows")
+    func captionConversionDoesNotRescanHistory() {
+        var captions = ChineseCaptionOutput(language: "zh-TW")
+        var processed = 0
+        var output = ""
+        let chunk = String(repeating: "开", count: 20)
+        for _ in 0..<500 {
+            output = captions.append(chunk, convert: { text, _ in
+                processed += text.unicodeScalars.count
+                return text
+            })
+        }
+        #expect(output == String(repeating: chunk, count: 500))
+        #expect(processed < 16 * output.unicodeScalars.count)
+    }
+
+    @Test("existing caption languages keep their append-only path")
+    func existingCaptionLanguages() {
+        let languages: [String?] = [nil, "auto", "zh", "en"]
+        for language in languages {
+            var captions = ChineseCaptionOutput(language: language)
+            for chunk in ["汉字", " カ", " ✅"] {
+                _ = captions.append(chunk, convert: { text, _ in
+                    Issue.record("Existing caption languages must bypass conversion")
+                    return text
+                })
+            }
+            #expect(captions.append("") == "汉字 カ ✅")
+        }
+    }
+
+    @Test("caption output is independent of generated Unicode append partitions")
+    func generatedCaptionPartitions() {
+        var seed: UInt64 = 649
+        let alphabet = Array("x头髮，✅👩🏽‍💻e\u{301}\u{20000}".unicodeScalars)
+        for _ in 0..<32 {
+            let scalars = (0..<400).map { _ in
+                seed = seed &* 6364136223846793005 &+ 1
+                return alphabet[Int(seed % UInt64(alphabet.count))]
+            }
+            let input = String(String.UnicodeScalarView(scalars))
+            var captions = ChineseCaptionOutput(language: "zh-TW")
+            var output = ""
+            var offset = 0
+            while offset < scalars.count {
+                seed = seed &* 6364136223846793005 &+ 1
+                let end = min(offset + 1 + Int(seed % 73), scalars.count)
+                let chunk = String(String.UnicodeScalarView(scalars[offset..<end]))
+                output = captions.append(chunk, convert: { text, _ in text.replacingOccurrences(of: "x", with: "y") })
+                offset = end
+            }
+            #expect(output == input.replacingOccurrences(of: "x", with: "y"))
+        }
+    }
+
+    @Test("length-changing caption fallback does not duplicate committed context")
+    func captionLengthChangingFallback() {
+        var captions = ChineseCaptionOutput(language: "zh-TW")
+        let prefix = String(repeating: "頭，", count: 200)
+        _ = captions.append(prefix)
+        let expand: (String, String?) -> String = { text, _ in text.replacingOccurrences(of: "x", with: "xx") }
+        #expect(captions.append("x", convert: expand) == prefix + "xx")
+        #expect(captions.append("y✅", convert: expand) == prefix + "xxy✅")
+        #expect(captions.append("x", convert: expand) == prefix + "xxy✅xx")
+    }
+
+    @Test("live-caption window retains cross-update phrase context and resets")
+    func captionConversionContext() {
+        var captions = ChineseCaptionOutput(language: "zh-TW")
+        let prefix = String(repeating: "开会。", count: 100)
+        _ = captions.append(prefix + "头")
+        #expect(captions.append("发，カ") == ChineseTranscriptionOutput.apply(prefix + "头发，カ", language: "zh-TW"))
+        captions.reset()
+        #expect(captions.append("头发") == "頭髮")
+    }
+
+    @Test("Traditional conversion uses context across segments and retains timing")
+    func traditionalSegments() {
+        let result = SpeechTranscriptionResult(text: "头发", segments: [
+            SpeechSegment(start: 1, end: 2, text: "头"),
+            SpeechSegment(start: 2, end: 3, text: "发"),
+        ]).convertingChineseOutput(language: "zh-TW")
+        #expect(result.text == "頭髮")
+        #expect(result.segments.map(\.text) == ["頭", "髮"])
+        #expect(result.segments.map(\.start) == [1, 2])
+        #expect(result.segments.map(\.end) == [2, 3])
+
+        let repairedBoundary = SpeechTranscriptionResult(text: "发型", segments: [
+            SpeechSegment(start: 3, end: 4, text: "发"),
+            SpeechSegment(start: 4, end: 5, text: "型"),
+        ]).convertingChineseOutput(language: "zh-TW")
+        #expect(repairedBoundary.text == "髮型")
+        #expect(repairedBoundary.segments.map(\.text) == ["髮", "型"])
+    }
+
     @Test("empty result")
     func emptyResult() {
         let result = SpeechTranscriptionResult(text: "", segments: [])
@@ -94,6 +283,34 @@ struct TranscriptionCoordinatorTests {
         var backends = Set(BackendOption.all.map(\.backend))
         backends.insert(BackendOption.appleSpeechAnalyzer.backend)
         #expect(backends == TranscriptionCoordinator.explicitlyRoutedBackendIdentifiers.union(["fluidaudio"]))
+    }
+
+    @Test("Chinese output conversion uses the request language selection")
+    func chineseOutputLanguageUsesExplicitSelections() {
+        let qwen = BackendOption.all.first { $0.backend == "qwen" }!
+        let nemotron = BackendOption.all.first { $0.backend == "nemotron35" }!
+
+        #expect(TranscriptionCoordinator.chineseOutputLanguage(
+            backend: qwen,
+            whisper: .defaultLanguage,
+            qwen: .chineseTraditional,
+            cohere: .defaultLanguage,
+            nemotron: .chinese
+        ) == "zh-TW")
+        #expect(TranscriptionCoordinator.chineseOutputLanguage(
+            backend: nemotron,
+            whisper: .defaultLanguage,
+            qwen: .auto,
+            cohere: .defaultLanguage,
+            nemotron: .chineseTraditional
+        ) == "zh-TW")
+        #expect(TranscriptionCoordinator.chineseOutputLanguage(
+            backend: nemotron,
+            whisper: .defaultLanguage,
+            qwen: .auto,
+            cohere: .defaultLanguage,
+            nemotron: .chinese
+        ) == "zh")
     }
 
     @Test("Apple Speech cleanup waits for an active use")

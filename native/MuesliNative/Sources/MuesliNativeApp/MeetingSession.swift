@@ -371,7 +371,27 @@ final class MeetingSession {
     }
 
     private func currentBackend() -> BackendOption {
-        backendLock.withLock { $0 }
+        Self.transcriptBackend(
+            liveCaptionsEnabled: config.enableLiveStreamingPartials,
+            liveCaptionBackend: config.resolvedMeetingLiveCaptionBackend,
+            fallbackBackend: backendLock.withLock { $0 }
+        )
+    }
+
+    static func transcriptBackend(
+        liveCaptionsEnabled: Bool,
+        liveCaptionBackend: MeetingLiveCaptionBackend,
+        fallbackBackend: BackendOption
+    ) -> BackendOption {
+        guard liveCaptionsEnabled else { return fallbackBackend }
+        switch liveCaptionBackend {
+        case .appleSpeech:
+            return .appleSpeechAnalyzer
+        case .nemotron35:
+            return .nemotron35Multilingual
+        case .parakeetRealtimeEOU:
+            return fallbackBackend
+        }
     }
 
     func start() async throws {
@@ -435,7 +455,7 @@ final class MeetingSession {
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
-                    nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
+                    nemotronLanguage: self.config.resolvedNemotron35Language,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
@@ -509,11 +529,63 @@ final class MeetingSession {
     ) async -> [SpeechSegment] {
         // Apple chunks already chose their authoritative result before any batch work.
         guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech else { return segments }
-        let prefersStreamingTranscript = config.enableLiveStreamingPartials
-            && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
-        guard (segments.isEmpty || prefersStreamingTranscript),
+        guard Self.shouldUseStreamingTextAsFinal(
+            enabled: config.enableLiveStreamingPartials,
+            backend: config.resolvedMeetingLiveCaptionBackend,
+            outputLanguage: finalTranscriptOutputLanguage(),
+            hasBatchSegments: !segments.isEmpty
+        ),
               let text = await partialSession?.finalizedSegmentText(id: segmentID) else { return segments }
         return [SpeechSegment(start: start, end: max(end, start + 0.1), text: text)]
+    }
+
+    private func currentChineseOutputLanguage() -> String? {
+        TranscriptionCoordinator.chineseOutputLanguage(
+            backend: currentBackend(),
+            whisper: config.resolvedWhisperLanguage,
+            qwen: config.resolvedQwen3AsrLanguage,
+            cohere: config.resolvedCohereLanguage,
+            nemotron: config.resolvedNemotron35Language
+        )
+    }
+
+    private func liveCaptionOutputLanguage() -> String? {
+        Self.outputLanguageForLiveCaptions(
+            liveCaptionsEnabled: config.enableLiveStreamingPartials,
+            liveCaptionBackend: config.resolvedMeetingLiveCaptionBackend,
+            nemotronLanguage: config.resolvedNemotron35Language,
+            transcriptionOutputLanguage: currentChineseOutputLanguage()
+        )
+    }
+
+    private func finalTranscriptOutputLanguage() -> String? {
+        Self.outputLanguageForFinalTranscript(
+            transcriptionOutputLanguage: currentChineseOutputLanguage(),
+            liveCaptionOutputLanguage: liveCaptionOutputLanguage()
+        )
+    }
+
+    static func outputLanguageForFinalTranscript(
+        transcriptionOutputLanguage: String?,
+        liveCaptionOutputLanguage: String?
+    ) -> String? {
+        if ChineseTranscriptionOutput.isTraditional(transcriptionOutputLanguage) {
+            return transcriptionOutputLanguage
+        }
+        if ChineseTranscriptionOutput.isTraditional(liveCaptionOutputLanguage) {
+            return liveCaptionOutputLanguage
+        }
+        return transcriptionOutputLanguage ?? liveCaptionOutputLanguage
+    }
+
+    static func outputLanguageForLiveCaptions(
+        liveCaptionsEnabled: Bool,
+        liveCaptionBackend: MeetingLiveCaptionBackend,
+        nemotronLanguage: Nemotron35Language,
+        transcriptionOutputLanguage: String?
+    ) -> String? {
+        guard liveCaptionsEnabled, liveCaptionBackend == .nemotron35 else { return transcriptionOutputLanguage }
+        return nemotronLanguage.rawValue
     }
 
     private func appleStreamingText(session: MeetingStreamingPartialSession?, id: UUID) async -> String? {
@@ -532,6 +604,27 @@ final class MeetingSession {
         if let text = await finalizedText() { return segmentsFromFinalizedText(text, timing: timing) }
         guard !Task.isCancelled else { return [] }
         return await recordedAudio()
+    }
+
+    static func liveDisplaySegments(_ segments: [SpeechSegment], language: String?) -> [SpeechSegment] {
+        SpeechTranscriptionResult(
+            text: segments.map(\.text).joined(),
+            segments: segments
+        ).convertingChineseOutput(language: language).segments
+    }
+
+    static func shouldUseStreamingTextAsFinal(
+        enabled: Bool,
+        backend: MeetingLiveCaptionBackend,
+        outputLanguage: String?,
+        hasBatchSegments: Bool
+    ) -> Bool {
+        guard enabled else { return false }
+        if backend == .nemotron35 && ChineseTranscriptionOutput.isTraditional(outputLanguage) {
+            // Nemotron's bounded captions are display previews; saved output must retain raw Han context.
+            return false
+        }
+        return backend.producesFinalTranscript || !hasBatchSegments
     }
 
     static func segmentsFromFinalizedText(_ text: String, timing: MeetingChunkTimingSnapshot) -> [SpeechSegment] {
@@ -700,8 +793,12 @@ final class MeetingSession {
         let stoppedCapture = await shutdown.value
         var micSegments: [SpeechSegment] = []
         var systemSegments: [SpeechSegment] = []
-        let usesStreamingFinalTranscript = config.enableLiveStreamingPartials
-            && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
+        let usesStreamingFinalTranscript = Self.shouldUseStreamingTextAsFinal(
+            enabled: config.enableLiveStreamingPartials,
+            backend: config.resolvedMeetingLiveCaptionBackend,
+            outputLanguage: finalTranscriptOutputLanguage(),
+            hasBatchSegments: true
+        )
 
         // Stop VAD controller
         if !usesStreamingFinalTranscript {
@@ -800,6 +897,8 @@ final class MeetingSession {
                         bodhanLanguage: config.resolvedBodhanLanguage,
                         bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
+                        qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                        nemotronLanguage: config.resolvedNemotron35Language,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
@@ -890,11 +989,16 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
-        let rawTranscript = TranscriptFormatter.merge(
-            micSegments: protectedTranscriptInputs.micSegments,
-            systemSegments: protectedTranscriptInputs.systemSegments,
-            diarizationSegments: protectedTranscriptInputs.diarizationSegments,
-            meetingStart: meetingStart
+        let outputLanguage = finalTranscriptOutputLanguage()
+        let rawTranscript = ChineseTranscriptionOutput.apply(
+            TranscriptFormatter.merge(
+                micSegments: protectedTranscriptInputs.micSegments,
+                systemSegments: protectedTranscriptInputs.systemSegments,
+                diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+                meetingStart: meetingStart,
+                outputLanguage: outputLanguage
+            ),
+            language: outputLanguage
         )
 
         let titleManualNotes = await manualNotesProvider?()
@@ -1073,7 +1177,11 @@ final class MeetingSession {
                 guard self.micChunkCollector.retire(id: retireID, segments: resolvedSegments) else { return }
                 self.commitMicPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
-                self.onChunkTranscribed?(resolvedSegments, "You")
+                let displaySegments = Self.liveDisplaySegments(
+                    resolvedSegments,
+                    language: self.finalTranscriptOutputLanguage()
+                )
+                self.onChunkTranscribed?(displaySegments, "You")
             }
         } else {
             task.cancel()
@@ -1126,6 +1234,8 @@ final class MeetingSession {
                         bodhanLanguage: config.resolvedBodhanLanguage,
                         bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
+                        qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                        nemotronLanguage: config.resolvedNemotron35Language,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
@@ -1166,7 +1276,11 @@ final class MeetingSession {
                 guard self.systemChunkCollector.retire(id: retireID, segments: resolvedSegments) else { return }
                 self.commitSystemPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
-                self.onChunkTranscribed?(resolvedSegments, "Others")
+                let displaySegments = Self.liveDisplaySegments(
+                    resolvedSegments,
+                    language: self.finalTranscriptOutputLanguage()
+                )
+                self.onChunkTranscribed?(displaySegments, "Others")
             }
         } else {
             task.cancel()
@@ -1344,6 +1458,8 @@ final class MeetingSession {
                 bodhanLanguage: config.resolvedBodhanLanguage,
                 bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
+                qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                nemotronLanguage: config.resolvedNemotron35Language,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
@@ -1456,6 +1572,8 @@ final class MeetingSession {
                         bodhanLanguage: config.resolvedBodhanLanguage,
                         bodhanOutputMode: config.resolvedBodhanOutputMode,
                         whisperLanguage: config.resolvedWhisperLanguage,
+                        qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                        nemotronLanguage: config.resolvedNemotron35Language,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
@@ -1492,6 +1610,8 @@ final class MeetingSession {
                 bodhanLanguage: config.resolvedBodhanLanguage,
                 bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage,
+                qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                nemotronLanguage: config.resolvedNemotron35Language,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
