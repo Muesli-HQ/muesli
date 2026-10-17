@@ -10370,12 +10370,13 @@ public final class MuesliController: NSObject {
 
     /// Explicit dev-lane replay bypasses only transcription. It shares the same
     /// runtime, Stop control, permission checks and persisted trace as voice input.
-    func replayComputerUseCommandForDevelopment(_ command: String) {
+    @discardableResult
+    func replayComputerUseCommandForDevelopment(_ command: String) -> Task<Void, Never>? {
         guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
               canPrepareComputerUseCommand, config.computerUseBackgroundMode,
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fputs("[cua] replay refused: requires an idle dev lane with background mode enabled\n", stderr)
-            return
+            return nil
         }
         // The shared command handler checks screen access only after settings routing.
         let taskID = UUID()
@@ -10387,6 +10388,7 @@ public final class MuesliController: NSObject {
         computerUseCommandTask = Task { [weak self] in
             await self?.handleComputerUseCommand(transcript: command, dictationID: dictationID, taskID: taskID)
         }
+        return computerUseCommandTask
     }
 
     @MainActor

@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                CommandLine.arguments.contains("--trycua-probe-only"),
                let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
                CommandLine.arguments.indices.contains(index + 1) {
-                let reference = ComputerUseReferenceDriver()
+                let reference = ComputerUseReferenceDriver.shared
                 referenceDriver = reference
                 let executable = CommandLine.arguments[index + 1]
                 referenceStartup = Task { @MainActor in
@@ -68,7 +68,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                data.count <= 16_384, let command = String(data: data, encoding: .utf8) {
                 Task { @MainActor [weak controller] in
                     try? await Task.sleep(for: .seconds(2))
-                    controller?.replayComputerUseCommandForDevelopment(command.trimmingCharacters(in: .whitespacesAndNewlines))
+                    let repeatIndex = CommandLine.arguments.firstIndex(of: "--computer-use-command-repeat")
+                    let repetitions = repeatIndex.flatMap { index in
+                        CommandLine.arguments.indices.contains(index + 1) ? Int(CommandLine.arguments[index + 1]) : nil
+                    } ?? 1
+                    for _ in 0..<min(5, max(1, repetitions)) {
+                        guard !Task.isCancelled,
+                              let replay = controller?.replayComputerUseCommandForDevelopment(command.trimmingCharacters(in: .whitespacesAndNewlines)) else { break }
+                        await replay.value
+                        if replay.isCancelled { break }
+                    }
                 }
             }
             NSApplication.shared.registerForRemoteNotifications()
@@ -111,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         terminationTask = Task { @MainActor [weak self] in
             self?.referenceStartup?.cancel()
             await self?.referenceStartup?.value
-            await self?.referenceDriver?.stop()
+            await ComputerUseReferenceDriver.shared.shutdown()
             await controller.shutdown()
             self?.terminationTask = nil
             sender.reply(toApplicationShouldTerminate: true)

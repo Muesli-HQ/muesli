@@ -5,6 +5,31 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Persistent reference host isolates command ownership and rejects stale release")
+    func referenceCommandOwnership() throws {
+        let driver = ComputerUseReferenceDriver()
+        let first = try driver.claimCommand()
+        #expect(throws: (any Error).self) { try driver.claimCommand() }
+        driver.releaseCommand(UUID())
+        #expect(throws: (any Error).self) { try driver.claimCommand() }
+        driver.releaseCommand(first)
+        let second = try driver.claimCommand()
+        #expect(first != second)
+        driver.releaseCommand(first)
+        #expect(throws: (any Error).self) { try driver.claimCommand() }
+        driver.releaseCommand(second)
+    }
+
+    @Test("Reference task session overrides model session aliases without changing targets")
+    func referenceTaskSessionIsolation() {
+        let scoped = ComputerUseReferenceDriver.scopedArguments(
+            ["session": "previous-task", "_session_id": "forged", "pid": 12, "window_id": 34], session: "current-task")
+        #expect(scoped["session"] as? String == "current-task")
+        #expect(scoped["_session_id"] == nil)
+        #expect(scoped["pid"] as? Int == 12)
+        #expect(scoped["window_id"] as? Int == 34)
+    }
+
     @Test("Reference comparison rejects foreground delivery before dispatch")
     func referenceBackgroundDelivery() {
         #expect(ComputerUseReferenceRuntime.permitsBackgroundDelivery([:]))
