@@ -50,8 +50,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var text: String
     public var speakerTranscript: String?
     public var summaryText: String?
-    /// Whether a meeting summary corresponds to the synchronized transcript.
-    /// Nil means the source predates explicit freshness tracking.
+    /// Whether the sender considers the meeting summary current for this transcript.
+    /// Nil means the sending client predates this signal or could not determine freshness.
     public var summaryIsCurrent: Bool?
     public var manualNotes: String?
     public var source: String?

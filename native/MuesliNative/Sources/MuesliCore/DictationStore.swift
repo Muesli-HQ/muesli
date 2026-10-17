@@ -4615,7 +4615,19 @@ public final class DictationStore {
 
     @discardableResult
     public func upsertSyncedTextRecords(_ records: [SyncTextRecord]) throws -> [SyncTextRecord] {
-        guard !records.isEmpty else { return [] }
+        try upsertSyncedTextRecordsTrackingMeetingSummaryFreshness(records).appliedRecords
+    }
+
+    /// Applies remote text records and reports only meetings whose summary stale state changed.
+    @discardableResult
+    public func upsertSyncedTextRecordsTrackingMeetingSummaryFreshness(
+        _ records: [SyncTextRecord]
+    ) throws -> (
+        appliedRecords: [SyncTextRecord],
+        freshnessChangedMeetingIDs: Set<Int64>,
+        deletedMeetingIDs: Set<Int64>
+    ) {
+        guard !records.isEmpty else { return ([], [], []) }
 
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -4623,8 +4635,13 @@ public final class DictationStore {
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
         do {
             var applied: [SyncTextRecord] = []
+            var freshnessChangedMeetingIDs = Set<Int64>()
+            var deletedMeetingIDs = Set<Int64>()
             var sawMeeting = false
             for record in records {
+                let freshnessBefore = record.kind == .meeting
+                    ? try meetingSummaryFreshnessState(recordName: record.id, db: db)
+                    : nil
                 let changed: Bool
                 switch record.kind {
                 case .dictation:
@@ -4636,12 +4653,24 @@ public final class DictationStore {
                 if changed {
                     applied.append(record)
                 }
+                if record.kind == .meeting {
+                    let freshnessAfter = try meetingSummaryFreshnessState(recordName: record.id, db: db)
+                    if (freshnessBefore?.isStale ?? false) != (freshnessAfter?.isStale ?? false),
+                       let meetingID = freshnessAfter?.meetingID ?? freshnessBefore?.meetingID {
+                        freshnessChangedMeetingIDs.insert(meetingID)
+                    }
+                    if record.isDeleted,
+                       freshnessAfter?.isDeleted == true,
+                       let meetingID = freshnessAfter?.meetingID ?? freshnessBefore?.meetingID {
+                        deletedMeetingIDs.insert(meetingID)
+                    }
+                }
             }
             if sawMeeting {
                 try reconcileFollowUpLinks(db: db)
             }
             try exec("COMMIT", db: db)
-            return applied
+            return (applied, freshnessChangedMeetingIDs, deletedMeetingIDs)
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
@@ -5248,6 +5277,7 @@ public final class DictationStore {
         let start = record.startedAt ?? record.createdAt
         let end = record.endedAt ?? start.addingTimeInterval(record.durationSeconds)
         let followUpRecordName = normalizedFollowUpRecordName(record.followUpToRecordName, recordName: record.id)
+        let rawTranscript = record.speakerTranscript ?? record.text
         let sql = """
         INSERT INTO meetings (
             title, calendar_event_id, start_time, end_time, duration_seconds,
@@ -5291,7 +5321,6 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (formatISODate(start) as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, (formatISODate(end) as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 4, record.durationSeconds)
-        let rawTranscript = record.speakerTranscript ?? record.text
         sqlite3_bind_text(statement, 5, (rawTranscript as NSString).utf8String, -1, nil)
         bindOptionalText(record.summaryText, at: 6, statement: statement)
         let meetingStatus = record.meetingStatus ?? .completed
@@ -5337,13 +5366,19 @@ public final class DictationStore {
 
     private func setMeetingSummaryFreshness(_ isCurrent: Bool, recordName: String, db: OpaquePointer?) throws {
         guard let meetingID = try localMeetingID(recordName: recordName, db: db) else { return }
+        try setMeetingSummaryFreshness(isCurrent, meetingID: meetingID, db: db)
+    }
+
+    private func setMeetingSummaryFreshness(_ isCurrent: Bool, meetingID: Int64, db: OpaquePointer?) throws {
         _ = try speakerRows(
             """
             INSERT INTO local_meeting_transcript_versions(meeting_id, generation, summary_stale)
-            VALUES (?, 0, ?)
+            SELECT m.id, COALESCE(v.generation, 0), ?
+            FROM meetings m LEFT JOIN local_meeting_transcript_versions v ON v.meeting_id = m.id
+            WHERE m.id = ? AND m.deleted_at IS NULL
             ON CONFLICT(meeting_id) DO UPDATE SET summary_stale = excluded.summary_stale
             """,
-            [String(meetingID), isCurrent ? "0" : "1"],
+            [isCurrent ? "0" : "1", String(meetingID)],
             db: db
         )
     }
@@ -5360,6 +5395,33 @@ public final class DictationStore {
         if step == SQLITE_DONE { return nil }
         guard step == SQLITE_ROW else { throw lastError(db) }
         return sqlite3_column_int64(statement, 0)
+    }
+
+    private func meetingSummaryFreshnessState(
+        recordName: String,
+        db: OpaquePointer?
+    ) throws -> (meetingID: Int64, isStale: Bool, isDeleted: Bool)? {
+        let sql = """
+        SELECT m.id, COALESCE(v.summary_stale, 0), m.deleted_at
+        FROM meetings m
+        LEFT JOIN local_meeting_transcript_versions v ON v.meeting_id = m.id
+        WHERE m.cloud_record_name = ?
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
+        let step = sqlite3_step(statement)
+        if step == SQLITE_DONE { return nil }
+        guard step == SQLITE_ROW else { throw lastError(db) }
+        return (
+            meetingID: sqlite3_column_int64(statement, 0),
+            isStale: sqlite3_column_int(statement, 1) != 0,
+            isDeleted: sqlite3_column_type(statement, 2) != SQLITE_NULL
+        )
     }
 
     private func makeDictationRecord(_ statement: OpaquePointer?) -> DictationRecord {
@@ -5867,12 +5929,17 @@ extension DictationStore {
         return try speakerRows("SELECT summary_stale FROM local_meeting_transcript_versions WHERE meeting_id = ?", [String(id)], db: db).first?.first == "1"
     }
 
-    /// Only a successful summary for this exact transcript may clear the stale indication.
-    public func markMeetingSummaryCurrent(id: Int64, expected: MeetingTranscriptVersion) throws {
+    /// Persists summary freshness for this exact transcript, including a first summary
+    /// that failed before a transcript-version row existed.
+    public func setMeetingSummaryFreshness(
+        id: Int64,
+        expected: MeetingTranscriptVersion,
+        isCurrent: Bool
+    ) throws {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
         if try speakerTranscriptVersion(id: id, db: db) == expected {
-            _ = try speakerRows("UPDATE local_meeting_transcript_versions SET summary_stale = 0 WHERE meeting_id = ?", [String(id)], db: db)
+            try setMeetingSummaryFreshness(isCurrent, meetingID: id, db: db)
         }
         try exec("COMMIT", db: db)
     }
@@ -5882,16 +5949,14 @@ extension DictationStore {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
         guard try speakerTranscriptVersion(id: id, db: db) == expected else { return }
-        _ = try speakerRows(
-            """
-            INSERT INTO local_meeting_transcript_versions(meeting_id, generation, summary_stale)
-            VALUES (?, ?, 1)
-            ON CONFLICT(meeting_id) DO UPDATE SET summary_stale = 1
-            """,
-            [String(id), String(expected.generation)],
-            db: db
-        )
+        // The expected-version check and write are atomic; the shared setter also filters tombstones.
+        try setMeetingSummaryFreshness(false, meetingID: id, db: db)
         try exec("COMMIT", db: db)
+    }
+
+    /// Only a successful summary for this exact transcript may clear the stale indication.
+    public func markMeetingSummaryCurrent(id: Int64, expected: MeetingTranscriptVersion) throws {
+        try setMeetingSummaryFreshness(id: id, expected: expected, isCurrent: true)
     }
 
     public func installMeetingSpeakerState(id: Int64, state: MeetingSpeakerState, expected: MeetingTranscriptVersion) throws -> MeetingSpeakerWriteResult {
@@ -5901,6 +5966,17 @@ extension DictationStore {
         guard state.isValid, state.revision == 0, MeetingSpeakerState.digest(state.render()) == expected.digest else { return .invalidated }
         let priorEpoch = try speakerRows("SELECT epoch FROM local_meeting_speaker_state WHERE meeting_id = ?", [String(id)], db: db).first?.first
         guard priorEpoch != state.epoch.uuidString else { return .conflict }
+        try writeSpeakerState(id: id, state: state, version: expected, db: db)
+        try exec("COMMIT", db: db)
+        return .updated
+    }
+
+    /// Restores saved identities after a failed retry only while the retry's transcript version is unchanged.
+    public func restoreMeetingSpeakerState(id: Int64, state: MeetingSpeakerState, expected: MeetingTranscriptVersion) throws -> MeetingSpeakerWriteResult {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard try speakerTranscriptVersion(id: id, db: db) == expected else { return .invalidated }
+        guard state.isValid, MeetingSpeakerState.digest(state.render()) == expected.digest else { return .invalidated }
         try writeSpeakerState(id: id, state: state, version: expected, db: db)
         try exec("COMMIT", db: db)
         return .updated

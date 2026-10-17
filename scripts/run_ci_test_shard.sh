@@ -21,6 +21,7 @@ case "${shard}" in
       InsightsTests
       DictationStoreTests
       MeetingSpeakerStateTests
+      MeetingSpeakerPaletteTests
       MeetingSpeakerStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests

@@ -21,33 +21,103 @@ struct MeetingChatNavigationTests {
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
-            status: .completed
+            status: .completed,
+            summaryFreshnessRevision: 0
+        )
+        let refreshed = MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 1
         )
 
         #expect(initial == MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
-            status: .completed
+            status: .completed,
+            summaryFreshnessRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Changed transcript",
             notes: "Notes",
-            status: .completed
+            status: .completed,
+            summaryFreshnessRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Changed notes",
-            status: .completed
+            status: .completed,
+            summaryFreshnessRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
-            status: .processing
+            status: .processing,
+            summaryFreshnessRevision: 0
         ))
+        #expect(initial != refreshed)
+    }
+
+    @Test func summaryFreshnessRevisionsAreScopedToChangedMeetings() {
+        let appState = AppState()
+
+        #expect(appState.meetingSummaryFreshnessRevision(for: 1) == 0)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 0)
+
+        appState.noteMeetingSummaryFreshnessChanged(for: [1])
+
+        #expect(appState.meetingSummaryFreshnessRevision(for: 1) == 1)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 0)
+
+        appState.noteMeetingSummaryFreshnessChanged(for: [1, 2])
+
+        #expect(appState.meetingSummaryFreshnessRevision(for: 1) == 2)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 1)
+
+        appState.removeMeetingSummaryFreshnessRevisions(for: [1])
+        #expect(appState.meetingSummaryFreshnessRevision(for: 1) == 0)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 1)
+
+        appState.clearMeetingSummaryFreshnessRevisions()
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 0)
+    }
+
+    @Test func delayedFreshnessNotificationsIgnoreMissingAndDeletedMeetings() {
+        let appState = AppState()
+
+        appState.noteMeetingSummaryFreshnessChanged(
+            for: [1, 2, 3],
+            existingMeetingIDs: [2, 3],
+            deletedMeetingIDs: [3]
+        )
+
+        #expect(appState.meetingSummaryFreshnessRevision(for: 1) == 0)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 2) == 1)
+        #expect(appState.meetingSummaryFreshnessRevision(for: 3) == 0)
+    }
+
+    @Test func selectedMeetingRemainsInFreshnessObservationSetOutsideBrowserRows() {
+        let appState = AppState()
+        appState.selectedMeetingID = 42
+
+        #expect(appState.meetingSummaryFreshnessObservedMeetingIDs() == [42])
+    }
+
+    @Test func unreadSummaryFreshnessDoesNotCarryBetweenMeetings() {
+        var presentation = MeetingSummaryFreshnessPresentationState()
+
+        presentation.update(meetingID: 1, summaryIsStale: true)
+        presentation.update(meetingID: 1, summaryIsStale: nil)
+        #expect(presentation.isStale)
+
+        presentation.update(meetingID: 2, summaryIsStale: nil)
+        #expect(presentation.meetingID == 2)
+        #expect(!presentation.isStale)
     }
 
     @Test func entryUsesSingleMeetingScopeAndReturnPreservesComposer() async throws {
@@ -139,23 +209,40 @@ struct MeetingChatNavigationTests {
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: repeated) == 2)
     }
 
-    @Test func structuredTranscriptLocatorKeepsMultilineTurnsTogether() {
+    @Test func structuredTranscriptCitationUsesTurnIDsAcrossEmbeddedNewlines() {
         let epoch = UUID()
-        let speaker = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "a")
-        let state = MeetingSpeakerState(
-            epoch: epoch,
-            speakers: [.init(key: speaker, rank: 1, fallbackLabel: "Speaker 1")],
-            turns: [
-                .init(speaker: speaker, timestamp: "00:00:01", start: 0, end: 1, text: "A\nB"),
-                .init(speaker: speaker, timestamp: "00:00:02", start: 1, end: 2, text: "C")
-            ]
-        )
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Speaker 1"),
+                       .init(key: second, rank: 2, fallbackLabel: "Speaker 2")],
+            turns: [.init(speaker: first, timestamp: "00:00:01", start: 1, end: 2, text: "A\nB"),
+                    .init(speaker: second, timestamp: "00:00:03", start: 3, end: 4, text: "C")])
         let transcript = state.render()
-        let continuation = (transcript as NSString).range(of: "B")
-        let secondTurn = (transcript as NSString).range(of: "C")
+        let bRange = (transcript as NSString).range(of: "B")
+        let cRange = (transcript as NSString).range(of: "C")
 
-        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: continuation, speakerState: state) == 0)
-        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: secondTurn, speakerState: state) == 1)
+        let turnRanges = MeetingChatDocumentTarget.transcriptMessageRanges(in: transcript, speakerState: state)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(
+            in: transcript,
+            range: bRange,
+            messageRanges: turnRanges
+        ) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(
+            in: transcript,
+            range: cRange,
+            messageRanges: turnRanges
+        ) == 1)
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: bRange, speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: cRange, speakerState: state) == 1)
+    }
+
+    @Test func transcriptCitationWaitsForItsMessageRowToLoad() {
+        let message = TranscriptChatMessage(id: 1, timestamp: nil, speaker: "Speaker 2", text: "Target passage")
+
+        #expect(MeetingChatDocumentTarget.loadedTranscriptScrollTarget(messages: [], highlightedMessageID: 1) == nil)
+        #expect(MeetingChatDocumentTarget.loadedTranscriptScrollTarget(messages: [message], highlightedMessageID: 1) == 1)
     }
 
     @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() async throws {

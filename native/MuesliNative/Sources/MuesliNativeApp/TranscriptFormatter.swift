@@ -25,7 +25,8 @@ enum TranscriptFormatter {
         micSegments: [SpeechSegment], systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?, meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(),
-        systemChannel: MeetingSpeakerKey.Channel = .system
+        systemChannel: MeetingSpeakerKey.Channel = .system,
+        preserveSegmentBoundaries: Bool = false
     ) -> MeetingSpeakerState {
         var identities: [String: MeetingSpeaker] = [:]
         let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "source")
@@ -66,7 +67,7 @@ enum TranscriptFormatter {
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = consolidate(tagged)
+        let consolidated = consolidate(tagged, preserveSegmentBoundaries: preserveSegmentBoundaries)
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -97,7 +98,10 @@ enum TranscriptFormatter {
     /// so they interleave correctly with other speakers.
     private static let consolidationGapThreshold: TimeInterval = 2.0
 
-    private static func consolidate(_ segments: [TaggedSegment]) -> [TaggedSegment] {
+    private static func consolidate(
+        _ segments: [TaggedSegment],
+        preserveSegmentBoundaries: Bool = false
+    ) -> [TaggedSegment] {
         guard !segments.isEmpty else { return [] }
 
         var result: [TaggedSegment] = []
@@ -110,7 +114,9 @@ enum TranscriptFormatter {
             let gap = max(0, seg.segment.start - currentEnd)
             if seg.speaker == currentSpeaker && gap <= consolidationGapThreshold {
                 // Same speaker, temporally close — accumulate text
-                currentText = appendText(currentText, seg.segment.text, gap: gap)
+                currentText = preserveSegmentBoundaries
+                    ? joinText(currentText, seg.segment.text)
+                    : appendText(currentText, seg.segment.text, gap: gap)
                 currentEnd = max(currentEnd, seg.segment.end)
             } else {
                 // Different speaker or too far apart — emit and start new segment

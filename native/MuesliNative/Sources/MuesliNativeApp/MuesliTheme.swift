@@ -13,13 +13,17 @@ enum MuesliTheme {
         dark: backgroundDeepDarkHex,
         light: backgroundDeepLightHex
     )
-    static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
+    static let backgroundBaseDarkHex = 0x161719
+    static let backgroundBaseLightHex = 0xFFFFFF
+    static let backgroundBase   = Color.adaptive(dark: backgroundBaseDarkHex, light: backgroundBaseLightHex)
     static let backgroundRaised = Color.adaptive(dark: 0x202226, light: 0xF0F0F2)
     static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
 
     // MARK: - Surfaces (interactive elements)
 
-    static let surfacePrimary   = Color.adaptive(dark: 0x262830, light: 0xE5E5EA)
+    static let surfacePrimaryDarkHex = 0x262830
+    static let surfacePrimaryLightHex = 0xE5E5EA
+    static let surfacePrimary   = Color.adaptive(dark: surfacePrimaryDarkHex, light: surfacePrimaryLightHex)
     static let surfaceSelected  = Color.adaptive(dark: 0x2E3340, light: 0xD6DFFE)
     static let surfaceBorder    = Color.adaptiveAlpha(
         dark: .white, darkAlpha: 0.07,
