@@ -190,11 +190,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
-        if recoversFromInputConfigurationChanges {
-            if let error = MuesliAudioGraphPrepareEngine(engine) { throw error }
-        } else {
-            engine.prepare()
-        }
+        if let error = MuesliAudioGraphPrepareEngine(engine) { throw error }
         isGraphPrepared = true
         graphPreparedInputDeviceID = preferredInputDeviceID
         emitLatency("app_scoped_prepare_end")
@@ -261,22 +257,16 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let tapBlock = try makeBufferedTap(format: hwFormat, recordingID: recordingID)
 
         emitLatency("app_scoped_tap_install_begin")
-        if recoversFromInputConfigurationChanges {
-            if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
-                throw tapError
-            }
-        } else {
-            engine.inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil, block: tapBlock)
+        // AVAudioEngine raises NSException (uncatchable from Swift) when the input
+        // format is invalid mid route change, so every graph call goes through the bridge.
+        if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
+            throw tapError
         }
         tapInstalled = true
         emitLatency("app_scoped_tap_install_end")
 
         emitLatency("app_scoped_engine_start_begin")
-        if recoversFromInputConfigurationChanges {
-            if let error = MuesliAudioGraphStartEngine(engine) { throw error }
-        } else {
-            try engine.start()
-        }
+        if let error = MuesliAudioGraphStartEngine(engine) { throw error }
         emitLatency("app_scoped_engine_start_end")
     }
 
@@ -505,15 +495,12 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     var testing_hasActiveRecording: Bool { failureLock.withLock { $0.activeRecordingID != nil } }
 
     private func inputFormatLocked() throws -> AVAudioFormat {
-        if recoversFromInputConfigurationChanges {
-            let state = MuesliAudioGraphReadInputState(engine)
-            if let error = state.error { throw error }
-            guard let format = state.outputFormat else {
-                throw Self.runtimeError(code: 6, message: "Microphone input format is unavailable")
-            }
-            return format
+        let state = MuesliAudioGraphReadInputState(engine)
+        if let error = state.error { throw error }
+        guard let format = state.outputFormat else {
+            throw Self.runtimeError(code: 6, message: "Microphone input format is unavailable")
         }
-        return engine.inputNode.outputFormat(forBus: 0)
+        return format
     }
 
     private var configChangeRestartItem: DispatchWorkItem?
@@ -740,21 +727,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     // rebind (captured during the AirPods Stop Transcribing failure).
     private func removeTapIfNeeded() {
         guard tapInstalled else { return }
-        if recoversFromInputConfigurationChanges {
-            _ = MuesliAudioGraphRemoveInputTap(engine, 0)
-        } else {
-            engine.inputNode.removeTap(onBus: 0)
-        }
+        _ = MuesliAudioGraphRemoveInputTap(engine, 0)
         tapInstalled = false
     }
 
     private func stopEngineSafely() {
         guard let engine = engineStorage else { return }
-        if recoversFromInputConfigurationChanges {
-            _ = MuesliAudioGraphStopEngine(engine)
-        } else {
-            engine.stop()
-        }
+        _ = MuesliAudioGraphStopEngine(engine)
     }
 
     private func isCurrentRecording(_ recordingID: UUID) -> Bool {
