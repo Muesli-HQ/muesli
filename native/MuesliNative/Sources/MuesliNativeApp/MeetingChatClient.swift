@@ -88,7 +88,7 @@ enum MeetingChatClient {
         let prior = promptHistory(history).map { MeetingChatHistory.promptBlock($0) }
         let sources: [[String: String]] = evidence.passages.map {
             ["id": $0.sourceKey, "meeting_id": String($0.meetingID), "title": utf8Prefix($0.title, limit: 300), "date": $0.startDate.ISO8601Format(),
-             "kind": $0.kind.label, "timestamp": $0.timestamp ?? "", "excerpt": $0.excerpt]
+             "kind": $0.kind.label, "timestamp": $0.timestamp ?? "", "excerpt": MeetingSpeakerState.modelFacingTranscript($0.excerpt)]
         }
         let sourceJSON = String(decoding: try JSONSerialization.data(withJSONObject: sources, options: [.sortedKeys]), as: UTF8.self)
         let user = """
