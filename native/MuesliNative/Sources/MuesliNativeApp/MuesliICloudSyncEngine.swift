@@ -1272,6 +1272,11 @@ final class MuesliICloudSyncEngine {
         cloud["meetingStatus"] = record.meetingStatus?.rawValue as NSString?
         cloud["followUpToRecordName"] = record.followUpToRecordName as NSString?
         cloud["engineIdentifier"] = record.engineIdentifier as NSString?
+        if record.kind == .meeting, let summaryIsCurrent = record.summaryIsCurrent {
+            cloud["summaryIsCurrent"] = NSNumber(value: summaryIsCurrent)
+        } else {
+            cloud["summaryIsCurrent"] = nil as NSNumber?
+        }
         cloud["createdAt"] = record.createdAt as NSDate
         cloud["updatedAt"] = record.updatedAt as NSDate
         cloud["startedAt"] = record.startedAt as NSDate?
@@ -1285,6 +1290,7 @@ final class MuesliICloudSyncEngine {
             cloud["text"] = nil as NSString?
             cloud["speakerTranscript"] = nil as NSString?
             cloud["summaryText"] = nil as NSString?
+            cloud["summaryIsCurrent"] = nil as NSNumber?
             cloud["manualNotes"] = nil as NSString?
             cloud["followUpToRecordName"] = nil as NSString?
             return cloud
@@ -1322,6 +1328,7 @@ final class MuesliICloudSyncEngine {
             text: (record["text"] as? String) ?? "",
             speakerTranscript: record["speakerTranscript"] as? String,
             summaryText: record["summaryText"] as? String,
+            summaryIsCurrent: kind == .meeting ? (record["summaryIsCurrent"] as? NSNumber)?.boolValue : nil,
             manualNotes: record["manualNotes"] as? String,
             source: record["source"] as? String,
             localSource: record["localSource"] as? String,
@@ -1597,6 +1604,7 @@ final class MuesliICloudSyncEngine {
             "text",
             "speakerTranscript",
             "summaryText",
+            "summaryIsCurrent",
             "manualNotes",
             "source",
             "localSource",

@@ -13,8 +13,25 @@ struct MeetingChatDocumentTarget {
         let found = ns.range(of: citation.excerpt)
         return found.location == NSNotFound ? nil : found
     }
-    static func transcriptMessageID(in text: String, range: NSRange) -> Int? {
+    static func transcriptMessageID(
+        in text: String,
+        range: NSRange,
+        speakerState: MeetingSpeakerState? = nil
+    ) -> Int? {
         guard range.location >= 0, range.location < (text as NSString).length else { return nil }
+        if let speakerState, speakerState.isValid, speakerState.render() == text {
+            let labels = speakerState.labels
+            var offset = 0
+            for (index, turn) in speakerState.turns.enumerated() {
+                let label = labels[turn.speaker] ?? "Unknown speaker"
+                let rendered = "[\(turn.timestamp)] \(label): \(turn.text)"
+                let length = (rendered as NSString).length
+                if range.location >= offset, range.location < offset + length { return index }
+                offset += length
+                if index < speakerState.turns.count - 1 { offset += 1 }
+            }
+            return nil
+        }
         var nextID = 0
         var result: Int?
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byLines) { line, lineRange, _, _ in

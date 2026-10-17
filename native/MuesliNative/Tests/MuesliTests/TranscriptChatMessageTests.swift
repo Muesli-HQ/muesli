@@ -1,4 +1,6 @@
 import Testing
+import Foundation
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Transcript chat message parsing")
@@ -40,5 +42,25 @@ struct TranscriptChatMessageTests {
         #expect(messages[0].speaker == nil)
         #expect(messages[0].text == "Product: launch timeline changed.")
         #expect(messages[1].text == "This line has no speaker.")
+    }
+}
+
+extension TranscriptChatMessageTests {
+    @Test func structuredMessagesKeepIdentityAndColonNames() {
+        let epoch = UUID()
+        let a = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "a")
+        let b = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "b")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: a, rank: 1, fallbackLabel: "Speaker 1", assignment: .init(name: "Team: Example", provenance: .manual)),
+                       .init(key: b, rank: 2, fallbackLabel: "Speaker 2", assignment: .init(name: "You", provenance: .manual))],
+            turns: [.init(speaker: a, timestamp: "00:00:01", start: 1, end: 2, text: "Product: unchanged"),
+                    .init(speaker: b, timestamp: "00:00:03", start: 3, end: 4, text: "Second")])
+        let messages = TranscriptChatMessage.messages(from: state.render(), speakerState: state)
+        #expect(messages[0].speaker == "Team: Example")
+        #expect(messages[0].text == "Product: unchanged")
+        #expect(messages[0].speakerKey == a)
+        #expect(messages[1].speakerKey == b)
+        #expect(!messages[1].isUser)
+        #expect(TranscriptChatMessage.messages(from: "Edited text", speakerState: state)[0].speakerKey == nil)
     }
 }

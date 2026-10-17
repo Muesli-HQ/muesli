@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Shared disk-backed reader for ASR and diarization. Only one window exists
 /// at a time; the caller must finish inference before requesting the next one.
@@ -199,6 +200,7 @@ enum RecordedTranscriptDiarization {
     struct Outcome: Sendable {
         let transcript: String
         let warning: String?
+        var speakerState: MeetingSpeakerState? = nil
     }
 
     /// Speaker identification enriches a successful ASR result; it must not
@@ -211,11 +213,10 @@ enum RecordedTranscriptDiarization {
         do {
             let segments = try await identify()
             try Task.checkCancellation()
-            let text = AudioFileImportController.formatTranscriptWithSpeakers(
+            let result = AudioFileImportController.structuredTranscriptWithSpeakers(
                 transcription: transcription, diarizationSegments: segments,
-                meetingStart: AudioFileImportController.importedTranscriptTimelineStart()
-            )
-            return Outcome(transcript: text, warning: nil)
+                meetingStart: AudioFileImportController.importedTranscriptTimelineStart())
+            return Outcome(transcript: result.transcript, warning: nil, speakerState: result.speakerState)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
