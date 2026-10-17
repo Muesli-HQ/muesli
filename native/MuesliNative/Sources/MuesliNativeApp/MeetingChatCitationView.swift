@@ -13,17 +13,66 @@ struct MeetingChatDocumentTarget {
         let found = ns.range(of: citation.excerpt)
         return found.location == NSNotFound ? nil : found
     }
-    static func transcriptMessageID(in text: String, range: NSRange) -> Int? {
-        guard range.location >= 0, range.location < (text as NSString).length else { return nil }
-        var nextID = 0
-        var result: Int?
+    static func transcriptMessageID(in text: String, range: NSRange, speakerState: MeetingSpeakerState? = nil) -> Int? {
+        let messageRanges = transcriptMessageRanges(in: text, speakerState: speakerState)
+        return transcriptMessageID(in: text, range: range, messageRanges: messageRanges)
+    }
+
+    static func transcriptMessageRanges(
+        in text: String,
+        speakerState: MeetingSpeakerState? = nil
+    ) -> [NSRange] {
+        let nsText = text as NSString
+        if let speakerState, speakerState.isValid, speakerState.render() == text {
+            let labels = speakerState.labels
+            var location = 0
+            var ranges: [NSRange] = []
+            for (index, turn) in speakerState.turns.enumerated() {
+                let renderedTurn = "[\(turn.timestamp)] \(labels[turn.speaker] ?? "Unknown speaker"): \(turn.text)"
+                let renderedLength = (renderedTurn as NSString).length
+                ranges.append(NSRange(location: location, length: renderedLength))
+                location += renderedLength
+                if index < speakerState.turns.count - 1 { location += 1 }
+            }
+            return location <= nsText.length ? ranges : []
+        }
+
+        var ranges: [NSRange] = []
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byLines) { line, lineRange, _, _ in
             guard let line, !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            let original = NSRange(lineRange, in: text)
-            if range.location >= original.location && range.location < original.location + original.length { result = nextID }
-            nextID += 1
+            ranges.append(NSRange(lineRange, in: text))
         }
-        return result
+        return ranges
+    }
+
+    static func transcriptMessageID(
+        in text: String,
+        range: NSRange,
+        messageRanges: [NSRange]
+    ) -> Int? {
+        let textLength = (text as NSString).length
+        guard range.location >= 0, range.length >= 0, range.location <= textLength,
+              range.length <= textLength - range.location else { return nil }
+
+        var lowerBound = 0
+        var upperBound = messageRanges.count
+        while lowerBound < upperBound {
+            let middle = lowerBound + (upperBound - lowerBound) / 2
+            let messageRange = messageRanges[middle]
+            if range.location < messageRange.location {
+                upperBound = middle
+            } else if range.location >= NSMaxRange(messageRange) {
+                lowerBound = middle + 1
+            } else {
+                return middle
+            }
+        }
+        return nil
+    }
+
+    static func loadedTranscriptScrollTarget(messages: [TranscriptChatMessage], highlightedMessageID: Int?) -> Int? {
+        guard let highlightedMessageID, messages.contains(where: { $0.id == highlightedMessageID }) else { return nil }
+        return highlightedMessageID
     }
 }
 
