@@ -1,4 +1,5 @@
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Meeting preview text")
@@ -37,5 +38,25 @@ struct MeetingPreviewTextTests {
         """)
 
         #expect(preview == "No notes yet")
+    }
+
+    @Test("legacy literal backslashes in transcript labels stay unchanged")
+    func legacySpeakerLabelBackslashIsPreserved() {
+        let preview = MeetingPreviewText.snippet(from: #"[00:00:01] Team\: Example: Ship Friday."#)
+
+        #expect(preview == #"[00:00:01] Team\: Example: Ship Friday."#)
+    }
+
+    @Test("transcript search previews decode a speaker label only once")
+    func searchPreviewPreservesBackslashBeforeColonInSpeakerName() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team\\: Room", text: "Ship Friday."
+        )
+
+        let preview = MeetingPreviewText.transcriptSearchField(
+            rawTranscript: stored, matching: "team\\: room"
+        )
+
+        #expect(preview == #"[00:00:01] Team\: Room: Ship Friday."#)
     }
 }

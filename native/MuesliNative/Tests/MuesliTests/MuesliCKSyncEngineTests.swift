@@ -69,6 +69,17 @@ private actor TestCKSyncCancellationProbe {
     }
 }
 
+@MainActor
+private final class TestMeetingSummaryFreshnessProbe {
+    private(set) var changedDeliveries: [Set<Int64>] = []
+    private(set) var deletedDeliveries: [Set<Int64>] = []
+
+    func record(changed: Set<Int64>, deleted: Set<Int64>) {
+        changedDeliveries.append(changed)
+        deletedDeliveries.append(deleted)
+    }
+}
+
 @Suite("Muesli CKSyncEngine", .serialized)
 struct MuesliCKSyncEngineTests {
     private func makeStore() throws -> DictationStore {
@@ -89,6 +100,9 @@ struct MuesliCKSyncEngineTests {
             kind: record.kind,
             title: record.title,
             text: text,
+            summaryText: record.summaryText,
+            summaryIsCurrent: record.summaryIsCurrent,
+            manualNotes: record.manualNotes,
             source: record.source,
             localSource: record.localSource,
             meetingStatus: record.meetingStatus,
@@ -101,6 +115,31 @@ struct MuesliCKSyncEngineTests {
             isDeleted: record.isDeleted
         ))
         return cloud
+    }
+
+    @Test("CloudKit payload preserves summary transcript freshness")
+    func cloudKitPayloadPreservesSummaryTranscriptFreshness() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+        let local = SyncTextRecord(
+            id: "meeting-fresh-summary",
+            kind: .meeting,
+            title: "Fresh summary",
+            text: "Transcript",
+            summaryText: "Summary for this transcript",
+            summaryIsCurrent: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 1
+        )
+
+        let cloud = MuesliICloudSyncEngine.syncZoneCloudRecord(from: local)
+        let decoded = try #require(MuesliICloudSyncEngine.syncTextRecord(from: cloud))
+
+        #expect(cloud["summaryIsCurrent"] as? NSNumber == true)
+        #expect(decoded.summaryIsCurrent == true)
     }
 
     @Test("local changes prepare and send without fetching first")
@@ -474,6 +513,73 @@ struct MuesliCKSyncEngineTests {
         #expect(resolved.text == "Newer server text")
         #expect(try store.hasTextRecordsNeedingSync() == false)
         #expect(state.pendingRecordZoneChanges.isEmpty)
+    }
+
+    @Test("fetched summary freshness notifies only meetings whose stale state changed")
+    @MainActor
+    func fetchedSummaryFreshnessNotifiesChangedMeetingIDs() async throws {
+        let store = try makeStore()
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+        let first = SyncTextRecord(
+            id: "meeting-freshness-callback",
+            kind: .meeting,
+            title: "Freshness callback",
+            text: "Original transcript",
+            summaryIsCurrent: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2
+        )
+        #expect(try store.upsertSyncedTextRecord(first))
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+        let callback = TestMeetingSummaryFreshnessProbe()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            meetingSummaryFreshnessDidChange: { changedIDs, deletedIDs in
+                callback.record(changed: changedIDs, deleted: deletedIDs)
+            }
+        )
+        let state = TestCKSyncPendingState()
+
+        var transcriptEdit = first
+        transcriptEdit.text = "Changed transcript"
+        transcriptEdit.summaryIsCurrent = nil
+        transcriptEdit.updatedAt = timestamp.addingTimeInterval(60)
+        try await coordinator.handleFetchedRecords(
+            [MuesliICloudSyncEngine.syncZoneCloudRecord(from: transcriptEdit)], state: state
+        )
+        #expect(callback.changedDeliveries == [Set([meetingID])])
+        #expect(callback.deletedDeliveries == [[]])
+
+        var metadataEdit = transcriptEdit
+        metadataEdit.title = "Renamed meeting"
+        metadataEdit.updatedAt = timestamp.addingTimeInterval(120)
+        try await coordinator.handleFetchedRecords(
+            [MuesliICloudSyncEngine.syncZoneCloudRecord(from: metadataEdit)], state: state
+        )
+        #expect(callback.changedDeliveries == [Set([meetingID])])
+        #expect(callback.deletedDeliveries == [[]])
+
+        var summaryRefresh = metadataEdit
+        summaryRefresh.summaryIsCurrent = true
+        summaryRefresh.updatedAt = timestamp.addingTimeInterval(180)
+        try await coordinator.handleFetchedRecords(
+            [MuesliICloudSyncEngine.syncZoneCloudRecord(from: summaryRefresh)], state: state
+        )
+        #expect(callback.changedDeliveries == [Set([meetingID]), Set([meetingID])])
+        #expect(callback.deletedDeliveries == [[], []])
+
+        var tombstone = summaryRefresh
+        tombstone.isDeleted = true
+        tombstone.updatedAt = timestamp.addingTimeInterval(240)
+        try await coordinator.handleFetchedRecords(
+            [MuesliICloudSyncEngine.syncZoneCloudRecord(from: tombstone)], state: state
+        )
+        #expect(callback.changedDeliveries == [Set([meetingID]), Set([meetingID]), []])
+        #expect(callback.deletedDeliveries == [[], [], Set([meetingID])])
     }
 
     @Test("older fetched server record hydrates metadata but preserves local dirty edit")

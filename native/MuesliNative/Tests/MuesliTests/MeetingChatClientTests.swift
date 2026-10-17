@@ -14,6 +14,24 @@ struct MeetingChatClientTests {
                      coverage: .init(eligibleMeetingCount: 1, evidenceMeetingCount: 1, isPartialRecap: false))
     }
 
+    @Test func transcriptPromptShowsHumanReadableSpeakerLabelsAndKeepsEvidenceOriginal() throws {
+        var packet = evidence()
+        packet.passages[0].excerpt = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:05", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let storedExcerpt = packet.passages[0].excerpt
+
+        let prompt = try MeetingChatClient.makePrompt(question: "What did they decide?", evidence: packet, history: [])
+        let sourceBoundary = "QUOTED SOURCES (JSON):\n"
+        let start = try #require(prompt.user.range(of: sourceBoundary)?.upperBound)
+        let end = try #require(prompt.user[start...].range(of: "\nUSER QUESTION:")?.lowerBound)
+        let sourceJSON = String(prompt.user[start..<end])
+        let sources = try #require(JSONSerialization.jsonObject(with: Data(sourceJSON.utf8)) as? [[String: String]])
+
+        #expect(sources.first?["excerpt"] == #"[00:00:05] Team: Example: Ship Friday."#)
+        #expect(packet.passages[0].excerpt == storedExcerpt)
+    }
+
     @Test func rollingMemoryIsPortableContextAndLongRecentAnswersAreNotClipped() throws {
         let longAnswer = String(repeating: "A useful detail. ", count: 330) + "KEEP THE LAST DETAIL"
         let turn = MeetingChatTurn(id: UUID(), sessionID: UUID(), ordinal: 0, question: "Explain the plan",
@@ -39,7 +57,10 @@ struct MeetingChatClientTests {
             execute: { call, current in
                 executed.append(call)
                 var result = current
-                var passage = current.passages[0]; passage.id = "p2"; passage.sourceKey = "S2"; passage.excerpt = "Full meeting detail."
+                var passage = current.passages[0]; passage.id = "p2"; passage.sourceKey = "S2"
+                passage.excerpt = MeetingSpeakerState.renderTranscriptTurn(
+                    timestamp: "00:00:07", speaker: "Team: Example", text: "Full meeting detail."
+                )
                 result.passages.append(passage)
                 return .init(evidence: result, matchedPassageCount: 1)
             }, activity: { _, _ in })
@@ -55,7 +76,11 @@ struct MeetingChatClientTests {
         #expect(replay.contains { $0["type"] as? String == "reasoning" && $0["encrypted_content"] as? String == "opaque-test-state" })
         let result = try #require(replay.first { $0["type"] as? String == "function_call_output" })
         #expect(result["call_id"] as? String == "native-call-1")
-        #expect((result["output"] as? String)?.contains("Full meeting detail.") == true)
+        #expect((result["output"] as? String)?.contains("Team: Example: Full meeting detail.") == true)
+        #expect((result["output"] as? String)?.contains(#"Team\: Example"#) == false)
+        #expect(final.passages.last?.excerpt == MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:07", speaker: "Team: Example", text: "Full meeting detail."
+        ))
         #expect(!requests[0].base.system.contains("returning exactly {\"tool\""))
     }
 
