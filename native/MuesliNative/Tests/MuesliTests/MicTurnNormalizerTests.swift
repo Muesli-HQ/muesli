@@ -49,6 +49,49 @@ struct MicTurnNormalizerTests {
         #expect(segments[1].text == "again later")
     }
 
+    @Test("speaker attribution preserves reliable backend phrase timings")
+    func preservesReliableSpeakerTimings() {
+        let result = SpeechTranscriptionResult(
+            text: "Owner words. Guest reply.",
+            segments: [
+                SpeechSegment(start: 0, end: 2, text: "Owner words."),
+                SpeechSegment(start: 2.5, end: 3, text: "Guest reply."),
+            ]
+        )
+
+        let segments = MicTurnNormalizer.normalize(
+            result: result,
+            startTime: 10,
+            endTime: 14,
+            preserveReliableSpeakerTimings: true
+        )
+
+        #expect(segments.map(\.start) == [10, 12.5])
+        #expect(segments.map(\.end) == [12, 13])
+        #expect(segments.map(\.text) == ["Owner words.", "Guest reply."])
+    }
+
+    @Test("speaker attribution keeps untimed ASR text in one coarse chunk")
+    func keepsUntimedTextCoarseForSpeakerAttribution() {
+        let text = "Owner words. Guest reply. Owner continues."
+        let result = SpeechTranscriptionResult(
+            text: text,
+            segments: [SpeechSegment(start: 0, end: 0, text: text)]
+        )
+
+        let segments = MicTurnNormalizer.normalize(
+            result: result,
+            startTime: 10,
+            endTime: 14,
+            preserveReliableSpeakerTimings: true
+        )
+
+        #expect(segments.count == 1)
+        #expect(segments[0].start == 10)
+        #expect(segments[0].end == 14)
+        #expect(segments[0].text == text)
+    }
+
     @Test("collapses fragmented backend shards into sentence-split segments")
     func collapsesFragmentedShards() {
         let result = SpeechTranscriptionResult(

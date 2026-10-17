@@ -5916,6 +5916,21 @@ public final class DictationStore {
 
 
 extension DictationStore {
+    public func speakerStateMeetingIDs() throws -> [Int64] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("SELECT meeting_id FROM local_meeting_speaker_state WHERE authoritative = 1", [], db: db).compactMap { $0.first.flatMap(Int64.init) }
+    }
+
+    /// Returns only speaker states that contain owner voice evidence, so a
+    /// profile change does not need to decode every saved transcript state.
+    public func speakerStateMeetingIDsWithOwnerVoiceEvidence() throws -> [Int64] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("""
+            SELECT meeting_id FROM local_meeting_speaker_state
+            WHERE authoritative = 1 AND state_json LIKE '%"voiceProfileID"%'
+            """, [], db: db).compactMap { $0.first.flatMap(Int64.init) }
+    }
+
     public func meetingTranscriptVersion(id: Int64) throws -> MeetingTranscriptVersion? {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         return try speakerTranscriptVersion(id: id, db: db)
@@ -5985,6 +6000,56 @@ extension DictationStore {
         return .updated
     }
 
+    /// Re-authorizes a saved mapping after a failed retry only when its transcript and state are unchanged.
+    public func restoreMeetingSpeakerStateIfTranscriptUnchanged(
+        id: Int64,
+        snapshot: MeetingSpeakerSnapshot
+    ) throws -> Bool {
+        try restoreMeetingSpeakerStateIfTranscriptUnchanged(
+            id: id, snapshot: snapshot, permittedVoiceProfileID: snapshot.state.voiceProfileID)
+    }
+
+    /// Restores a failed retry's mapping only if unchanged, and strips voice
+    /// evidence when its profile was revoked while the mapping was non-authoritative.
+    public func restoreMeetingSpeakerStateIfTranscriptUnchanged(
+        id: Int64,
+        snapshot: MeetingSpeakerSnapshot,
+        permittedVoiceProfileID: UUID?
+    ) throws -> Bool {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard let current = try speakerTranscriptVersion(id: id, db: db),
+              current.digest == snapshot.version.digest,
+              snapshot.state.isValid,
+              snapshot.state.matchesTranscriptDigest(current.digest),
+              let storedJSON = try speakerRows(
+                "SELECT state_json FROM local_meeting_speaker_state WHERE meeting_id = ?",
+                [String(id)], db: db
+              ).first?.first,
+              let storedData = storedJSON.data(using: .utf8),
+              let storedState = try? JSONDecoder().decode(MeetingSpeakerState.self, from: storedData),
+              storedState == snapshot.state else { return false }
+
+        var restoredState = snapshot.state
+        if let profileID = restoredState.voiceProfileID, profileID != permittedVoiceProfileID {
+            restoredState.removeSelfEvidence()
+            restoredState.revision += 1
+            let text = restoredState.render()
+            let manualNotes = try manualNotesForMeeting(id: id, db: db)
+            _ = try speakerRows(
+                "UPDATE meetings SET raw_transcript = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ? AND deleted_at IS NULL",
+                [text, String(Self.countWords(in: text) + Self.countWords(in: manualNotes)),
+                 String(Date().timeIntervalSince1970), String(id)], db: db
+            )
+            guard let sanitizedVersion = try speakerTranscriptVersion(id: id, db: db) else { return false }
+            try writeSpeakerState(id: id, state: restoredState, version: sanitizedVersion, db: db)
+        } else {
+            try writeSpeakerState(id: id, state: restoredState, version: current, db: db)
+        }
+        try exec("COMMIT", db: db)
+        return true
+    }
+
     /// Serializes validation, canonical text mutation, trigger invalidation and new authority publication.
     public func updateMeetingSpeakerState(id: Int64, state: MeetingSpeakerState, expected: MeetingSpeakerSnapshot) throws -> MeetingSpeakerWriteResult {
         let db = try openDatabase(); defer { sqlite3_close(db) }
@@ -6002,6 +6067,34 @@ extension DictationStore {
         try writeSpeakerState(id: id, state: next, version: version, db: db)
         try exec("COMMIT", db: db)
         return .updated
+    }
+
+    /// Removes revoked voice-derived labels from the current state atomically with transcript rendering.
+    public func revokeMeetingSpeakerSelfEvidence(id: Int64, permittedVoiceProfileID: UUID?) throws -> Bool {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard let current = try speakerSnapshot(id: id, db: db),
+              let profileID = current.state.voiceProfileID,
+              profileID != permittedVoiceProfileID else {
+            try exec("COMMIT", db: db)
+            return false
+        }
+
+        var state = current.state
+        state.removeSelfEvidence()
+        state.revision += 1
+        let text = state.render()
+        let manualNotes = try manualNotesForMeeting(id: id, db: db)
+        _ = try speakerRows(
+            "UPDATE meetings SET raw_transcript = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ? AND deleted_at IS NULL",
+            [text, String(Self.countWords(in: text) + Self.countWords(in: manualNotes)),
+             String(Date().timeIntervalSince1970), String(id)],
+            db: db
+        )
+        guard let version = try speakerTranscriptVersion(id: id, db: db) else { return false }
+        try writeSpeakerState(id: id, state: state, version: version, db: db)
+        try exec("COMMIT", db: db)
+        return true
     }
 
     private func speakerTranscriptVersion(id: Int64, db: OpaquePointer?) throws -> MeetingTranscriptVersion? {

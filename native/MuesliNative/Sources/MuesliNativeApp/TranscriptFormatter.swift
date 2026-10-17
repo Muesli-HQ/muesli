@@ -16,12 +16,18 @@ enum TranscriptFormatter {
         diarizationSegments: [TimedSpeakerSegment]?,
         micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date,
-        conservativeSpeakerAttribution: Bool = false
+        conservativeSpeakerAttribution: Bool = false,
+        microphoneIdentityRequired: Bool = false,
+        microphoneOwnerRecognitionEnabled: Bool = false,
+        microphoneIdentitySegments: [TimedSpeakerSegment]? = nil
     ) -> String {
         structured(micSegments: micSegments, systemSegments: systemSegments,
                    diarizationSegments: diarizationSegments, micDiarizationSegments: micDiarizationSegments,
                    meetingStart: meetingStart,
-                   conservativeSpeakerAttribution: conservativeSpeakerAttribution).render()
+                   conservativeSpeakerAttribution: conservativeSpeakerAttribution,
+                   microphoneIdentityRequired: microphoneIdentityRequired,
+                   microphoneOwnerRecognitionEnabled: microphoneOwnerRecognitionEnabled,
+                   microphoneIdentitySegments: microphoneIdentitySegments).render()
     }
 
     static func structured(
@@ -29,40 +35,92 @@ enum TranscriptFormatter {
         diarizationSegments: [TimedSpeakerSegment]?, micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(),
+        microphoneIdentityRequired: Bool = false,
+        microphoneOwnerRecognitionEnabled: Bool = false,
+        microphoneIdentitySegments: [TimedSpeakerSegment]? = nil,
         systemChannel: MeetingSpeakerKey.Channel = .system,
         preserveSegmentBoundaries: Bool = false,
         accessibilitySpeakerNamingEnabled: Bool = false
     ) -> MeetingSpeakerState {
         let useConservativeAttribution = conservativeSpeakerAttribution || accessibilitySpeakerNamingEnabled
         var identities: [String: MeetingSpeaker] = [:]
-        let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "source")
-        if !micSegments.isEmpty {
-            identities["You"] = MeetingSpeaker(key: micKey, rank: 1, fallbackLabel: "You", isSelf: true)
-        }
+        let significantMicIDs = microphoneIdentityRequired
+            ? SpeakerAttribution.significantSpeakerIDs(in: microphoneIdentitySegments ?? [])
+            : []
+        let micClusterID = significantMicIDs.count == 1 ? (significantMicIDs.first ?? "source") : "source"
+        let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: micClusterID)
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
         let displayMicSegments = micSegments
         let taggedMic: [TaggedSegment]
-        if let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments) {
-            identities.removeValue(forKey: "You")
-            let micSpeakerLabelMap = speakerLabelMap(for: localDiarization, prefix: "Local speaker")
-            for (id, label) in micSpeakerLabelMap {
-                let rank = Int(label.split(separator: " ").last ?? "1") ?? 1
-                identities[label] = MeetingSpeaker(
-                    key: .init(epoch: epoch, channel: .microphone, clusterID: id),
-                    rank: rank, fallbackLabel: label)
+        if microphoneOwnerRecognitionEnabled {
+            let identitySegments = microphoneIdentitySegments ?? []
+            var rawSpeakerIDs: [String] = []
+            for segment in identitySegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds })
+            where !rawSpeakerIDs.contains(segment.speakerId) {
+                rawSpeakerIDs.append(segment.speakerId)
             }
-            taggedMic = displayMicSegments.map { segment in
-                let speaker = findSpeaker(
-                    for: segment,
-                    in: localDiarization,
-                    labelMap: micSpeakerLabelMap,
-                    fallback: "Local speaker"
+
+            let significantLabels = significantMicIDs.count > 1
+                ? speakerLabelMap(for: identitySegments.filter { significantMicIDs.contains($0.speakerId) }, prefix: "Local speaker")
+                : [:]
+            var identityTokens: [String: String] = [:]
+            for (index, id) in rawSpeakerIDs.enumerated() {
+                let token = microphoneIdentityToken(for: id)
+                identityTokens[id] = token
+                identities[token] = MeetingSpeaker(
+                    key: .init(epoch: epoch, channel: .microphone, clusterID: id),
+                    rank: index + 1,
+                    fallbackLabel: significantLabels[id] ?? "Microphone"
                 )
-                return TaggedSegment(segment: segment, speaker: speaker)
+            }
+
+            var unattributedSegments: [SpeechSegment] = []
+            taggedMic = displayMicSegments.map { segment in
+                guard let id = microphoneIdentitySpeakerID(for: segment, in: identitySegments),
+                      let token = identityTokens[id] else {
+                    unattributedSegments.append(segment)
+                    return TaggedSegment(segment: segment, speaker: Self.unattributedMicrophoneToken)
+                }
+                return TaggedSegment(segment: segment, speaker: token)
+            }
+            if !unattributedSegments.isEmpty {
+                let key = rawSpeakerIDs.isEmpty
+                    ? micKey
+                    : MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "aggregate:unattributed")
+                identities[Self.unattributedMicrophoneToken] = MeetingSpeaker(
+                    key: key, rank: (rawSpeakerIDs.count + 1), fallbackLabel: "Microphone",
+                    isAssignable: rawSpeakerIDs.isEmpty
+                )
             }
         } else {
-            taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+            if !micSegments.isEmpty {
+                let label = microphoneIdentityRequired ? "Microphone" : "You"
+                identities[label] = MeetingSpeaker(key: micKey, rank: 1, fallbackLabel: label,
+                    isSelf: !microphoneIdentityRequired)
+            }
+            let localDiarization = microphoneIdentityRequired
+                ? (significantMicIDs.count > 1 ? micDiarizationSegments : nil)
+                : SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+            if let localDiarization {
+                identities.removeValue(forKey: "You")
+                identities.removeValue(forKey: "Microphone")
+                let micSpeakerLabelMap = speakerLabelMap(for: localDiarization, prefix: "Local speaker")
+                for (id, label) in micSpeakerLabelMap {
+                    let rank = Int(label.split(separator: " ").last ?? "1") ?? 1
+                    identities[label] = MeetingSpeaker(
+                        key: .init(epoch: epoch, channel: .microphone, clusterID: id),
+                        rank: rank, fallbackLabel: label)
+                }
+                taggedMic = displayMicSegments.map { segment in
+                    let speaker = findSpeaker(for: segment, in: localDiarization,
+                        labelMap: micSpeakerLabelMap, fallback: "Local speaker")
+                    return TaggedSegment(segment: segment, speaker: speaker)
+                }
+            } else {
+                let fallback = microphoneIdentityRequired ? "Microphone" : "You"
+                taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: fallback) }
+            }
         }
 
         let taggedSystem: [TaggedSegment]
@@ -106,15 +164,27 @@ enum TranscriptFormatter {
                 key: .init(epoch: epoch, channel: systemChannel, clusterID: "aggregate:\(label)"),
                 rank: identities.count + 2, fallbackLabel: label, isAssignable: false)
         }
+        // Samples play the meeting recording, so overlaps from either channel can contaminate a speaker's excerpt.
+        let sampleMicDiarizationSegments = microphoneIdentitySegments ?? micDiarizationSegments
         let sampleValidated = consolidated.map { taggedSegment -> TaggedSegment in
-            guard let identity = identities[taggedSegment.speaker],
-                  diarizationSegments?.contains(where: { diarization in
-                      let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
-                          > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
-                      guard overlaps else { return false }
-                      if identity.key.channel == .microphone { return true }
-                      return identity.key.channel == systemChannel && diarization.speakerId != identity.key.clusterID
-                  }) == true else { return taggedSegment }
+            guard let identity = identities[taggedSegment.speaker] else { return taggedSegment }
+            let includesOtherMicrophoneVoice = sampleMicDiarizationSegments?.contains(where: { diarization in
+                let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
+                    > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
+                guard overlaps else { return false }
+                if identity.key.channel == .microphone {
+                    return diarization.speakerId != identity.key.clusterID
+                }
+                return identity.key.channel == systemChannel
+            }) == true
+            let includesOtherSystemSpeaker = diarizationSegments?.contains(where: { diarization in
+                let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
+                    > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
+                guard overlaps else { return false }
+                if identity.key.channel == .microphone { return true }
+                return identity.key.channel == systemChannel && diarization.speakerId != identity.key.clusterID
+            }) == true
+            guard includesOtherMicrophoneVoice || includesOtherSystemSpeaker else { return taggedSegment }
             return TaggedSegment(segment: taggedSegment.segment, speaker: taggedSegment.speaker, sampleEligible: false)
         }
         let turns = sampleValidated.compactMap { taggedSegment -> MeetingSpeakerTurn? in
@@ -152,6 +222,39 @@ enum TranscriptFormatter {
     /// segments from the same speaker that are far apart in time stay separate
     /// so they interleave correctly with other speakers.
     private static let consolidationGapThreshold: TimeInterval = 2.0
+
+    private static let unattributedMicrophoneToken = "\u{0}unattributed-microphone"
+
+    private static func microphoneIdentityToken(for id: String) -> String {
+        "\u{0}microphone:\(id)"
+    }
+
+    /// Only a single, clear diarization cluster covering most of an ASR turn
+    /// can carry owner identity. Mixed or uncovered turns stay generic.
+    private static func microphoneIdentitySpeakerID(
+        for segment: SpeechSegment,
+        in diarizationSegments: [TimedSpeakerSegment]
+    ) -> String? {
+        let duration = segment.end - segment.start
+        guard duration > 0 else { return nil }
+        let overlaps = diarizationSegments.compactMap { diarization -> (String, Double, Double)? in
+            let start = max(segment.start, Double(diarization.startTimeSeconds))
+            let end = min(segment.end, Double(diarization.endTimeSeconds))
+            return end > start ? (diarization.speakerId, start, end) : nil
+        }
+        let ids = Set(overlaps.map(\.0))
+        guard ids.count == 1, let id = ids.first else { return nil }
+        var covered: [(Double, Double)] = []
+        for (_, start, end) in overlaps.sorted(by: { $0.1 < $1.1 }) {
+            if let last = covered.last, start <= last.1 {
+                covered[covered.count - 1].1 = max(last.1, end)
+            } else {
+                covered.append((start, end))
+            }
+        }
+        let coverage = covered.reduce(0) { $0 + $1.1 - $1.0 }
+        return coverage / duration >= 0.6 ? id : nil
+    }
 
     private static func consolidate(
         _ segments: [TaggedSegment],

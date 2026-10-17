@@ -161,6 +161,18 @@ struct MeetingSpeakerAccessibilityMonitorTests {
         #expect(fixture.releaseCount == 0)
     }
 
+    @Test func startupGateRetainsAuthorizationAfterEnding() {
+        let gate = MeetingSpeakerAccessibilityStartupGate()
+        let authorization = UUID()
+
+        #expect(gate.currentAuthorization == nil)
+        #expect(gate.authorize(authorization))
+        #expect(gate.currentAuthorization == authorization)
+        #expect(gate.end() == authorization)
+        #expect(gate.currentAuthorization == authorization)
+        #expect(!gate.isActive)
+    }
+
     @Test func startupReleasesOwnerWhenShutdownWinsDuringAcquisition() async {
         let fixture = SpeakerStartupFixture()
         let authorization = UUID()

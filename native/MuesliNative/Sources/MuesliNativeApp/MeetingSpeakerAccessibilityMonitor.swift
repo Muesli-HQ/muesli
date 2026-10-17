@@ -74,6 +74,12 @@ final class MeetingSpeakerAccessibilityStartupGate: @unchecked Sendable {
         return !ended
     }
 
+    var currentAuthorization: UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        return authorization
+    }
+
     func authorize(_ authorization: UUID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -90,7 +96,7 @@ final class MeetingSpeakerAccessibilityStartupGate: @unchecked Sendable {
     }
 }
 
-/// Tracks sample time for audio already written to the system recording. It is
+/// Tracks sample time for audio already written to a meeting recording. It is
 /// independent of the live chunk queue, which can reject the short tail while
 /// a native recorder is applying a pause.
 final class MeetingSpeakerAudioTimelineClock: @unchecked Sendable {
@@ -152,7 +158,12 @@ actor MeetingSpeakerAccessibilityMonitor {
         self.reader = reader
     }
 
-    func start(authorization: UUID, token: @escaping () async -> UUID?, clock: @escaping () -> Double?) {
+    func start(
+        authorization: UUID,
+        token: @escaping () async -> UUID?,
+        clock: @escaping () -> Double?,
+        microphoneClock: @escaping () -> Double? = { nil }
+    ) {
         task?.cancel()
         generation = UUID()
         continuity = UUID()
@@ -163,7 +174,8 @@ actor MeetingSpeakerAccessibilityMonitor {
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.poll(generation: generation, authorization: authorization, token: token, clock: clock)
+                await self.poll(generation: generation, authorization: authorization, token: token,
+                    clock: clock, microphoneClock: microphoneClock)
                 let intervalMilliseconds = Int64(MeetingSpeakerAccessibilitySamplingPolicy.pollInterval * 1_000)
                 try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
             }
@@ -176,8 +188,14 @@ actor MeetingSpeakerAccessibilityMonitor {
     }
 
     /// Single-poll entry point used by deterministic monitor tests.
-    func recordPoll(authorization: UUID, token: @escaping () async -> UUID?, clock: @escaping () -> Double?) async {
-        await poll(generation: generation, authorization: authorization, token: token, clock: clock)
+    func recordPoll(
+        authorization: UUID,
+        token: @escaping () async -> UUID?,
+        clock: @escaping () -> Double?,
+        microphoneClock: @escaping () -> Double? = { nil }
+    ) async {
+        await poll(generation: generation, authorization: authorization, token: token,
+            clock: clock, microphoneClock: microphoneClock)
     }
 
     func stop() -> MeetingSpeakerTimeline {
@@ -191,7 +209,8 @@ actor MeetingSpeakerAccessibilityMonitor {
         generation: UUID,
         authorization: UUID,
         token: @escaping () async -> UUID?,
-        clock: @escaping () -> Double?
+        clock: @escaping () -> Double?,
+        microphoneClock: @escaping () -> Double?
     ) async {
         guard self.generation == generation else { return }
         guard !authorizationRevoked else { return }
@@ -205,6 +224,7 @@ actor MeetingSpeakerAccessibilityMonitor {
             return
         }
 
+        let microphoneStart = microphoneClock()
         let frame = await reader()
 
         guard self.generation == generation, !Task.isCancelled else { return }
@@ -228,7 +248,16 @@ actor MeetingSpeakerAccessibilityMonitor {
            previous.frame.app == frame.app, previous.frame.scope != frame.scope {
             note(.scopeChanged)
         }
-        observations.append(.init(time: end, continuity: continuity.uuidString, frame: frame))
+        let microphoneEnd = microphoneClock()
+        let microphoneTime: Double?
+        if let microphoneStart, let microphoneEnd,
+           microphoneEnd >= microphoneStart, microphoneEnd - microphoneStart <= 0.5 {
+            microphoneTime = microphoneEnd
+        } else {
+            microphoneTime = nil
+        }
+        observations.append(.init(time: end, continuity: continuity.uuidString,
+            frame: frame, microphoneTime: microphoneTime))
     }
 
     private func recordFrameReasons(_ frame: MeetingSpeakerFrame) {

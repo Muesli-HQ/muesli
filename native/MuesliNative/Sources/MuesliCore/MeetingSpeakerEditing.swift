@@ -72,11 +72,16 @@ extension MeetingSpeakerState {
             guard assign(.init(name: name, provenance: .manual), to: key) else { return false }
         case .resetName(let key), .declineName(let key):
             guard let index = speakers.firstIndex(where: { $0.key == key && $0.mergedInto == nil && $0.isAssignable }),
-                  let assignment = speakers[index].assignment else { return false }
-            if case .declineName = action, assignment.provenance == .manual { return false }
+                  speakers[index].assignment != nil || speakers[index].selfProvenance != nil else { return false }
+            let assignment = speakers[index].assignment
+            if case .declineName = action, assignment?.provenance == .manual, speakers[index].selfProvenance == nil { return false }
             undo.speakers = [speakers[index]]
+            if speakers[index].selfProvenance != nil {
+                speakers[index].isSelf = false; speakers[index].selfProvenance = nil
+                if case .declineName = action { speakers[index].declinedSelf = true }
+            }
             if case .declineName = action { declineAutomaticName(for: key) }
-            else { speakers[index].history.append(assignment); speakers[index].assignment = nil }
+            else if let assignment { speakers[index].history.append(assignment); speakers[index].assignment = nil }
         case .addSpeaker(let name, let channel):
             guard !Self.safeLabel(name).isEmpty else { return false }
             let rank = (speakers.map(\.rank).max() ?? 0) + 1
@@ -97,8 +102,10 @@ extension MeetingSpeakerState {
             let previousSource = speakers[sourceIndex]
             if previousSource.isSelf && !speakers[targetIndex].isSelf {
                 speakers[targetIndex].paletteIsSelf = speakers[targetIndex].paletteIsSelf ?? speakers[targetIndex].isSelf
+                speakers[targetIndex].selfProvenance = previousSource.selfProvenance
             }
             speakers[targetIndex].isSelf = speakers[targetIndex].isSelf || previousSource.isSelf
+            speakers[targetIndex].declinedSelf = speakers[targetIndex].declinedSelf == true || previousSource.declinedSelf == true
             speakers[targetIndex].declined.formUnion(previousSource.declined)
             for index in aliases {
                 speakers[index].mergedInto = target; speakers[index].isAssignable = false; speakers[index].isSelf = false

@@ -102,17 +102,52 @@ struct MeetingsNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         )
         let refreshed = MeetingSpeakerLoadKey(
             id: 7,
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 1
+            summaryFreshnessRevision: 1,
+            speakerStateRevision: 0
         )
 
         #expect(initial != refreshed)
+    }
+
+    @Test func speakerCorrectionRefreshesPresentationWhenRenderedTextIsUnchanged() async throws {
+        let store = try makeStore()
+        let epoch = UUID()
+        let originalKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "first")
+        let reassignedKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch, speakers: [
+            .init(key: originalKey, rank: 1, fallbackLabel: "Microphone"),
+            .init(key: reassignedKey, rank: 2, fallbackLabel: "Microphone"),
+        ], turns: [
+            .init(speaker: originalKey, timestamp: "00:00:01", start: 1, end: 2, text: "Shared audio"),
+        ])
+        let transcript = state.render()
+        let start = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Speaker correction", calendarEventID: nil, startTime: start,
+            endTime: start.addingTimeInterval(60), rawTranscript: transcript,
+            formattedNotes: "Notes", micAudioPath: nil, systemAudioPath: nil
+        )
+        let version = try #require(try store.meetingTranscriptVersion(id: meetingID))
+        #expect(try store.installMeetingSpeakerState(id: meetingID, state: state, expected: version) == .updated)
+
+        let controller = makeController(dictationStore: store)
+        let initialRevision = controller.appState.meetingSpeakerStateRevision(for: meetingID)
+        let snapshot = try #require(try store.meetingSpeakerSnapshot(id: meetingID))
+        let updated = try await controller.applyMeetingSpeakerCorrection(
+            id: meetingID, action: .reassign(state.turns[0].id, to: reassignedKey), expected: snapshot
+        )
+
+        #expect(updated.state.render() == transcript)
+        #expect(updated.state.turns[0].speaker == reassignedKey)
+        #expect(controller.appState.meetingSpeakerStateRevision(for: meetingID) > initialRevision)
     }
 
     private func makeController(
@@ -1178,6 +1213,15 @@ struct MeetingsNavigationTests {
 
         #expect(error.localizedDescription.contains("stopped before changing this meeting"))
         #expect(error.localizedDescription.contains("speaker identities could not be checked"))
+    }
+
+    @Test("retranscribe version-guard failures restore the original meeting status")
+    func retranscribeVersionGuardFailureRestoresOriginalStatus() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: true,
+            error: MeetingRetranscriptionError.recordingUnavailable
+        ) == .completed)
     }
 
     @Test("retranscribe save failures restore original meeting status")

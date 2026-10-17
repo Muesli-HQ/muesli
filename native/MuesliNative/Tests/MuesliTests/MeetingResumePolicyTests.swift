@@ -45,6 +45,30 @@ struct MeetingResumePolicyTests {
         #expect(MeetingResumePolicy.hasNewTranscriptContent(prior: "", new: "new segment"))
     }
 
+    @Test("no-op resume marks notes stale when transcript sanitation changes saved text")
+    func noOpResumeSummaryFreshnessRequiresSavedTranscriptMatch() {
+        #expect(MeetingResumePolicy.summaryIsCurrentAfterNoOpResume(
+            existingSummaryIsStale: false,
+            savedTranscript: "[00:00:01] Example (You): Earlier words",
+            resumedTranscript: "[00:00:01] Microphone: Earlier words"
+        ) == false)
+        #expect(MeetingResumePolicy.summaryIsCurrentAfterNoOpResume(
+            existingSummaryIsStale: false,
+            savedTranscript: "Earlier words",
+            resumedTranscript: "Earlier words"
+        ) == true)
+        #expect(MeetingResumePolicy.summaryIsCurrentAfterNoOpResume(
+            existingSummaryIsStale: true,
+            savedTranscript: "Earlier words",
+            resumedTranscript: "Earlier words"
+        ) == false)
+        #expect(MeetingResumePolicy.summaryIsCurrentAfterNoOpResume(
+            existingSummaryIsStale: nil,
+            savedTranscript: "Earlier words",
+            resumedTranscript: "Earlier words"
+        ) == nil)
+    }
+
     @Test("combined visual context keeps both sides with a separator")
     func combinedVisualContextAppends() {
         let combined = MeetingResumePolicy.combinedResumeVisualContext(
@@ -78,7 +102,7 @@ struct MeetingResumePolicyTests {
         #expect(combined?.hasPrefix("p") == true)
     }
 
-    private func makeResult(start: Date, end: Date, summaryIsCurrent: Bool = true) -> MeetingSessionResult {
+    private func makeResult(start: Date, end: Date) -> MeetingSessionResult {
         MeetingSessionResult(
             title: "M",
             originalTitle: "M",
@@ -91,8 +115,7 @@ struct MeetingResumePolicyTests {
             retainedRecordingURL: nil,
             retainedRecordingError: nil,
             systemRecordingURL: nil,
-            templateSnapshot: MeetingTemplates.auto.snapshot,
-            summaryIsCurrent: summaryIsCurrent
+            templateSnapshot: MeetingTemplates.auto.snapshot
         )
     }
 
@@ -131,14 +154,66 @@ struct MeetingResumePolicyTests {
 
     @Test("resume overrides preserve or explicitly replace summary freshness")
     func overrideCarriesSummaryFreshness() {
-        let start = Date(timeIntervalSince1970: 2_000_000)
-        var result = makeResult(start: start, end: start.addingTimeInterval(45))
+        var result = makeResult(start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 2))
         result.summaryIsCurrent = false
+        #expect(result.overriding(rawTranscript: "same", formattedNotes: "notes").summaryIsCurrent == false)
+        #expect(result.overriding(rawTranscript: "same", formattedNotes: "notes", summaryIsCurrent: true).summaryIsCurrent == true)
+        #expect(result.overriding(rawTranscript: "same", formattedNotes: "notes", summaryIsCurrent: false).summaryIsCurrent == false)
+    }
 
-        let preserved = result.overriding(rawTranscript: "combined", formattedNotes: "retained")
-        let refreshed = result.overriding(rawTranscript: "combined", formattedNotes: "fresh", summaryIsCurrent: true)
+    @Test("resume removes automatic prior names only when structured state matches")
+    func resumeRemovesOnlyMatchingAutomaticNames() {
+        let epoch = UUID()
+        let owner = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner")
+        let guest = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "guest")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [
+                .init(key: owner, rank: 1, fallbackLabel: "Microphone"),
+                .init(key: guest, rank: 2, fallbackLabel: "Speaker 1",
+                      assignment: .init(name: "Guest", provenance: .accessibility)),
+            ],
+            turns: [
+                .init(speaker: owner, timestamp: "00:00:01", start: 1, end: 2, text: "Owner words"),
+                .init(speaker: guest, timestamp: "00:00:03", start: 3, end: 4, text: "Guest words"),
+            ])
+        state.applySelfEvidence(accessibility: [], voice: [owner], ownerName: "Example", profileID: UUID())
+        let named = state.render()
 
-        #expect(preserved.summaryIsCurrent == false)
-        #expect(refreshed.summaryIsCurrent == true)
+        let safe = MeetingResumePolicy.resumeTranscriptWithoutAutomaticNames(named, speakerState: state)
+        #expect(safe == "[00:00:01] Microphone: Owner words\n[00:00:03] Speaker 1: Guest words")
+        let edited = "User-edited words that no longer match structured state"
+        #expect(MeetingResumePolicy.resumeTranscriptWithoutAutomaticNames(edited, speakerState: state) == edited)
+    }
+
+    @Test("resumed current speaker evidence is retained and can revoke the full transcript")
+    func resumedSpeakerEvidenceRemainsRevocable() {
+        let epoch = UUID(), token = UUID()
+        let owner = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "resumed_owner")
+        var currentState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: owner, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: owner, timestamp: "10:30:00", start: 0, end: 2, text: "Continued words")])
+        currentState.applySelfEvidence(accessibility: [], voice: [owner], ownerName: "Example", profileID: UUID())
+        let currentTranscript = currentState.render()
+        let priorTranscript = "[10:00:00] Speaker 1: Earlier words"
+        let safeCurrent = "[10:30:00] Microphone: Continued words"
+        let safeCombined = priorTranscript + MeetingResumePolicy.resumeSeparator + safeCurrent
+        let combinedState = MeetingResumePolicy.speakerStateForResume(
+            priorTranscript: priorTranscript,
+            currentTranscript: currentTranscript,
+            currentState: currentState
+        )
+        #expect(combinedState?.render() == priorTranscript + MeetingResumePolicy.resumeSeparator + currentTranscript)
+
+        var result = makeResult(start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 2))
+        result.rawTranscript = currentTranscript
+        result.speakerState = currentState
+        result.ownerRecognitionAuthorization = token
+        result.speakerAuthorizationFallbackTranscript = safeCurrent
+        let merged = result.overriding(rawTranscript: combinedState?.render() ?? "", formattedNotes: "Merged notes",
+            fallbackTranscript: safeCombined, speakerState: combinedState)
+
+        #expect(merged.rawTranscript.contains("Example (You): Continued words"))
+        #expect(merged.speakerState?.render() == merged.rawTranscript)
+        #expect(merged.validatingOwnerAuthorization(nil).rawTranscript == safeCombined)
     }
 }

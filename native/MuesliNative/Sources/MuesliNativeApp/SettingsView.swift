@@ -1152,6 +1152,19 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
+                "Meeting owner recognition",
+                description: "Experimental and off by default. Keep disabled until consented voice fixtures and real meeting audio are verified on a Mac.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("meeting_owner_recognition")
+                TextField("Your display name (optional)", text: Binding(
+                    get: { appState.config.meetingOwnerDisplayName },
+                    set: { value in controller.updateConfig { $0.meetingOwnerDisplayName = value } }))
+                OwnerVoiceSettingsView(voice: controller.ownerVoice,
+                    captureActive: appState.isMeetingRecording || appState.dictationState != .idle)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
                 "Show transcript on hover",
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth

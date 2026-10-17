@@ -92,6 +92,16 @@ struct MeetingSpeakerAccessibilityTests {
         #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 4)]).names[key]?.name == "Example")
     }
 
+    @Test func clockResetDoesNotDoubleCountOverlappingSpeechIntervals() {
+        let state = fixture()
+        let key = state.speakers[0].key
+        let times = [0.0, 1.0, 0.0, 1.0, 2.0]
+        let observations = times.map { MeetingSpeakerObservation(time: $0, continuity: "one", frame: frame()) }
+        let timeline = MeetingSpeakerTimeline(observations: observations)
+
+        #expect(timeline.assignments(activities: [.init(key: key, start: 0, end: 1.5)]).names[key] == nil)
+    }
+
     @Test func meetDocumentSelectionFiltersUnrelatedWindowsBeforeRelevantLimit() {
         let meet = "https://meet.google.com/abc-defg-hij"
         let selected = MeetingSpeakerSources.meetDocumentURLs(

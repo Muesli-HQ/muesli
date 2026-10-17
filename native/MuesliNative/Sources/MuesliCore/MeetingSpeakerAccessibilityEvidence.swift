@@ -60,7 +60,8 @@ public struct MeetingSpeakerAXWindow: Sendable {
 public struct MeetingSpeakerParticipant: Sendable, Equatable {
     public let id: String
     public let name: String
-    public init(id: String, name: String) { self.id = id; self.name = name }
+    public let isSelf: Bool
+    public init(id: String, name: String, isSelf: Bool = false) { self.id = id; self.name = name; self.isSelf = isSelf }
 }
 public struct MeetingSpeakerFrame: Sendable {
     public let scope: String
@@ -104,7 +105,10 @@ public enum MeetingSpeakerSources {
                 let statuses = node.children.filter { $0.detail.lowercased() == "speaking status" }
                 guard statuses.count <= 1 else { invalid = true; return }
                 let id = window.scope + "/" + node.id
-                people.append(.init(id: id, name: name))
+                let isSelf = node.children.contains {
+                    $0.detail.lowercased() == "self status" && $0.value == "true"
+                }
+                people.append(.init(id: id, name: name, isSelf: isSelf))
                 if statuses.first?.value == "true" { speaking.append(id) }
             } else { node.children.forEach(walk) }
         }
@@ -150,8 +154,11 @@ public enum MeetingSpeakerSources {
 public struct MeetingSpeakerObservation: Sendable {
     public let time: Double
     public let continuity: String
+    public let microphoneTime: Double?
     public let frame: MeetingSpeakerFrame
-    public init(time: Double, continuity: String, frame: MeetingSpeakerFrame) { self.time = time; self.continuity = continuity; self.frame = frame }
+    public init(time: Double, continuity: String, frame: MeetingSpeakerFrame, microphoneTime: Double? = nil) {
+        self.time = time; self.continuity = continuity; self.frame = frame; self.microphoneTime = microphoneTime
+    }
 }
 public struct MeetingSpeakerActivity: Sendable {
     public let key: MeetingSpeakerKey
@@ -161,6 +168,7 @@ public struct MeetingSpeakerActivity: Sendable {
 }
 public struct MeetingSpeakerEvidenceAssignments: Sendable {
     public var names: [MeetingSpeakerKey: MeetingSpeakerAssignment] = [:]
+    public var explicitSelf: Set<MeetingSpeakerKey> = []
 }
 public struct MeetingSpeakerTimeline: Sendable {
     public var observations: [MeetingSpeakerObservation]
@@ -178,9 +186,21 @@ public struct MeetingSpeakerTimeline: Sendable {
             return "\(reason.rawValue)=\(count)"
         }.joined(separator: ",")
     }
-    public func assignments(activities: [MeetingSpeakerActivity]) -> MeetingSpeakerEvidenceAssignments {
+    public func assignments(
+        activities: [MeetingSpeakerActivity],
+        channel: MeetingSpeakerKey.Channel = .system
+    ) -> MeetingSpeakerEvidenceAssignments {
+        if channel == .microphone, observations.contains(where: { $0.microphoneTime == nil }) { return .init() }
+        let observations = channel == .microphone
+            ? self.observations.map {
+                MeetingSpeakerObservation(time: $0.microphoneTime ?? .nan,
+                    continuity: $0.continuity, frame: $0.frame)
+            }
+            : self.observations
         guard !incomplete, observations.count >= 3 else { return .init() }
-        let valid = activities.filter { $0.key.channel == .system && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start }
+        let valid = activities.filter {
+            $0.key.channel == channel && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start
+        }
         let grouped = Dictionary(grouping: valid, by: \.key)
         struct Vote { var seconds = 0.0; var polls: Set<Int> = []; var person: MeetingSpeakerParticipant }
         var winners: [MeetingSpeakerKey: Vote] = [:]
@@ -193,14 +213,18 @@ public struct MeetingSpeakerTimeline: Sendable {
             }
             let duration = union.reduce(0) { $0 + $1.1 - $1.0 }
             var votes: [String: Vote] = [:]
+            var coveredThrough = -Double.infinity
             for index in 1..<observations.count {
                 let a = observations[index - 1], b = observations[index]
                 guard a.time.isFinite, b.time.isFinite, a.time >= 0, b.time > a.time,
                       b.time - a.time <= MeetingSpeakerAccessibilitySamplingPolicy.maximumVoteGap,
                       a.continuity == b.continuity, a.frame.scope == b.frame.scope, a.frame.app == b.frame.app,
                       let person = a.frame.active, person == b.frame.active else { continue }
-                let seconds = union.reduce(0) { $0 + max(0, min($1.1, b.time) - max($1.0, a.time)) }
+                let intervalStart = max(a.time, coveredThrough)
+                guard intervalStart < b.time else { continue }
+                let seconds = union.reduce(0) { $0 + max(0, min($1.1, b.time) - max($1.0, intervalStart)) }
                 guard seconds > 0 else { continue }
+                coveredThrough = b.time
                 var vote = votes[person.id] ?? Vote(person: person)
                 vote.seconds += seconds; vote.polls.formUnion([index - 1, index]); votes[person.id] = vote
             }
@@ -217,6 +241,7 @@ public struct MeetingSpeakerTimeline: Sendable {
         for (key, vote) in winners where counts[vote.person.id] == 1
             && displayNameCounts[vote.person.name.precomposedStringWithCanonicalMapping.lowercased()] == 1 {
             result.names[key] = .init(name: vote.person.name, provenance: .accessibility)
+            if vote.person.isSelf { result.explicitSelf.insert(key) }
         }
         return result
     }

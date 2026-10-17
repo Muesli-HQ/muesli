@@ -55,6 +55,118 @@ struct TranscriptChatMessageTests {
         #expect(messages[0].text == "Product: launch timeline changed.")
         #expect(messages[1].text == "This line has no speaker.")
     }
+
+    @Test("live microphone headings are parsed as speaker labels")
+    func microphoneHeading() {
+        let messages = TranscriptChatMessage.messages(from: "[10:30:00] Microphone: Still verifying who spoke.")
+
+        #expect(messages.count == 1)
+        #expect(messages[0].timestamp == "10:30:00")
+        #expect(messages[0].speaker == "Microphone")
+        #expect(messages[0].text == "Still verifying who spoke.")
+        #expect(!messages[0].isUser)
+    }
+
+    @Test("legacy custom headings preserve literal backslashes before colons")
+    func legacyCustomHeadingPreservesBackslashBeforeColon() {
+        let messages = TranscriptChatMessage.messages(from: "[10:00:00] Team\\: Room: Words")
+
+        #expect(messages.count == 1)
+        #expect(messages[0].speaker == "Team\\: Room")
+        #expect(messages[0].text == "Words")
+    }
+
+    @Test("structured resumed state still displays the prior transcript prefix")
+    func structuredResumeDisplaysPriorText() {
+        let epoch = UUID()
+        let current = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "current")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: current, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: current, timestamp: "10:30:00", start: 0, end: 2, text: "New words")])
+        state.renderedPrefix = "[10:00:00] Speaker 1: Prior words\n\n— Resumed —\n\n"
+        state.renderedPrefixSpeakerLabels = ["Speaker 1"]
+
+        let messages = TranscriptChatMessage.messages(from: state.render(), speakerState: state)
+
+        #expect(messages.map(\.speaker) == ["Speaker 1", nil, "Microphone"])
+        #expect(messages.map(\.text) == ["Prior words", "— Resumed —", "New words"])
+    }
+
+    @Test("structured resume parses an exact manually assigned long speaker name")
+    func structuredResumeParsesLongManualSpeakerName() {
+        let epoch = UUID()
+        let priorKey = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "prior")
+        let currentKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "current")
+        let longName = "Dr. Alexandra Montgomery-Wellington, Chief Negotiator"
+        let priorState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: priorKey, rank: 1, fallbackLabel: "Speaker 1",
+                             assignment: .init(name: longName, provenance: .manual))],
+            turns: [.init(speaker: priorKey, timestamp: "10:00:00", start: 0, end: 2, text: "Prior words")])
+        let prior = MeetingResumePolicy.transcriptForResume(priorState.render(), speakerState: priorState)
+        var currentState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: currentKey, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: currentKey, timestamp: "10:30:00", start: 0, end: 2, text: "New words")])
+        currentState.renderedPrefix = nil
+        let resumed = MeetingResumePolicy.speakerStateForResume(
+            priorTranscript: prior.text,
+            currentTranscript: currentState.render(),
+            currentState: currentState,
+            priorSpeakerLabels: prior.speakerLabels
+        )!
+
+        let messages = TranscriptChatMessage.messages(from: resumed.render(), speakerState: resumed)
+        #expect(messages.map(\.speaker) == [longName, nil, "Microphone"])
+        #expect(messages.map(\.text) == ["Prior words", "— Resumed —", "New words"])
+    }
+
+    @Test("structured resume parses a manual speaker name containing a colon")
+    func structuredResumeParsesColonManualSpeakerName() {
+        let epoch = UUID()
+        let priorKey = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "prior")
+        let currentKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "current")
+        let priorState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: priorKey, rank: 1, fallbackLabel: "Speaker 1",
+                             assignment: .init(name: "Team: Example", provenance: .manual))],
+            turns: [.init(speaker: priorKey, timestamp: "10:00:00", start: 0, end: 2, text: "Prior words")])
+        let prior = MeetingResumePolicy.transcriptForResume(priorState.render(), speakerState: priorState)
+        let currentState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: currentKey, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: currentKey, timestamp: "10:30:00", start: 0, end: 2, text: "New words")])
+        let resumed = MeetingResumePolicy.speakerStateForResume(
+            priorTranscript: prior.text,
+            currentTranscript: currentState.render(),
+            currentState: currentState,
+            priorSpeakerLabels: prior.speakerLabels
+        )!
+
+        let messages = TranscriptChatMessage.messages(from: resumed.render(), speakerState: resumed)
+        #expect(messages.map(\.speaker) == ["Team: Example", nil, "Microphone"])
+        #expect(messages.map(\.text) == ["Prior words", "— Resumed —", "New words"])
+    }
+
+    @Test("legacy escaped resumed speaker labels remain distinct")
+    func structuredResumeDisambiguatesEscapedManualNames() {
+        let epoch = UUID()
+        let currentKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "current")
+        let priorTranscript = #"""
+        [10:00:00] A\:q: First person's words
+        [10:00:02] A\\\:q: Second person's words
+        """#
+        let currentState = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: currentKey, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: currentKey, timestamp: "10:30:00", start: 0, end: 2, text: "New words")])
+        let resumed = MeetingResumePolicy.speakerStateForResume(
+            priorTranscript: priorTranscript,
+            currentTranscript: currentState.render(),
+            currentState: currentState,
+            priorSpeakerLabels: ["A:q", #"A\:q"#]
+        )!
+
+        let messages = TranscriptChatMessage.messages(from: resumed.render(), speakerState: resumed)
+
+        #expect(messages.map(\.speaker) == ["A:q", #"A\:q"#, nil, "Microphone"])
+        #expect(messages.map(\.text) == ["First person's words", "Second person's words", "— Resumed —", "New words"])
+    }
 }
 
 extension TranscriptChatMessageTests {

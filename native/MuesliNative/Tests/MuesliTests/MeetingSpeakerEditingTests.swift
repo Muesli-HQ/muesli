@@ -183,8 +183,38 @@ extension MeetingSpeakerEditingTests {
         let model = MeetingSpeakerEditorModel()
         model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
 
-        await model.updateMatchingTurns(query: "target", version: version)
+        await model.updateMatchingTurns(.init(query: "target", version: version, speakerRevision: state.revision))
 
         #expect(model.matchingTurns.map(\.text) == ["Search target"])
+    }
+
+    @MainActor @Test func editorSearchRefreshesAfterGenericSpeakerReassignment() async {
+        let epoch = UUID()
+        let originalKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner")
+        let reassignedKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "guest")
+        let version = MeetingTranscriptVersion(generation: 1, digest: "same-transcript")
+        var state = MeetingSpeakerState(epoch: epoch, speakers: [
+            .init(key: originalKey, rank: 1, fallbackLabel: "Microphone"),
+            .init(key: reassignedKey, rank: 2, fallbackLabel: "Microphone"),
+        ], turns: [
+            .init(speaker: originalKey, timestamp: "00:00:01", start: 1, end: 2, text: "Shared audio"),
+        ])
+        let model = MeetingSpeakerEditorModel()
+        model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
+
+        let originalSearch = MeetingSpeakerSearchInput(query: "Microphone", version: version, speakerRevision: state.revision)
+        await model.updateMatchingTurns(originalSearch)
+        #expect(model.matchingTurns.map(\.speaker) == [originalKey])
+
+        let reassigned = state.correct(.reassign(state.turns[0].id, to: reassignedKey))
+        #expect(reassigned)
+        state.revision += 1
+        model.snapshot = MeetingSpeakerSnapshot(state: state, version: version, summaryIsStale: false)
+
+        let updatedSearch = MeetingSpeakerSearchInput(query: "Microphone", version: version, speakerRevision: state.revision)
+        #expect(originalSearch != updatedSearch)
+        await model.updateMatchingTurns(updatedSearch)
+
+        #expect(model.matchingTurns.map(\.speaker) == [reassignedKey])
     }
 }

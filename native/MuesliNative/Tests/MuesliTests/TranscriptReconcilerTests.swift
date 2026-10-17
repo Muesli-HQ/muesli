@@ -170,6 +170,108 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.micSegments.count == 1)
     }
 
+    @Test("single significant mic cluster remains available for identity matching")
+    func singleSpeakerMicIdentitySurvivesReconciliation() {
+        let rawIdentity = [makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 60)]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [SpeechSegment(start: 0, end: 10, text: "Owner words")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: rawIdentity
+        )
+
+        #expect(reconciled.micDiarizationSegments == nil)
+        #expect(reconciled.micIdentitySegments?.map(\.speakerId) == ["owner_cluster"])
+
+        var state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: reconciled.systemSegments,
+            diarizationSegments: reconciled.diarizationSegments,
+            micDiarizationSegments: reconciled.micDiarizationSegments,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: UUID(),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: reconciled.micIdentitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: state.epoch, channel: .microphone, clusterID: "owner_cluster")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Example", profileID: UUID())
+        #expect(state.render().contains("Example (You): Owner words"))
+    }
+
+    @Test("owner recognition keeps guessed mixed-chunk speech generic")
+    func ownerRecognitionKeepsGuessedMixedChunkGeneric() {
+        let text = "Our team mapped the full launch plan, reviewed every milestone, assigned the owners, and discussed the key risks in detail. Yes. We then continued with the complete rollout checklist, its dependencies, and the remaining release decisions in detail."
+        let micTurns = MeetingSession.segmentsFromFinalizedText(
+            text,
+            timing: MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 160_000)
+        )
+        #expect(micTurns.count == 1)
+        #expect(micTurns[0].text == text)
+
+        let diarization = [
+            makeDiarSeg(speakerId: "owner", start: 0, end: 5.5),
+            makeDiarSeg(speakerId: "guest", start: 5.5, end: 6),
+            makeDiarSeg(speakerId: "owner_after", start: 6, end: 10),
+        ]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: micTurns,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: diarization,
+            preserveMicrophoneIdentityBoundaries: true
+        )
+        var state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: reconciled.micDiarizationSegments,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: UUID(),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: reconciled.micIdentitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: state.epoch, channel: .microphone, clusterID: "owner")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Enrolled owner", profileID: UUID())
+
+        let guestTurn = state.turns.first { $0.text.contains("Yes.") }
+        #expect(guestTurn != nil)
+        #expect(guestTurn?.speaker.clusterID != "owner")
+    }
+
+    @Test("owner recognition preserves a brief guest boundary behind a dominant owner")
+    func ownerRecognitionPreservesRawMicSpeakerBoundaries() {
+        let owner = makeDiarSeg(speakerId: "owner", start: 0, end: 594)
+        let guest = makeDiarSeg(speakerId: "guest", start: 594, end: 603)
+        let micTurns = [
+            SpeechSegment(start: 0, end: 594, text: "Owner words."),
+            SpeechSegment(start: 594, end: 603, text: "Guest reply."),
+        ]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: micTurns,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [owner, guest],
+            preserveMicrophoneIdentityBoundaries: true
+        )
+
+        #expect(reconciled.micDiarizationSegments == nil)
+        #expect(reconciled.micSegments.map(\.text) == ["Owner words.", "Guest reply."])
+        let state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: UUID(),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: reconciled.micIdentitySegments
+        )
+        #expect(state.turns.map(\.speaker.clusterID) == ["owner", "guest"])
+    }
+
     @Test("split mic turns get separate local speaker labels in the transcript")
     func splitMicTurnsGetSeparateLabels() {
         let micDiarization = significant([

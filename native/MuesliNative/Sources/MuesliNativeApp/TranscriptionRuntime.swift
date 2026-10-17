@@ -137,6 +137,7 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var diarizerVoiceModelIdentity: String?
     private var isDiarizerLoadInProgress = false
     private var activeDiarizerLoadID: UUID?
     private var diarizerLoadTask: Task<Void, Never>?
@@ -830,6 +831,7 @@ actor TranscriptionCoordinator {
             let diarizer = DiarizerManager()
             diarizer.initialize(models: models)
             diarizerManager = diarizer
+            diarizerVoiceModelIdentity = try? OwnerVoiceExtractor.modelIdentity()
             diarizerDiagnostics.ready(context, startedAt: startedAt)
             fputs(
                 "[muesli-native] Speaker diarization loaded (compute: \(policy.computePolicy.rawValue))\n",
@@ -1140,6 +1142,60 @@ actor TranscriptionCoordinator {
         let speakerCount = Set(result.segments.map(\.speakerId)).count
         fputs("[muesli-native] diarization complete: \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
         return result
+    }
+
+    func ownerVoiceModelIdentity() -> String? { diarizerVoiceModelIdentity }
+
+    func extractOwnerVoice(samples: [Float]) async throws -> OwnerVoiceWindow {
+        guard !samples.isEmpty, samples.count <= 160_000, let vadManager else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        let speech = try await vadManager.segmentSpeechAudio(samples, config: VadSegmentationConfig(maxSpeechDuration: 10, speechPadding: 0))
+        try Task.checkCancellation()
+        let clean = speech.flatMap { $0 }
+        guard !clean.isEmpty else { return OwnerVoiceWindow(embedding: [], speechSeconds: 0, hasOverlap: false) }
+        guard let manager = diarizerManager, manager.isAvailable else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        // The manager is coordinator-owned. No await while mutable speaker state is swapped.
+        let session = RecordedAudioDiarizationSession(manager: manager)
+        let result = try session.withSpeakerState { manager in
+            try manager.performCompleteDiarization(clean, sampleRate: 16_000)
+        }
+        let mixed = Set(result.segments.map(\.speakerId)).count != 1
+        let embedding = mixed ? [] : try manager.extractSpeakerEmbedding(from: clean)
+        return OwnerVoiceWindow(embedding: embedding, speechSeconds: Double(clean.count) / 16_000, hasOverlap: mixed)
+    }
+
+    /// Independent samples from the cleaned mic file, never repeated diarizer centroids.
+    func ownerMicrophoneCluster(at url: URL, segments: [TimedSpeakerSegment], profile: OwnerVoiceProfile) async throws -> String? {
+        guard profile.modelIdentity == diarizerVoiceModelIdentity, (try? profile.validate()) != nil else { return nil }
+        let ids = Set(segments.map(\.speakerId))
+        guard !ids.isEmpty, ids.count <= 20 else { return nil }
+        let reader = try RecordingAudioWindowReader(url: url, seconds: 3, overlapSeconds: 0)
+        defer { reader.close() }
+        var evidence: [String: [OwnerVoiceWindow]] = [:]
+        var scanned = 0
+        while OwnerVoiceMatcher.shouldCollectMoreEvidence(clusterIDs: ids, evidence: evidence),
+              let window = try reader.next() {
+            scanned += 1
+            guard scanned <= 4_800 else { return nil }
+            let intersecting = segments.filter { Double($0.startTimeSeconds) < window.end && Double($0.endTimeSeconds) > window.start }
+            let active = Set(intersecting.map(\.speakerId))
+            guard active.count == 1, let id = active.first,
+                  (evidence[id]?.count ?? 0) < OwnerVoiceMatcher.maximumEvidenceWindowsPerCluster else { continue }
+            var cursor = window.start
+            for segment in intersecting.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+                if Double(segment.startTimeSeconds) > cursor + 0.001 { break }
+                cursor = max(cursor, Double(segment.endTimeSeconds))
+            }
+            guard cursor >= window.end - 0.001 else { continue }
+            let samples = try AudioConverter().resampleAudioFile(window.url)
+            let extracted = try await extractOwnerVoice(samples: samples)
+            try Task.checkCancellation()
+            evidence[id, default: []].append(extracted)
+        }
+        return OwnerVoiceMatcher(profile: profile).uniqueOwner(clusterIDs: ids, evidence: evidence)
     }
 
     func getVadManager() -> VadManager? {

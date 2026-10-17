@@ -58,7 +58,6 @@ SoundControllerTests
 StreamingVadControllerTests
 SystemTurnNormalizerTests
 TelemetryRuntimeConfigurationTests
-TranscriptChatMessageTests
 TranscriptCleanupBackendOptionTests
 UpcomingMeetingsWindowTests
 UpdateActionRoutingTests

@@ -6,6 +6,9 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
+    /// Raw microphone cluster IDs retained for owner recognition, even when
+    /// significance filtering leaves the displayed mic channel generic.
+    let micIdentitySegments: [TimedSpeakerSegment]?
     /// Significant in-room speakers only; nil when the mic channel stays "You".
     var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
@@ -37,12 +40,19 @@ enum TranscriptReconciler {
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
-        micDiarizationSegments: [TimedSpeakerSegment]? = nil
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
+        preserveMicrophoneIdentityBoundaries: Bool = false
     ) -> ReconciledTranscriptInputs {
         let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments)
-        let micSpeaker = micSpeakerResolver(for: localDiarization)
-        // With several local speakers, attribute per sentence before merging back.
-        let attributableMicTurns = micSpeaker == nil ? micTurns : MicTurnNormalizer.sentenceSegments(micTurns)
+        let micSpeaker = micSpeakerResolver(for: preserveMicrophoneIdentityBoundaries
+            ? micDiarizationSegments
+            : localDiarization)
+        // Sentence timing is interpolated from text length, so it cannot establish
+        // owner identity inside a mixed chunk. Preserve the original range for the
+        // owner path; the formatter leaves ranges crossing speakers generic.
+        let attributableMicTurns = micSpeaker == nil || preserveMicrophoneIdentityBoundaries
+            ? micTurns
+            : MicTurnNormalizer.sentenceSegments(micTurns)
         let normalizedMicTurns = mergeReadableSegments(sortedSegments(attributableMicTurns), speakerOf: micSpeaker)
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
         let windows = buildWindows(
@@ -63,6 +73,7 @@ enum TranscriptReconciler {
             micSegments: sortedSegments(keptMicTurns),
             systemSegments: sortedSegments(keptSystemTurns),
             diarizationSegments: diarizationSegments,
+            micIdentitySegments: micDiarizationSegments,
             micDiarizationSegments: localDiarization
         )
     }

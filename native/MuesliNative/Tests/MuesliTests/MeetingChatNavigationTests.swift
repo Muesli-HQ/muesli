@@ -22,14 +22,16 @@ struct MeetingChatNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         )
         let refreshed = MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 1
+            summaryFreshnessRevision: 1,
+            speakerStateRevision: 0
         )
 
         #expect(initial == MeetingSpeakerLoadKey(
@@ -37,30 +39,42 @@ struct MeetingChatNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Changed transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Changed notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
             status: .processing,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 0
         ))
         #expect(initial != refreshed)
+        #expect(initial != MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerStateRevision: 1
+        ))
     }
 
     @Test func summaryFreshnessRevisionsAreScopedToChangedMeetings() {
@@ -305,6 +319,49 @@ struct MeetingChatNavigationTests {
         #expect(messages.count == 2)
         #expect(messages[0].speaker == "Team: Example")
         #expect(messages[0].text == "A\nB")
+    }
+
+    @Test func structuredTranscriptCitationFindsEscapedSpeakerLabels() {
+        let epoch = UUID()
+        let key = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "speaker")
+        let speaker = MeetingSpeaker(
+            key: key,
+            rank: 1,
+            fallbackLabel: "Speaker 1",
+            assignment: .init(name: "Team: Example\\Voice", provenance: .manual)
+        )
+        let state = MeetingSpeakerState(
+            epoch: epoch,
+            speakers: [speaker],
+            turns: [.init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Target passage")]
+        )
+        let transcript = state.render()
+        let targetRange = (transcript as NSString).range(of: "Target passage")
+
+        #expect(transcript.contains("Team\\: Example\\\\Voice"))
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(
+            in: transcript,
+            range: targetRange,
+            speakerState: state
+        ) == 0)
+    }
+
+    @Test func structuredTranscriptCitationIncludesResumedPrefixMessages() {
+        let epoch = UUID()
+        let current = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "current")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: current, rank: 1, fallbackLabel: "Microphone")],
+            turns: [.init(speaker: current, timestamp: "10:30:00", start: 0, end: 2, text: "Current words")])
+        state.renderedPrefix = "[10:00:00] Speaker 1: Prior words\n[10:15:00] Team: Example: More prior words\n\n— Resumed —\n\n"
+        state.renderedPrefixSpeakerLabels = ["Speaker 1", "Team: Example"]
+        let transcript = state.render()
+        let priorRange = (transcript as NSString).range(of: "Prior words")
+        let secondPriorRange = (transcript as NSString).range(of: "More prior words")
+        let currentRange = (transcript as NSString).range(of: "Current words")
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: priorRange, speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: secondPriorRange, speakerState: state) == 1)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: currentRange, speakerState: state) == 3)
     }
 
     @Test func transcriptCitationWaitsForItsMessageRowToLoad() {
