@@ -102,17 +102,40 @@ struct MeetingsNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         )
         let refreshed = MeetingSpeakerLoadKey(
             id: 7,
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 1
+            summaryFreshnessRevision: 1,
+            speakerSnapshotRevision: 0
         )
 
         #expect(initial != refreshed)
+    }
+
+    @Test func speakerCorrectionsCanRefreshPresentationWithoutTextChanges() {
+        let initial = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
+        )
+        let afterCorrection = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 1
+        )
+
+        #expect(initial != afterCorrection)
     }
 
     private func makeController(

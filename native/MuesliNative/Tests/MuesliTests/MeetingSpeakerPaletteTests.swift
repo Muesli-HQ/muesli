@@ -30,6 +30,37 @@ struct MeetingSpeakerPaletteTests {
         }
     }
 
+    @Test func mergedSelfUsesSurvivorPaletteColourInStructuredMessages() {
+        let epoch = UUID()
+        let you = MeetingSpeaker(
+            key: .init(epoch: epoch, channel: .microphone, clusterID: "source"),
+            rank: 1, fallbackLabel: "You", isSelf: true
+        )
+        let remote = MeetingSpeaker(
+            key: .init(epoch: epoch, channel: .system, clusterID: "remote"),
+            rank: 2, fallbackLabel: "Speaker 1"
+        )
+        var state = MeetingSpeakerState(epoch: epoch, speakers: [you, remote], turns: [
+            .init(speaker: you.key, timestamp: "00:00:01", start: 1, end: 2, text: "Local voice"),
+            .init(speaker: remote.key, timestamp: "00:00:02", start: 2, end: 3, text: "Remote voice"),
+        ])
+        let targetColour = MeetingSpeakerPalette.colour(for: remote.key, isSelf: false, isPerson: true)
+        let mergedSelf = state.correct(.merge(you.key, into: remote.key))
+        #expect(mergedSelf)
+
+        let messages = TranscriptChatMessage.messages(from: state.render(), speakerState: state)
+
+        #expect(messages.count == 2)
+        #expect(messages.allSatisfy { $0.isUser && $0.speakerPaletteIsSelf == false })
+        #expect(messages.allSatisfy {
+            MeetingSpeakerPalette.colour(
+                for: $0.speakerKey,
+                isSelf: $0.speakerPaletteIsSelf ?? $0.isUser,
+                isPerson: $0.speakerIsPerson ?? false
+            ) == targetColour
+        })
+    }
+
     private func contrast(_ a: Int, _ b: Int) -> Double {
         func luminance(_ rgb: Int) -> Double {
             let channels = [16, 8, 0].map { shift -> Double in

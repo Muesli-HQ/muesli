@@ -38,9 +38,31 @@ struct MeetingSpeakerStoreTests {
         let version = try #require(try store.meetingTranscriptVersion(id: id))
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
         let snapshot = try #require(try store.meetingSpeakerSnapshot(id: id))
+        let transcript = try #require(try store.meeting(id: id)?.rawTranscript)
 
-        try store.updateMeetingTranscript(id: id, rawTranscript: state.render())
+        // Recreate the trigger shipped by the first S3 build to exercise its upgrade path.
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { if let db { sqlite3_close(db) } }
+        let oldTrigger = """
+        DROP TRIGGER local_meeting_speaker_text_changed;
+        CREATE TRIGGER local_meeting_speaker_text_changed
+        AFTER UPDATE OF raw_transcript ON meetings
+        BEGIN
+            INSERT INTO local_meeting_transcript_versions(meeting_id, generation, summary_stale)
+            VALUES (NEW.id, 1, CASE WHEN COALESCE(OLD.raw_transcript, '') != COALESCE(NEW.raw_transcript, '') THEN 1 ELSE 0 END)
+            ON CONFLICT(meeting_id) DO UPDATE SET generation = generation + 1,
+                summary_stale = MAX(summary_stale, excluded.summary_stale);
+            UPDATE local_meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id;
+        END;
+        """
+        #expect(sqlite3_exec(db, oldTrigger, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        db = nil
 
+        try store.migrateIfNeeded()
+
+        try store.updateMeetingTranscript(id: id, rawTranscript: transcript)
         let retainedVersion = try #require(try store.meetingTranscriptVersion(id: id))
         #expect(retainedVersion == version)
         let retained = try #require(try store.meetingSpeakerSnapshot(id: id))
@@ -389,5 +411,27 @@ struct MeetingSpeakerStoreTests {
             throw NSError(domain: "MeetingSpeakerStoreTests", code: 3)
         }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+}
+
+extension MeetingSpeakerStoreTests {
+    @Test func correctionUsesTheSnapshotThatProducedIt() throws {
+        let (store, id, state) = try fixture()
+        let version = try #require(try store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let captured = try #require(try store.meetingSpeakerSnapshot(id: id))
+        var first = captured.state, stale = captured.state
+        let firstRename = first.correct(.rename(state.speakers[0].key, "First"))
+        #expect(firstRename)
+        let staleRename = stale.correct(.rename(state.speakers[0].key, "Stale"))
+        #expect(staleRename)
+        #expect(try store.updateMeetingSpeakerState(id: id, state: first, expected: captured) == .updated)
+        #expect(try store.updateMeetingSpeakerState(id: id, state: stale, expected: captured) == .conflict)
+        let current = try #require(try store.meetingSpeakerSnapshot(id: id))
+        var undone = current.state
+        let didUndo = undone.correct(.undo)
+        #expect(didUndo)
+        #expect(try store.updateMeetingSpeakerState(id: id, state: undone, expected: current) == .updated)
+        #expect(try store.meeting(id: id)?.rawTranscript == "[00:00:01] Speaker 1: Original words")
     }
 }

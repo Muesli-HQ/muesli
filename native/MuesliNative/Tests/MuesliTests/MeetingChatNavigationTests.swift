@@ -22,14 +22,16 @@ struct MeetingChatNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         )
         let refreshed = MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 1
+            summaryFreshnessRevision: 1,
+            speakerSnapshotRevision: 0
         )
 
         #expect(initial == MeetingSpeakerLoadKey(
@@ -37,28 +39,32 @@ struct MeetingChatNavigationTests {
             transcript: "Transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Changed transcript",
             notes: "Notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Changed notes",
             status: .completed,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         ))
         #expect(initial != MeetingSpeakerLoadKey(
             id: 1,
             transcript: "Transcript",
             notes: "Notes",
             status: .processing,
-            summaryFreshnessRevision: 0
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
         ))
         #expect(initial != refreshed)
     }
@@ -234,6 +240,16 @@ struct MeetingChatNavigationTests {
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: repeated) == 2)
     }
 
+    @Test func syncedRenamedSpeakerLabelsStayOutOfTranscriptSpeech() {
+        let messages = TranscriptChatMessage.messages(from: "[00:00:01] Project lead: Let's begin\nProject lead: An unformatted line")
+
+        #expect(messages.count == 2)
+        #expect(messages[0].speaker == "Project lead")
+        #expect(messages[0].text == "Let's begin")
+        #expect(messages[1].speaker == nil)
+        #expect(messages[1].text == "Project lead: An unformatted line")
+    }
+
     @Test func structuredTranscriptCitationUsesTurnIDsAcrossEmbeddedNewlines() {
         let epoch = UUID()
         let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
@@ -268,6 +284,12 @@ struct MeetingChatNavigationTests {
 
         #expect(MeetingChatDocumentTarget.loadedTranscriptScrollTarget(messages: [], highlightedMessageID: 1) == nil)
         #expect(MeetingChatDocumentTarget.loadedTranscriptScrollTarget(messages: [message], highlightedMessageID: 1) == 1)
+    }
+
+    @Test func transcriptLoadingIsNotReportedAsMissingContent() {
+        #expect(MeetingTranscriptContentState(hasLoaded: false, messageCount: 0) == .loading)
+        #expect(MeetingTranscriptContentState(hasLoaded: true, messageCount: 0) == .empty)
+        #expect(MeetingTranscriptContentState(hasLoaded: true, messageCount: 1) == .messages)
     }
 
     @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() async throws {
