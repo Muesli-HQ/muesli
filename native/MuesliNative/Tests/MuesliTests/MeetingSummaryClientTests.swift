@@ -540,6 +540,19 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("Decision: launch the new workflow"))
     }
 
+    @Test func titleAndFailurePromptsShowHumanReadableSpeakerLabels() {
+        let transcript = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:05", speaker: "Team: Example", text: "Ship Friday."
+        )
+
+        #expect(MeetingSummaryClient.titlePrompt(transcript: transcript).contains("Team: Example"))
+        #expect(!MeetingSummaryClient.titlePrompt(transcript: transcript).contains(#"Team\: Example"#))
+        let failure = MeetingSummaryClient.summaryFailureNotes(transcript: transcript,
+            meetingTitle: "Planning", error: CocoaError(.fileReadUnknown))
+        #expect(failure.contains("Team: Example"))
+        #expect(!failure.contains(#"Team\: Example"#))
+    }
+
     @Test("title prompt bounds oversized written notes")
     func titlePromptBoundsOversizedWrittenNotes() {
         let prompt = MeetingSummaryClient.titlePrompt(
@@ -941,6 +954,35 @@ struct MeetingSummaryClientTests {
         #expect(repeatedFailure.contains("- Old written note"))
         #expect(repeatedFailure.contains("Newest transcript"))
         #expect(!repeatedFailure.contains("## Raw Transcript\n\nNew transcript"))
+    }
+
+    @Test("failed regeneration compares escaped transcripts in their readable form")
+    func failedRegenerationReplacesReadableEscapedTranscript() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let previousTranscript = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example", text: "Old words"
+        )
+        let nextTranscript = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:01", speaker: "Team: Example", text: "New words"
+        )
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: previousTranscript,
+            meetingTitle: "Launch review",
+            error: error
+        )
+
+        let regenerated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            previousTranscript: previousTranscript,
+            transcript: nextTranscript,
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: nil
+        )
+
+        #expect(regenerated.hasSuffix("\n\n## Raw Transcript\n\n[00:00:01] Team: Example: New words"))
+        #expect(!regenerated.contains("Old words"))
+        #expect(!regenerated.contains(#"Team\: Example"#))
     }
 
     @Test("failed regeneration ignores transcript headings inside written notes")

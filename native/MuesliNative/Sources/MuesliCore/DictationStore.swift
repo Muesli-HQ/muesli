@@ -1108,6 +1108,7 @@ public final class DictationStore {
         WHERE deleted_at IS NULL AND (
             title LIKE ? ESCAPE '\\'
             OR raw_transcript LIKE ? ESCAPE '\\'
+            OR raw_transcript LIKE ? ESCAPE '\\'
             OR formatted_notes LIKE ? ESCAPE '\\'
             OR manual_notes LIKE ? ESCAPE '\\'
             OR EXISTS (
@@ -1130,13 +1131,15 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         let pattern = Self.escapeLikePattern(query) as NSString
+        let escapedSpeakerPattern = Self.escapeLikePattern(MeetingSpeakerState.escapedTranscriptSpeakerLabel(query)) as NSString
         sqlite3_bind_text(statement, 1, pattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 2, pattern.utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, pattern.utf8String, -1, nil)
+        sqlite3_bind_text(statement, 3, escapedSpeakerPattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, pattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 5, pattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 6, pattern.utf8String, -1, nil)
-        sqlite3_bind_int(statement, 7, Int32(limit))
+        sqlite3_bind_text(statement, 7, pattern.utf8String, -1, nil)
+        sqlite3_bind_int(statement, 8, Int32(limit))
 
         var rows: [MeetingRecord] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -5988,7 +5991,7 @@ extension DictationStore {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
         guard try speakerTranscriptVersion(id: id, db: db) == expected else { return .conflict }
-        guard state.isValid, state.revision == 0, MeetingSpeakerState.digest(state.render()) == expected.digest else { return .invalidated }
+        guard state.isValid, state.revision == 0, state.matchesTranscriptDigest(expected.digest) else { return .invalidated }
         let priorEpoch = try speakerRows("SELECT epoch FROM local_meeting_speaker_state WHERE meeting_id = ?", [String(id)], db: db).first?.first
         guard priorEpoch != state.epoch.uuidString else { return .conflict }
         try writeSpeakerState(id: id, state: state, version: expected, db: db)
@@ -6009,7 +6012,7 @@ extension DictationStore {
         let state = snapshot.state
         guard state.isValid,
               snapshot.version.digest == expected.digest,
-              MeetingSpeakerState.digest(state.render()) == expected.digest else { return .invalidated }
+              state.matchesTranscriptDigest(expected.digest) else { return .invalidated }
         guard let row = try speakerRows(
             "SELECT epoch, state_json, generation, rendered_hash, authoritative FROM local_meeting_speaker_state WHERE meeting_id = ?",
             [String(id)],
@@ -6062,7 +6065,7 @@ extension DictationStore {
             """, [String(id)], db: db).first,
               let state = try? JSONDecoder().decode(MeetingSpeakerState.self, from: Data(row[0].utf8)), state.isValid,
               let current = try speakerTranscriptVersion(id: id, db: db), current.generation == Int64(row[1]),
-              current.digest == row[2], MeetingSpeakerState.digest(state.render()) == current.digest else { return nil }
+              current.digest == row[2], state.matchesTranscriptDigest(current.digest) else { return nil }
         return .init(state: state, version: current, summaryIsStale: row[3] == "1")
     }
 

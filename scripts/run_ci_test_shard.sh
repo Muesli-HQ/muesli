@@ -21,6 +21,8 @@ case "${shard}" in
       InsightsTests
       DictationStoreTests
       MeetingSpeakerStateTests
+      MeetingSpeakerAccessibilityTests
+      MeetingSpeakerAccessibilityMonitorTests
       MeetingSpeakerEditingTests
       MeetingSpeakerPaletteTests
       MeetingSpeakerStoreTests
@@ -153,6 +155,7 @@ case "${shard}" in
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
+      MeetingTranscriptEditorTests
       CustomLLMAPIKeyResolutionTests
       CustomLLMHeaderPropagationTests
       CustomLLMRequestHeadersTests
