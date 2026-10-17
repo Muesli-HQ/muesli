@@ -1267,6 +1267,35 @@ struct MeetingsNavigationTests {
         ) == .completed)
     }
 
+    @Test("transcript validation failure after processing starts restores meeting status")
+    func staleTranscriptVersionRestoresMeetingStatus() throws {
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Existing meeting", savedRecordingPath: nil)
+        let meeting = try #require(try store.meeting(id: meetingID))
+        var didSetProcessing = false
+
+        #expect(throws: MeetingRetranscriptionError.self) {
+            try MuesliController.beginRetranscription(
+                setProcessingStatus: { try store.updateMeetingStatus(id: meetingID, status: .processing) },
+                loadTranscriptVersion: { try store.meetingTranscriptVersion(id: meetingID) },
+                expectedTranscriptDigest: MeetingSpeakerState.digest("stale transcript"),
+                didSetProcessing: &didSetProcessing
+            )
+        }
+
+        #expect(didSetProcessing)
+        let restoredStatus = MuesliController.retranscriptionFailureStatus(
+            originalStatus: meeting.status,
+            didSetProcessing: didSetProcessing,
+            error: MeetingRetranscriptionError.recordingUnavailable
+        )
+        #expect(restoredStatus == .completed)
+        if let restoredStatus {
+            try store.updateMeetingStatus(id: meetingID, status: restoredStatus)
+        }
+        #expect(try store.meeting(id: meetingID)?.status == .completed)
+    }
+
     @Test("cached manual notes are persisted before debounce")
     func cachedManualNotesPersistImmediately() throws {
         let store = try makeStore()

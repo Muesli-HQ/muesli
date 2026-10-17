@@ -66,8 +66,8 @@ struct VoiceProfileStoreTests {
         object.removeValue(forKey: "id")
         try JSONSerialization.data(withJSONObject: object).write(to: store.profileURL)
 
-        let migrated = try #require(store.loadStored())
-        let loadedAgain = try #require(store.loadStored())
+        let migrated = try #require(try store.loadStored())
+        let loadedAgain = try #require(try store.loadStored())
         let savedObject = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: store.profileURL)) as? [String: Any])
 
         #expect(migrated.id == loadedAgain.id)

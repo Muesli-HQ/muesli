@@ -138,6 +138,7 @@ actor TranscriptionCoordinator {
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var diarizerVoiceModelIdentity: String?
+    private let liveSpeakerInferenceWorker: LiveSpeakerInferenceWorker
     private var isDiarizerLoadInProgress = false
     private var activeDiarizerLoadID: UUID?
     private var diarizerLoadTask: Task<Void, Never>?
@@ -156,12 +157,14 @@ actor TranscriptionCoordinator {
         },
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
-        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
+        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
+        liveSpeakerInferenceWorker: LiveSpeakerInferenceWorker? = nil
     ) {
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
         self.diarizerDiagnostics = diarizerDiagnostics
+        self.liveSpeakerInferenceWorker = liveSpeakerInferenceWorker ?? LiveSpeakerInferenceWorker(modelLoader: diarizerModelLoader)
     }
 
     private var _nemotron35Transcriber: Any?
@@ -1144,6 +1147,29 @@ actor TranscriptionCoordinator {
         return result
     }
 
+    func beginLiveSpeakerEpoch(_ epoch: UUID) async {
+        await liveSpeakerInferenceWorker.begin(epoch)
+    }
+
+    func endLiveSpeakerEpoch(_ epoch: UUID) async {
+        await liveSpeakerInferenceWorker.end(epoch)
+    }
+
+    func inferLiveSpeakers(epoch: UUID, window: MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment] {
+        try Task.checkCancellation()
+        guard await liveSpeakerInferenceWorker.hasEpoch(epoch) else { throw CancellationError() }
+        guard window.samples.allSatisfy(\.isFinite) else { throw OwnerVoiceEnrollmentError.invalidWindow }
+        if window.channel == .microphone {
+            guard MeetingMicrophoneSpeechGate.accepts(window.samples, speechSeconds: min(0.5, Double(window.samples.count) / 16_000)) else { return [] }
+            guard let vadManager else { throw OwnerVoiceEnrollmentError.unavailable }
+            let speech = try await vadManager.segmentSpeechAudio(window.samples, config: VadSegmentationConfig(maxSpeechDuration: 5, speechPadding: 0))
+            try Task.checkCancellation()
+            let seconds = Double(speech.reduce(0) { $0 + $1.count }) / 16_000
+            guard MeetingMicrophoneSpeechGate.accepts(window.samples, speechSeconds: seconds) else { return [] }
+        }
+        return try await liveSpeakerInferenceWorker.infer(epoch: epoch, window: window)
+    }
+
     func ownerVoiceModelIdentity() -> String? { diarizerVoiceModelIdentity }
 
     func extractOwnerVoice(samples: [Float]) async throws -> OwnerVoiceWindow {
@@ -1207,6 +1233,7 @@ actor TranscriptionCoordinator {
     }
 
     func shutdown() async {
+        await liveSpeakerInferenceWorker.shutdown()
         await fluidTranscriber.shutdown()
         await parakeetUnifiedTranscriber.shutdown()
         await whisperTranscriber.shutdown()
@@ -1225,6 +1252,7 @@ actor TranscriptionCoordinator {
                 await gemma4.shutdown()
             }
         }
+
     }
 
     private func removeFillers(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
@@ -1724,4 +1752,118 @@ actor TranscriptionCoordinator {
         }
     }
 
+}
+
+/// Owns a separate diarizer model and mutable speaker state so synchronous live
+/// diarization cannot occupy the coordinator actor used by ASR requests.
+actor LiveSpeakerInferenceWorker {
+    typealias ModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
+    typealias InferenceOverride = @Sendable (MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment]
+
+    private let modelLoader: ModelLoader
+    private let inferenceOverride: InferenceOverride?
+    private var manager: DiarizerManager?
+    private var managerLoadTask: Task<Void, Never>?
+    private var managerLoadID: UUID?
+    private var managerLoadError: Error?
+    private var sessions: [UUID: [MeetingSpeakerKey.Channel: RecordedAudioDiarizationSession]] = [:]
+
+    init(modelLoader: @escaping ModelLoader, inferenceOverride: InferenceOverride? = nil) {
+        self.modelLoader = modelLoader
+        self.inferenceOverride = inferenceOverride
+    }
+
+    func begin(_ epoch: UUID) {
+        sessions[epoch] = [:]
+        if manager == nil { managerLoadError = nil }
+    }
+
+    func end(_ epoch: UUID) {
+        sessions[epoch] = nil
+        if sessions.isEmpty {
+            managerLoadID = nil
+            managerLoadTask?.cancel()
+            managerLoadTask = nil
+            manager = nil
+            managerLoadError = nil
+        }
+    }
+    func hasEpoch(_ epoch: UUID) -> Bool { sessions[epoch] != nil }
+
+    func infer(epoch: UUID, window: MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment] {
+        try Task.checkCancellation()
+        guard sessions[epoch] != nil else { throw CancellationError() }
+        if let inferenceOverride { return try await inferenceOverride(window) }
+
+        let manager = try await loadedManager()
+        try Task.checkCancellation()
+        guard var epochSessions = sessions[epoch] else {
+            if sessions.isEmpty { self.manager = nil }
+            throw CancellationError()
+        }
+        let session = epochSessions[window.channel] ?? RecordedAudioDiarizationSession(manager: manager)
+        epochSessions[window.channel] = session
+        sessions[epoch] = epochSessions
+        let result = try session.withSpeakerState { model in
+            try model.performCompleteDiarization(window.samples, sampleRate: 16_000, atTime: window.start)
+        }
+        return RecordedAudioDiarizationSession.clippedSegments(result.segments, start: window.start, end: window.end).map {
+            .init(clusterID: $0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
+        }
+    }
+
+    func shutdown() {
+        managerLoadID = nil
+        managerLoadTask?.cancel()
+        managerLoadTask = nil
+        sessions.removeAll()
+        manager = nil
+        managerLoadError = nil
+    }
+
+    private func loadedManager() async throws -> DiarizerManager {
+        if let manager, manager.isAvailable { return manager }
+        if let managerLoadError { throw managerLoadError }
+        if managerLoadTask == nil {
+            managerLoadError = nil
+            let loadID = UUID()
+            managerLoadID = loadID
+            let loader = modelLoader
+            let policy = DiarizerRuntimePolicy.resolve(for: .current())
+            managerLoadTask = Task { [weak self] in
+                do {
+                    let models = try await loader(policy)
+                    try Task.checkCancellation()
+                    await self?.finishManagerLoad(id: loadID, result: .success(models))
+                } catch {
+                    await self?.finishManagerLoad(id: loadID, result: .failure(error))
+                }
+            }
+        }
+        let loadTask = managerLoadTask
+        await loadTask?.value
+        if let manager, manager.isAvailable { return manager }
+        if let managerLoadError { throw managerLoadError }
+        throw CancellationError()
+    }
+
+    private func finishManagerLoad(id: UUID, result: Result<DiarizerModels, Error>) {
+        guard managerLoadID == id else { return }
+        managerLoadID = nil
+        managerLoadTask = nil
+        switch result {
+        case .success(let models):
+            do {
+                let loaded = DiarizerManager()
+                loaded.initialize(models: models)
+                guard loaded.isAvailable else { throw DiarizerError.notInitialized }
+                manager = loaded
+                managerLoadError = nil
+            } catch {
+                managerLoadError = error
+            }
+        case .failure(let error):
+            managerLoadError = error
+        }
+    }
 }

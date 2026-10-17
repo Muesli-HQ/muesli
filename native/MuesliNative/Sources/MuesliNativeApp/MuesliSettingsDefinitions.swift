@@ -336,6 +336,7 @@ extension MuesliController {
             self.updatePostProcessorModel($0, for: .hosted(.openRouter))
         }
 
+        toggle("meeting_live_speakers", "Live speaker labels (experimental)", \.enableLiveSpeakerLabels)
         toggle("meeting_owner_recognition", "Recognize my voice in meetings (experimental)", \.enableMeetingOwnerRecognition,
                unavailable: { enabled in enabled && !self.config.diarizeMicrophoneAudio ? "Enable microphone diarization first." : nil },
                apply: { enabled in
