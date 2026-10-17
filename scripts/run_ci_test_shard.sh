@@ -20,6 +20,9 @@ case "${shard}" in
       ConfigStoreTests
       InsightsTests
       DictationStoreTests
+      MeetingSpeakerStateTests
+      MeetingSpeakerPaletteTests
+      MeetingSpeakerStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
       ComputerUseLocalPlannerBenchmarkTests

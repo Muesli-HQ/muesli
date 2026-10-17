@@ -500,3 +500,23 @@ struct TranscriptFormatterTests {
     }
 
 }
+
+extension TranscriptFormatterTests {
+    @Test func structuredStateRetainsChannelAndClusterKeys() {
+        let epoch = UUID()
+        let mic = [SpeechSegment(start: 0, end: 1, text: "Local words")]
+        let system = [SpeechSegment(start: 3, end: 4, text: "Remote words")]
+        let diarization = [TimedSpeakerSegment(speakerId: "raw-cluster", embedding: [], startTimeSeconds: 3, endTimeSeconds: 4, qualityScore: 1)]
+        let state = TranscriptFormatter.structured(micSegments: mic, systemSegments: system,
+            diarizationSegments: diarization, meetingStart: Date(timeIntervalSince1970: 0), epoch: epoch)
+        #expect(state.isValid)
+        #expect(state.render() == TranscriptFormatter.merge(micSegments: mic, systemSegments: system,
+            diarizationSegments: diarization, meetingStart: Date(timeIntervalSince1970: 0)))
+        #expect(state.turns[0].speaker.channel == .microphone)
+        #expect(state.turns[1].speaker.clusterID == "raw-cluster")
+        #expect(state.turns.allSatisfy { $0.speaker.epoch == epoch })
+        let fallback = TranscriptFormatter.structured(micSegments: [], systemSegments: system,
+            diarizationSegments: nil, meetingStart: Date())
+        #expect(fallback.speakers.allSatisfy { !$0.isAssignable })
+    }
+}

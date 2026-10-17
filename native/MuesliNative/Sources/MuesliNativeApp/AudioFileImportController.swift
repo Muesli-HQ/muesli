@@ -192,6 +192,7 @@ enum AudioFileImportController {
 
         // Run speaker diarization if available
         var diarizedTranscript = rawTranscript
+        var speakerState: MeetingSpeakerState?
         if let diarizerManager = await transcriptionCoordinator.getDiarizerManager(),
            diarizerManager.isAvailable {
             progress("Identifying speakers...")
@@ -200,11 +201,11 @@ enum AudioFileImportController {
                     progress("Identifying speakers · \(Int(fraction * 100))%")
                 }
                 if !speakerSegments.isEmpty {
-                    diarizedTranscript = formatTranscriptWithSpeakers(
-                        transcription: transcription,
-                        diarizationSegments: speakerSegments,
-                        meetingStart: importedTranscriptTimelineStart()
-                    )
+                    let result = structuredTranscriptWithSpeakers(
+                        transcription: transcription, diarizationSegments: speakerSegments,
+                        meetingStart: importedTranscriptTimelineStart())
+                    diarizedTranscript = result.transcript
+                    speakerState = result.speakerState
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -230,6 +231,7 @@ enum AudioFileImportController {
         progress("Generating summary...")
         let templateSnapshot = context.templateSnapshot
         let formattedNotes: String
+        let summaryIsCurrent: Bool
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
                 transcript: diarizedTranscript,
@@ -239,8 +241,10 @@ enum AudioFileImportController {
                 existingNotes: nil,
                 manualNotesToRetain: ""
             )
+            summaryIsCurrent = true
         } catch {
             fputs("[import] summary generation failed: \(error)\n", stderr)
+            summaryIsCurrent = false
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: diarizedTranscript,
                 meetingTitle: generatedTitle,
@@ -270,7 +274,9 @@ enum AudioFileImportController {
             selectedTemplateID: templateSnapshot.id,
             selectedTemplateName: templateSnapshot.name,
             selectedTemplateKind: templateSnapshot.kind,
-            selectedTemplatePrompt: templateSnapshot.prompt
+            selectedTemplatePrompt: templateSnapshot.prompt,
+            summaryIsCurrent: summaryIsCurrent,
+            speakerState: speakerState
         )
 
         return ImportResult(
@@ -438,29 +444,38 @@ enum AudioFileImportController {
         diarizationSegments: [TimedSpeakerSegment],
         meetingStart: Date
     ) -> String {
-        let rawText = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawText.isEmpty, !diarizationSegments.isEmpty else { return rawText }
+        structuredTranscriptWithSpeakers(transcription: transcription, diarizationSegments: diarizationSegments,
+                                        meetingStart: meetingStart).transcript
+    }
 
-        let speakerCount = Set(diarizationSegments.map(\.speakerId)).count
-        guard speakerCount > 1 else { return rawText }
+    static func structuredTranscriptWithSpeakers(
+        transcription: SpeechTranscriptionResult,
+        diarizationSegments: [TimedSpeakerSegment],
+        meetingStart: Date
+    ) -> (transcript: String, speakerState: MeetingSpeakerState?) {
+        let rawText = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawText.isEmpty, !diarizationSegments.isEmpty else { return (rawText, nil) }
 
         if rawText.range(of: #"(?m)^\[[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\]\s+(You|Others|Multiple speakers|Unknown speaker|Speaker\s+\d+):"#, options: .regularExpression) != nil {
-            return rawText
+            return (rawText, nil)
         }
 
         let transcribedSegments = transcription.segments.filter {
             !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        guard !transcribedSegments.isEmpty else { return rawText }
+        guard !transcribedSegments.isEmpty else { return (rawText, nil) }
 
-        let formatted = TranscriptFormatter.merge(
+        let state = TranscriptFormatter.structured(
             micSegments: [],
             systemSegments: transcribedSegments,
             diarizationSegments: diarizationSegments,
             meetingStart: meetingStart,
-            conservativeSpeakerAttribution: true
+            conservativeSpeakerAttribution: true,
+            systemChannel: .imported,
+            preserveSegmentBoundaries: true
         )
-        return formatted.isEmpty ? rawText : formatted
+        let formatted = state.render()
+        return formatted.isEmpty ? (rawText, nil) : (formatted, state)
     }
 
     /// Backward-compatible helper for tests and any callers that only have raw text.

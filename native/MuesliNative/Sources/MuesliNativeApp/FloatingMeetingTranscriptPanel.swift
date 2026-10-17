@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import SwiftUI
+import MuesliCore
 
 enum FloatingMeetingTranscriptPlacement {
     static let panelSize = NSSize(width: 360, height: 320)
@@ -66,11 +67,12 @@ final class FloatingMeetingTranscriptModel {
     var isPresented = false
     var didCopy = false
 
-    func update(transcript: String, partialYou: String, partialOthers: String) {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil) {
         presentation.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            speakerState: speakerState
         )
     }
 
@@ -132,11 +134,12 @@ final class FloatingMeetingTranscriptPanelController {
         hostingView?.superview != nil && hostingView?.isHidden == false
     }
 
-    func update(transcript: String, partialYou: String, partialOthers: String) {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil) {
         model.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            speakerState: speakerState
         )
     }
 
