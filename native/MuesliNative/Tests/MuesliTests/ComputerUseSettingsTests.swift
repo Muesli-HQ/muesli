@@ -439,6 +439,11 @@ struct ComputerUseSettingsTests {
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store, configStore: configStore)
         let settings = controller.settingsDefinitions()
+        let callerSetting = try #require(settings.first { $0.id == "identify_phone_callers" })
+        #expect(callerSetting.snapshot(config: controller.config).current == "off")
+        try await controller.applySetting("identify_phone_callers", value: "on")
+        #expect(controller.config.identifyPhoneCallers)
+        #expect(configStore.load().identifyPhoneCallers)
         let denied = OnboardingPermissionSnapshot(microphone: false, accessibility: false,
             inputMonitoring: false, systemAudio: false, screenRecording: false)
         let granted = OnboardingPermissionSnapshot(microphone: true, accessibility: true,

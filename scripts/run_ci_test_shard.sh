@@ -19,6 +19,9 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       InsightsTests
+      CallerHandleNormalizerTests
+      CallerStoreTests
+      CallerSummaryFilterTests
       DictationStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -121,6 +124,9 @@ case "${shard}" in
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
+      PhoneCallerParserTests
+      PhoneCallerAXReaderTests
+      CallerIdentityCoordinatorTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
       MeetingCaptureLifecycleTests
