@@ -16,6 +16,22 @@ enum TranscriptFormatter {
         meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false
     ) -> String {
+        structured(micSegments: micSegments, systemSegments: systemSegments,
+                   diarizationSegments: diarizationSegments, meetingStart: meetingStart,
+                   conservativeSpeakerAttribution: conservativeSpeakerAttribution).render()
+    }
+
+    static func structured(
+        micSegments: [SpeechSegment], systemSegments: [SpeechSegment],
+        diarizationSegments: [TimedSpeakerSegment]?, meetingStart: Date,
+        conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(),
+        systemChannel: MeetingSpeakerKey.Channel = .system
+    ) -> MeetingSpeakerState {
+        var identities: [String: MeetingSpeaker] = [:]
+        let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "source")
+        if !micSegments.isEmpty {
+            identities["You"] = MeetingSpeaker(key: micKey, rank: 1, fallbackLabel: "You", isSelf: true)
+        }
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
         let displayMicSegments = micSegments
@@ -28,7 +44,11 @@ enum TranscriptFormatter {
             var nextSpeakerNumber = 1
             for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
                 if speakerLabelMap[seg.speakerId] == nil {
-                    speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
+                    let label = "Speaker \(nextSpeakerNumber)"
+                    speakerLabelMap[seg.speakerId] = label
+                    identities[label] = MeetingSpeaker(
+                        key: .init(epoch: epoch, channel: systemChannel, clusterID: seg.speakerId),
+                        rank: nextSpeakerNumber + 1, fallbackLabel: label)
                     nextSpeakerNumber += 1
                 }
             }
@@ -53,11 +73,21 @@ enum TranscriptFormatter {
         formatter.timeZone = .current
         formatter.dateFormat = "HH:mm:ss"
 
-        return consolidated.map { taggedSegment in
-            let timestamp = meetingStart.addingTimeInterval(taggedSegment.segment.start)
-            let text = taggedSegment.segment.text.trimmingCharacters(in: .whitespaces)
-            return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(text)"
-        }.joined(separator: "\n")
+        // Aggregate/source placeholders retain provenance without inventing a person.
+        for label in Set(consolidated.map(\.speaker)).sorted() where identities[label] == nil {
+            identities[label] = MeetingSpeaker(
+                key: .init(epoch: epoch, channel: systemChannel, clusterID: "aggregate:\(label)"),
+                rank: identities.count + 2, fallbackLabel: label, isAssignable: false)
+        }
+        let turns = consolidated.compactMap { taggedSegment -> MeetingSpeakerTurn? in
+            guard let identity = identities[taggedSegment.speaker] else { return nil }
+            return MeetingSpeakerTurn(speaker: identity.key,
+                timestamp: formatter.string(from: meetingStart.addingTimeInterval(taggedSegment.segment.start)),
+                start: taggedSegment.segment.start, end: taggedSegment.segment.end,
+                text: taggedSegment.segment.text.trimmingCharacters(in: .whitespaces))
+        }
+        return MeetingSpeakerState(epoch: epoch,
+            speakers: identities.values.sorted { $0.rank < $1.rank }, turns: turns)
     }
 
     /// Merge consecutive segments from the same speaker into single entries,

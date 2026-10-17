@@ -1237,6 +1237,91 @@ struct DictationStoreTests {
         #expect(try store.textRecordsNeedingSync().isEmpty)
     }
 
+    @Test("sync summary freshness follows explicit status, not note changes")
+    func syncedSummaryFreshnessUsesExplicitStatus() throws {
+        let store = try makeStore()
+        let timestamp = Date(timeIntervalSince1970: 1_770_000_000)
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Original transcript",
+            summaryText: "Original notes",
+            summaryIsCurrent: true,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-original"
+        )))
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes",
+            summaryIsCurrent: false,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(60),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-transcript"
+        )))
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.textRecordForSync(recordName: "meeting-summary-freshness")?.summaryIsCurrent == false)
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes with typo fixed",
+            summaryIsCurrent: false,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(120),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-note-edit"
+        )))
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        #expect(try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-summary-freshness",
+            kind: .meeting,
+            title: "Summary freshness",
+            text: "Edited transcript",
+            summaryText: "Original notes with typo fixed",
+            summaryIsCurrent: true,
+            source: "ios",
+            meetingStatus: .completed,
+            createdAt: timestamp,
+            updatedAt: timestamp.addingTimeInterval(180),
+            startedAt: timestamp,
+            endedAt: timestamp.addingTimeInterval(60),
+            durationSeconds: 60,
+            wordCount: 2,
+            cloudChangeTag: "tag-summary"
+        )))
+
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.textRecordForSync(recordName: "meeting-summary-freshness")?.summaryIsCurrent == true)
+    }
+
     @Test("deleted unsynced local text records are not uploaded")
     func deletedUnsyncedLocalTextRecordsAreNotUploaded() throws {
         let store = try makeStore()
@@ -1510,6 +1595,31 @@ struct DictationStoreTests {
         #expect(cloud.recordID == recordID)
         #expect(cloud["text"] as? String == "Local dirty text")
         #expect(cloud["updatedAt"] as? Date == updatedAt)
+    }
+
+    @Test("sync cloud records preserve meeting summary freshness")
+    func syncCloudRecordPreservesSummaryFreshness() throws {
+        let updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let record = SyncTextRecord(
+            id: "meeting-summary-stale",
+            kind: .meeting,
+            title: "Stale summary",
+            text: "Edited transcript",
+            summaryText: "Notes with a typo fix",
+            summaryIsCurrent: false,
+            source: "macos",
+            meetingStatus: .completed,
+            createdAt: updatedAt.addingTimeInterval(-60),
+            updatedAt: updatedAt,
+            durationSeconds: 60,
+            wordCount: 2
+        )
+
+        let cloud = MuesliICloudSyncEngine.syncZoneCloudRecord(from: record)
+        let roundTripped = try #require(MuesliICloudSyncEngine.syncTextRecord(from: cloud))
+
+        #expect((cloud["summaryIsCurrent"] as? NSNumber)?.boolValue == false)
+        #expect(roundTripped.summaryIsCurrent == false)
     }
 
     @Test("sync cloud record restores persisted CKRecord system fields")
