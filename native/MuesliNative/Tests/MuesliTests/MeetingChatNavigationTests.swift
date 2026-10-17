@@ -15,6 +15,50 @@ struct MeetingChatNavigationTests {
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Friday", scope: .init())
         return (controller, store, try #require(evidence.passages.first { $0.kind == .transcript }?.citation))
     }
+
+    @Test func speakerLoadKeyTracksMeetingPresentationInputs() {
+        let initial = MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryIsStale: false
+        )
+
+        #expect(initial == MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryIsStale: false
+        ))
+        #expect(initial != MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryIsStale: true
+        ))
+        #expect(initial != MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Changed transcript",
+            notes: "Notes",
+            status: .completed
+        ))
+        #expect(initial != MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Changed notes",
+            status: .completed
+        ))
+        #expect(initial != MeetingSpeakerLoadKey(
+            id: 1,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .processing
+        ))
+    }
+
     @Test func entryUsesSingleMeetingScopeAndReturnPreservesComposer() async throws {
         let (controller, _, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
@@ -102,6 +146,25 @@ struct MeetingChatNavigationTests {
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: second) == 0)
         let repeated = (text as NSString).range(of: "second chunk", options: .backwards)
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: repeated) == 2)
+    }
+
+    @Test func structuredTranscriptLocatorKeepsMultilineTurnsTogether() {
+        let epoch = UUID()
+        let speaker = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "a")
+        let state = MeetingSpeakerState(
+            epoch: epoch,
+            speakers: [.init(key: speaker, rank: 1, fallbackLabel: "Speaker 1")],
+            turns: [
+                .init(speaker: speaker, timestamp: "00:00:01", start: 0, end: 1, text: "A\nB"),
+                .init(speaker: speaker, timestamp: "00:00:02", start: 1, end: 2, text: "C")
+            ]
+        )
+        let transcript = state.render()
+        let continuation = (transcript as NSString).range(of: "B")
+        let secondTurn = (transcript as NSString).range(of: "C")
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: continuation, speakerState: state) == 0)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: secondTurn, speakerState: state) == 1)
     }
 
     @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() async throws {
