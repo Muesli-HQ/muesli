@@ -184,13 +184,14 @@ extension MeetingSessionResult {
 enum MeetingProcessingStage {
     case stoppingCapture
     case transcribingAudio
+    case diarizingSpeakers
     case cleaningAudio
     case generatingTitle
     case summarizingNotes
 
     var allowsDictation: Bool {
         switch self {
-        case .stoppingCapture, .transcribingAudio, .cleaningAudio:
+        case .stoppingCapture, .transcribingAudio, .diarizingSpeakers, .cleaningAudio:
             false
         case .generatingTitle, .summarizingNotes:
             true
@@ -206,6 +207,11 @@ private enum MeetingTranscriptRecoveryResult {
 
 final class MeetingSession {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+    /// Temp directory of the whole-meeting mic track; swept at launch after a crash.
+    /// Scoped to the app identity: dev lanes and production share `$TMPDIR`, and one
+    /// app's launch sweep must not delete another app's track mid-meeting.
+    static let micDiarizationDirectoryName =
+        "muesli-meeting-mic-diarization-\(Bundle.main.bundleIdentifier ?? "unknown")"
 
     private let title: String
     private let calendarEventID: String?
@@ -230,6 +236,11 @@ final class MeetingSession {
     /// Route-aware mic recorder with real-time 16 kHz mono PCM access.
     private var meetingMicRecorder: MeetingMicRecording
     private var rawMicChunkRecorder: PCMChunkRecorder?
+    /// Whole-meeting cleaned mic track for in-room speaker diarization. Fed by
+    /// the same funnel as the mic chunks, so its timeline matches mic segments.
+    private var micDiarizationRecorder: PCMChunkRecorder?
+    /// Why the opt-in mic track was never recorded, for diagnostics.
+    private var micDiarizationSetupError: Error?
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
     /// VAD controller for speech-boundary chunk rotation
@@ -686,7 +697,11 @@ final class MeetingSession {
         chunkRotationQueue.async(execute: DispatchWorkItem(block: operation))
     }
 
-    func testingFinishCapture() async -> (URL?, URL?, URL?) {
+    /// The in-progress mic diarization track, while capture is running.
+    var testingMicDiarizationFileURL: URL? { chunkRotationQueue.sync { micDiarizationRecorder?.currentFileURL } }
+
+    /// Mic chunk, system chunk, retained recording and mic diarization track.
+    func testingFinishCapture() async -> (URL?, URL?, URL?, URL?) {
         let result = await captureLifecycle.stop()
         for url in [result.microphone, result.systemAudio].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: url)
@@ -694,8 +709,10 @@ final class MeetingSession {
         return chunkRotationQueue.sync {
             captureLifecycle.finishMicrophoneDelivery()
             appendFlushedStreamingMicOnQueue()
-            let urls = (rawMicChunkRecorder?.stop(), systemChunkRecorder?.stop(), retainedRecordingWriter?.stop())
+            let urls = (rawMicChunkRecorder?.stop(), systemChunkRecorder?.stop(), retainedRecordingWriter?.stop(),
+                        micDiarizationRecorder?.stop())
             rawMicChunkRecorder = nil; systemChunkRecorder = nil; retainedRecordingWriter = nil
+            micDiarizationRecorder = nil
             return urls
         }
     }
@@ -766,14 +783,17 @@ final class MeetingSession {
             RunningApplicationStore.shared.stop(owner: runningApplicationsOwner)
         }
         Task { await screenContextCollector.stopAndDrain() }
-        let (rawRecorder, systemRecorder) = chunkRotationQueue.sync { () -> (PCMChunkRecorder?, PCMChunkRecorder?) in
+        let (rawRecorder, systemRecorder, micDiarizationRecorder) = chunkRotationQueue.sync {
+            () -> (PCMChunkRecorder?, PCMChunkRecorder?, PCMChunkRecorder?) in
             chunkTimingTracker.discard()
             systemChunkTimingTracker.discard()
             let rawRecorder = rawMicChunkRecorder
             let systemRecorder = systemChunkRecorder
+            let micDiarizationRecorder = self.micDiarizationRecorder
             rawMicChunkRecorder = nil
             systemChunkRecorder = nil
-            return (rawRecorder, systemRecorder)
+            self.micDiarizationRecorder = nil
+            return (rawRecorder, systemRecorder, micDiarizationRecorder)
         }
         // Same contract as stop(): the queue barrier above drains pending
         // sample callbacks; only then is episode state final.
@@ -789,6 +809,7 @@ final class MeetingSession {
         retainedRecordingWriterError = nil
         rawRecorder?.cancel()
         systemRecorder?.cancel()
+        micDiarizationRecorder?.cancel()
         meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
@@ -829,6 +850,7 @@ final class MeetingSession {
         meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         systemAudioRecorder.onRouteChange = nil
+        var micDiarizationURL: URL?
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
             captureLifecycle.finishMicrophoneDelivery()
 
@@ -840,9 +862,16 @@ final class MeetingSession {
             let lastSystemChunkURL = systemChunkRecorder?.stop()
             rawMicChunkRecorder = nil
             systemChunkRecorder = nil
+            micDiarizationURL = micDiarizationRecorder?.stop()
+            micDiarizationRecorder = nil
             let lastChunkTiming = chunkTimingTracker.finish()
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
+        }
+        defer {
+            if let micDiarizationURL {
+                try? FileManager.default.removeItem(at: micDiarizationURL)
+            }
         }
         // The chunkRotationQueue barrier above guarantees every sample callback
         // enqueued before teardown has been processed and that later callbacks
@@ -945,6 +974,23 @@ final class MeetingSession {
             }
         }
 
+        var micDiarizationSegments: [TimedSpeakerSegment]?
+        var micDiarizationError = micDiarizationSetupError
+        if let micDiarizationURL {
+            // In-person meetings: split the room mic into local speakers. Best-effort;
+            // on failure the mic channel keeps its single "You" label.
+            onProgress?(.diarizingSpeakers)
+            do {
+                let segments = try await transcriptionCoordinator.diarizeRecordedAudio(at: micDiarizationURL)
+                let speakerCount = Set(segments.map(\.speakerId)).count
+                fputs("[meeting] mic diarization complete: \(segments.count) segments, \(speakerCount) speakers\n", stderr)
+                micDiarizationSegments = segments
+            } catch {
+                micDiarizationError = error
+                fputs("[meeting] mic diarization failed, keeping single mic speaker: \(error)\n", stderr)
+            }
+        }
+
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
         micSegments.sort { lhs, rhs in
             if lhs.start == rhs.start {
@@ -1001,7 +1047,8 @@ final class MeetingSession {
         let reconciledTranscriptInputs = TranscriptReconciler.reconcile(
             micTurns: micSegments,
             systemSegments: systemSegments,
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micDiarizationSegments: micDiarizationSegments
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
         let currentSpeakerAuthorization = await speakerAccessibilityAuthorizationProvider?()
@@ -1010,6 +1057,7 @@ final class MeetingSession {
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
             meetingStart: meetingStart,
             accessibilitySpeakerNamingEnabled: speakerAuthorization != nil
         )
@@ -1094,6 +1142,12 @@ final class MeetingSession {
             micChunks: micChunkHealthTracker.snapshot(),
             systemChunks: systemChunkHealthTracker.snapshot(),
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            micDiarization: config.diarizeMicrophoneAudio
+                ? MeetingSessionDiagnostics.MicDiarizationStats(
+                    rawSegments: micDiarizationSegments,
+                    error: micDiarizationError
+                )
+                : nil,
             protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
         )
 
@@ -1324,6 +1378,18 @@ final class MeetingSession {
         }
     }
 
+    private func setupMicDiarizationRecorderIfNeeded() {
+        micDiarizationRecorder = nil
+        micDiarizationSetupError = nil
+        guard config.diarizeMicrophoneAudio else { return }
+        do {
+            micDiarizationRecorder = try PCMChunkRecorder(directoryName: Self.micDiarizationDirectoryName)
+        } catch {
+            micDiarizationSetupError = error
+            fputs("[meeting] failed to prepare mic diarization recorder: \(error)\n", stderr)
+        }
+    }
+
     private func stopSystemAudioWatchdog() {
         inputObservationQueue.async { [inputObserver] in inputObserver.stop() }
         systemAudioWatchdog.finishMeeting()
@@ -1332,6 +1398,7 @@ final class MeetingSession {
     private func prepareRealtimeAudioPipeline(vadManager: VadManager?) throws {
         rawMicChunkRecorder = try PCMChunkRecorder(directoryName: "muesli-meeting-mic-chunks")
         systemChunkRecorder = try PCMChunkRecorder(directoryName: "muesli-meeting-system-chunks")
+        setupMicDiarizationRecorderIfNeeded()
         configureRealtimeAudioCallbacks(vadManager: vadManager)
     }
 
@@ -1446,6 +1513,7 @@ final class MeetingSession {
         // speaker playback already present in the system track.
         retainedRecordingWriter?.appendMic(cleanedInt16)
         rawMicChunkRecorder?.append(cleanedInt16)
+        micDiarizationRecorder?.append(cleanedInt16)
         chunkTimingTracker.append(sampleCount: cleanedInt16.count)
         diagnostics?.appendCleanedMicSamples(cleanedInt16)
     }
