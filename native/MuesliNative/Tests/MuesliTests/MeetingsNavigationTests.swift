@@ -96,6 +96,48 @@ private actor OpenRouterCatalogRaceProbe {
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
 
+    @Test func speakerPresentationReloadKeyChangesWhenFreshnessRefreshes() {
+        let initial = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
+        )
+        let refreshed = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 1,
+            speakerSnapshotRevision: 0
+        )
+
+        #expect(initial != refreshed)
+    }
+
+    @Test func speakerCorrectionsCanRefreshPresentationWithoutTextChanges() {
+        let initial = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 0
+        )
+        let afterCorrection = MeetingSpeakerLoadKey(
+            id: 7,
+            transcript: "Transcript",
+            notes: "Notes",
+            status: .completed,
+            summaryFreshnessRevision: 0,
+            speakerSnapshotRevision: 1
+        )
+
+        #expect(initial != afterCorrection)
+    }
+
     private func makeController(
         dictationStore: DictationStore? = nil,
         configStore: ConfigStore? = nil
@@ -207,6 +249,43 @@ struct MeetingsNavigationTests {
         #expect(error.localizedDescription.contains("Authentication expired"))
         #expect(error.localizedDescription.contains("CLAUDE_CODE_5"))
         #expect(try store.meeting(id: meetingID)?.formattedNotes == "## Notes")
+    }
+
+    @Test("successful re-summarization refreshes the saved meeting presentation")
+    func successfulResummaryRefreshesSavedMeetingPresentation() async throws {
+        let directory = makeSupportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try #"""
+        #!/bin/sh
+        cat >/dev/null
+        printf '%s' '{"type":"result","is_error":false,"result":"## Fresh notes"}'
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        try store.updateMeetingTranscript(id: meetingID, rawTranscript: "Edited transcript")
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        let meeting = try #require(try store.meeting(id: meetingID))
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.claudeCode.backend
+            $0.claudeCodeExecutablePath = executable.path
+        }
+        let initialFreshnessRevision = controller.appState.meetingSummaryFreshnessRevision(for: meetingID)
+
+        let outcome: Result<Void, Error> = await withCheckedContinuation { continuation in
+            controller.resummarize(meeting: meeting) { continuation.resume(returning: $0) }
+        }
+
+        guard case .success = outcome else {
+            Issue.record("Expected the summary to be saved")
+            return
+        }
+        #expect(try store.meeting(id: meetingID)?.formattedNotes == "## Fresh notes")
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+        #expect(controller.appState.meetingSummaryFreshnessRevision(for: meetingID) > initialFreshnessRevision)
     }
 
     @Test("app state defaults meetings to browser mode")
@@ -462,6 +541,7 @@ struct MeetingsNavigationTests {
 
         let controller = makeController(dictationStore: store)
         let meetingID = try store.recentMeetings(limit: 1).first!.id
+        controller.appState.noteMeetingSummaryFreshnessChanged(for: [meetingID])
         controller.appState.selectedMeetingID = meetingID
         controller.appState.selectedMeetingRecord = try store.meeting(id: meetingID)
         controller.appState.meetingsNavigationState = .document(meetingID)
@@ -472,6 +552,7 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.selectedMeetingID == nil)
         #expect(controller.appState.selectedMeetingRecord == nil)
         #expect(controller.appState.meetingsNavigationState == .browser)
+        #expect(controller.appState.meetingSummaryFreshnessRevision(for: meetingID) == 0)
         #expect(FileManager.default.fileExists(atPath: savedRecordingURL.path) == false)
     }
 
@@ -557,10 +638,13 @@ struct MeetingsNavigationTests {
         try Data("old-cache".utf8).write(to: strandedCacheURL)
         try insertMeeting(in: store, title: "Clear Target", savedRecordingPath: savedRecordingURL.path)
         let controller = makeController(dictationStore: store, configStore: configStore)
+        let meetingID = try #require(try store.recentMeetings(limit: 1).first?.id)
+        controller.appState.noteMeetingSummaryFreshnessChanged(for: [meetingID])
 
         controller.clearMeetingHistory()
 
         #expect(try store.recentMeetings(limit: 10).isEmpty)
+        #expect(controller.appState.meetingSummaryFreshnessRevision(for: meetingID) == 0)
         #expect(FileManager.default.fileExists(atPath: recordingsDirectory.path) == false)
         #expect(FileManager.default.fileExists(atPath: cacheURL.path) == false)
         #expect(FileManager.default.fileExists(atPath: strandedCacheURL.path) == false)
@@ -1257,6 +1341,145 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting?.title == "Customer Review")
         #expect(storedMeeting?.rawTranscript == "Discussed roadmap and blockers.")
         #expect(storedMeeting?.savedRecordingPath == nil)
+    }
+
+    @Test("successful resumed summary clears staleness without speaker state")
+    func successfulResumedSummaryClearsStalenessWithoutSpeakerState() throws {
+        let store = try makeStore()
+        let start = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Resumed meeting", calendarEventID: nil, startTime: start, endTime: start.addingTimeInterval(60),
+            rawTranscript: "Prior speech", formattedNotes: "Prior notes", micAudioPath: nil, systemAudioPath: nil
+        )
+        try store.updateMeetingTranscript(id: meetingID, rawTranscript: "Edited prior speech")
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        let controller = makeController(dictationStore: store)
+        let initialFreshnessRevision = controller.appState.meetingSummaryFreshnessRevision(for: meetingID)
+        let result = MeetingSessionResult(
+            title: "Resumed meeting", originalTitle: "Resumed meeting", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(90), durationSeconds: 90,
+            rawTranscript: "Edited prior speech\nNew speech", formattedNotes: "Combined notes",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot, speakerState: nil, summaryIsCurrent: true
+        )
+        _ = try controller.persistCompletedMeetingResult(
+            result, existingMeetingID: meetingID, preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+        #expect(controller.appState.meetingSummaryFreshnessRevision(for: meetingID) > initialFreshnessRevision)
+    }
+
+    @Test("unknown resumed summary freshness preserves the saved stale state")
+    func unknownResumedSummaryFreshnessPreservesSavedState() throws {
+        let store = try makeStore()
+        let start = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Resumed meeting", calendarEventID: nil, startTime: start,
+            endTime: start.addingTimeInterval(60), rawTranscript: "Prior speech",
+            formattedNotes: "Prior notes", micAudioPath: nil, systemAudioPath: nil
+        )
+        try store.updateMeetingTranscript(id: meetingID, rawTranscript: "Edited prior speech")
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        let controller = makeController(dictationStore: store)
+        let result = MeetingSessionResult(
+            title: "Resumed meeting", originalTitle: "Resumed meeting", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(90), durationSeconds: 90,
+            rawTranscript: "Edited prior speech", formattedNotes: "Prior notes",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot, speakerState: nil, summaryIsCurrent: nil
+        )
+
+        _ = try controller.persistCompletedMeetingResult(
+            result, existingMeetingID: meetingID,
+            preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        #expect(try store.textRecordsNeedingSync().first?.summaryIsCurrent == false)
+    }
+
+    @Test("failed first summary remains stale for a newly persisted meeting")
+    func failedFirstSummaryRemainsStaleForNewMeeting() throws {
+        let store = try makeStore()
+        let controller = makeController(dictationStore: store)
+        let start = Date()
+        let result = MeetingSessionResult(
+            title: "Imported meeting", originalTitle: "Imported meeting", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(30), durationSeconds: 30,
+            rawTranscript: "Imported transcript", formattedNotes: "Summary unavailable",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot, speakerState: nil, summaryIsCurrent: false
+        )
+
+        let persisted = try controller.persistCompletedMeetingResult(
+            result,
+            preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: persisted.meetingID))
+    }
+
+    @Test("failed summary on a new completed meeting syncs as stale")
+    func failedSummaryOnCompletedMeetingInsertStaysStaleInSync() throws {
+        let store = try makeStore()
+        let start = Date()
+        let result = MeetingSessionResult(
+            title: "Failed summary",
+            originalTitle: "Failed summary",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Imported transcript.",
+            formattedNotes: "Summary generation failed.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot,
+            summaryIsCurrent: false
+        )
+        let controller = makeController(dictationStore: store)
+        let persistence = try controller.persistCompletedMeetingResult(
+            result,
+            preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: persistence.meetingID))
+        let syncRecord = try #require(try store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        #expect(syncRecord.text == "Imported transcript.")
+        #expect(syncRecord.summaryIsCurrent == false)
+    }
+
+    @Test("failed imported audio summary syncs as stale")
+    func failedImportedAudioSummaryStaysStaleInSync() throws {
+        let store = try makeStore()
+        let controller = makeController(dictationStore: store)
+        let template = MeetingTemplates.auto.snapshot
+        let start = Date()
+        let meetingID = try controller.persistImportedAudioMeeting(
+            title: "Imported audio",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(30),
+            rawTranscript: "Imported transcript.",
+            formattedNotes: "Summary generation failed.",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: template.id,
+            selectedTemplateName: template.name,
+            selectedTemplateKind: template.kind,
+            selectedTemplatePrompt: template.prompt,
+            summaryIsCurrent: false
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        let syncRecord = try #require(try store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        #expect(syncRecord.text == "Imported transcript.")
+        #expect(syncRecord.summaryIsCurrent == false)
     }
 
     @Test("persistCompletedMeetingResult honors prompt recording save decision")
