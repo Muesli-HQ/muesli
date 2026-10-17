@@ -126,7 +126,8 @@ struct MeetingHookIntegrationTests {
             selectedTemplateID: nil,
             selectedTemplateName: nil,
             selectedTemplateKind: nil,
-            selectedTemplatePrompt: nil
+            selectedTemplatePrompt: nil,
+            summaryIsCurrent: true
         )
 
         #expect(spy.invocations.count == 1)

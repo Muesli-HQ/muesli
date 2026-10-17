@@ -45,6 +45,17 @@ struct MeetingResumePolicyTests {
         #expect(MeetingResumePolicy.hasNewTranscriptContent(prior: "", new: "new segment"))
     }
 
+    @Test("resume without new transcript content preserves the prior summary freshness")
+    func unchangedResumePreservesSummaryFreshness() {
+        #expect(MeetingResumePolicy.summaryIsCurrentAfterUnchangedResume(
+            existingSummaryIsStale: false
+        ))
+        #expect(!MeetingResumePolicy.summaryIsCurrentAfterUnchangedResume(
+            existingSummaryIsStale: true
+        ))
+        #expect(!MeetingResumePolicy.summaryIsCurrentAfterUnchangedResume(existingSummaryIsStale: nil))
+    }
+
     @Test("combined visual context keeps both sides with a separator")
     func combinedVisualContextAppends() {
         let combined = MeetingResumePolicy.combinedResumeVisualContext(
@@ -126,5 +137,18 @@ struct MeetingResumePolicyTests {
         #expect(overridden.startTime == start)
         #expect(overridden.durationSeconds == 45)
         #expect(overridden.rawTranscript == "z")
+    }
+
+    @Test("resume overrides preserve or explicitly replace summary freshness")
+    func overrideCarriesSummaryFreshness() {
+        let start = Date(timeIntervalSince1970: 2_000_000)
+        var result = makeResult(start: start, end: start.addingTimeInterval(45))
+        result.summaryIsCurrent = false
+
+        let preserved = result.overriding(rawTranscript: "combined", formattedNotes: "retained")
+        let refreshed = result.overriding(rawTranscript: "combined", formattedNotes: "fresh", summaryIsCurrent: true)
+
+        #expect(!preserved.summaryIsCurrent)
+        #expect(refreshed.summaryIsCurrent)
     }
 }
