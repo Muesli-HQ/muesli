@@ -58,7 +58,10 @@ enum TranscriptFormatter {
                 let speaker = conservativeSpeakerAttribution
                     ? recordedSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
                     : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
-                return TaggedSegment(segment: segment, speaker: speaker)
+                let overlappingSpeakers = Set(diarizationSegments.filter {
+                    min(Double($0.endTimeSeconds), segment.end) > max(Double($0.startTimeSeconds), segment.start)
+                }.map(\.speakerId))
+                return TaggedSegment(segment: segment, speaker: speaker, sampleEligible: overlappingSpeakers.count <= 1)
             }
         } else {
             taggedSystem = systemSegments.map { TaggedSegment(segment: $0, speaker: "Others") }
@@ -80,12 +83,25 @@ enum TranscriptFormatter {
                 key: .init(epoch: epoch, channel: systemChannel, clusterID: "aggregate:\(label)"),
                 rank: identities.count + 2, fallbackLabel: label, isAssignable: false)
         }
-        let turns = consolidated.compactMap { taggedSegment -> MeetingSpeakerTurn? in
+        let sampleValidated = consolidated.map { taggedSegment -> TaggedSegment in
+            guard let identity = identities[taggedSegment.speaker],
+                  diarizationSegments?.contains(where: { diarization in
+                      let overlaps = min(Double(diarization.endTimeSeconds), taggedSegment.segment.end)
+                          > max(Double(diarization.startTimeSeconds), taggedSegment.segment.start)
+                      guard overlaps else { return false }
+                      if identity.key.channel == .microphone { return true }
+                      return identity.key.channel == systemChannel && diarization.speakerId != identity.key.clusterID
+                  }) == true else { return taggedSegment }
+            return TaggedSegment(segment: taggedSegment.segment, speaker: taggedSegment.speaker, sampleEligible: false)
+        }
+        let turns = sampleValidated.compactMap { taggedSegment -> MeetingSpeakerTurn? in
             guard let identity = identities[taggedSegment.speaker] else { return nil }
-            return MeetingSpeakerTurn(speaker: identity.key,
+            var turn = MeetingSpeakerTurn(speaker: identity.key,
                 timestamp: formatter.string(from: meetingStart.addingTimeInterval(taggedSegment.segment.start)),
                 start: taggedSegment.segment.start, end: taggedSegment.segment.end,
                 text: taggedSegment.segment.text.trimmingCharacters(in: .whitespaces))
+            if !taggedSegment.sampleEligible { turn.sampleEligible = false }
+            return turn
         }
         return MeetingSpeakerState(epoch: epoch,
             speakers: identities.values.sorted { $0.rank < $1.rank }, turns: turns)
@@ -109,6 +125,7 @@ enum TranscriptFormatter {
         var currentStart = segments[0].segment.start
         var currentEnd = segments[0].segment.end
         var currentText = segments[0].segment.text
+        var currentSampleEligible = segments[0].sampleEligible
 
         for seg in segments.dropFirst() {
             let gap = max(0, seg.segment.start - currentEnd)
@@ -118,22 +135,26 @@ enum TranscriptFormatter {
                     ? joinText(currentText, seg.segment.text)
                     : appendText(currentText, seg.segment.text, gap: gap)
                 currentEnd = max(currentEnd, seg.segment.end)
+                currentSampleEligible = currentSampleEligible && seg.sampleEligible
             } else {
                 // Different speaker or too far apart — emit and start new segment
                 result.append(TaggedSegment(
                     segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
-                    speaker: currentSpeaker
+                    speaker: currentSpeaker,
+                    sampleEligible: currentSampleEligible
                 ))
                 currentSpeaker = seg.speaker
                 currentStart = seg.segment.start
                 currentEnd = seg.segment.end
                 currentText = seg.segment.text
+                currentSampleEligible = seg.sampleEligible
             }
         }
         // Emit last segment
         result.append(TaggedSegment(
             segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
-            speaker: currentSpeaker
+            speaker: currentSpeaker,
+            sampleEligible: currentSampleEligible
         ))
 
         return result
@@ -277,4 +298,11 @@ enum TranscriptFormatter {
 private struct TaggedSegment {
     let segment: SpeechSegment
     let speaker: String
+    let sampleEligible: Bool
+
+    init(segment: SpeechSegment, speaker: String, sampleEligible: Bool = true) {
+        self.segment = segment
+        self.speaker = speaker
+        self.sampleEligible = sampleEligible
+    }
 }

@@ -8588,6 +8588,29 @@ public final class MuesliController: NSObject {
         }
     }
 
+    var canEditMeetingSpeakers: Bool {
+        !isInteractiveAudioActivityInProgress && !isStartingMeetingRecording && activeMeetingSession == nil
+            && backgroundMeetingProcessingCount == 0
+    }
+
+    func applyMeetingSpeakerCorrection(id: Int64, action: MeetingSpeakerCorrection,
+                                       expected: MeetingSpeakerSnapshot) async throws -> MeetingSpeakerSnapshot {
+        guard canEditMeetingSpeakers else { throw MeetingSpeakerEditorError.busy }
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let updated = try await Task.detached(priority: .userInitiated) {
+            var state = expected.state
+            guard state.correct(action), state.isValid else { throw MeetingSpeakerEditorError.invalidAction }
+            let store = DictationStore(databaseURL: databaseURL)
+            guard try store.updateMeetingSpeakerState(id: id, state: state, expected: expected) == .updated,
+                  let saved = try store.meetingSpeakerSnapshot(id: id) else { throw MeetingSpeakerEditorError.conflict }
+            return saved
+        }.value
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+        historyWindowController?.reload()
+        return updated
+    }
+
     func loadMeetingSpeakerPresentation(id: Int64) async -> (snapshot: MeetingSpeakerSnapshot?, summaryIsStale: Bool?) {
         let databaseURL = dictationStore.resolvedDatabaseURL
         return await Task.detached(priority: .userInitiated) {

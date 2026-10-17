@@ -333,6 +333,64 @@ struct TranscriptFormatterTests {
         #expect(result.contains("Speaker 2: Who said this?"))
     }
 
+    @Test("mixed-speaker ASR blocks cannot be used as isolated samples")
+    func mixedSpeakerBlocksAreNotSampleEligible() {
+        let state = TranscriptFormatter.structured(
+            micSegments: [],
+            systemSegments: [SpeechSegment(start: 0, end: 6, text: "Two people spoke")],
+            diarizationSegments: [
+                makeDiarSeg(speakerId: "spk_A", start: 0, end: 2),
+                makeDiarSeg(speakerId: "spk_B", start: 2, end: 6),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = state.turns[0]
+        #expect(turn.speaker.clusterID == "spk_B")
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("consolidated blocks cannot span an untranscribed diarized speaker")
+    func consolidatedSampleCannotIncludeUntranscribedOtherSpeaker() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [],
+            systemSegments: [
+                SpeechSegment(start: 0, end: 1, text: "First words"),
+                SpeechSegment(start: 2, end: 4, text: "Second words"),
+            ],
+            diarizationSegments: [
+                makeDiarSeg(speakerId: "spk_A", start: 0, end: 1),
+                makeDiarSeg(speakerId: "spk_B", start: 1, end: 2),
+                makeDiarSeg(speakerId: "spk_A", start: 2, end: 4),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(state.turns.count == 1)
+        #expect(turn.speaker.clusterID == "spk_A")
+        #expect(turn.start == 0)
+        #expect(turn.end == 4)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("microphone samples cannot include a diarized system voice")
+    func microphoneSampleCannotIncludeDiarizedSystemVoice() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 4, text: "My words")],
+            systemSegments: [],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 1, end: 2)],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(turn.speaker.channel == .microphone)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
     @Test("diarization with mic segments interleaves correctly")
     func diarizationWithMicInterleave() {
         let meetingStart = Date(timeIntervalSince1970: 0)

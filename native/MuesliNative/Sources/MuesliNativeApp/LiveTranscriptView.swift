@@ -33,6 +33,7 @@ struct LiveTranscriptBubble: View {
     let isPartial: Bool
     var speakerKey: MeetingSpeakerKey? = nil
     var speakerIsPerson: Bool = false
+    var speakerPaletteIsSelf: Bool? = nil
     var onOpen: (() -> Void)? = nil
     @State private var isHovered = false
     @State private var didCopy = false
@@ -102,7 +103,7 @@ struct LiveTranscriptBubble: View {
     }
 
     private var speakerTint: Color {
-        MeetingSpeakerStyle.colour(for: speakerKey, isSelf: isUser, isPerson: speakerIsPerson)
+        MeetingSpeakerStyle.colour(for: speakerKey, isSelf: speakerPaletteIsSelf ?? isUser, isPerson: speakerIsPerson)
     }
 
     // Opaque standard surfaces keep name contrast independent of the user's accent colour.
@@ -187,6 +188,7 @@ struct LiveTranscriptFeedView: View {
                         isPartial: false,
                         speakerKey: message.speakerKey,
                         speakerIsPerson: message.speakerIsPerson ?? false,
+                        speakerPaletteIsSelf: message.speakerPaletteIsSelf,
                         onOpen: onOpen
                     )
                 }
