@@ -483,6 +483,7 @@ public struct MeetingParticipant: Identifiable, Equatable, Sendable {
     public let displayName: String
     public let emailAddress: String?
     public let insertionOrder: Int
+    public let callerPersonID: UUID?
 
     public var id: String {
         "\(meetingID):\(participantIdentifier)"
@@ -493,13 +494,15 @@ public struct MeetingParticipant: Identifiable, Equatable, Sendable {
         participantIdentifier: String,
         displayName: String,
         emailAddress: String? = nil,
-        insertionOrder: Int
+        insertionOrder: Int,
+        callerPersonID: UUID? = nil
     ) {
         self.meetingID = meetingID
         self.participantIdentifier = participantIdentifier
         self.displayName = displayName
         self.emailAddress = emailAddress
         self.insertionOrder = insertionOrder
+        self.callerPersonID = callerPersonID
     }
 }
 
