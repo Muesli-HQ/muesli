@@ -200,6 +200,20 @@ final class MeetingNeuralAec {
         lastProcessingError = nil
     }
 
+    /// Align resumed microphone samples after system-only audio retained since the last reset.
+    func advanceMicrophoneTimeline(by sampleCount: Int64) {
+        guard sampleCount > 0,
+              let sampleCount = Int(exactly: sampleCount),
+              micSamplesReceived == 0,
+              pendingMicSamples.isEmpty,
+              micHistory.isEmpty else { return }
+
+        micSamplesReceived = sampleCount
+        pendingMicStartSample = sampleCount
+        micHistoryStartSample = sampleCount
+        nextDelayEstimateSample += sampleCount
+    }
+
     /// Buffer system audio samples indexed by absolute position.
     func feedSystemSamples(_ samples: [Float]) {
         if systemTimelineStartSample == nil {

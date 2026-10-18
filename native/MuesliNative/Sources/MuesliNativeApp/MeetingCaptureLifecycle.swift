@@ -109,13 +109,13 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
         }
     }
 
-    /// System callbacks have no delayed conversion worker. Serialize admission
-    /// and queue submission with Pause so accepted reference audio precedes its
-    /// AEC/chunk fence, while callbacks during a pending Resume stay excluded.
+    /// The native recorder calls this after writing each buffer to the full
+    /// system recording. Preserve every such buffer until the session barrier,
+    /// including in-flight callbacks during Pause and Stop, so chunk offsets
+    /// stay aligned with diarization of that recording.
     func enqueueSystemSamples(on queue: DispatchQueue, consume: @escaping () -> Void) {
         state.withLock {
-            guard !$0.microphoneDeliveryClosed, $0.phase.acceptsSamples,
-                  $0.pendingMicrophoneBoundaries == 0 else { return }
+            guard !$0.microphoneDeliveryClosed else { return }
             queue.async { [weak self] in
                 guard self?.isMicrophoneDeliveryOpen == true else { return }
                 consume()

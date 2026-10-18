@@ -137,6 +137,8 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var diarizerVoiceModelIdentity: String?
+    private let liveSpeakerInferenceWorker: LiveSpeakerInferenceWorker
     private var isDiarizerLoadInProgress = false
     private var activeDiarizerLoadID: UUID?
     private var diarizerLoadTask: Task<Void, Never>?
@@ -155,12 +157,14 @@ actor TranscriptionCoordinator {
         },
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
-        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
+        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
+        liveSpeakerInferenceWorker: LiveSpeakerInferenceWorker? = nil
     ) {
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
         self.diarizerDiagnostics = diarizerDiagnostics
+        self.liveSpeakerInferenceWorker = liveSpeakerInferenceWorker ?? LiveSpeakerInferenceWorker(modelLoader: diarizerModelLoader)
     }
 
     private var _nemotron35Transcriber: Any?
@@ -830,6 +834,7 @@ actor TranscriptionCoordinator {
             let diarizer = DiarizerManager()
             diarizer.initialize(models: models)
             diarizerManager = diarizer
+            diarizerVoiceModelIdentity = try? OwnerVoiceExtractor.modelIdentity()
             diarizerDiagnostics.ready(context, startedAt: startedAt)
             fputs(
                 "[muesli-native] Speaker diarization loaded (compute: \(policy.computePolicy.rawValue))\n",
@@ -1142,6 +1147,83 @@ actor TranscriptionCoordinator {
         return result
     }
 
+    func beginLiveSpeakerEpoch(_ epoch: UUID) async {
+        await liveSpeakerInferenceWorker.begin(epoch)
+    }
+
+    func endLiveSpeakerEpoch(_ epoch: UUID) async {
+        await liveSpeakerInferenceWorker.end(epoch)
+    }
+
+    func inferLiveSpeakers(epoch: UUID, window: MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment] {
+        try Task.checkCancellation()
+        guard await liveSpeakerInferenceWorker.hasEpoch(epoch) else { throw CancellationError() }
+        guard window.samples.allSatisfy(\.isFinite) else { throw OwnerVoiceEnrollmentError.invalidWindow }
+        if window.channel == .microphone {
+            guard MeetingMicrophoneSpeechGate.accepts(window.samples, speechSeconds: min(0.5, Double(window.samples.count) / 16_000)) else { return [] }
+            guard let vadManager else { throw OwnerVoiceEnrollmentError.unavailable }
+            let speech = try await vadManager.segmentSpeechAudio(window.samples, config: VadSegmentationConfig(maxSpeechDuration: 5, speechPadding: 0))
+            try Task.checkCancellation()
+            let seconds = Double(speech.reduce(0) { $0 + $1.count }) / 16_000
+            guard MeetingMicrophoneSpeechGate.accepts(window.samples, speechSeconds: seconds) else { return [] }
+        }
+        return try await liveSpeakerInferenceWorker.infer(epoch: epoch, window: window)
+    }
+
+    func ownerVoiceModelIdentity() -> String? { diarizerVoiceModelIdentity }
+
+    func extractOwnerVoice(samples: [Float]) async throws -> OwnerVoiceWindow {
+        guard !samples.isEmpty, samples.count <= 160_000, let vadManager else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        let speech = try await vadManager.segmentSpeechAudio(samples, config: VadSegmentationConfig(maxSpeechDuration: 10, speechPadding: 0))
+        try Task.checkCancellation()
+        let clean = speech.flatMap { $0 }
+        guard !clean.isEmpty else { return OwnerVoiceWindow(embedding: [], speechSeconds: 0, hasOverlap: false) }
+        guard let manager = diarizerManager, manager.isAvailable else {
+            throw OwnerVoiceEnrollmentError.unavailable
+        }
+        // The manager is coordinator-owned. No await while mutable speaker state is swapped.
+        let session = RecordedAudioDiarizationSession(manager: manager)
+        let result = try session.withSpeakerState { manager in
+            try manager.performCompleteDiarization(clean, sampleRate: 16_000)
+        }
+        let mixed = Set(result.segments.map(\.speakerId)).count != 1
+        let embedding = mixed ? [] : try manager.extractSpeakerEmbedding(from: clean)
+        return OwnerVoiceWindow(embedding: embedding, speechSeconds: Double(clean.count) / 16_000, hasOverlap: mixed)
+    }
+
+    /// Independent samples from the cleaned mic file, never repeated diarizer centroids.
+    func ownerMicrophoneCluster(at url: URL, segments: [TimedSpeakerSegment], profile: OwnerVoiceProfile) async throws -> String? {
+        guard profile.modelIdentity == diarizerVoiceModelIdentity, (try? profile.validate()) != nil else { return nil }
+        let ids = Set(segments.map(\.speakerId))
+        guard !ids.isEmpty, ids.count <= 20 else { return nil }
+        let reader = try RecordingAudioWindowReader(url: url, seconds: 3, overlapSeconds: 0)
+        defer { reader.close() }
+        var evidence: [String: [OwnerVoiceWindow]] = [:]
+        var scanned = 0
+        while OwnerVoiceMatcher.shouldCollectMoreEvidence(clusterIDs: ids, evidence: evidence),
+              let window = try reader.next() {
+            scanned += 1
+            guard scanned <= 4_800 else { return nil }
+            let intersecting = segments.filter { Double($0.startTimeSeconds) < window.end && Double($0.endTimeSeconds) > window.start }
+            let active = Set(intersecting.map(\.speakerId))
+            guard active.count == 1, let id = active.first,
+                  (evidence[id]?.count ?? 0) < OwnerVoiceMatcher.maximumEvidenceWindowsPerCluster else { continue }
+            var cursor = window.start
+            for segment in intersecting.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+                if Double(segment.startTimeSeconds) > cursor + 0.001 { break }
+                cursor = max(cursor, Double(segment.endTimeSeconds))
+            }
+            guard cursor >= window.end - 0.001 else { continue }
+            let samples = try AudioConverter().resampleAudioFile(window.url)
+            let extracted = try await extractOwnerVoice(samples: samples)
+            try Task.checkCancellation()
+            evidence[id, default: []].append(extracted)
+        }
+        return OwnerVoiceMatcher(profile: profile).uniqueOwner(clusterIDs: ids, evidence: evidence)
+    }
+
     func getVadManager() -> VadManager? {
         vadManager
     }
@@ -1151,6 +1233,7 @@ actor TranscriptionCoordinator {
     }
 
     func shutdown() async {
+        await liveSpeakerInferenceWorker.shutdown()
         await fluidTranscriber.shutdown()
         await parakeetUnifiedTranscriber.shutdown()
         await whisperTranscriber.shutdown()
@@ -1169,6 +1252,7 @@ actor TranscriptionCoordinator {
                 await gemma4.shutdown()
             }
         }
+
     }
 
     private func removeFillers(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
@@ -1668,4 +1752,118 @@ actor TranscriptionCoordinator {
         }
     }
 
+}
+
+/// Owns a separate diarizer model and mutable speaker state so synchronous live
+/// diarization cannot occupy the coordinator actor used by ASR requests.
+actor LiveSpeakerInferenceWorker {
+    typealias ModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
+    typealias InferenceOverride = @Sendable (MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment]
+
+    private let modelLoader: ModelLoader
+    private let inferenceOverride: InferenceOverride?
+    private var manager: DiarizerManager?
+    private var managerLoadTask: Task<Void, Never>?
+    private var managerLoadID: UUID?
+    private var managerLoadError: Error?
+    private var sessions: [UUID: [MeetingSpeakerKey.Channel: RecordedAudioDiarizationSession]] = [:]
+
+    init(modelLoader: @escaping ModelLoader, inferenceOverride: InferenceOverride? = nil) {
+        self.modelLoader = modelLoader
+        self.inferenceOverride = inferenceOverride
+    }
+
+    func begin(_ epoch: UUID) {
+        sessions[epoch] = [:]
+        if manager == nil { managerLoadError = nil }
+    }
+
+    func end(_ epoch: UUID) {
+        sessions[epoch] = nil
+        if sessions.isEmpty {
+            managerLoadID = nil
+            managerLoadTask?.cancel()
+            managerLoadTask = nil
+            manager = nil
+            managerLoadError = nil
+        }
+    }
+    func hasEpoch(_ epoch: UUID) -> Bool { sessions[epoch] != nil }
+
+    func infer(epoch: UUID, window: MeetingSpeakerAudioWindow) async throws -> [MeetingLiveSpeakerSegment] {
+        try Task.checkCancellation()
+        guard sessions[epoch] != nil else { throw CancellationError() }
+        if let inferenceOverride { return try await inferenceOverride(window) }
+
+        let manager = try await loadedManager()
+        try Task.checkCancellation()
+        guard var epochSessions = sessions[epoch] else {
+            if sessions.isEmpty { self.manager = nil }
+            throw CancellationError()
+        }
+        let session = epochSessions[window.channel] ?? RecordedAudioDiarizationSession(manager: manager)
+        epochSessions[window.channel] = session
+        sessions[epoch] = epochSessions
+        let result = try session.withSpeakerState { model in
+            try model.performCompleteDiarization(window.samples, sampleRate: 16_000, atTime: window.start)
+        }
+        return RecordedAudioDiarizationSession.clippedSegments(result.segments, start: window.start, end: window.end).map {
+            .init(clusterID: $0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
+        }
+    }
+
+    func shutdown() {
+        managerLoadID = nil
+        managerLoadTask?.cancel()
+        managerLoadTask = nil
+        sessions.removeAll()
+        manager = nil
+        managerLoadError = nil
+    }
+
+    private func loadedManager() async throws -> DiarizerManager {
+        if let manager, manager.isAvailable { return manager }
+        if let managerLoadError { throw managerLoadError }
+        if managerLoadTask == nil {
+            managerLoadError = nil
+            let loadID = UUID()
+            managerLoadID = loadID
+            let loader = modelLoader
+            let policy = DiarizerRuntimePolicy.resolve(for: .current())
+            managerLoadTask = Task { [weak self] in
+                do {
+                    let models = try await loader(policy)
+                    try Task.checkCancellation()
+                    await self?.finishManagerLoad(id: loadID, result: .success(models))
+                } catch {
+                    await self?.finishManagerLoad(id: loadID, result: .failure(error))
+                }
+            }
+        }
+        let loadTask = managerLoadTask
+        await loadTask?.value
+        if let manager, manager.isAvailable { return manager }
+        if let managerLoadError { throw managerLoadError }
+        throw CancellationError()
+    }
+
+    private func finishManagerLoad(id: UUID, result: Result<DiarizerModels, Error>) {
+        guard managerLoadID == id else { return }
+        managerLoadID = nil
+        managerLoadTask = nil
+        switch result {
+        case .success(let models):
+            do {
+                let loaded = DiarizerManager()
+                loaded.initialize(models: models)
+                guard loaded.isAvailable else { throw DiarizerError.notInitialized }
+                manager = loaded
+                managerLoadError = nil
+            } catch {
+                managerLoadError = error
+            }
+        case .failure(let error):
+            managerLoadError = error
+        }
+    }
 }
