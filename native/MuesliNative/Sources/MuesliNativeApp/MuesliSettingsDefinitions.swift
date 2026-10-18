@@ -348,6 +348,7 @@ extension MuesliController {
         toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
+        toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)
         menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })
         menu("meeting_reminder_time", "Meeting reminder timing", ScheduledMeetingNotificationLeadTime.allCases, \.scheduledMeetingNotificationLeadTime,
              title: { $0 == .atStart ? "At start" : "\(Int($0.seconds / 60)) minutes before" })
