@@ -1,0 +1,124 @@
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+@@ -363,6 +363,13 @@
+         method: &str,
+         params: Value,
+     ) -> anyhow::Result<Value> {
++        // Diagnostic metadata only: never log URLs, selectors, or page content.
++        struct CallTiming<'a>(&'a str, Instant);
++        impl Drop for CallTiming<'_> {
++            fn drop(&mut self) { eprintln!("[muesli-cdp] end {} {}ms", self.0, self.1.elapsed().as_millis()); }
++        }
++        eprintln!("[muesli-cdp] begin {method}");
++        let _timing = CallTiming(method, Instant::now());
+         let policy = self.method_policy();
+         if !policy.allows(method) {
+             anyhow::bail!(
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs
+@@ -573,44 +573,30 @@
+ }
+ 
+ fn apply_page_occlusion(nodes: &mut [SemanticNode], dom: &DomIndex, layout: &LayoutIndex) {
++    // Only painted, hit-testable positioned boxes can occlude another branch.
++    // Compute this invariant set once, rather than walking DOM ancestry for
++    // every visible AX node against every layout node (including text/layout).
++    let overlays: Vec<_> = layout.nodes.iter().filter_map(|(&backend, overlay)| {
++        let (Some(bounds), Some(paint)) = (overlay.bounds, overlay.paint_order) else { return None; };
++        if !bounds.has_area()
++            || !overlay.styles.get("position").is_some_and(|p| matches!(p.as_str(), "fixed" | "absolute"))
++            || overlay.styles.get("pointer-events").is_some_and(|p| p == "none")
++            || layout_hidden(overlay)
++        { return None; }
++        Some((backend, bounds, paint))
++    }).collect();
+     for node in nodes {
+-        if node.visibility != BrowserVisibility::InViewport {
+-            continue;
+-        }
+-        let Some(target_backend) = node.backend_node_id else {
+-            continue;
+-        };
+-        let Some(target) = layout.nodes.get(&target_backend) else {
+-            continue;
+-        };
+-        let (Some(target_bounds), Some(target_paint)) = (target.bounds, target.paint_order) else {
+-            continue;
+-        };
+-        let covered = layout.nodes.iter().any(|(&backend, overlay)| {
+-            if backend == target_backend
+-                || dom.shares_dom_branch(backend, target_backend)
+-                || overlay
+-                    .paint_order
+-                    .is_none_or(|paint| paint <= target_paint)
+-                || !overlay
+-                    .styles
+-                    .get("position")
+-                    .is_some_and(|position| matches!(position.as_str(), "fixed" | "absolute"))
+-                || overlay
+-                    .styles
+-                    .get("pointer-events")
+-                    .is_some_and(|value| value == "none")
+-                || layout_hidden(overlay)
+-            {
+-                return false;
+-            }
+-            overlay
+-                .bounds
+-                .is_some_and(|bounds| bounds.has_area() && bounds.covers(target_bounds))
++        if node.visibility != BrowserVisibility::InViewport { continue; }
++        let Some(target_backend) = node.backend_node_id else { continue; };
++        let Some(target) = layout.nodes.get(&target_backend) else { continue; };
++        let (Some(target_bounds), Some(target_paint)) = (target.bounds, target.paint_order) else { continue; };
++        let covered = overlays.iter().any(|&(backend, bounds, paint)| {
++            backend != target_backend
++                && paint > target_paint
++                && bounds.covers(target_bounds)
++                && !dom.shares_dom_branch(backend, target_backend)
+         });
+-        if covered {
+-            node.visibility = BrowserVisibility::PageOccluded;
+-        }
++        if covered { node.visibility = BrowserVisibility::PageOccluded; }
+     }
+ }
+ 
+@@ -1411,6 +1397,38 @@
+     }
+ 
+     #[test]
++    fn occlusion_candidate_filters_preserve_click_safety() {
++        for (position, pointer, visibility, paint, bounds, covered) in [
++            ("fixed", "auto", "visible", 2, [0,0,800,600], true),
++            ("absolute", "auto", "visible", 2, [0,0,800,600], true),
++            ("static", "auto", "visible", 2, [0,0,800,600], false),
++            ("fixed", "none", "visible", 2, [0,0,800,600], false),
++            ("fixed", "auto", "hidden", 2, [0,0,800,600], false),
++            ("fixed", "auto", "visible", 0, [0,0,800,600], false),
++            ("fixed", "auto", "visible", 2, [400,400,20,20], false),
++        ] {
++            let dom = build_dom_index(&json!({"nodeType":9,"frameId":"F_MAIN","children":[
++                {"nodeType":1,"nodeName":"BUTTON","backendNodeId":1},
++                {"nodeType":1,"nodeName":"DIV","backendNodeId":2}]}));
++            let mut layout = build_layout_index(&json!({"strings":[],"documents":[{
++                "nodes":{"backendNodeId":[1,2]},"layout":{"nodeIndex":[0,1],
++                "bounds":[[10,10,100,30],bounds],"paintOrders":[1,paint]}}]}));
++            let overlay = layout.nodes.get_mut(&2).unwrap();
++            for (key,value) in [("position",position),("pointer-events",pointer),("visibility",visibility)] {
++                overlay.styles.insert(key.to_owned(),value.to_owned());
++            }
++            let viewport = parse_viewport(&json!({"cssVisualViewport":{
++                "pageX":0,"pageY":0,"clientWidth":800,"clientHeight":600}}));
++            let ax = json!({"nodes":[{"nodeId":"button","backendDOMNodeId":1,
++                "role":{"value":"button"},"name":{"value":"Reply"}}]});
++            let result = compose_accessibility_tree(&ax,&dom,&layout,&viewport,frame());
++            let button = result.nodes.iter().find(|n| n.backend_node_id==Some(1)).unwrap();
++            assert_eq!(button.visibility==BrowserVisibility::PageOccluded,covered,
++                "{position}/{pointer}/{visibility}/{paint}/{bounds:?}");
++        }
++    }
++
++    #[test]
+     fn dialog_container_does_not_occlude_its_own_actions() {
+         let dom = build_dom_index(&json!({
+             "nodeType": 9,

@@ -4,6 +4,7 @@ import MuesliCore
 struct ComputerUsePlannerRuntimeResult: Equatable {
     enum Status: Equatable {
         case done
+        case incomplete
         case timedOut
         case needsConfirmation
         case failed

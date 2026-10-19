@@ -1,0 +1,153 @@
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+@@ -258,6 +258,9 @@
+         "requested_origin": requested_origin,
+         "action_class": action_class,
+     });
++    if tool_name == "browser_navigate" {
++        resource["new_tab"] = Value::Bool(args.get("new_tab").and_then(Value::as_bool).unwrap_or(false));
++    }
+     if tool_name == "browser_dialog" {
+         resource["dialog_id"] = args.get("dialog_id").cloned().unwrap_or(Value::Null);
+         resource["dialog_action"] = args.get("action").cloned().unwrap_or(Value::Null);
+@@ -873,7 +876,7 @@
+             name: "browser_navigate".into(),
+             description: "Navigate one tab of an exactly-bound browser target to a \
+                 new URL (http/https/about only). Refused for heuristic bindings. \
+-                Navigation invalidates all p<snapshot>:<index> refs for the tab."
++                Navigation invalidates all p<snapshot>:<index> refs for the tab. Set new_tab=true to open a new background tab without replacing the anchor tab. Refresh get_browser_state afterwards."
+                 .into(),
+             input_schema: json!({
+                 "type": "object",
+@@ -881,6 +884,7 @@
+                     "target_id": schema_target_id(),
+                     "tab_id": schema_tab_id(),
+                     "url": { "type": "string", "description": "Destination URL (http:, https:, or about:)." },
++                    "new_tab": { "type": "boolean", "default": false, "description": "Create a new background tab in the anchor tab profile; never activate Chrome or replace the anchor." },
+                     "session": schema_session(),
+                 },
+                 "required": ["target_id", "tab_id", "url"],
+@@ -964,6 +968,59 @@
+             Ok(v) => v,
+             Err(refusal) => return refusal.to_tool_result(),
+         };
++
++        if args.get("new_tab").and_then(Value::as_bool).unwrap_or(false) {
++            // Keep the observed anchor intact. Never accept focus/window/context options
++            // from the planner: derive profile ownership from the revalidated anchor.
++            let Some(window_id) = validated.record.cdp_window_id else {
++                return ToolResult::error("new_tab requires an exactly correlated browser window");
++            };
++            let targets = match validated.conn.call(None, "Target.getTargets", json!({})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("tab discovery failed: {e}")),
++            };
++            let Some(anchor) = targets.get("targetInfos").and_then(Value::as_array)
++                .and_then(|items| items.iter().find(|t| t["targetId"] == validated.tab.cdp_target_id)) else {
++                return ToolResult::error("anchor tab disappeared before opening a new tab");
++            };
++            let mut params = json!({"url": "about:blank", "background": true, "newWindow": false});
++            if let Some(context) = anchor.get("browserContextId").and_then(Value::as_str) {
++                params["browserContextId"] = json!(context);
++            }
++            let created = match validated.conn.call(None, "Target.createTarget", params).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("background tab creation failed: {e}")),
++            };
++            let Some(created_id) = created.get("targetId").and_then(Value::as_str) else {
++                return ToolResult::error("background tab creation returned no target ID; do not retry blindly");
++            };
++            let window = match validated.conn.call(None, "Browser.getWindowForTarget", json!({"targetId": created_id})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("new blank tab exists but window verification failed: {e}")),
++            };
++            if window.get("windowId").and_then(Value::as_i64) != Some(window_id) {
++                return ToolResult::error("new blank tab opened in another window; no requested navigation occurred. Refresh browser windows before continuing.");
++            }
++            // Recheck revocation and ownership after creating the blank tab, before
++            // navigating it to user content. No activation or foreground fallback.
++            if let Err(refusal) = self.engine.revalidate_for_mutation(&session, &target_id, Some(&tab_id)).await {
++                return refusal.to_tool_result();
++            }
++            let attached = match validated.conn.call(None, "Target.attachToTarget", json!({"targetId": created_id, "flatten": true})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("new blank tab attachment failed: {e}")),
++            };
++            let Some(created_session) = attached.get("sessionId").and_then(Value::as_str) else {
++                return ToolResult::error("new blank tab attachment returned no session");
++            };
++            let result = validated.conn.call(Some(created_session), "Page.navigate", json!({"url": url})).await;
++            let _ = validated.conn.call(None, "Target.detachFromTarget", json!({"sessionId": created_session})).await;
++            return match result {
++                Ok(v) if v.get("errorText").is_none() => ToolResult::text("Opened a new background tab. Refresh get_browser_state to obtain its tab_id; the anchor tab is unchanged.").with_structured(json!({"status":"ok", "new_tab":true, "target_id":target_id, "url":url, "refresh_required":true})),
++                Ok(v) => ToolResult::error(format!("new tab navigation failed: {v}")),
++                Err(e) => ToolResult::error(format!("new tab exists but navigation outcome is uncertain: {e}; inspect before retrying")),
++            };
++        }
+ 
+         match validated
+             .conn
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+@@ -66,6 +66,7 @@
+     "Runtime.evaluate",
+     "Target.activateTarget",
+     "Target.attachToTarget",
++    "Target.createTarget",
+     "Target.detachFromTarget",
+     "Target.getTargets",
+     "Target.setAutoAttach",
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+@@ -440,6 +440,7 @@
+         let is_oopif = sess.starts_with("oopif-sess-");
+ 
+         match call.method.as_str() {
++            "Target.createTarget" => MockReply::ok(json!({"targetId": "T_NEW"})),
+             "Target.getTargets" => {
+                 let mut infos: Vec<Value> = Vec::new();
+                 if !st.omit_primary_target {
+@@ -2178,6 +2179,43 @@
+ }
+ 
+ #[tokio::test]
++async fn new_tab_preserves_anchor_and_forces_background_creation() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    let result = BrowserNavigateTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "session": SESSION,
++        "url": "https://fixture.test/new", "new_tab": true,
++        "background": false, "newWindow": true, "focus": true,
++        "browserContextId": "untrusted-profile"
++    })).await;
++    assert_eq!(structured(&result)["status"], "ok", "{result:?}");
++    let creates = recorded_calls(&f, "Target.createTarget");
++    assert_eq!(creates.len(), 1);
++    assert_eq!(creates[0].1, json!({"url":"about:blank", "background":true, "newWindow":false}));
++    let attaches = recorded_calls(&f, "Target.attachToTarget");
++    assert!(attaches.iter().any(|(_, args)| args["targetId"] == "T_NEW"));
++    let nav = recorded_calls(&f, "Page.navigate");
++    assert_eq!(nav.len(), 1);
++    assert_eq!(nav[0].1["url"], "https://fixture.test/new");
++    assert!(recorded_calls(&f, "Page.bringToFront").is_empty());
++    assert!(recorded_calls(&f, "Target.activateTarget").is_empty());
++}
++
++#[tokio::test]
++async fn new_tab_refuses_stale_anchor_without_creating_anything() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    f.state.lock().unwrap().omit_primary_target = true;
++    let result = BrowserNavigateTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "session": SESSION,
++        "url": "https://fixture.test/new", "new_tab": true
++    })).await;
++    assert_ne!(structured(&result)["status"], "ok");
++    assert!(recorded_calls(&f, "Target.createTarget").is_empty());
++    assert!(recorded_calls(&f, "Page.navigate").is_empty());
++}
++
++#[tokio::test]
+ async fn browser_visual_feedback_probes_live_tab_visibility_without_activating_it() {
+     let f = fixture_with(|state| state.tab_visible = false).await;
+     let (target, tab) = bind(&f).await;
