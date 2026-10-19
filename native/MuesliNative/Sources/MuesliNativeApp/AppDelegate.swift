@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CloudKit
 import Foundation
 import Sparkle
@@ -68,6 +69,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                data.count <= 16_384, let command = String(data: data, encoding: .utf8) {
                 Task { @MainActor [weak controller] in
                     try? await Task.sleep(for: .seconds(2))
+                    // Dev replay can wait for manual browser connection without
+                    // restarting the host and discarding that connection.
+                    if CommandLine.arguments.contains("--computer-use-wait-for-chrome") {
+                        let driver = ComputerUseReferenceDriver.shared
+                        for await (state, active) in driver.$chromeAccess.combineLatest(driver.$commandActive).values {
+                            if Task.isCancelled { return }
+                            if state == .connected && !active { break }
+                        }
+                    }
+                    // Dev benchmark barrier: allow isolated driver probes to finish
+                    // on the same approved connection before starting the planner.
+                    if let index = CommandLine.arguments.firstIndex(of: "--computer-use-start-signal"),
+                       CommandLine.arguments.indices.contains(index + 1) {
+                        let signal = CommandLine.arguments[index + 1]
+                        while !FileManager.default.fileExists(atPath: signal) {
+                            do { try await Task.sleep(for: .milliseconds(200)) }
+                            catch { return }
+                        }
+                    }
                     let repeatIndex = CommandLine.arguments.firstIndex(of: "--computer-use-command-repeat")
                     let repetitions = repeatIndex.flatMap { index in
                         CommandLine.arguments.indices.contains(index + 1) ? Int(CommandLine.arguments[index + 1]) : nil

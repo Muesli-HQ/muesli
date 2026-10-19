@@ -1,0 +1,112 @@
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs
+@@ -29,6 +29,8 @@
+     pub transport_session: String,
+     pub pid: i64,
+     pub window_id: u64,
++    // Trusted embedding-host policy, captured when consent is granted.
++    pub profile_window_scope: bool,
+     pub fingerprint: ProcessFingerprint,
+     pub browser: String,
+     pub browser_product: BrowserProduct,
+@@ -122,6 +124,7 @@
+             transport_session: transport_session.unwrap_or(public_session).to_owned(),
+             pid,
+             window_id,
++            profile_window_scope: profile_window_scope_enabled(),
+             fingerprint,
+             browser,
+             browser_product,
+@@ -450,3 +453,8 @@
+         );
+     }
+ }
++
++/// Not a model-controlled tool argument. Default upstream window scope remains.
++pub(crate) fn profile_window_scope_enabled() -> bool {
++    std::env::var("MUESLI_CHROME_PROFILE_WINDOW_SCOPE").as_deref() == Ok("1")
++}
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
+@@ -1341,7 +1341,7 @@
+         if let Some(grant) = &grant {
+             if !grant.fingerprint.matches(&fingerprint)
+                 || grant.endpoint_ws_url != endpoint.ws_url
+-                || grant.window_id != window_id
++                || (!grant.profile_window_scope && grant.window_id != window_id)
+             {
+                 return Err(refuse(
+                     BrowserRefusalCode::BrowserBindingStale,
+@@ -1406,6 +1406,16 @@
+                 }
+             }
+         };
++
++        // A profile connection is not a window capability. Each additional
++        // window must pass native ownership and exact native/CDP correlation.
++        // Never grant mutation access from a heuristic cross-window match.
++        if grant.as_ref().is_some_and(|g| g.window_id != window_id)
++            && quality != BindingQuality::Exact
++        {
++            return Err(refuse(BrowserRefusalCode::BrowserWrongTargetRefused,
++                "another profile window requires exact native/CDP identity proof"));
++        }
+ 
+         // Tabs = page targets living in the bound CDP window. Selection is a
+         // separate proof from native-window correlation: a representative CDP
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+@@ -1245,13 +1245,15 @@
+                 serde_json::json!({
+                     "pid": pid,
+                     "window_id": window_id,
++                    "attachment_scope": if super::grant::profile_window_scope_enabled() { "verified_windows_of_profile" } else { "window" },
+                     "process_fingerprint": fingerprint.clone(),
+                     "browser_product": classification.product_kind,
+                     "endpoint_owner_pid": endpoint.ownership.owner_pid,
+                 }),
+                 format!(
+-                    "Attach Cua Driver to {:?} window {} using its logged-in profile",
+-                    classification.product_kind, window_id
++                    "Attach Cua Driver to {:?} using its logged-in profile (anchor window {}; scope: {})",
++                    classification.product_kind, window_id,
++                    if super::grant::profile_window_scope_enabled() { "verified windows of this profile" } else { "anchor window only" }
+                 ),
+             );
+             Some(
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+@@ -3232,3 +3232,33 @@
+     assert_eq!(f._server.accepted_connections(), count);
+     crate::session::fire_session_end("event-transport");
+ }
++
++#[tokio::test]
++#[ignore = "Run separately with and without MUESLI_CHROME_PROFILE_WINDOW_SCOPE=1"]
++async fn muesli_profile_scope_rebinds_without_reconnect_and_preserves_boundaries() {
++    let (f, _) = protected_existing_profile_fixture().await;
++    let prepared = BrowserPrepareTool::new(f.engine.clone()).invoke(json!({
++        "pid":1,"window_id":7,"session":"profile-test","_transport_session_id":"profile-transport",
++        "strategy":{"kind":"existing_profile"}})).await;
++    assert_eq!(structured(&prepared)["prepared"], true);
++    let count = f._server.accepted_connections();
++    let result = f.engine.bind_native("profile-test",Some("profile-transport"),1,8).await;
++    if !super::grant::profile_window_scope_enabled() {
++        assert_eq!(result.unwrap_err().code, super::refusal::BrowserRefusalCode::BrowserBindingStale);
++        return;
++    }
++    let (target, record) = result.unwrap();
++    assert_eq!(record.window_id,8);
++    assert_eq!(record.quality, super::types::BindingQuality::Exact);
++    assert_eq!(f._server.accepted_connections(),count);
++    assert!(!f.setup_invoked.load(Ordering::SeqCst));
++    assert!(f.engine.store.get_target("other-session",&target).is_err());
++    assert!(f.engine.bind_native("other-session",Some("other-transport"),1,8).await.is_err());
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),2,8).await.is_err());
++    f.state.lock().unwrap().omit_primary_target = true;
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),1,9).await.is_err());
++    f.state.lock().unwrap().omit_primary_target = false;
++    f.engine.revoke_existing_profile_grant("profile-test",Some("profile-transport"),1).await;
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),1,8).await.is_err());
++    crate::session::fire_session_end("profile-transport");
++}

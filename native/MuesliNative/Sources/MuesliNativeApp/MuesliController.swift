@@ -10962,6 +10962,8 @@ public final class MuesliController: NSObject {
         switch status {
         case .done:
             return "done"
+        case .incomplete:
+            return "incomplete"
         case .timedOut:
             return "timed_out"
         case .needsConfirmation:
@@ -10991,6 +10993,10 @@ public final class MuesliController: NSObject {
             message = result.message.hasPrefix("Done") ? result.message : "Done: \(result.message)"
             floatingMessage = "Done"
             icon = ""
+        case .incomplete:
+            message = result.message
+            floatingMessage = "Incomplete"
+            icon = "!"
         case .timedOut:
             message = result.message
             floatingMessage = "Timed out"

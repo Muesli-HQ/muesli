@@ -1,0 +1,1498 @@
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs
+index d8c79dd..2217853 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs
+@@ -864,7 +864,8 @@ fn advertised_enforcement_for(tool: &str) -> RiskEnforcement {
+ pub fn advertised_risk_for(tool: &str) -> RiskAssessment {
+     let class = match tool {
+         // Public driver/OS metadata with no user-content payload.
+-        "get_screen_size"
++        "browser_connection_status"
++        | "get_screen_size"
+         | "get_cursor_position"
+         | "get_config"
+         | "get_session"
+@@ -1510,6 +1511,13 @@ mod tests {
+         assert_eq!(isolated.enforcement, RiskEnforcement::Active);
+     }
+ 
++    #[test]
++    fn muesli_connection_status_is_reviewed_metadata() {
++        let risk = classify_tool_call("browser_connection_status", &serde_json::json!({"session":"test", "pid":1, "watch":true}));
++        assert_eq!(risk.class, RiskClass::R0);
++        authorize_tool_call("browser_connection_status", &serde_json::json!({"session":"test", "pid":1, "watch":true})).expect("read-only connection metadata must pass dispatch classification");
++    }
++
+     #[test]
+     fn unknown_tools_are_unclassified_and_denied() {
+         let error = authorize_tool_call("new_unreviewed_tool", &serde_json::json!({}))
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+index c401f20..1ccf25a 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+@@ -66,6 +66,7 @@ const EXISTING_PROFILE_METHODS: &[&str] = &[
+     "Runtime.evaluate",
+     "Target.activateTarget",
+     "Target.attachToTarget",
++    "Target.createTarget",
+     "Target.detachFromTarget",
+     "Target.getTargets",
+     "Target.setAutoAttach",
+@@ -134,11 +135,13 @@ struct Demux {
+     dialogs: StdMutex<HashMap<String, CdpDialogState>>,
+     next_dialog_generation: AtomicU64,
+     closed: AtomicBool,
++    close_events: tokio::sync::watch::Sender<bool>,
+ }
+ 
+ impl Demux {
+     fn close(&self) {
+         self.closed.store(true, Ordering::SeqCst);
++        self.close_events.send_replace(true);
+         // Dropping the senders wakes every pending caller with a recv
+         // error, which `call` reports as a closed socket.
+         self.pending.lock().unwrap().clear();
+@@ -268,6 +271,7 @@ impl CdpConnection {
+             dialogs: StdMutex::new(HashMap::new()),
+             next_dialog_generation: AtomicU64::new(1),
+             closed: AtomicBool::new(false),
++            close_events: tokio::sync::watch::channel(false).0,
+         });
+         let reader = tokio::spawn(read_loop(read, demux.clone()));
+         Ok(Self {
+@@ -295,6 +299,10 @@ impl CdpConnection {
+ 
+     /// Whether the reader observed the socket close. A closed connection
+     /// never recovers; the pool redials.
++    pub fn subscribe_close(&self) -> tokio::sync::watch::Receiver<bool> {
++        self.demux.close_events.subscribe()
++    }
++
+     pub fn is_closed(&self) -> bool {
+         self.demux.closed.load(Ordering::SeqCst)
+     }
+@@ -356,6 +364,13 @@ impl CdpConnection {
+         method: &str,
+         params: Value,
+     ) -> anyhow::Result<Value> {
++        // Diagnostic metadata only: never log URLs, selectors, or page content.
++        struct CallTiming<'a>(&'a str, Instant);
++        impl Drop for CallTiming<'_> {
++            fn drop(&mut self) { eprintln!("[muesli-cdp] end {} {}ms", self.0, self.1.elapsed().as_millis()); }
++        }
++        eprintln!("[muesli-cdp] begin {method} unix_ms={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
++        let _timing = CallTiming(method, Instant::now());
+         let policy = self.method_policy();
+         if !policy.allows(method) {
+             anyhow::bail!(
+@@ -679,6 +694,19 @@ impl CdpPool {
+         &self,
+         ws_url: &str,
+         generation: u64,
++    ) -> anyhow::Result<Arc<CdpConnection>> {
++        self.claim_existing_with_dial(ws_url, generation, true).await
++    }
++
++    /// Reuse approved sockets atomically without opening a consent-triggering socket.
++    pub async fn claim_existing_without_dial(
++        &self, ws_url: &str, generation: u64,
++    ) -> anyhow::Result<Arc<CdpConnection>> {
++        self.claim_existing_with_dial(ws_url, generation, false).await
++    }
++
++    async fn claim_existing_with_dial(
++        &self, ws_url: &str, generation: u64, allow_dial: bool,
+     ) -> anyhow::Result<Arc<CdpConnection>> {
+         loopback_port(ws_url)
+             .ok_or_else(|| anyhow::anyhow!("existing-profile endpoint has no loopback port"))?;
+@@ -718,6 +746,10 @@ impl CdpPool {
+             }
+         }
+ 
++        if !allow_dial {
++            anyhow::bail!("no reusable approved browser socket; interactive consent is required");
++        }
++
+         // The WebSocket handshake can wait for browser-owned consent UI.
+         // Never hold the entry mutex across that wait: other sessions keep
+         // using their sockets and revocation stays responsive.
+@@ -1065,12 +1097,21 @@ mod tests {
+         );
+         assert!(pool.get(&url).await.is_err());
+ 
+-        let next = pool.claim_existing(&url, 2).await.unwrap();
++        let next = pool.claim_existing_without_dial(&url, 2).await.unwrap();
+         assert!(Arc::ptr_eq(&first, &next));
+         assert_eq!(dials.load(Ordering::SeqCst), 1);
+         server.abort();
+     }
+ 
++    #[tokio::test]
++    async fn background_claim_never_dials_for_missing_socket() {
++        let (url, dials, server) = counting_browser().await;
++        let pool = CdpPool::new();
++        assert!(pool.claim_existing_without_dial(&url, 1).await.is_err());
++        assert_eq!(dials.load(Ordering::SeqCst), 0);
++        server.abort();
++    }
++
+     #[tokio::test]
+     async fn parked_socket_closes_after_the_idle_bound() {
+         let (url, dials, server) = counting_browser().await;
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
+index c4e14ca..3da3568 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
+@@ -251,7 +251,34 @@ fn endpoint_access_class(
+ /// `record`/`tab` evidence rides along for future callers even though
+ /// the v1 tools only need the attached connection.
+ #[allow(dead_code)]
++// A fresh flattened session belongs to one operation. Leaving it attached
++// retains renderer agents (including focus emulation) across unrelated calls.
++// Snapshots store document/target identity, never this transient session.
++pub(crate) struct OperationSession {
++    connection: Arc<CdpConnection>,
++    id: String,
++}
++impl OperationSession {
++    fn new(connection: &Arc<CdpConnection>, id: &str) -> Self {
++        Self { connection: connection.clone(), id: id.to_owned() }
++    }
++}
++impl Drop for OperationSession {
++    fn drop(&mut self) {
++        let connection = self.connection.clone();
++        let id = self.id.clone();
++        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
++            runtime.spawn(async move {
++                if !connection.is_closed() {
++                    let _ = connection.call(None, "Target.detachFromTarget", json!({"sessionId": id})).await;
++                }
++            });
++        }
++    }
++}
++
+ pub(crate) struct ValidatedTab {
++    _session_cleanup: OperationSession,
+     pub conn: Arc<CdpConnection>,
+     pub record: TargetRecord,
+     pub tab: TabRecord,
+@@ -896,6 +923,17 @@ impl BrowserEngine {
+             return Ok((conn, grant));
+         }
+ 
++        // Muesli's host owns interactive reconnect through its Settings UI.
++        // Redial can make Chrome display consent and activate itself, even for
++        // read-only browser tools. A live socket may be reused; a new one must
++        // come from the explicitly invoked browser_prepare flow.
++        if std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1") {
++            return Err(refuse(
++                BrowserRefusalCode::BrowserConsentRequired,
++                "Chrome connection ended. Reconnect from Muesli Settings > Permissions.",
++            ));
++        }
++
+         // One leader owns endpoint reproof and bounded redial. Followers
+         // re-check the generation after acquiring this gate and reuse its
+         // socket rather than opening another browser-level connection.
+@@ -1330,7 +1368,7 @@ impl BrowserEngine {
+         if let Some(grant) = &grant {
+             if !grant.fingerprint.matches(&fingerprint)
+                 || grant.endpoint_ws_url != endpoint.ws_url
+-                || grant.window_id != window_id
++                || (!grant.profile_window_scope && grant.window_id != window_id)
+             {
+                 return Err(refuse(
+                     BrowserRefusalCode::BrowserBindingStale,
+@@ -1396,6 +1434,16 @@ impl BrowserEngine {
+             }
+         };
+ 
++        // A profile connection is not a window capability. Each additional
++        // window must pass native ownership and exact native/CDP correlation.
++        // Never grant mutation access from a heuristic cross-window match.
++        if grant.as_ref().is_some_and(|g| g.window_id != window_id)
++            && quality != BindingQuality::Exact
++        {
++            return Err(refuse(BrowserRefusalCode::BrowserWrongTargetRefused,
++                "another profile window requires exact native/CDP identity proof"));
++        }
++
+         // Tabs = page targets living in the bound CDP window. Selection is a
+         // separate proof from native-window correlation: a representative CDP
+         // target is only a window handle and must never be reported as active.
+@@ -1656,6 +1704,7 @@ impl BrowserEngine {
+         }
+ 
+         let cdp_session = self.attach(&conn, &tab.cdp_target_id).await?;
++        let _session_cleanup = OperationSession::new(&conn, &cdp_session);
+         let dispatch_context = crate::tool::current_dispatch_authorization_context();
+         if dispatch_context
+             .as_deref()
+@@ -1678,6 +1727,7 @@ impl BrowserEngine {
+             authorize_live_browser_origin(manifest, &live_url)?;
+         }
+         Ok(ValidatedTab {
++            _session_cleanup,
+             conn,
+             record,
+             tab,
+@@ -2012,6 +2062,7 @@ impl BrowserEngine {
+         })?;
+         let conn = self.connection_for_record(session, &record).await?;
+         let cdp_session = self.attach(&conn, &tab.cdp_target_id).await?;
++        let _session_cleanup = OperationSession::new(&conn, &cdp_session);
+         let metrics = conn
+             .call(Some(&cdp_session), "Page.getLayoutMetrics", json!({}))
+             .await
+@@ -2109,6 +2160,7 @@ impl BrowserEngine {
+         })?;
+         let conn = self.connection_for_record(session, &record).await?;
+         let cdp_session = self.attach(&conn, &tab.cdp_target_id).await?;
++        let _session_cleanup = OperationSession::new(&conn, &cdp_session);
+ 
+         let doc = conn
+             .call(
+@@ -2586,6 +2638,7 @@ impl BrowserEngine {
+             if let Some(identity) = &snapshot.semantic_root_identity {
+                 let conn = self.connection_for_record(session, &record).await?;
+                 let cdp_session = self.attach(&conn, &tab.cdp_target_id).await?;
++        let _session_cleanup = OperationSession::new(&conn, &cdp_session);
+                 let tree = self.local_frame_tree(&conn, &cdp_session).await.map_err(|error| {
+                     match error {
+                         FrameTreeError::Unsupported => refuse(
+@@ -2685,6 +2738,7 @@ impl BrowserEngine {
+         })?;
+         let conn = self.connection_for_record(session, &record).await?;
+         let cdp_session = self.attach(&conn, &tab.cdp_target_id).await?;
++        let _session_cleanup = OperationSession::new(&conn, &cdp_session);
+         let (document, document_complete) = self.semantic_document(&conn, &cdp_session).await?;
+         let root = document.get("root").cloned().unwrap_or(Value::Null);
+         let url = root
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs
+index 7469b0e..dcd8ad7 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/grant.rs
+@@ -29,6 +29,8 @@ pub(crate) struct ExistingProfileGrant {
+     pub transport_session: String,
+     pub pid: i64,
+     pub window_id: u64,
++    // Trusted embedding-host policy, captured when consent is granted.
++    pub profile_window_scope: bool,
+     pub fingerprint: ProcessFingerprint,
+     pub browser: String,
+     pub browser_product: BrowserProduct,
+@@ -122,6 +124,7 @@ impl ExistingProfileGrants {
+             transport_session: transport_session.unwrap_or(public_session).to_owned(),
+             pid,
+             window_id,
++            profile_window_scope: profile_window_scope_enabled(),
+             fingerprint,
+             browser,
+             browser_product,
+@@ -450,3 +453,8 @@ mod tests {
+         );
+     }
+ }
++
++/// Not a model-controlled tool argument. Default upstream window scope remains.
++pub(crate) fn profile_window_scope_enabled() -> bool {
++    std::env::var("MUESLI_CHROME_PROFILE_WINDOW_SCOPE").as_deref() == Ok("1")
++}
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+index 82f7dff..ae68a7e 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+@@ -938,13 +938,15 @@ impl BrowserEngine {
+         &self,
+         request: PrepareRequest,
+     ) -> Result<PrepareOutcome, BrowserRefusal> {
++        let reuse_only = !request.foreground
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1");
+         let browser_pid = request.pid;
+         // Where the platform can guard it (macOS: the browser window is on
+         // another Space), attach in the background under the guard instead of
+         // refusing.
+         let background_guard = match (browser_pid, request.window_id) {
+             (Some(pid), Some(window_id))
+-                if !request.foreground
++                if !request.foreground && !reuse_only
+                     && self
+                         .platform
+                         .existing_profile_attach_background_limitation()
+@@ -1118,7 +1120,11 @@ impl BrowserEngine {
+             ));
+         }
+         self.native_window_checked(pid, window_id).await?;
+-        self.existing_profile_background_check(pid, request.foreground || guarded)?;
++        let reuse_only = !request.foreground
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1");
++        if !reuse_only {
++            self.existing_profile_background_check(pid, request.foreground || guarded)?;
++        }
+         let fingerprint = self.platform.process_fingerprint(pid).await?;
+         let mut setup = ExistingProfileSetupOutcome::default();
+         let setup_request = ExistingProfileSetupRequest {
+@@ -1132,6 +1138,14 @@ impl BrowserEngine {
+             .platform
+             .discover_existing_profile_endpoint(pid)
+             .await?;
++        if endpoint.is_none()
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1")
++        {
++            return Err(refusal(
++                BrowserRefusalCode::BrowserRequiresSetup,
++                "Enable remote debugging in Chrome. Muesli is waiting for its PID-owned endpoint.",
++            ));
++        }
+         if endpoint.is_none() {
+             setup = self
+                 .platform
+@@ -1244,13 +1258,15 @@ impl BrowserEngine {
+                 serde_json::json!({
+                     "pid": pid,
+                     "window_id": window_id,
++                    "attachment_scope": if super::grant::profile_window_scope_enabled() { "verified_windows_of_profile" } else { "window" },
+                     "process_fingerprint": fingerprint.clone(),
+                     "browser_product": classification.product_kind,
+                     "endpoint_owner_pid": endpoint.ownership.owner_pid,
+                 }),
+                 format!(
+-                    "Attach Cua Driver to {:?} window {} using its logged-in profile",
+-                    classification.product_kind, window_id
++                    "Attach Cua Driver to {:?} using its logged-in profile (anchor window {}; scope: {})",
++                    classification.product_kind, window_id,
++                    if super::grant::profile_window_scope_enabled() { "verified windows of this profile" } else { "anchor window only" }
+                 ),
+             );
+             Some(
+@@ -1323,7 +1339,20 @@ impl BrowserEngine {
+                 self.approval_broker.revoke(protected).await;
+             }
+         }
+-        let (claimed, displayed_consent_prompt) = match claim_with_delayed_consent(
++        let (claimed, displayed_consent_prompt) = if reuse_only {
++            match self.pool.claim_existing_without_dial(&endpoint.ws_url, grant.generation).await {
++                Ok(connection) => (Ok(connection), false),
++                Err(_) => {
++                    self.revoke_existing_profile_grant(
++                        &request.session, request.transport_session.as_deref(), pid,
++                    ).await;
++                    return Err(refusal(
++                        BrowserRefusalCode::BrowserConsentRequired,
++                        "No reusable approved Chrome connection. Interactive connection approval is required.",
++                    ));
++                }
++            }
++        } else { match claim_with_delayed_consent(
+             self.pool.claim_existing(&endpoint.ws_url, grant.generation),
+             |action| {
+                 self.platform
+@@ -1358,6 +1387,7 @@ impl BrowserEngine {
+                 }
+                 return Err(error);
+             }
++        }
+         };
+         // Chrome on Windows can reject the WebSocket handshake that was
+         // pending while its native remote-debugging consent prompt was open.
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs
+index dc7cece..fb9e6d1 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/semantic.rs
+@@ -82,12 +82,14 @@ struct DomMeta {
+     css_hidden: bool,
+     parent_backend_node_id: Option<i64>,
+     frame_id: Option<String>,
++    document_base: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, Default)]
+ pub(crate) struct DomIndex {
+     nodes: HashMap<i64, DomMeta>,
+     pub(crate) css_hidden_count: usize,
++    document_bases: HashMap<String, String>,
+ }
+ 
+ #[derive(Debug, Clone, Default)]
+@@ -118,6 +120,9 @@ pub(crate) struct SemanticNode {
+     pub(crate) role: String,
+     pub(crate) name: Option<String>,
+     pub(crate) value: Option<String>,
++    pub(crate) href: Option<String>,
++    pub(crate) destination: Option<String>,
++    pub(crate) query_match: Option<bool>,
+     pub(crate) states: BTreeMap<String, Value>,
+     pub(crate) frame: FrameRef,
+     pub(crate) visibility: BrowserVisibility,
+@@ -202,7 +207,7 @@ impl SemanticDocument {
+     ) -> SemanticPage {
+         let mut candidates = scoped_indices(&self.nodes, query, scope_backend_node_id);
+         candidates.retain(|idx| {
+-            !matches!(
++            informative(&self.nodes[*idx]) && !matches!(
+                 self.nodes[*idx].visibility,
+                 BrowserVisibility::CssHidden | BrowserVisibility::PageOccluded
+             )
+@@ -222,7 +227,12 @@ impl SemanticDocument {
+         let outline = render_outline(&self.nodes, &selected);
+         let selected_nodes = page_slice
+             .iter()
+-            .map(|idx| self.nodes[*idx].clone())
++            .map(|idx| {
++                let mut node = self.nodes[*idx].clone();
++                node.query_match = query.filter(|q| !q.trim().is_empty())
++                    .map(|q| query_score(&node, q) > 0);
++                node
++            })
+             .collect::<Vec<_>>();
+         let semantic_css_hidden = self
+             .nodes
+@@ -287,10 +297,20 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+         inherited_hidden: bool,
+         parent_backend_node_id: Option<i64>,
+         inherited_frame_id: Option<&str>,
++        inherited_base: Option<&str>,
+         order: &mut usize,
+         index: &mut DomIndex,
+     ) {
+         let node_type = node.get("nodeType").and_then(Value::as_i64).unwrap_or(0);
++        if node_type == 9 {
++            if let (Some(frame), Some(base)) = (
++                node.get("frameId").and_then(Value::as_str),
++                node.get("baseURL").or_else(|| node.get("documentURL")).and_then(Value::as_str),
++            ) { index.document_bases.insert(frame.to_owned(), base.to_owned()); }
++        }
++        let document_base = if node_type == 9 {
++            node.get("baseURL").or_else(|| node.get("documentURL")).and_then(Value::as_str)
++        } else { inherited_base };
+         let attrs = attributes(node);
+         let hidden = inherited_hidden || statically_hidden(&attrs);
+         let backend_node_id = node.get("backendNodeId").and_then(Value::as_i64);
+@@ -317,6 +337,7 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+                     css_hidden: hidden,
+                     parent_backend_node_id,
+                     frame_id: frame_id.map(str::to_owned),
++                    document_base: document_base.map(str::to_owned),
+                 },
+             );
+             *order += 1;
+@@ -328,6 +349,7 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+                     hidden,
+                     backend_node_id.or(parent_backend_node_id),
+                     frame_id,
++                    document_base,
+                     order,
+                     index,
+                 );
+@@ -343,6 +365,7 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+                     hidden,
+                     backend_node_id.or(parent_backend_node_id),
+                     frame_id,
++                    document_base,
+                     order,
+                     index,
+                 );
+@@ -354,6 +377,7 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+                 hidden,
+                 backend_node_id.or(parent_backend_node_id),
+                 content_document.get("frameId").and_then(Value::as_str),
++                None,
+                 order,
+                 index,
+             );
+@@ -367,6 +391,7 @@ pub(crate) fn build_dom_index(root: &Value) -> DomIndex {
+         false,
+         None,
+         root.get("frameId").and_then(Value::as_str),
++        None,
+         &mut order,
+         &mut index,
+     );
+@@ -553,6 +578,9 @@ pub(crate) fn compose_accessibility_tree(
+             role,
+             name,
+             value,
++            href: observed_href(dom_meta),
++            destination: link_destination(dom_meta, dom),
++            query_match: None,
+             states,
+             frame: frame.clone(),
+             visibility,
+@@ -573,44 +601,30 @@ pub(crate) fn compose_accessibility_tree(
+ }
+ 
+ fn apply_page_occlusion(nodes: &mut [SemanticNode], dom: &DomIndex, layout: &LayoutIndex) {
++    // Only painted, hit-testable positioned boxes can occlude another branch.
++    // Compute this invariant set once, rather than walking DOM ancestry for
++    // every visible AX node against every layout node (including text/layout).
++    let overlays: Vec<_> = layout.nodes.iter().filter_map(|(&backend, overlay)| {
++        let (Some(bounds), Some(paint)) = (overlay.bounds, overlay.paint_order) else { return None; };
++        if !bounds.has_area()
++            || !overlay.styles.get("position").is_some_and(|p| matches!(p.as_str(), "fixed" | "absolute"))
++            || overlay.styles.get("pointer-events").is_some_and(|p| p == "none")
++            || layout_hidden(overlay)
++        { return None; }
++        Some((backend, bounds, paint))
++    }).collect();
+     for node in nodes {
+-        if node.visibility != BrowserVisibility::InViewport {
+-            continue;
+-        }
+-        let Some(target_backend) = node.backend_node_id else {
+-            continue;
+-        };
+-        let Some(target) = layout.nodes.get(&target_backend) else {
+-            continue;
+-        };
+-        let (Some(target_bounds), Some(target_paint)) = (target.bounds, target.paint_order) else {
+-            continue;
+-        };
+-        let covered = layout.nodes.iter().any(|(&backend, overlay)| {
+-            if backend == target_backend
+-                || dom.shares_dom_branch(backend, target_backend)
+-                || overlay
+-                    .paint_order
+-                    .is_none_or(|paint| paint <= target_paint)
+-                || !overlay
+-                    .styles
+-                    .get("position")
+-                    .is_some_and(|position| matches!(position.as_str(), "fixed" | "absolute"))
+-                || overlay
+-                    .styles
+-                    .get("pointer-events")
+-                    .is_some_and(|value| value == "none")
+-                || layout_hidden(overlay)
+-            {
+-                return false;
+-            }
+-            overlay
+-                .bounds
+-                .is_some_and(|bounds| bounds.has_area() && bounds.covers(target_bounds))
++        if node.visibility != BrowserVisibility::InViewport { continue; }
++        let Some(target_backend) = node.backend_node_id else { continue; };
++        let Some(target) = layout.nodes.get(&target_backend) else { continue; };
++        let (Some(target_bounds), Some(target_paint)) = (target.bounds, target.paint_order) else { continue; };
++        let covered = overlays.iter().any(|&(backend, bounds, paint)| {
++            backend != target_backend
++                && paint > target_paint
++                && bounds.covers(target_bounds)
++                && !dom.shares_dom_branch(backend, target_backend)
+         });
+-        if covered {
+-            node.visibility = BrowserVisibility::PageOccluded;
+-        }
++        if covered { node.visibility = BrowserVisibility::PageOccluded; }
+     }
+ }
+ 
+@@ -695,6 +709,9 @@ fn supplement_dom_actions(
+                 .get("value")
+                 .cloned()
+                 .and_then(clean_semantic_text),
++            href: observed_href(Some(meta)),
++            destination: link_destination(Some(meta), dom),
++            query_match: None,
+             states,
+             frame: frame.clone(),
+             visibility,
+@@ -704,6 +721,23 @@ fn supplement_dom_actions(
+     }
+ }
+ 
++// Observed link metadata only; never adds mutation authority or executes a URL.
++fn observed_href(meta: Option<&DomMeta>) -> Option<String> {
++    let meta = meta?;
++    if !matches!(meta.tag.as_str(), "a" | "area") { return None; }
++    meta.attrs.get("href").filter(|value| value.len() <= 4096).cloned()
++}
++
++fn link_destination(meta: Option<&DomMeta>, dom: &DomIndex) -> Option<String> {
++    let raw = observed_href(meta)?;
++    let meta = meta?;
++    let parsed = url::Url::parse(&raw).ok().or_else(|| {
++        let base = meta.document_base.as_deref().or_else(|| dom.document_bases.get(meta.frame_id.as_ref()?).map(String::as_str))?;
++        url::Url::parse(base).ok()?.join(&raw).ok()
++    })?;
++    matches!(parsed.scheme(), "http" | "https").then(|| parsed.to_string())
++}
++
+ fn attributes(node: &Value) -> HashMap<String, String> {
+     node.get("attributes")
+         .and_then(Value::as_array)
+@@ -977,6 +1011,13 @@ fn remove_redundant_static_text(nodes: &mut Vec<SemanticNode>) {
+     });
+ }
+ 
++fn informative(node: &SemanticNode) -> bool {
++    !(matches!(node.role.as_str(), "generic" | "none" | "presentation")
++        && node.name.as_deref().is_none_or(str::is_empty)
++        && node.value.as_deref().is_none_or(str::is_empty)
++        && node.actions.is_empty() && node.states.is_empty())
++}
++
+ fn rank(node: &SemanticNode) -> u8 {
+     let priority_context = node.states.get("focused").and_then(Value::as_bool) == Some(true)
+         || matches!(node.role.as_str(), "dialog" | "alertdialog");
+@@ -1026,17 +1067,18 @@ fn scoped_indices(
+     let query = query.map(|value| value.trim().to_ascii_lowercase());
+     let in_scope =
+         |node: &SemanticNode| scope_backend_node_id.is_none() || allowed.contains(&node.ax_id);
++    let visible = |node: &SemanticNode| !matches!(node.visibility, BrowserVisibility::CssHidden | BrowserVisibility::PageOccluded);
+     let exact_match_exists = query.as_ref().is_some_and(|query| {
+         !query.is_empty()
+             && nodes
+                 .iter()
+-                .any(|node| in_scope(node) && node_contains_query(node, query))
++                .any(|node| in_scope(node) && visible(node) && node_contains_query(node, query))
+     });
+-    nodes
++    let matches: Vec<usize> = nodes
+         .iter()
+         .enumerate()
+         .filter(|(_, node)| {
+-            in_scope(node)
++            in_scope(node) && visible(node)
+                 && query.as_ref().is_none_or(|query| {
+                     query.is_empty()
+                         || if exact_match_exists {
+@@ -1047,7 +1089,62 @@ fn scoped_indices(
+                 })
+         })
+         .map(|(idx, _)| idx)
+-        .collect()
++        .collect();
++
++    if query.as_ref().is_none_or(|q| q.is_empty()) { return matches; }
++    let mut selected: HashSet<usize> = matches.iter().copied().collect();
++    let mut containers = HashSet::new();
++    // Bound context globally as well as per container; direct matches retain
++    // their existing pagination budget and rank ahead of added context.
++    let mut remaining = 128usize;
++    for idx in &matches {
++        let mut current = Some(*idx);
++        let mut container = None;
++        for _ in 0..16 {
++            let Some(i) = current else { break };
++            if !in_scope(&nodes[i]) { break; }
++            if matches!(nodes[i].role.as_str(), "article" | "form" | "dialog" | "menu" | "listitem" | "row") {
++                container = Some(i); break;
++            }
++            current = nodes[i].parent_ax_id.as_deref().and_then(|id| by_ax_id.get(id).copied());
++        }
++        if container.is_none() && matches!(nodes[*idx].role.as_str(), "textbox" | "searchbox" | "combobox") {
++            let mut ancestor = nodes[*idx].parent_ax_id.as_deref().and_then(|id| by_ax_id.get(id).copied());
++            for _ in 0..6 {
++                let Some(a) = ancestor else { break };
++                if !in_scope(&nodes[a]) || matches!(nodes[a].role.as_str(), "main" | "rootwebarea" | "webarea" | "navigation") { break; }
++                let mut queue = vec![a]; let mut seen = HashSet::new(); let mut meaningful = 0; let mut button = false;
++                while let Some(i) = queue.pop() {
++                    if !seen.insert(i) { continue; }
++                    if seen.len() > 256 { break; }
++                    if !in_scope(&nodes[i]) || matches!(nodes[i].visibility, BrowserVisibility::CssHidden | BrowserVisibility::PageOccluded) { continue; }
++                    meaningful += usize::from(informative(&nodes[i]));
++                    button |= nodes[i].role == "button";
++                    queue.extend(nodes[i].child_ax_ids.iter().filter_map(|id| by_ax_id.get(id.as_str()).copied()));
++                }
++                if seen.len() <= 256 && meaningful <= 64 && button { container = Some(a); break; }
++                ancestor = nodes[a].parent_ax_id.as_deref().and_then(|id| by_ax_id.get(id).copied());
++            }
++        }
++        let Some(container) = container else { continue };
++        if !containers.insert(container) || remaining == 0 { continue; }
++        let mut queue = std::collections::VecDeque::from([container]);
++        let mut visited = HashSet::new();
++        let mut meaningful = 0usize;
++        while let Some(i) = queue.pop_front() {
++            if visited.len() >= 256 || meaningful >= 64 || remaining == 0 { break; }
++            if !visited.insert(i) || !in_scope(&nodes[i]) { continue; }
++            if matches!(nodes[i].visibility, BrowserVisibility::CssHidden | BrowserVisibility::PageOccluded) { continue; }
++            if informative(&nodes[i]) {
++                meaningful += 1;
++                if selected.insert(i) { remaining -= 1; }
++            }
++            queue.extend(nodes[i].child_ax_ids.iter().filter_map(|id| by_ax_id.get(id.as_str()).copied()));
++        }
++    }
++    let mut selected: Vec<_> = selected.into_iter().collect();
++    selected.sort_unstable();
++    selected
+ }
+ 
+ fn node_contains_query(node: &SemanticNode, query: &str) -> bool {
+@@ -1079,11 +1176,11 @@ fn query_score(node: &SemanticNode, query: &str) -> usize {
+     .flatten()
+     .map(str::to_ascii_lowercase)
+     .collect::<Vec<_>>();
+-    query
+-        .split(|character: char| !character.is_alphanumeric())
+-        .filter(|term| !term.is_empty())
+-        .filter(|term| fields.iter().any(|field| field.contains(term)))
+-        .count()
++    let terms: Vec<_> = query.split(|character: char| !character.is_alphanumeric())
++        .filter(|term| !term.is_empty()).collect();
++    if !terms.is_empty() && terms.iter().all(|term| fields.iter().any(|field| field.contains(term))) {
++        terms.len()
++    } else { 0 }
+ }
+ 
+ fn with_ancestors(nodes: &[SemanticNode], selected: &[usize]) -> HashSet<usize> {
+@@ -1119,7 +1216,7 @@ fn render_outline(nodes: &[SemanticNode], selected: &HashSet<usize>) -> String {
+     let mut lines = Vec::new();
+     for idx in ordered {
+         let node = &nodes[idx];
+-        if matches!(node.role.as_str(), "rootwebarea" | "webarea") {
++        if !informative(node) || matches!(node.role.as_str(), "rootwebarea" | "webarea") {
+             continue;
+         }
+         let mut depth = 0;
+@@ -1129,6 +1226,7 @@ fn render_outline(nodes: &[SemanticNode], selected: &HashSet<usize>) -> String {
+                 break;
+             };
+             if selected.contains(&parent_idx)
++                && informative(&nodes[parent_idx])
+                 && !matches!(nodes[parent_idx].role.as_str(), "rootwebarea" | "webarea")
+             {
+                 depth += 1;
+@@ -1166,6 +1264,146 @@ mod tests {
+ 
+     use super::*;
+ 
++    fn context_node(id: &str, role: &str, name: &str, parent: Option<&str>, children: &[&str], backend: i64) -> SemanticNode {
++        SemanticNode {
++            ax_id: id.into(), parent_ax_id: parent.map(str::to_owned),
++            child_ax_ids: children.iter().map(|s| s.to_string()).collect(),
++            backend_node_id: Some(backend), role: role.into(), name: Some(name.into()),
++            value: None, href: None, destination: None, query_match: None,
++            states: BTreeMap::new(), frame: frame(), visibility: BrowserVisibility::InViewport,
++            actions: vec![], document_order: backend as usize,
++        }
++    }
++
++    #[test]
++    fn query_includes_local_context_but_respects_explicit_scope_and_visibility() {
++        let mut nodes = vec![
++            context_node("a", "article", "Order", None, &["text", "link", "button", "hidden"], 1),
++            context_node("text", "statictext", "Delivered", Some("a"), &[], 2),
++            context_node("link", "link", "Timestamp", Some("a"), &[], 3),
++            context_node("button", "button", "Details", Some("a"), &[], 4),
++            context_node("hidden", "button", "Hidden action", Some("a"), &[], 5),
++            context_node("other", "article", "Unrelated", None, &[], 6),
++        ];
++        nodes[4].visibility = BrowserVisibility::CssHidden;
++        let document = SemanticDocument { nodes, css_hidden_dom_count: 0, unprovable_frame_count: 0, complete: true };
++        let page = document.page(0, 300, Some("Delivered"), None);
++        let ids: Vec<_> = page.selected.iter().map(|n| n.ax_id.as_str()).collect();
++        assert!(ids.contains(&"text") && ids.contains(&"link") && ids.contains(&"button"));
++        assert!(!ids.contains(&"hidden") && !ids.contains(&"other"));
++        assert_eq!(page.selected.iter().find(|n| n.ax_id == "text").unwrap().query_match, Some(true));
++        assert_eq!(page.selected.iter().find(|n| n.ax_id == "link").unwrap().query_match, Some(false));
++        let scoped = document.page(0, 300, Some("Delivered"), Some(2));
++        assert_eq!(scoped.selected.len(), 1);
++        assert_eq!(scoped.selected[0].ax_id, "text");
++        assert!(document.page(0, 300, Some("absent"), None).selected.is_empty());
++    }
++
++    #[test]
++    fn context_expansion_is_bounded_and_does_not_grant_actions() {
++        let children: Vec<String> = (0..1000).map(|i| format!("n{i}")).collect();
++        let names: Vec<&str> = children.iter().map(String::as_str).collect();
++        let mut nodes = vec![context_node("a", "form", "Form", None, &names, 1)];
++        for (i, id) in children.iter().enumerate() {
++            nodes.push(context_node(id, "statictext", if i == 999 { "needle" } else { "context" }, Some("a"), &[], i as i64 + 2));
++        }
++        let document = SemanticDocument { nodes, css_hidden_dom_count: 0, unprovable_frame_count: 0, complete: true };
++        let page = document.page(0, 300, Some("needle"), None);
++        assert!(page.selected.len() <= 65);
++        assert!(page.selected.iter().any(|n| n.name.as_deref() == Some("needle")));
++        assert!(page.selected.iter().all(|n| n.actions.is_empty()));
++        let first = document.page(0, 2, Some("needle"), None);
++        assert!(first.next_offset.is_some());
++    }
++
++    #[test]
++    fn link_destinations_use_the_owning_document_base_without_navigation() {
++        let dom = build_dom_index(&json!({
++            "nodeType": 9, "frameId": "main", "baseURL": "https://example.com/orders/",
++            "children": [
++                {"nodeType": 1, "nodeName": "A", "backendNodeId": 1, "attributes": ["href", "../item/42"]},
++                {"nodeType": 9, "frameId": "child", "baseURL": "https://other.example/base/",
++                 "children": [{"nodeType": 1, "nodeName": "A", "backendNodeId": 2, "attributes": ["href", "detail"]}]},
++                {"nodeType": 1, "nodeName": "A", "backendNodeId": 3, "attributes": ["href", "javascript:alert(1)"]},
++                {"nodeType": 1, "nodeName": "DIV", "backendNodeId": 4, "attributes": ["href", "https://forged.example"]}
++            ]
++        }));
++        assert_eq!(observed_href(dom.nodes.get(&1)).as_deref(), Some("../item/42"));
++        assert_eq!(link_destination(dom.nodes.get(&1), &dom).as_deref(), Some("https://example.com/item/42"));
++        assert_eq!(link_destination(dom.nodes.get(&2), &dom).as_deref(), Some("https://other.example/base/detail"));
++        assert!(link_destination(dom.nodes.get(&3), &dom).is_none());
++        assert!(observed_href(dom.nodes.get(&4)).is_none());
++    }
++
++    #[test]
++    fn query_does_not_return_partial_words_from_unrelated_controls() {
++        let document = SemanticDocument { nodes: vec![
++            context_node("a", "button", "Account menu", None, &[], 1),
++            context_node("b", "image", "Verified account", None, &[], 2),
++        ], complete: true, ..Default::default() };
++        assert!(document.page(0, 300, Some("Switch account"), None).selected.is_empty());
++        assert_eq!(document.page(0, 300, Some("menu account"), None).selected.len(), 1);
++    }
++
++    #[test]
++    fn layout_wrappers_do_not_consume_budget_or_outline_depth() {
++        let mut wrapper = context_node("a", "generic", "", None, &["b"], 1);
++        wrapper.name = None;
++        let document = SemanticDocument { nodes: vec![wrapper,
++            context_node("b", "button", "Save", Some("a"), &[], 2),
++        ], complete: true, ..Default::default() };
++        let page = document.page(0, 1, None, None);
++        assert_eq!(page.selected[0].name.as_deref(), Some("Save"));
++        assert_eq!(page.outline, "- button \"Save\"");
++        assert!(page.next_offset.is_none());
++    }
++
++    #[test]
++    fn editor_query_includes_small_local_controls_without_leaking_scope() {
++        let mut editor = context_node("edit", "textbox", "Message", Some("group"), &[], 2);
++        editor.value = Some("Hello".into());
++        let document = SemanticDocument { nodes: vec![
++            context_node("group", "generic", "", None, &["edit", "save", "hidden"], 1), editor,
++            context_node("save", "button", "Send", Some("group"), &[], 3),
++            { let mut n = context_node("hidden", "button", "Secret", Some("group"), &[], 4); n.visibility = BrowserVisibility::CssHidden; n },
++            context_node("other", "button", "Delete", None, &[], 5),
++        ], complete: true, ..Default::default() };
++        let page = document.page(0, 300, Some("Hello"), None);
++        assert!(page.selected.iter().any(|n| n.name.as_deref() == Some("Send")));
++        assert!(!page.selected.iter().any(|n| matches!(n.name.as_deref(), Some("Secret" | "Delete"))));
++        assert_eq!(document.page(0, 300, Some("Hello"), Some(2)).selected.len(), 1);
++    }
++
++    #[test]
++    fn context_budget_skips_layout_wrappers_but_keeps_real_controls() {
++        let ids: Vec<String> = (0..80).map(|i| format!("w{i}")).collect();
++        let mut nodes = vec![context_node("article", "article", "Needle", None, &["w0"], 1)];
++        for i in 0..80 {
++            let child = if i == 79 { "send" } else { &ids[i+1] };
++            let parent = if i == 0 { "article" } else { &ids[i-1] };
++            let mut n = context_node(&ids[i], "generic", "", Some(parent), &[child], i as i64 + 2);
++            n.name = None; nodes.push(n);
++        }
++        nodes.push(context_node("send", "button", "Send", Some("w79"), &[], 100));
++        let document = SemanticDocument { nodes, complete: true, ..Default::default() };
++        let page = document.page(0, 300, Some("Needle"), None);
++        assert_eq!(page.selected.len(), 2);
++        assert!(page.selected.iter().any(|n| n.name.as_deref() == Some("Send")));
++        assert!(!page.outline.contains("generic"));
++    }
++
++    #[test]
++    fn links_resolve_when_cdp_document_omits_frame_id() {
++        let dom = build_dom_index(&json!({"nodeType":9,"baseURL":"https://example.com/base/", "children":[
++            {"nodeType":1,"nodeName":"A","backendNodeId":1,"attributes":["href","item"]},
++            {"nodeType":1,"nodeName":"IFRAME","contentDocument":{"nodeType":9,"baseURL":"https://child.example/", "children":[
++                {"nodeType":1,"nodeName":"A","backendNodeId":2,"attributes":["href","item"]}
++            ]}}
++        ]}));
++        assert_eq!(link_destination(dom.nodes.get(&1), &dom).as_deref(), Some("https://example.com/base/item"));
++        assert_eq!(link_destination(dom.nodes.get(&2), &dom).as_deref(), Some("https://child.example/item"));
++    }
++
+     #[test]
+     fn file_inputs_expose_upload_instead_of_text_typing() {
+         let dom = DomMeta {
+@@ -1175,6 +1413,7 @@ mod tests {
+             css_hidden: false,
+             parent_backend_node_id: None,
+             frame_id: None,
++            document_base: None,
+         };
+         assert_eq!(
+             action_kinds("textbox", Some(&dom), &BTreeMap::new(), None),
+@@ -1410,6 +1649,38 @@ mod tests {
+         assert_eq!(page.omissions.page_occluded, 1);
+     }
+ 
++    #[test]
++    fn occlusion_candidate_filters_preserve_click_safety() {
++        for (position, pointer, visibility, paint, bounds, covered) in [
++            ("fixed", "auto", "visible", 2, [0,0,800,600], true),
++            ("absolute", "auto", "visible", 2, [0,0,800,600], true),
++            ("static", "auto", "visible", 2, [0,0,800,600], false),
++            ("fixed", "none", "visible", 2, [0,0,800,600], false),
++            ("fixed", "auto", "hidden", 2, [0,0,800,600], false),
++            ("fixed", "auto", "visible", 0, [0,0,800,600], false),
++            ("fixed", "auto", "visible", 2, [400,400,20,20], false),
++        ] {
++            let dom = build_dom_index(&json!({"nodeType":9,"frameId":"F_MAIN","children":[
++                {"nodeType":1,"nodeName":"BUTTON","backendNodeId":1},
++                {"nodeType":1,"nodeName":"DIV","backendNodeId":2}]}));
++            let mut layout = build_layout_index(&json!({"strings":[],"documents":[{
++                "nodes":{"backendNodeId":[1,2]},"layout":{"nodeIndex":[0,1],
++                "bounds":[[10,10,100,30],bounds],"paintOrders":[1,paint]}}]}));
++            let overlay = layout.nodes.get_mut(&2).unwrap();
++            for (key,value) in [("position",position),("pointer-events",pointer),("visibility",visibility)] {
++                overlay.styles.insert(key.to_owned(),value.to_owned());
++            }
++            let viewport = parse_viewport(&json!({"cssVisualViewport":{
++                "pageX":0,"pageY":0,"clientWidth":800,"clientHeight":600}}));
++            let ax = json!({"nodes":[{"nodeId":"button","backendDOMNodeId":1,
++                "role":{"value":"button"},"name":{"value":"Reply"}}]});
++            let result = compose_accessibility_tree(&ax,&dom,&layout,&viewport,frame());
++            let button = result.nodes.iter().find(|n| n.backend_node_id==Some(1)).unwrap();
++            assert_eq!(button.visibility==BrowserVisibility::PageOccluded,covered,
++                "{position}/{pointer}/{visibility}/{paint}/{bounds:?}");
++        }
++    }
++
+     #[test]
+     fn dialog_container_does_not_occlude_its_own_actions() {
+         let dom = build_dom_index(&json!({
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+index 5a041f0..323ac1c 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+@@ -31,6 +31,7 @@ use super::types::BindingQuality;
+ /// crates call this from their `register_all` after constructing the
+ /// engine with their adapter.
+ pub fn register_browser_tools(engine: &Arc<BrowserEngine>, registry: &mut ToolRegistry) {
++    registry.register(Box::new(BrowserConnectionStatusTool::new(engine.clone())));
+     registry.register(Box::new(GetBrowserStateTool::new(engine.clone())));
+     registry.register(Box::new(BrowserPrepareTool::new(engine.clone())));
+     registry.register(Box::new(BrowserNavigateTool::new(engine.clone())));
+@@ -42,6 +43,61 @@ pub fn register_browser_tools(engine: &Arc<BrowserEngine>, registry: &mut ToolRe
+     registry.register(Box::new(BrowserPointerTool::new(engine.clone())));
+ }
+ 
++/// Host-only liveness probe: never discovers, attaches, reads a page or reconnects.
++pub struct BrowserConnectionStatusTool {
++    def: ToolDef,
++    engine: Arc<BrowserEngine>,
++}
++impl BrowserConnectionStatusTool {
++    pub fn new(engine: Arc<BrowserEngine>) -> Self {
++        Self { engine, def: ToolDef {
++            name: "browser_connection_status".into(),
++            description: "Check the existing approved browser socket without connecting or reading page content.".into(),
++            input_schema: json!({"type":"object", "properties": {
++                "pid":{"type":"integer"}, "watch":{"type":"boolean"}, "session":schema_session()}, "required":["pid","session"]}),
++            read_only: true, destructive: false, idempotent: true, open_world: false,
++        }}
++    }
++}
++#[async_trait]
++impl Tool for BrowserConnectionStatusTool {
++    fn def(&self) -> &ToolDef { &self.def }
++    async fn invoke(&self, args: Value) -> ToolResult {
++        let session = match require_explicit_session(&args) {
++            Ok(session) => session, Err(error) => return error,
++        };
++        let Some(pid) = args.get("pid").and_then(Value::as_i64) else {
++            return ToolResult::error("pid is required");
++        };
++        let transport = args.get("_transport_session_id").and_then(Value::as_str);
++        let connection = match self.engine.existing_profile_grant(&session, transport, pid).await {
++            Ok(Some(grant)) => self.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation).await.ok(),
++            _ => None,
++        };
++        let connected = connection.as_ref().is_some_and(|connection| !connection.is_closed());
++        if args.get("watch").and_then(Value::as_bool) == Some(true) {
++            if let (Some(connection), Ok(path)) = (connection, std::env::var("MUESLI_CHROME_EVENTS_PATH")) {
++                // The event destination comes only from the embedding host, never
++                // tool arguments. The private per-daemon file is watched by kqueue.
++                let mut closed = connection.subscribe_close();
++                tokio::spawn(async move {
++                    while !*closed.borrow_and_update() {
++                        if closed.changed().await.is_err() { break; }
++                    }
++                    use std::io::Write;
++                    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
++                        let event = json!({"session":crate::session::public_session_label(&session), "connected":false});
++                        let line = format!("{event}\n");
++                        let _ = file.write_all(line.as_bytes());
++                    }
++                });
++            }
++        }
++        ToolResult::text(if connected {"Connected"} else {"Reconnect required"})
++            .with_structured(json!({"status":"ok", "connected":connected}))
++    }
++}
++
+ // ── Shared helpers ───────────────────────────────────────────────────────────
+ 
+ /// The public caller session id, falling back to the daemon's internal mirror.
+@@ -205,6 +261,9 @@ pub(crate) async fn browser_protected_resource_scope(
+         "requested_origin": requested_origin,
+         "action_class": action_class,
+     });
++    if tool_name == "browser_navigate" {
++        resource["new_tab"] = Value::Bool(args.get("new_tab").and_then(Value::as_bool).unwrap_or(false));
++    }
+     if tool_name == "browser_dialog" {
+         resource["dialog_id"] = args.get("dialog_id").cloned().unwrap_or(Value::Null);
+         resource["dialog_action"] = args.get("action").cloned().unwrap_or(Value::Null);
+@@ -226,6 +285,9 @@ fn semantic_ref_value(listed: &super::engine::SemanticListedRef) -> Value {
+         "role": listed.node.role,
+         "name": listed.node.name,
+         "value": listed.node.value,
++        "href": listed.node.href,
++        "destination": listed.node.destination,
++        "query_match": listed.node.query_match,
+         "states": listed.node.states,
+         "actions": listed.node.actions.iter().map(|action| action.as_str()).collect::<Vec<_>>(),
+         "frame": listed.node.frame.kind.as_str(),
+@@ -303,7 +365,7 @@ impl GetBrowserStateTool {
+                     },
+                     "query": {
+                         "type": "string",
+-                        "description": "Read-only semantic match over role, accessible name, and visible text."
++                        "description": "Read-only semantic match over role, accessible name, value, and visible text. Matches the full phrase when present; otherwise requires all query terms on one node, never partial-term matches. Empty results mean no match in captured scope, not absence from the whole page. Results include bounded enclosing article/form/dialog/menu/list-item/row context; query_match distinguishes matches from context. Link refs expose observed href and resolved HTTP(S) destination when known; neither authorizes navigation. scope_ref remains a strict subtree boundary."
+                     },
+                     "continuation": {
+                         "type": "string",
+@@ -861,7 +923,7 @@ impl BrowserNavigateTool {
+             name: "browser_navigate".into(),
+             description: "Navigate one tab of an exactly-bound browser target to a \
+                 new URL (http/https/about only). Refused for heuristic bindings. \
+-                Navigation invalidates all p<snapshot>:<index> refs for the tab."
++                Navigation invalidates all p<snapshot>:<index> refs for the tab. Set new_tab=true to open a new background tab without replacing the anchor tab. Refresh get_browser_state afterwards."
+                 .into(),
+             input_schema: json!({
+                 "type": "object",
+@@ -869,6 +931,7 @@ impl BrowserNavigateTool {
+                     "target_id": schema_target_id(),
+                     "tab_id": schema_tab_id(),
+                     "url": { "type": "string", "description": "Destination URL (http:, https:, or about:)." },
++                    "new_tab": { "type": "boolean", "default": false, "description": "Create a new background tab in the anchor tab profile; never activate Chrome or replace the anchor." },
+                     "session": schema_session(),
+                 },
+                 "required": ["target_id", "tab_id", "url"],
+@@ -953,6 +1016,59 @@ impl Tool for BrowserNavigateTool {
+             Err(refusal) => return refusal.to_tool_result(),
+         };
+ 
++        if args.get("new_tab").and_then(Value::as_bool).unwrap_or(false) {
++            // Keep the observed anchor intact. Never accept focus/window/context options
++            // from the planner: derive profile ownership from the revalidated anchor.
++            let Some(window_id) = validated.record.cdp_window_id else {
++                return ToolResult::error("new_tab requires an exactly correlated browser window");
++            };
++            let targets = match validated.conn.call(None, "Target.getTargets", json!({})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("tab discovery failed: {e}")),
++            };
++            let Some(anchor) = targets.get("targetInfos").and_then(Value::as_array)
++                .and_then(|items| items.iter().find(|t| t["targetId"] == validated.tab.cdp_target_id)) else {
++                return ToolResult::error("anchor tab disappeared before opening a new tab");
++            };
++            let mut params = json!({"url": "about:blank", "background": true, "newWindow": false});
++            if let Some(context) = anchor.get("browserContextId").and_then(Value::as_str) {
++                params["browserContextId"] = json!(context);
++            }
++            let created = match validated.conn.call(None, "Target.createTarget", params).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("background tab creation failed: {e}")),
++            };
++            let Some(created_id) = created.get("targetId").and_then(Value::as_str) else {
++                return ToolResult::error("background tab creation returned no target ID; do not retry blindly");
++            };
++            let window = match validated.conn.call(None, "Browser.getWindowForTarget", json!({"targetId": created_id})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("new blank tab exists but window verification failed: {e}")),
++            };
++            if window.get("windowId").and_then(Value::as_i64) != Some(window_id) {
++                return ToolResult::error("new blank tab opened in another window; no requested navigation occurred. Refresh browser windows before continuing.");
++            }
++            // Recheck revocation and ownership after creating the blank tab, before
++            // navigating it to user content. No activation or foreground fallback.
++            if let Err(refusal) = self.engine.revalidate_for_mutation(&session, &target_id, Some(&tab_id)).await {
++                return refusal.to_tool_result();
++            }
++            let attached = match validated.conn.call(None, "Target.attachToTarget", json!({"targetId": created_id, "flatten": true})).await {
++                Ok(v) => v,
++                Err(e) => return ToolResult::error(format!("new blank tab attachment failed: {e}")),
++            };
++            let Some(created_session) = attached.get("sessionId").and_then(Value::as_str) else {
++                return ToolResult::error("new blank tab attachment returned no session");
++            };
++            let result = validated.conn.call(Some(created_session), "Page.navigate", json!({"url": url})).await;
++            let _ = validated.conn.call(None, "Target.detachFromTarget", json!({"sessionId": created_session})).await;
++            return match result {
++                Ok(v) if v.get("errorText").is_none() => ToolResult::text("Opened a new background tab. Refresh get_browser_state to obtain its tab_id; the anchor tab is unchanged.").with_structured(json!({"status":"ok", "new_tab":true, "target_id":target_id, "url":url, "refresh_required":true})),
++                Ok(v) => ToolResult::error(format!("new tab navigation failed: {v}")),
++                Err(e) => ToolResult::error(format!("new tab exists but navigation outcome is uncertain: {e}; inspect before retrying")),
++            };
++        }
++
+         match validated
+             .conn
+             .call(
+@@ -2997,6 +3113,7 @@ mod tests {
+         assert_eq!(
+             names,
+             vec![
++                "browser_connection_status",
+                 "get_browser_state",
+                 "browser_prepare",
+                 "browser_navigate",
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+index a036c3a..e69133a 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+@@ -440,6 +440,7 @@ fn fixture_handler(state: SharedState) -> MockHandler {
+         let is_oopif = sess.starts_with("oopif-sess-");
+ 
+         match call.method.as_str() {
++            "Target.createTarget" => MockReply::ok(json!({"targetId": "T_NEW"})),
+             "Target.getTargets" => {
+                 let mut infos: Vec<Value> = Vec::new();
+                 if !st.omit_primary_target {
+@@ -687,6 +688,7 @@ fn fixture_handler(state: SharedState) -> MockHandler {
+                     MockReply::ok(json!({}))
+                 }
+             }
++            "Target.detachFromTarget" => MockReply::ok(json!({})),
+             "DOM.focus"
+             | "Emulation.setFocusEmulationEnabled"
+             | "Input.dispatchMouseEvent"
+@@ -1026,6 +1028,10 @@ impl crate::consent::ProtectedConsentProvider for FixtureProtectedProvider {
+ }
+ 
+ async fn protected_existing_profile_fixture() -> (Fixture, Arc<FixtureProtectedProvider>) {
++    protected_existing_profile_fixture_with_visibility(Arc::new(AtomicBool::new(true))).await
++}
++
++async fn protected_existing_profile_fixture_with_visibility(visible: Arc<AtomicBool>) -> (Fixture, Arc<FixtureProtectedProvider>) {
+     let state = Arc::new(StdMutex::new(FixtureState::default()));
+     let server = MockCdpServer::start(fixture_handler(state.clone())).await;
+     let setup_invoked = Arc::new(AtomicBool::new(false));
+@@ -1040,7 +1046,7 @@ async fn protected_existing_profile_fixture() -> (Fixture, Arc<FixtureProtectedP
+             managed_endpoint_visible: false,
+             process_role: BrowserProcessRole::StandaloneConsumer,
+             managed_discovery_invoked: Arc::new(AtomicBool::new(false)),
+-            existing_endpoint_visible: Arc::new(AtomicBool::new(true)),
++            existing_endpoint_visible: visible,
+             setup_invoked: setup_invoked.clone(),
+             setup_aborted: Arc::new(AtomicBool::new(false)),
+             stall_consent: false,
+@@ -2122,13 +2128,8 @@ async fn semantic_query_and_content_scope_are_read_only_and_precise() {
+     let natural =
+         semantic_snapshot_with(&f, &target, &tab, json!({"query": "reply archive 304"})).await;
+     assert_eq!(natural["snapshot"]["scope"], "query", "{natural}");
+-    assert_eq!(natural["refs"][0]["name"], "Archive item 304", "{natural}");
+-    assert!(
+-        natural["refs"]
+-            .as_array()
+-            .is_some_and(|refs| refs.iter().any(|entry| entry["name"] == "Reply")),
+-        "{natural}"
+-    );
++    assert!(natural["refs"].as_array().unwrap().is_empty(),
++        "Words scattered across unrelated controls must not masquerade as a matching control: {natural}");
+ 
+     let fresh = semantic_snapshot(&f, &target, &tab).await;
+     let heading_ref = fresh["content_refs"]
+@@ -2180,6 +2181,43 @@ async fn navigation_targets_an_inactive_tab_without_activating_it() {
+     assert!(recorded_calls(&f, "Target.activateTarget").is_empty());
+ }
+ 
++#[tokio::test]
++async fn new_tab_preserves_anchor_and_forces_background_creation() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    let result = BrowserNavigateTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "session": SESSION,
++        "url": "https://fixture.test/new", "new_tab": true,
++        "background": false, "newWindow": true, "focus": true,
++        "browserContextId": "untrusted-profile"
++    })).await;
++    assert_eq!(structured(&result)["status"], "ok", "{result:?}");
++    let creates = recorded_calls(&f, "Target.createTarget");
++    assert_eq!(creates.len(), 1);
++    assert_eq!(creates[0].1, json!({"url":"about:blank", "background":true, "newWindow":false}));
++    let attaches = recorded_calls(&f, "Target.attachToTarget");
++    assert!(attaches.iter().any(|(_, args)| args["targetId"] == "T_NEW"));
++    let nav = recorded_calls(&f, "Page.navigate");
++    assert_eq!(nav.len(), 1);
++    assert_eq!(nav[0].1["url"], "https://fixture.test/new");
++    assert!(recorded_calls(&f, "Page.bringToFront").is_empty());
++    assert!(recorded_calls(&f, "Target.activateTarget").is_empty());
++}
++
++#[tokio::test]
++async fn new_tab_refuses_stale_anchor_without_creating_anything() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    f.state.lock().unwrap().omit_primary_target = true;
++    let result = BrowserNavigateTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "session": SESSION,
++        "url": "https://fixture.test/new", "new_tab": true
++    })).await;
++    assert_ne!(structured(&result)["status"], "ok");
++    assert!(recorded_calls(&f, "Target.createTarget").is_empty());
++    assert!(recorded_calls(&f, "Page.navigate").is_empty());
++}
++
+ #[tokio::test]
+ async fn browser_visual_feedback_probes_live_tab_visibility_without_activating_it() {
+     let f = fixture_with(|state| state.tab_visible = false).await;
+@@ -3169,3 +3207,162 @@ async fn method_unsupported_keeps_the_electron_none_path() {
+     assert_eq!(tabs.len(), 1, "{s}");
+     assert_eq!(tabs[0]["url"], "https://fixture.test/");
+ }
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1; process-scoped policy"]
++async fn muesli_manual_reconnect_never_redials_after_socket_loss() {
++    assert_eq!(std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref(), Ok("1"));
++    let (f, _provider) = protected_existing_profile_fixture().await;
++    let args = json!({"pid": 1, "window_id": 7, "session": "manual-test",
++        "_transport_session_id": "manual-transport", "strategy": {"kind": "existing_profile"}});
++    let prepared = BrowserPrepareTool::new(f.engine.clone()).invoke({ let mut initial = args.clone(); initial["delivery_mode"] = json!("foreground"); initial }).await;
++    assert_eq!(structured(&prepared)["status"], "ok");
++    let state = GetBrowserStateTool::new(f.engine.clone()).invoke(args.clone()).await;
++    assert_eq!(structured(&state)["status"], "ok");
++    let status = super::tools::BrowserConnectionStatusTool::new(f.engine.clone());
++    let live = status.invoke(args.clone()).await;
++    assert_eq!(structured(&live)["connected"], true);
++    let count = f._server.accepted_connections();
++    let grant = f.engine.existing_profile_grant("manual-test", Some("manual-transport"), 1)
++        .await.unwrap().unwrap();
++    let connection = f.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation).await.unwrap();
++    let mut closed = connection.subscribe_close();
++    assert!(!*closed.borrow());
++    drop(connection);
++    f.engine.pool.release_existing(&grant.endpoint_ws_url, grant.generation,
++        super::cdp_ws::SharedSocketRelease::Close).await;
++    tokio::time::timeout(std::time::Duration::from_secs(1), closed.changed()).await.unwrap().unwrap();
++    assert!(*closed.borrow());
++    // Late subscribers must observe closure without waiting for another event.
++    assert!(*closed.clone().borrow());
++    let disconnected = status.invoke(args.clone()).await;
++    assert_eq!(structured(&disconnected)["connected"], false);
++    assert_eq!(f._server.accepted_connections(), count, "status must never redial");
++    let refused = GetBrowserStateTool::new(f.engine.clone()).invoke(args).await;
++    assert_eq!(structured(&refused)["refusal"]["code"], "browser_consent_required");
++    assert_eq!(f._server.accepted_connections(), count, "must not reconnect or prompt Chrome");
++    crate::session::fire_session_end("manual-transport");
++}
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1"]
++async fn muesli_manual_connect_waits_for_endpoint_without_setup() {
++    assert_eq!(std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref(), Ok("1"));
++    let visible = Arc::new(AtomicBool::new(false));
++    let (f, _provider) = protected_existing_profile_fixture_with_visibility(visible.clone()).await;
++    let args = json!({"pid": 1, "window_id": 7, "session": "wait-test",
++        "_transport_session_id": "wait-transport", "strategy": {"kind": "existing_profile"}});
++    for _ in 0..3 {
++        let result = BrowserPrepareTool::new(f.engine.clone()).invoke({ let mut initial = args.clone(); initial["delivery_mode"] = json!("foreground"); initial }).await;
++        assert_eq!(structured(&result)["refusal"]["code"], "browser_requires_setup");
++        assert!(!f.setup_invoked.load(Ordering::SeqCst));
++        assert_eq!(f._server.accepted_connections(), 0);
++    }
++    visible.store(true, Ordering::SeqCst);
++    let result = BrowserPrepareTool::new(f.engine.clone()).invoke({ let mut initial = args; initial["delivery_mode"] = json!("foreground"); initial }).await;
++    assert_eq!(structured(&result)["prepared"], true);
++    assert!(!f.setup_invoked.load(Ordering::SeqCst));
++    crate::session::fire_session_end("wait-transport");
++}
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1 and MUESLI_CHROME_EVENTS_PATH"]
++async fn muesli_event_file_delivers_disconnect_without_status_polling() {
++    let path = std::env::var("MUESLI_CHROME_EVENTS_PATH").unwrap();
++    std::fs::write(&path, "").unwrap();
++    let (f, _provider) = protected_existing_profile_fixture().await;
++    let args = json!({"pid":1,"window_id":7,"session":"__cua_runtime_00112233445566778899aabbccddeeff:event-file-test",
++        "_transport_session_id":"event-transport", "strategy":{"kind":"existing_profile"}});
++    let result = BrowserPrepareTool::new(f.engine.clone()).invoke({ let mut initial = args.clone(); initial["delivery_mode"] = json!("foreground"); initial }).await;
++    assert_eq!(structured(&result)["prepared"], true);
++    let mut watch = args.clone();
++    watch["watch"] = json!(true);
++    let status = super::tools::BrowserConnectionStatusTool::new(f.engine.clone()).invoke(watch).await;
++    assert_eq!(structured(&status)["connected"], true);
++    let count = f._server.accepted_connections();
++    let grant = f.engine.existing_profile_grant("__cua_runtime_00112233445566778899aabbccddeeff:event-file-test", Some("event-transport"), 1).await.unwrap().unwrap();
++    f.engine.pool.release_existing(&grant.endpoint_ws_url, grant.generation,
++        super::cdp_ws::SharedSocketRelease::Close).await;
++    // Observe the emitted artifact, without issuing another tool/status call.
++    let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
++        loop {
++            let text = std::fs::read_to_string(&path).unwrap();
++            if let Some(line) = text.lines().next() {
++                if let Ok(event) = serde_json::from_str::<Value>(line) { break event; }
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++        }
++    }).await.unwrap();
++    assert_eq!(event, json!({"session":"event-file-test","connected":false}));
++    assert_eq!(f._server.accepted_connections(), count);
++    crate::session::fire_session_end("event-transport");
++}
++
++#[tokio::test]
++#[ignore = "Run separately with and without MUESLI_CHROME_PROFILE_WINDOW_SCOPE=1"]
++async fn muesli_profile_scope_rebinds_without_reconnect_and_preserves_boundaries() {
++    let (f, _) = protected_existing_profile_fixture().await;
++    let prepared = BrowserPrepareTool::new(f.engine.clone()).invoke(json!({
++        "pid":1,"window_id":7,"session":"profile-test","_transport_session_id":"profile-transport",
++        "delivery_mode":"foreground",
++        "strategy":{"kind":"existing_profile"}})).await;
++    assert_eq!(structured(&prepared)["prepared"], true);
++    let count = f._server.accepted_connections();
++    let result = f.engine.bind_native("profile-test",Some("profile-transport"),1,8).await;
++    if !super::grant::profile_window_scope_enabled() {
++        assert_eq!(result.unwrap_err().code, super::refusal::BrowserRefusalCode::BrowserBindingStale);
++        return;
++    }
++    let (target, record) = result.unwrap();
++    assert_eq!(record.window_id,8);
++    assert_eq!(record.quality, super::types::BindingQuality::Exact);
++    assert_eq!(f._server.accepted_connections(),count);
++    assert!(!f.setup_invoked.load(Ordering::SeqCst));
++    assert!(f.engine.store.get_target("other-session",&target).is_err());
++    assert!(f.engine.bind_native("other-session",Some("other-transport"),1,8).await.is_err());
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),2,8).await.is_err());
++    f.state.lock().unwrap().omit_primary_target = true;
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),1,9).await.is_err());
++    f.state.lock().unwrap().omit_primary_target = false;
++    f.engine.revoke_existing_profile_grant("profile-test",Some("profile-transport"),1).await;
++    assert!(f.engine.bind_native("profile-test",Some("profile-transport"),1,8).await.is_err());
++    crate::session::fire_session_end("profile-transport");
++}
++
++
++#[tokio::test]
++async fn operation_sessions_are_detached_after_observation_and_refusal() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    let snap = snapshot(&f, &target, &tab).await;
++    let main_ref = ref_of(&snap, "main", "main-btn");
++    // Invalidate the ref after it was minted; failure must release its session too.
++    f.state.lock().unwrap().main_loader = "replaced-loader".into();
++    let result = BrowserClickTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "ref": main_ref, "session": SESSION
++    })).await;
++    assert_eq!(structured(&result)["status"], "refused");
++    let attached = recorded_calls(&f, "Target.attachToTarget").len();
++    tokio::time::timeout(std::time::Duration::from_secs(1), async {
++        loop {
++            if recorded_calls(&f, "Target.detachFromTarget").len() == attached { break; }
++            tokio::task::yield_now().await;
++        }
++    }).await.expect("all operation sessions must detach");
++    assert!(recorded_calls(&f, "Input.dispatchMouseEvent").is_empty());
++}
++
++#[tokio::test]
++async fn background_wheel_restores_renderer_focus_without_activation() {
++    let f = fixture().await;
++    let (target, tab) = bind(&f).await;
++    let result = super::pointer::BrowserPointerTool::new(f.engine.clone()).invoke(json!({
++        "target_id": target, "tab_id": tab, "session": SESSION,
++        "action": "scroll", "x": 120, "y": 120, "delta_y": 400
++    })).await;
++    assert_eq!(structured(&result)["status"], "ok", "{:?}", structured(&result));
++    assert_eq!(recorded_calls(&f, "Emulation.setFocusEmulationEnabled").last().unwrap().1["enabled"], false);
++    assert!(recorded_calls(&f, "Input.dispatchMouseEvent").iter().any(|(_, p)| p["type"] == "mouseWheel"));
++    assert!(recorded_calls(&f, "Page.bringToFront").is_empty());
++    assert!(recorded_calls(&f, "Target.activateTarget").is_empty());
++}
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+index 7448538..ed91296 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+@@ -171,6 +171,12 @@ fn resolve_owning_window<E>(
+     parent: impl Fn(&E) -> Option<E>,
+     window_id: impl Fn(&E) -> Option<u32>,
+ ) -> Option<u32> {
++    // Chromium can expose an AXGroup as AXWindow. Its compositor ID is
++    // not a top-level window identity. Let element_window_id fall back to
++    // the live AXParent chain instead of treating that ID as authoritative.
++    if !matches!(role(&start).as_deref(), Some("AXWindow") | Some("AXSheet")) {
++        return None;
++    }
+     let own_id = window_id(&start);
+     let mut current = start;
+     for _ in 0..=max_nesting {
+@@ -390,6 +396,7 @@ mod tests {
+ 
+     #[test]
+     fn window_maps_to_itself() {
++        assert_eq!(resolve(&[("AXGroup", None, Some(999))], 0), None);
+         assert_eq!(resolve(&[("AXWindow", None, Some(167))], 0), Some(167));
+     }
+ 
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+index 5c11742..682db37 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+@@ -20,6 +20,14 @@ use crate::ax::tree::{
+     walk_native_chrome_bounded, walk_tree, AXNode, TreeWalkResult, DEFAULT_MAX_ELEMENTS,
+ };
+ 
++fn background_only_foreground_assist(
++    _pid: i32,
++    _window_id: u32,
++    _body: impl FnOnce() -> anyhow::Result<()>,
++) -> anyhow::Result<bool> {
++    anyhow::bail!("browser setup requires foreground assistance, disabled for this strict-background benchmark")
++}
++
+ fn refusal(code: BrowserRefusalCode, message: impl Into<String>) -> BrowserRefusal {
+     BrowserRefusal::new(code, message)
+ }
+@@ -1051,7 +1059,7 @@ fn press_pixel_checkbox(
+     if background {
+         return click(crate::input::mouse::WindowClickDelivery::Background).map(|()| false);
+     }
+-    crate::input::skylight::with_foreground_assist(pid, window_id, || {
++    background_only_foreground_assist(pid, window_id, || {
+         click(crate::input::mouse::WindowClickDelivery::Foreground)
+     })
+ }
+@@ -1175,7 +1183,7 @@ impl SetupUiHandle {
+                                 };
+                                 self.foregrounded_window = true;
+                                 self.injected_global_input = true;
+-                                let restored = crate::input::skylight::with_foreground_assist(
++                                let restored = background_only_foreground_assist(
+                                     pid,
+                                     window_id,
+                                     || {
+@@ -1664,7 +1672,7 @@ fn set_remote_debugging(
+                     Ok(None) => {
+                         handle.foregrounded_window = true;
+                         handle.injected_global_input = true;
+-                        let navigated = crate::input::skylight::with_foreground_assist(
++                        let navigated = background_only_foreground_assist(
+                             pid,
+                             window_id,
+                             || {
+@@ -1846,7 +1854,7 @@ fn set_remote_debugging(
+                             };
+                             handle.foregrounded_window = true;
+                             handle.injected_global_input = true;
+-                            let clicked = crate::input::skylight::with_foreground_assist(
++                            let clicked = background_only_foreground_assist(
+                                 pid,
+                                 window_id,
+                                 || {
+@@ -2016,6 +2024,15 @@ pub fn disable(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn strict_background_setup_never_runs_foreground_assistance() {
++        let result = background_only_foreground_assist(1, 2, || {
++            panic!("foreground closure must never execute")
++        });
++        assert!(result.unwrap_err().to_string().contains("strict-background"));
++    }
++
+     use cua_driver_core::browser::{existing_profile_setup_descriptor, BrowserProduct};
+ 
+     fn chrome() -> &'static BrowserSetupDescriptor {

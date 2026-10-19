@@ -1,0 +1,163 @@
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+@@ -134,11 +134,13 @@
+     dialogs: StdMutex<HashMap<String, CdpDialogState>>,
+     next_dialog_generation: AtomicU64,
+     closed: AtomicBool,
++    close_events: tokio::sync::watch::Sender<bool>,
+ }
+ 
+ impl Demux {
+     fn close(&self) {
+         self.closed.store(true, Ordering::SeqCst);
++        self.close_events.send_replace(true);
+         // Dropping the senders wakes every pending caller with a recv
+         // error, which `call` reports as a closed socket.
+         self.pending.lock().unwrap().clear();
+@@ -268,6 +270,7 @@
+             dialogs: StdMutex::new(HashMap::new()),
+             next_dialog_generation: AtomicU64::new(1),
+             closed: AtomicBool::new(false),
++            close_events: tokio::sync::watch::channel(false).0,
+         });
+         let reader = tokio::spawn(read_loop(read, demux.clone()));
+         Ok(Self {
+@@ -295,6 +298,10 @@
+ 
+     /// Whether the reader observed the socket close. A closed connection
+     /// never recovers; the pool redials.
++    pub fn subscribe_close(&self) -> tokio::sync::watch::Receiver<bool> {
++        self.demux.close_events.subscribe()
++    }
++
+     pub fn is_closed(&self) -> bool {
+         self.demux.closed.load(Ordering::SeqCst)
+     }
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+@@ -51,7 +51,7 @@
+             name: "browser_connection_status".into(),
+             description: "Check the existing approved browser socket without connecting or reading page content.".into(),
+             input_schema: json!({"type":"object", "properties": {
+-                "pid":{"type":"integer"}, "session":schema_session()}, "required":["pid","session"]}),
++                "pid":{"type":"integer"}, "watch":{"type":"boolean"}, "session":schema_session()}, "required":["pid","session"]}),
+             read_only: true, destructive: false, idempotent: true, open_world: false,
+         }}
+     }
+@@ -67,11 +67,29 @@
+             return ToolResult::error("pid is required");
+         };
+         let transport = args.get("_transport_session_id").and_then(Value::as_str);
+-        let connected = match self.engine.existing_profile_grant(&session, transport, pid).await {
+-            Ok(Some(grant)) => self.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation)
+-                .await.map(|connection| !connection.is_closed()).unwrap_or(false),
+-            _ => false,
+-        };
++        let connection = match self.engine.existing_profile_grant(&session, transport, pid).await {
++            Ok(Some(grant)) => self.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation).await.ok(),
++            _ => None,
++        };
++        let connected = connection.as_ref().is_some_and(|connection| !connection.is_closed());
++        if args.get("watch").and_then(Value::as_bool) == Some(true) {
++            if let (Some(connection), Ok(path)) = (connection, std::env::var("MUESLI_CHROME_EVENTS_PATH")) {
++                // The event destination comes only from the embedding host, never
++                // tool arguments. The private per-daemon file is watched by kqueue.
++                let mut closed = connection.subscribe_close();
++                tokio::spawn(async move {
++                    while !*closed.borrow_and_update() {
++                        if closed.changed().await.is_err() { break; }
++                    }
++                    use std::io::Write;
++                    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
++                        let event = json!({"session":crate::session::public_session_label(&session), "connected":false});
++                        let line = format!("{event}\n");
++                        let _ = file.write_all(line.as_bytes());
++                    }
++                });
++            }
++        }
+         ToolResult::text(if connected {"Connected"} else {"Reconnect required"})
+             .with_structured(json!({"status":"ok", "connected":connected}))
+     }
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+@@ -3160,8 +3160,16 @@
+     let count = f._server.accepted_connections();
+     let grant = f.engine.existing_profile_grant("manual-test", Some("manual-transport"), 1)
+         .await.unwrap().unwrap();
++    let connection = f.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation).await.unwrap();
++    let mut closed = connection.subscribe_close();
++    assert!(!*closed.borrow());
++    drop(connection);
+     f.engine.pool.release_existing(&grant.endpoint_ws_url, grant.generation,
+         super::cdp_ws::SharedSocketRelease::Close).await;
++    tokio::time::timeout(std::time::Duration::from_secs(1), closed.changed()).await.unwrap().unwrap();
++    assert!(*closed.borrow());
++    // Late subscribers must observe closure without waiting for another event.
++    assert!(*closed.clone().borrow());
+     let disconnected = status.invoke(args.clone()).await;
+     assert_eq!(structured(&disconnected)["connected"], false);
+     assert_eq!(f._server.accepted_connections(), count, "status must never redial");
+@@ -3191,3 +3199,36 @@
+     assert!(!f.setup_invoked.load(Ordering::SeqCst));
+     crate::session::fire_session_end("wait-transport");
+ }
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1 and MUESLI_CHROME_EVENTS_PATH"]
++async fn muesli_event_file_delivers_disconnect_without_status_polling() {
++    let path = std::env::var("MUESLI_CHROME_EVENTS_PATH").unwrap();
++    std::fs::write(&path, "").unwrap();
++    let (f, _provider) = protected_existing_profile_fixture().await;
++    let args = json!({"pid":1,"window_id":7,"session":"__cua_runtime_00112233445566778899aabbccddeeff:event-file-test",
++        "_transport_session_id":"event-transport", "strategy":{"kind":"existing_profile"}});
++    let result = BrowserPrepareTool::new(f.engine.clone()).invoke(args.clone()).await;
++    assert_eq!(structured(&result)["prepared"], true);
++    let mut watch = args.clone();
++    watch["watch"] = json!(true);
++    let status = super::tools::BrowserConnectionStatusTool::new(f.engine.clone()).invoke(watch).await;
++    assert_eq!(structured(&status)["connected"], true);
++    let count = f._server.accepted_connections();
++    let grant = f.engine.existing_profile_grant("__cua_runtime_00112233445566778899aabbccddeeff:event-file-test", Some("event-transport"), 1).await.unwrap().unwrap();
++    f.engine.pool.release_existing(&grant.endpoint_ws_url, grant.generation,
++        super::cdp_ws::SharedSocketRelease::Close).await;
++    // Observe the emitted artifact, without issuing another tool/status call.
++    let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
++        loop {
++            let text = std::fs::read_to_string(&path).unwrap();
++            if let Some(line) = text.lines().next() {
++                if let Ok(event) = serde_json::from_str::<Value>(line) { break event; }
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++        }
++    }).await.unwrap();
++    assert_eq!(event, json!({"session":"event-file-test","connected":false}));
++    assert_eq!(f._server.accepted_connections(), count);
++    crate::session::fire_session_end("event-transport");
++}
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/authorization.rs
+@@ -864,7 +864,8 @@
+ pub fn advertised_risk_for(tool: &str) -> RiskAssessment {
+     let class = match tool {
+         // Public driver/OS metadata with no user-content payload.
+-        "get_screen_size"
++        "browser_connection_status"
++        | "get_screen_size"
+         | "get_cursor_position"
+         | "get_config"
+         | "get_session"
+@@ -1511,6 +1512,13 @@
+     }
+ 
+     #[test]
++    fn muesli_connection_status_is_reviewed_metadata() {
++        let risk = classify_tool_call("browser_connection_status", &serde_json::json!({"session":"test", "pid":1, "watch":true}));
++        assert_eq!(risk.class, RiskClass::R0);
++        authorize_tool_call("browser_connection_status", &serde_json::json!({"session":"test", "pid":1, "watch":true})).expect("read-only connection metadata must pass dispatch classification");
++    }
++
++    #[test]
+     fn unknown_tools_are_unclassified_and_denied() {
+         let error = authorize_tool_call("new_unreviewed_tool", &serde_json::json!({}))
+             .expect_err("unknown risk must fail closed");

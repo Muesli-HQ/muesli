@@ -138,10 +138,13 @@ enum ComputerUseLocalPlanner {
 /// Tool validation, auth routing and execution do not depend on its runtime.
 protocol ComputerUseLocalInferenceBackend: Sendable {
     var available: Bool { get }
+    var contextWindowTokens: Int { get }
     func generate(systemPrompt: String, userPrompt: String, toolsJSON: String) async throws -> String
 }
 
 struct GemmaComputerUseInference: ComputerUseLocalInferenceBackend {
+    static let contextTokens = 16_384
+    var contextWindowTokens: Int { Self.contextTokens }
     let model: Gemma4LiteRTModel
     var available: Bool {
         if #available(macOS 15, *) { return Gemma4LiteRTModelStore.isAvailableLocally(model: model) }
