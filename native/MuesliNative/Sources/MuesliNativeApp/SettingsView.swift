@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import AVFoundation
 import SwiftUI
 import MuesliCore
@@ -2844,6 +2845,10 @@ struct SettingsView: View {
                 isBusy: calendarPermission.requesting,
                 actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
             )
+            if ComputerUseReferenceDriver.selectedExecutable != nil {
+                Divider().background(MuesliTheme.surfaceBorder)
+                ChromeBrowserAccessRow()
+            }
             if let errorMessage = calendarPermission.errorMessage {
                 Text(errorMessage)
                     .font(MuesliTheme.caption())
@@ -2861,44 +2866,10 @@ struct SettingsView: View {
         isBusy: Bool = false,
         actionTitle: String = "Grant"
     ) -> some View {
-        HStack {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
-                    .frame(width: 8, height: 8)
-                Text(name)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-            }
-            Spacer()
-            if granted {
-                Text("Granted")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.success)
-            } else {
-                Button(isBusy ? "Checking…" : actionTitle) {
-                    action()
-                }
-                .disabled(isBusy)
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(MuesliTheme.accentSubtle)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            }
-            Button {
-                openPrivacyPane(pane)
-            } label: {
-                Image(systemName: "arrow.up.forward.square")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help("Open in System Settings")
-        }
-        .frame(minHeight: 32)
+        PermissionStatusRow(name: name, granted: granted, action: action,
+                            isBusy: isBusy, actionTitle: actionTitle,
+                            openSettings: { openPrivacyPane(pane) },
+                            settingsHelp: "Open in System Settings")
     }
 
     private func openPrivacyPane(_ pane: String) {
@@ -4079,4 +4050,96 @@ private extension NSColor {
         let b = Int((rgb.blueComponent  * 255).rounded())
         return String(format: "%02x%02x%02x", r, g, b)
     }
+}
+
+/// Connection consent is a manual affordance, not a voice-writable setting.
+private struct ChromeBrowserAccessRow: View {
+    @ObservedObject private var driver = ComputerUseReferenceDriver.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PermissionStatusRow(
+                name: "Chrome browser access",
+                granted: driver.chromeAccess == .connected,
+                action: { Task { await driver.connectChromeFromSettings() } },
+                isBusy: driver.chromeAccess == .connecting,
+                actionTitle: driver.chromeAccess == .notConnected ? "Connect Chrome" : "Reconnect",
+                statusTitle: "Connected",
+                busyTitle: "Waiting…",
+                actionDisabled: driver.commandActive,
+                openSettings: {
+                    guard let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome"),
+                          let url = URL(string: "chrome://inspect/#remote-debugging") else { return }
+                    Task {
+                        _ = try? await NSWorkspace.shared.open([url], withApplicationAt: chrome,
+                                                               configuration: NSWorkspace.OpenConfiguration())
+                    }
+                },
+                settingsHelp: "Open Chrome browser access settings"
+            )
+            if let message = driver.chromeAccessMessage {
+                Text(message).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            } else if driver.chromeAccess == .notConnected {
+                Text("Connect opens Chrome for approval. Background commands reuse the connection.")
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            }
+        }
+        .onAppear { driver.refreshChromeAccess() }
+    }
+}
+
+/// Shared geometry and typography for system permissions and browser consent.
+private struct PermissionStatusRow: View {
+    let name: String
+    let granted: Bool
+    let action: () -> Void
+    var isBusy = false
+    var actionTitle = "Grant"
+    var statusTitle = "Granted"
+    var busyTitle = "Checking…"
+    var actionDisabled = false
+    let openSettings: () -> Void
+    let settingsHelp: String
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
+                    .frame(width: 8, height: 8)
+                Text(name)
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+            }
+            Spacer()
+            if granted {
+                Text(statusTitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.success)
+            } else {
+                Button(isBusy ? busyTitle : actionTitle) {
+                    action()
+                }
+                .disabled(isBusy || actionDisabled)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(MuesliTheme.accentSubtle)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            Button {
+                openSettings()
+            } label: {
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(settingsHelp)
+        }
+        .frame(minHeight: 32)
+    }
+
 }

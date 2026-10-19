@@ -20,12 +20,12 @@ struct NotchToolResult: Identifiable, Equatable {
 }
 
 enum NotchOutcome: Equatable {
-    case success, needsInput, failure
+    case success, needsInput, failure, incomplete
 
     var color: NSColor {
         switch self {
         case .success: return .systemGreen
-        case .needsInput: return .systemYellow
+        case .needsInput, .incomplete: return .systemYellow
         case .failure: return .systemRed
         }
     }
@@ -33,6 +33,7 @@ enum NotchOutcome: Equatable {
         switch self {
         case .success: return "Done"
         case .needsInput: return "Needs input"
+        case .incomplete: return "Incomplete"
         case .failure: return "Failed"
         }
     }
@@ -40,7 +41,7 @@ enum NotchOutcome: Equatable {
         switch self {
         case .success: return 2
         case .needsInput: return nil
-        case .failure: return 5
+        case .failure, .incomplete: return 5
         }
     }
 
@@ -58,6 +59,7 @@ enum NotchOutcome: Equatable {
     static func computerUse(_ status: ComputerUsePlannerRuntimeResult.Status) -> Self? {
         switch status {
         case .done: return .success
+        case .incomplete: return .incomplete
         case .needsConfirmation: return .needsInput
         case .failed, .timedOut: return .failure
         case .cancelled: return nil
