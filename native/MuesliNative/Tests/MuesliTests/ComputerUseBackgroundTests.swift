@@ -5,6 +5,51 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Observation feedback distinguishes unchanged reads from new scope and mutations")
+    func observationProgressFeedback() {
+        var progress = ComputerUseReferenceRuntime.ObservationProgress()
+        func snapshot(_ token: String, tab: String = "tab1", value: String = "") -> [String: Any] {
+            ["result": ["structuredContent": [
+                "status": "ok", "mode": "snapshot", "target_id": "target1", "tab_id": tab,
+                "outline": value, "refs": [], "content_refs": [],
+                "snapshot": ["id": token, "scope": "query", "complete": true,
+                             "omitted": ["offscreen": 12]]
+            ]]]
+        }
+        let args: [String: Any] = ["query": "arbitrary missing item"]
+        let first = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p1"))
+        #expect(first?.contains("does not establish absence") == true)
+        #expect(first?.contains("unchanged evidence") == false)
+        let repeated = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p2"))
+        #expect(repeated?.contains("unchanged evidence") == true)
+        let changed = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p3", value: "new content"))
+        #expect(changed?.contains("unchanged evidence") == false)
+        let otherTab = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p4", tab: "tab2"))
+        #expect(otherTab?.contains("Several reads") == false)
+        #expect(progress.guidance(tool: "browser_pointer", arguments: ["action": "scroll"], response: [:]) == nil)
+        let afterScroll = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p5", tab: "tab2"))
+        #expect(afterScroll?.contains("unchanged evidence") == false)
+        #expect(progress.guidance(tool: "get_browser_state", arguments: args,
+            response: ["result": ["isError": true]]) == nil)
+        let afterError = progress.guidance(tool: "get_browser_state", arguments: args, response: snapshot("p6", tab: "tab2"))
+        #expect(afterError?.contains("unchanged evidence") == false)
+    }
+
+    @Test("Retired observations preserve facts but discard pagination capabilities")
+    func retiredPaginationCapabilities() {
+        let response: [String: Any] = ["result": ["structuredContent": [
+            "status": "ok", "mode": "snapshot", "outline": "- article an established fact",
+            "snapshot": ["id": "old-snapshot", "continuation": "obsolete-cursor", "complete": false],
+            "continuation": "legacy-cursor", "target_id": "target1", "tab_id": "tab1"
+        ]]]
+        let summary = ComputerUseReferenceRuntime.snapshotHistorySummary(from: response) ?? ""
+        #expect(summary.contains("an established fact"))
+        #expect(summary.contains("target1"))
+        #expect(!summary.contains("obsolete-cursor"))
+        #expect(!summary.contains("legacy-cursor"))
+        #expect(!summary.contains("old-snapshot"))
+    }
+
     @Test("Persistent reference host isolates command ownership and rejects stale release")
     func referenceCommandOwnership() throws {
         let driver = ComputerUseReferenceDriver()
@@ -232,7 +277,7 @@ struct ComputerUseBackgroundTests {
 extension ComputerUseBackgroundTests {
     @Test("Strict reference background catalog excludes self-activating shortcut routes")
     func referenceShortcutBoundary() {
-        let excluded = ["hotkey", "press_key", "invoke_menu"]
+        let excluded = ["hotkey", "press_key", "invoke_menu", "browser_prepare"]
         let available = ["browser_navigate", "browser_type", "set_value", "move_cursor"]
         let catalog: [[String: Any]] = (excluded + available).map {
             ["name": $0, "inputSchema": ["type": "object"]]
@@ -262,6 +307,42 @@ extension ComputerUseBackgroundTests {
         #expect(NSDictionary(dictionary: forwarded).isEqual(to: schema))
     }
 
+    @Test("Reference history retires old page refs but preserves all mutation outcomes and identity")
+    func referenceSnapshotHistory() {
+        let summary = ComputerUseReferenceRuntime.snapshotHistorySummary(from: ["result": ["structuredContent": [
+            "status": "ok", "mode": "snapshot", "target_id": "target-1", "tab_id": "tab-1",
+            "page": ["url": "https://example.com/post/1"], "refs": [["ref": "p1:1"]], "outline": "old page"
+        ]]])
+        #expect(summary?.contains("target-1") == true)
+        #expect(summary?.contains("p1:1") == false)
+        #expect(summary?.contains("retired") == true)
+        #expect(summary?.contains("old page") == true)
+        typealias Entry = ComputerUseReferenceRuntime.HistoryEntry
+        let history = ComputerUseReferenceRuntime.plannerHistory(prefix: "original instruction", entries: [
+            Entry(call: "read 1", observation: "old refs", staleSnapshot: summary),
+            Entry(call: "submit reply", observation: "outcome uncertain: do not submit again", staleSnapshot: nil),
+            Entry(call: "read 2", observation: "recent refs", staleSnapshot: summary),
+            Entry(call: "read 3", observation: "fresh refs", staleSnapshot: summary)
+        ])
+        #expect(!history.contains("old refs"))
+        #expect(history.contains("recent refs") && history.contains("fresh refs"))
+        #expect(history.contains("outcome uncertain: do not submit again"))
+        #expect(history.contains("original instruction") && history.contains("target-1"))
+        #expect(ComputerUseReferenceRuntime.snapshotHistorySummary(from: ["result": ["isError": true]]) == nil)
+    }
+
+    @Test("Reference history retires superseded tab inventories while retaining window identity")
+    func referenceBindingHistory() {
+        let summary = ComputerUseReferenceRuntime.snapshotHistorySummary(from: ["result": ["structuredContent": [
+            "status": "ok", "mode": "bind", "target_id": "old-binding", "pid": 42,
+            "binding_quality": "exact", "tabs": [["tab_id": "obsolete-tab", "url": "https://example.com"]]
+        ]]])
+        #expect(summary?.contains("old-binding") == true)
+        #expect(summary?.contains("exact") == true)
+        #expect(summary?.contains("obsolete-tab") == false)
+        #expect(summary?.contains("retired_tab_count") == true)
+    }
+
     @Test("Reference observations keep target image bytes out of text history")
     func referenceObservation() {
         let windows = ComputerUseReferenceRuntime.observation(from: ["result": [
@@ -281,4 +362,161 @@ extension ComputerUseBackgroundTests {
         #expect(failure.image == nil)
         #expect(failure.text == "Permission denied")
     }
+}
+
+extension ComputerUseBackgroundTests {
+    @Test("Disconnected background browser calls cannot reach the transport or launch setup")
+    func manualChromeConnectionBoundary() async throws {
+        let driver = ComputerUseReferenceDriver()
+        for name in ["browser_prepare", "get_browser_state", "browser_navigate", "browser_click"] {
+            let result = try await driver.callInBackground(name: name, arguments: ["delivery_mode": "foreground"])
+            #expect((result["result"] as? [String: Any])?["isError"] as? Bool == true)
+            #expect(ComputerUseReferenceRuntime.observation(from: result).text.contains("Settings > Permissions"))
+            #expect(driver.processID == nil)
+            #expect(driver.chromeAccess == .notConnected)
+        }
+    }
+}
+
+extension ComputerUseBackgroundTests {
+    @Test("Chrome reconnect status follows driver refusal codes, not untrusted page text")
+    func chromeReconnectRefusals() {
+        for code in ["browser_requires_setup", "browser_consent_required", "browser_consent_revoked", "browser_reconnect_exhausted"] {
+            #expect(ComputerUseReferenceDriver.requiresChromeReconnect(["result": ["structuredContent": ["refusal": ["code": code]]]]))
+        }
+        #expect(!ComputerUseReferenceDriver.requiresChromeReconnect(["result": ["structuredContent": ["refusal": ["code": "browser_ref_stale"]]]]))
+        #expect(!ComputerUseReferenceDriver.requiresChromeReconnect(["result": ["content": [["type": "text", "text": "browser_consent_required"]]]]))
+    }
+}
+
+extension ComputerUseBackgroundTests {
+    @Test("Chrome Connect waits only for a missing endpoint and preserves other failures")
+    func chromePreparationStates() {
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["refusal": ["code": "browser_consent_required"]]]]) == .waitingForApproval)
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["refusal": ["code": "background_unavailable", "message": "Cannot attach safely"]]]]) == .failed("Cannot attach safely"))
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["refusal": ["code": "browser_requires_setup", "message": "Enable debugging"]]]]) == .waitingForDebugging)
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["refusal": ["code": "browser_wrong_target_refused", "message": "No exact window"]]]]) == .failed("No exact window"))
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["prepared": true]]]) == .connected)
+        #expect(ComputerUseReferenceDriver.chromePreparationOutcome(["result": ["structuredContent": ["prepared": false]]]) != .connected)
+    }
+}
+
+extension ComputerUseBackgroundTests {
+    @Test("Chrome status requires affirmative live-socket evidence")
+    func chromeSocketStatus() {
+        #expect(ComputerUseReferenceDriver.chromeConnectionIsLive(["result": ["structuredContent": ["connected": true]]]))
+        #expect(!ComputerUseReferenceDriver.chromeConnectionIsLive(["result": ["structuredContent": ["connected": false]]]))
+        #expect(!ComputerUseReferenceDriver.chromeConnectionIsLive(["result": ["isError": true, "structuredContent": ["connected": true]]]))
+        #expect(!ComputerUseReferenceDriver.chromeConnectionIsLive(["result": ["content": [["type": "text", "text": "Connected"]]]]))
+        #expect(!ComputerUseReferenceRuntime.allowedTools.contains("browser_connection_status"))
+    }
+}
+
+extension ComputerUseBackgroundTests {
+    @Test("Chrome disconnect events cannot invalidate a newer connection")
+    func chromeDisconnectEventIdentity() {
+        #expect(ComputerUseReferenceDriver.isChromeDisconnectEvent(["session": "current", "connected": false], session: "current"))
+        #expect(!ComputerUseReferenceDriver.isChromeDisconnectEvent(["session": "previous", "connected": false], session: "current"))
+        #expect(!ComputerUseReferenceDriver.isChromeDisconnectEvent(["session": "current", "connected": true], session: "current"))
+        #expect(!ComputerUseReferenceDriver.isChromeDisconnectEvent(["connected": false], session: nil))
+    }
+    @Test("Reference token budget accounts for model, schemas, images and Unicode")
+    func referenceTokenBudget() {
+        typealias Budget = ComputerUseReferenceRuntime.ContextBudget
+        let local = Budget(model: ComputerUseLocalPlanner.models[0].id)
+        let hosted = Budget(model: "gpt-6-sol")
+        let unknown = Budget(model: "unknown")
+        #expect(local.inputTokens < hosted.inputTokens)
+        #expect(unknown.inputTokens < local.inputTokens)
+        #expect(Budget(model: "gpt-6-sol", contextWindowTokens: 4096).inputTokens < local.inputTokens)
+        #expect(Budget.tokens("你好世界") > Budget.tokens("abcd"))
+        let text = hosted.historyAllowance(instructions: "system", tools: [], hasImage: false)
+        #expect(hosted.historyAllowance(instructions: "system", tools: [], hasImage: true) == text - 8192)
+        #expect(hosted.historyAllowance(instructions: "system", tools: [["schema": String(repeating: "x", count: 3000)]], hasImage: false) < text)
+    }
+
+    @Test("Reference compaction fits complete observations without dropping action evidence")
+    func referenceBudgetedHistory() throws {
+        typealias Runtime = ComputerUseReferenceRuntime
+        let large = String(repeating: "snapshot data ", count: 2000)
+        let entries = [
+            Runtime.HistoryEntry(call: "read 1", observation: large, staleSnapshot: "Earlier identity and facts"),
+            Runtime.HistoryEntry(call: "submit", observation: "outcome uncertain; NEVER repeat", staleSnapshot: nil),
+            Runtime.HistoryEntry(call: "read 2", observation: large, staleSnapshot: "Verified account and destination")
+        ]
+        let history = try #require(Runtime.budgetedHistory(prefix: "USER: original task", entries: entries, tokens: 500))
+        #expect(Runtime.ContextBudget.tokens(history) <= 500)
+        #expect(history.contains("original task"))
+        #expect(history.contains("Earlier identity and facts"))
+        #expect(history.contains("outcome uncertain; NEVER repeat"))
+        #expect(history.contains("Verified account and destination"))
+        #expect(Runtime.budgetedHistory(prefix: "original", entries: entries, tokens: 1) == nil)
+    }
+
+    @Test("Reference compaction deduplicates facts while preserving distinct evidence")
+    func referenceRepeatedFacts() throws {
+        typealias Runtime = ComputerUseReferenceRuntime
+        func entry(_ fact: String) -> Runtime.HistoryEntry {
+            let response: [String: Any] = ["structuredContent": ["status": "ok", "mode": "snapshot", "outline": fact]]
+            return .init(call: "read", observation: String(repeating: "full ", count: 3000),
+                         staleSnapshot: Runtime.snapshotHistorySummary(from: response))
+        }
+        let history = try #require(Runtime.budgetedHistory(prefix: "task", entries: [entry("same fact"), entry("same fact"), entry("same fact\nunique fact")], tokens: 1000))
+        #expect(history.contains("same fact") && history.contains("unique fact"))
+        #expect(history.contains("facts_identical_to_history_entry"))
+    }
+
+    @Test("Infrastructure failures preserve uncertain side effects without claiming success")
+    func referenceIncompleteOutcome() {
+        typealias Runtime = ComputerUseReferenceRuntime
+        for reason in ["context exhausted", "verification timed out", "planner unavailable", "step limit"] {
+            let (status, message) = Runtime.terminalOutcome(.failed, message: reason, attemptedMutation: true)
+            #expect(status == .incomplete)
+            #expect(message.contains(reason) && message.contains("Do not repeat"))
+            #expect(NotchOutcome.computerUse(status) == .incomplete)
+        }
+        #expect(Runtime.terminalOutcome(.failed, message: "no action", attemptedMutation: false).0 == .failed)
+        #expect(Runtime.terminalOutcome(.done, message: "Verified reply", attemptedMutation: true).0 == .done)
+        let cancelled = Runtime.terminalOutcome(.cancelled, message: "Stopped", attemptedMutation: true)
+        #expect(cancelled.0 == .cancelled && cancelled.1.contains("may already"))
+    }
+
+    @Test("Saved reference history fits the planner budget without executing tools",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_REFERENCE_HISTORY_REPLAY_ROOT"] != nil))
+    func referenceSavedHistoryReplay() throws {
+        typealias Runtime = ComputerUseReferenceRuntime
+        let root = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["MUESLI_REFERENCE_HISTORY_REPLAY_ROOT"]))
+        let catalog = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("tools.json"))) as? [String: Any]
+        let tools = Runtime.definitions(from: try #require((catalog?["result"] as? [String: Any])?["tools"] as? [[String: Any]]))
+        let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("call-") && $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        var entries: [Runtime.HistoryEntry] = []
+        let budget = Runtime.ContextBudget(model: "gpt-6-sol")
+        var largest = 0
+        var progress = Runtime.ObservationProgress()
+        var guidanceCount = 0
+        for file in files {
+            let call = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            let name = try #require(call["tool"] as? String)
+            guard Runtime.allowedTools.contains(name) else { continue }
+            let response = try #require(call["response"] as? [String: Any])
+            let observed = Runtime.observation(from: response)
+            let arguments = try JSONSerialization.data(withJSONObject: call["arguments"] ?? [:], options: [.sortedKeys])
+            let guidance = progress.guidance(tool: name, arguments: call["arguments"] as? [String: Any] ?? [:], response: response)
+            if guidance != nil { guidanceCount += 1 }
+            entries.append(.init(call: name + " " + String(decoding: arguments, as: UTF8.self),
+                                 observation: observed.text + (guidance.map { "\nRuntime observation guidance: " + $0 } ?? ""),
+                                 staleSnapshot: Runtime.snapshotHistorySummary(from: response)))
+            let allowance = budget.historyAllowance(instructions: Runtime.instructions, tools: tools, hasImage: observed.image != nil)
+            let candidate = Runtime.budgetedHistory(prefix: String(repeating: "original command ", count: 100), entries: entries, tokens: allowance)
+            // Avoid dumping private saved page observations in a failed assertion.
+            try #require(candidate != nil, "Saved history exceeded its allowance at entry \(entries.count)")
+            let history = candidate ?? ""
+            largest = max(largest, Runtime.ContextBudget.tokens(history))
+        }
+        #expect(!entries.isEmpty)
+        print("Reference replay: \(entries.count) calls; \(guidanceCount) observation guidance messages; peak estimated history \(largest) tokens; input budget \(budget.inputTokens)")
+    }
+
 }
