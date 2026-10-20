@@ -81,9 +81,10 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     // Construct native graphs only on the driver path, never while a route
     // decision creates a recorder. graphLock owns this storage.
     private var engineStorage: AVAudioEngine?
+    private let makeEngine: () -> AVAudioEngine
     private var engine: AVAudioEngine {
         if let engineStorage { return engineStorage }
-        let created = AVAudioEngine()
+        let created = makeEngine()
         engineStorage = created
         return created
     }
@@ -133,9 +134,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     init(
         directoryName: String = "muesli-meeting-mic",
         recoversFromInputConfigurationChanges: Bool = false,
-        observesInputConfigurationChanges: Bool? = nil
+        observesInputConfigurationChanges: Bool? = nil,
+        makeEngine: @escaping () -> AVAudioEngine = { AVAudioEngine() }
     ) {
         self.directoryName = directoryName
+        self.makeEngine = makeEngine
         self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
         self.observesInputConfigurationChanges = observesInputConfigurationChanges
             ?? recoversFromInputConfigurationChanges
@@ -257,8 +260,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let tapBlock = try makeBufferedTap(format: hwFormat, recordingID: recordingID)
 
         emitLatency("app_scoped_tap_install_begin")
-        // AVAudioEngine raises NSException (uncatchable from Swift) when the input
-        // format is invalid mid route change, so every graph call goes through the bridge.
+        // Tap installation can raise NSException while an input route is settling;
+        // contain it even when automatic input-configuration recovery is disabled.
         if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
             throw tapError
         }
