@@ -140,6 +140,7 @@ enum MeetingBrowserLogic {
     // UTC offset are cached: a local-time string means a different instant when the
     // system time zone changes. Failed parses are not cached.
     private static let parsedDates = NSCache<NSString, NSDate>()
+    private static let localParserLock = NSLock()
 
     static func parseDate(_ raw: String) -> Date? {
         let key = raw as NSString
@@ -148,7 +149,16 @@ enum MeetingBrowserLogic {
             parsedDates.setObject(parsed as NSDate, forKey: key)
             return parsed
         }
-        return localParsers.lazy.compactMap { $0.date(from: raw) }.first
+        // Local timestamps follow the current zone; refresh and parse atomically
+        // because background exports share these formatters with the meeting list.
+        localParserLock.lock()
+        defer { localParserLock.unlock() }
+        let timeZone = TimeZone.current
+        for parser in localParsers {
+            if parser.timeZone != timeZone { parser.timeZone = timeZone }
+            if let parsed = parser.date(from: raw) { return parsed }
+        }
+        return nil
     }
 
     static func formatStartTime(
