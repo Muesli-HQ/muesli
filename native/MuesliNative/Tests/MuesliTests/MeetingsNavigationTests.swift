@@ -2183,6 +2183,27 @@ struct MeetingBrowserLogicTests {
         #expect(formatted.localizedCaseInsensitiveContains("PM"))
     }
 
+    @Test("local timestamps follow time-zone changes while explicit offsets stay fixed")
+    func localDatesFollowTimeZoneChanges() async {
+        // Keep process-wide TZ changes isolated from other tests and macOS settings.
+        await #expect(processExitsWith: .success) {
+            setenv("TZ", "UTC", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let local = "2025-01-01T12:00:00"
+            let absolute = "2025-01-01T12:00:00Z"
+            let before = try #require(MeetingBrowserLogic.parseDate(local))
+            let fixed = try #require(MeetingBrowserLogic.parseDate(absolute))
+
+            setenv("TZ", "America/Los_Angeles", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let after = try #require(MeetingBrowserLogic.parseDate(local))
+            #expect(after.timeIntervalSince(before) == 8 * 60 * 60)
+            #expect(MeetingBrowserLogic.parseDate(absolute) == fixed)
+        }
+    }
+
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {
         let date = calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now
         let formatter = ISO8601DateFormatter()
