@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CloudKit
 import CoreAudio
@@ -242,6 +243,7 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
     case recordingUnavailable
     case noDownloadedTranscriptionModel
     case emptyTranscript
+    case failedToReadSpeakerState(underlying: Error)
     case failedToSave(underlying: Error)
 
     var errorDescription: String? {
@@ -256,6 +258,8 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
             return "Download a transcription model before re-transcribing this meeting."
         case .emptyTranscript:
             return "Re-transcription finished, but no speech was detected in the saved recording."
+        case .failedToReadSpeakerState(let underlying):
+            return "Re-transcription stopped before changing this meeting because its saved speaker identities could not be checked. Please retry. \(underlying.localizedDescription)"
         case .failedToSave(let underlying):
             return "The re-transcribed meeting could not be saved. \(underlying.localizedDescription)"
         }
@@ -1634,6 +1638,16 @@ public final class MuesliController: NSObject {
         normalizeMeetingTranscriptionSelectionForAvailability()
     }
 
+    private var meetingSpeakerAuthorizationCache = MeetingSpeakerAuthorizationCache()
+    func currentMeetingSpeakerAuthorization(forceRefresh: Bool = false) -> UUID? {
+        meetingSpeakerAuthorizationCache.authorization(
+            enabled: config.enableMeetingSpeakerAccessibility,
+            now: ProcessInfo.processInfo.systemUptime,
+            forceRefresh: forceRefresh,
+            isTrusted: AXIsProcessTrusted
+        )
+    }
+
     func updateConfig(
         iCloudDisableCompletionStatus: String? = nil,
         _ mutate: (inout AppConfig) -> Void
@@ -1652,7 +1666,11 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousSpeakerAccessibility = config.enableMeetingSpeakerAccessibility
         mutate(&config)
+        if previousSpeakerAccessibility != config.enableMeetingSpeakerAccessibility {
+            _ = currentMeetingSpeakerAuthorization()
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()
@@ -2649,6 +2667,15 @@ public final class MuesliController: NSObject {
                     self.finishIPhoneBridgeDeviceDiscovery(foundCompanion: true)
                 }
                 self.refreshICloudBridgeStateForConfig()
+            },
+            meetingSummaryFreshnessDidChange: { [weak self, lifecycleID] changedIDs, deletedIDs in
+                guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
+                self.appState.noteMeetingSummaryFreshnessChanged(
+                    for: changedIDs,
+                    existingMeetingIDs: self.appState.meetingSummaryFreshnessObservedMeetingIDs(),
+                    deletedMeetingIDs: deletedIDs
+                )
+                self.appState.removeMeetingSummaryFreshnessRevisions(for: deletedIDs)
             },
             syncZoneFetchDidSucceed: { [weak self, lifecycleID] in
                 guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
@@ -5873,6 +5900,11 @@ public final class MuesliController: NSObject {
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }
+            guard let meeting = try? self.dictationStore.meeting(id: meeting.id),
+                  let transcriptVersion = try? self.dictationStore.meetingTranscriptVersion(id: meeting.id),
+                  transcriptVersion.digest == MeetingSpeakerState.digest(meeting.rawTranscript) else {
+                completion(.failure(MeetingRetranscriptionError.recordingUnavailable)); return
+            }
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
             do {
@@ -5894,12 +5926,14 @@ public final class MuesliController: NSObject {
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        expectedTranscript: transcriptVersion
                     )
                 } catch {
                     throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
                 }
                 await MainActor.run {
+                    self.noteMeetingSummaryFreshnessChanged(for: meeting.id)
                     self.scheduleICloudSyncAfterLocalChange()
                     self.syncAppState()
                     self.historyWindowController?.reload()
@@ -5953,6 +5987,8 @@ public final class MuesliController: NSObject {
                 return
             }
             var didSetProcessing = false
+            var retryTranscriptVersion: MeetingTranscriptVersion?
+            var priorSpeakerSnapshot: MeetingSpeakerSnapshot?
             let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Re-transcribing retained meeting audio")
             defer {
                 ProcessInfo.processInfo.endActivity(activity)
@@ -5979,8 +6015,19 @@ public final class MuesliController: NSObject {
                     throw MeetingRetranscriptionError.noDownloadedTranscriptionModel
                 }
 
+                do {
+                    // The failed-retry path must restore speaker edit history before returning the meeting to its prior state.
+                    priorSpeakerSnapshot = try self.dictationStore.meetingSpeakerSnapshot(id: meeting.id)
+                } catch {
+                    throw MeetingRetranscriptionError.failedToReadSpeakerState(underlying: error)
+                }
                 try self.updateMeetingStatusAndScheduleSyncThrowing(id: meeting.id, status: .processing)
                 didSetProcessing = true
+                let transcriptVersion = try self.dictationStore.meetingTranscriptVersion(id: meeting.id)
+                retryTranscriptVersion = transcriptVersion
+                guard let transcriptVersion, transcriptVersion.digest == MeetingSpeakerState.digest(meeting.rawTranscript) else {
+                    throw MeetingRetranscriptionError.recordingUnavailable
+                }
                 self.syncAppState()
                 self.historyWindowController?.reload()
 
@@ -6079,7 +6126,15 @@ public final class MuesliController: NSObject {
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        expectedTranscript: transcriptVersion,
+                        summaryIsCurrent: summaryFailureWarning == nil
+                    )
+                    self.persistSpeakerState(
+                        diarization.speakerState,
+                        meetingID: meeting.id,
+                        rawTranscript: rawTranscript,
+                        summaryIsCurrent: summaryFailureWarning == nil
                     )
                 } catch {
                     if error is CancellationError { throw error }
@@ -6104,7 +6159,21 @@ public final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] failed to re-transcribe meeting \(meeting.id): \(error)\n", stderr)
                 if let restoredStatus = Self.retranscriptionFailureStatus(originalStatus: meeting.status, didSetProcessing: didSetProcessing, error: error) {
-                    self.updateMeetingStatusAndScheduleSync(id: meeting.id, status: restoredStatus)
+                    do {
+                        try self.updateMeetingStatusAndScheduleSyncThrowing(id: meeting.id, status: restoredStatus)
+                        if let priorSpeakerSnapshot, let retryTranscriptVersion {
+                            let restoreResult = try self.dictationStore.restoreMeetingSpeakerState(
+                                id: meeting.id,
+                                snapshot: priorSpeakerSnapshot,
+                                expected: retryTranscriptVersion
+                            )
+                            if restoreResult != .updated {
+                                fputs("[muesli-native] prior speaker state was not restored after failed retry (\(restoreResult))\n", stderr)
+                            }
+                        }
+                    } catch {
+                        fputs("[muesli-native] failed to restore meeting \(meeting.id) after re-transcription failure: \(error)\n", stderr)
+                    }
                 }
                 self.appState.meetingRetranscriptions[meeting.id]?.phase = Task.isCancelled ? .cancelled : .failed
                 self.appState.meetingRetranscriptions[meeting.id]?.message = Task.isCancelled ? "Re-transcription cancelled" : error.localizedDescription
@@ -6688,6 +6757,7 @@ public final class MuesliController: NSObject {
                 try deleteSavedMeetingRecording(at: savedRecordingPath)
             }
             try dictationStore.deleteMeeting(id: id)
+            appState.removeMeetingSummaryFreshnessRevisions(for: [id])
             cleanupOrphanedMeetingWaveformCacheFiles()
             scheduleICloudSyncAfterLocalChange()
         } catch let error as MeetingLifecycleError {
@@ -6767,7 +6837,9 @@ public final class MuesliController: NSObject {
             return
         }
 
-        try? dictationStore.clearMeetings()
+        if let _ = try? dictationStore.clearMeetings() {
+            appState.clearMeetingSummaryFreshnessRevisions()
+        }
         scheduleICloudSyncAfterLocalChange()
         clearAllCachedMeetingManualNotes()
         clearAllCachedMeetingTitles()
@@ -7422,7 +7494,9 @@ public final class MuesliController: NSObject {
         selectedTemplateID: String?,
         selectedTemplateName: String?,
         selectedTemplateKind: MeetingTemplateKind?,
-        selectedTemplatePrompt: String?
+        selectedTemplatePrompt: String?,
+        summaryIsCurrent: Bool,
+        speakerState: MeetingSpeakerState? = nil
     ) throws -> Int64 {
         let meetingID = try dictationStore.insertMeeting(
             title: title,
@@ -7439,6 +7513,12 @@ public final class MuesliController: NSObject {
             selectedTemplateKind: selectedTemplateKind,
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: .audioImport
+        )
+        persistSpeakerState(
+            speakerState,
+            meetingID: meetingID,
+            rawTranscript: rawTranscript,
+            summaryIsCurrent: summaryIsCurrent
         )
         scheduleICloudSyncAfterLocalChange()
         meetingHookDispatcher.dispatchCompletedMeetingHook(
@@ -7519,6 +7599,9 @@ public final class MuesliController: NSObject {
         let session = MeetingSession(title: title, calendarEventID: calendarEventID,
             backend: backend, runtime: runtime, config: config, templateSnapshot: templateSnapshot,
             transcriptionCoordinator: transcriptionCoordinator, meetingMicRecorder: microphone)
+        session.speakerAccessibilityAuthorizationProvider = { [weak self] in
+            await MainActor.run { self?.currentMeetingSpeakerAuthorization() }
+        }
         let owner = ObjectIdentifier(session)
         session.onCaptureQuiesced = { [weak self] in
             Task { @MainActor [weak self] in self?.completeMeetingCaptureShutdown(owner: owner) }
@@ -8143,6 +8226,7 @@ public final class MuesliController: NSObject {
     private func deleteMeetingDraftAndScheduleSync(id: Int64) {
         do {
             try dictationStore.deleteMeeting(id: id)
+            appState.removeMeetingSummaryFreshnessRevisions(for: [id])
             scheduleICloudSyncAfterLocalChange()
         } catch {
             fputs("[muesli-native] failed to delete meeting draft \(id): \(error)\n", stderr)
@@ -8450,6 +8534,7 @@ public final class MuesliController: NSObject {
         existingMeetingID: Int64? = nil,
         preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
+        let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization(forceRefresh: true))
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error
@@ -8498,8 +8583,95 @@ public final class MuesliController: NSObject {
                 visualContext: result.visualContext
             )
         }
+        persistSpeakerState(
+            result.speakerState,
+            meetingID: meetingID,
+            rawTranscript: result.rawTranscript,
+            summaryIsCurrent: result.summaryIsCurrent
+        )
         scheduleICloudSyncAfterLocalChange()
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
+    }
+
+    private func persistSpeakerState(
+        _ state: MeetingSpeakerState?,
+        meetingID: Int64,
+        rawTranscript: String,
+        summaryIsCurrent: Bool? = true
+    ) {
+        let version: MeetingTranscriptVersion
+        do {
+            guard let current = try dictationStore.meetingTranscriptVersion(id: meetingID),
+                  current.digest == MeetingSpeakerState.digest(rawTranscript) else { return }
+            version = current
+        } catch {
+            fputs("[meeting] transcript version could not be read after save\n", stderr)
+            return
+        }
+
+        if let state, state.matchesTranscriptDigest(version.digest) {
+            do {
+                _ = try dictationStore.installMeetingSpeakerState(id: meetingID, state: state, expected: version)
+            } catch {
+                // Optional identity enrichment must never suppress current-summary bookkeeping.
+                fputs("[meeting] speaker state could not be saved; transcript and recording retained\n", stderr)
+            }
+        }
+        if let summaryIsCurrent {
+            do {
+                if summaryIsCurrent {
+                    try dictationStore.markMeetingSummaryCurrent(id: meetingID, expected: version)
+                } else {
+                    try dictationStore.markMeetingSummaryStale(id: meetingID, expected: version)
+                }
+                noteMeetingSummaryFreshnessChanged(for: meetingID)
+            } catch {
+                fputs("[meeting] summary freshness state could not be saved\n", stderr)
+            }
+        }
+    }
+
+    var canEditMeetingSpeakers: Bool {
+        !isInteractiveAudioActivityInProgress && !isStartingMeetingRecording && activeMeetingSession == nil
+            && backgroundMeetingProcessingCount == 0
+    }
+
+    func applyMeetingSpeakerCorrection(id: Int64, action: MeetingSpeakerCorrection,
+                                       expected: MeetingSpeakerSnapshot) async throws -> MeetingSpeakerSnapshot {
+        guard canEditMeetingSpeakers else { throw MeetingSpeakerEditorError.busy }
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let updated = try await Task.detached(priority: .userInitiated) {
+            var state = expected.state
+            guard state.correct(action), state.isValid else { throw MeetingSpeakerEditorError.invalidAction }
+            let store = DictationStore(databaseURL: databaseURL)
+            guard try store.updateMeetingSpeakerState(id: id, state: state, expected: expected) == .updated,
+                  let saved = try store.meetingSpeakerSnapshot(id: id) else { throw MeetingSpeakerEditorError.conflict }
+            return saved
+        }.value
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+        historyWindowController?.reload()
+        return updated
+    }
+
+    func loadMeetingSpeakerPresentation(id: Int64) async -> (snapshot: MeetingSpeakerSnapshot?, summaryIsStale: Bool?) {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return await Task.detached(priority: .userInitiated) {
+            let store = DictationStore(databaseURL: databaseURL)
+            return (try? store.meetingSpeakerSnapshot(id: id), try? store.meetingSummaryIsStale(id: id))
+        }.value
+    }
+
+    private func noteMeetingSummaryFreshnessChanged(for meetingID: Int64) {
+        noteMeetingSummaryFreshnessChanged(for: [meetingID])
+    }
+
+    private func noteMeetingSummaryFreshnessChanged(for meetingIDs: Set<Int64>) {
+        appState.noteMeetingSummaryFreshnessChanged(for: meetingIDs)
+    }
+
+    func meetingSpeakerSnapshot(id: Int64) -> MeetingSpeakerSnapshot? {
+        try? dictationStore.meetingSpeakerSnapshot(id: id)
     }
 
     private func liveMeetingTitle(id: Int64) -> String? {
@@ -8597,12 +8769,16 @@ public final class MuesliController: NSObject {
                 durationSeconds: accumulatedDuration,
                 rawTranscript: combined,
                 formattedNotes: originalMeeting?.formattedNotes ?? result.formattedNotes,
-                visualContext: mergedVisualContext
+                visualContext: mergedVisualContext,
+                summaryIsCurrent: MeetingResumePolicy.summaryIsCurrentAfterUnchangedResume(
+                    existingSummaryIsStale: originalMeeting?.summaryIsStale
+                )
             )
         }
 
         let participantNames = await summaryParticipantNames(meetingID: meetingID)
         let regeneratedNotes: String
+        var summaryIsCurrent = true
         do {
             regeneratedNotes = try await MeetingSummaryClient.summarize(
                 transcript: combined,
@@ -8614,6 +8790,7 @@ public final class MuesliController: NSObject {
                 participantNames: participantNames,
                 visualContext: mergedVisualContext
             )
+            summaryIsCurrent = true
         } catch {
             fputs("[muesli-native] resume summary regeneration failed: \(error.localizedDescription)\n", stderr)
             regeneratedNotes = MeetingSummaryClient.summaryFailureNotes(
@@ -8622,13 +8799,15 @@ public final class MuesliController: NSObject {
                 error: error,
                 manualNotes: manualNotes
             )
+            summaryIsCurrent = false
         }
         return result.overriding(
             startTime: originalStart,
             durationSeconds: accumulatedDuration,
             rawTranscript: combined,
             formattedNotes: regeneratedNotes,
-            visualContext: mergedVisualContext
+            visualContext: mergedVisualContext,
+            summaryIsCurrent: summaryIsCurrent
         )
     }
 

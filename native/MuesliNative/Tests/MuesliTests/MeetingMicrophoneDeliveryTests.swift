@@ -200,6 +200,8 @@ struct MeetingMicrophoneDeliveryTests {
         // Native AudioQueue buffers must recycle, without leaking PCM into either side.
         for _ in 0..<5 { try producer.emit([15], at: 103) }
         if let driver = producer.driver { #expect(driver.queuedBufferCount == 3) }
+        // The system recorder already wrote this sample to the full recording,
+        // so its callback tail must stay on the same chunk and retained timeline.
         system.onPCMSamples?([30_000])
         if ending == "stop" { session.beginStoppingCapture() }
         if ending == "discard" { session.discard() }
@@ -225,13 +227,13 @@ struct MeetingMicrophoneDeliveryTests {
         let after: [Int16] = ending == "resume" || ending == "rapid" ? [8191, 10239] : []
         session.testingPipelineBarrier {
             #expect(micChunks == [before])
-            #expect(systemChunks == [[0, 0, 0]])
+            #expect(systemChunks == [[0, 0, 0, 30_000]])
             #expect(processor.events.prefix(3) == ["reset", "process", "reset"])
             #expect(processor.events.filter { $0 == "reset" }.count == (ending == "rapid" ? 3 : 2))
         }
         #expect(try pcm(urls.0) == after)
         #expect(try pcm(urls.1).isEmpty)
-        #expect(try pcm(urls.2) == before.map { $0 / 2 } + after)
+        #expect(try pcm(urls.2) == before.map { $0 / 2 } + [30_000] + after)
     }
 
     @Test("delayed native resume recycles every active buffer without admitting paused audio",
