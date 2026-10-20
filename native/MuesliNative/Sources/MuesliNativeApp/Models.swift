@@ -35,6 +35,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let parakeetRedux = BackendOption(
+        backend: "fluidaudio",
+        model: "FluidInference/parakeet-redux-coreml",
+        label: "Parakeet Redux",
+        sizeLabel: "~220 MB",
+        description: "A smaller download for dictation in 25 languages.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -186,7 +195,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetUnified, .parakeetMultilingual, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -320,6 +329,9 @@ struct BackendOption: Equatable {
     /// Shared OS requirements for model selection in onboarding and the library.
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
+        if self == .parakeetRedux {
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        }
         switch backend {
         case "nemotron35", "qwen", "cohere", "bodhan", "gemma4-litert":
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
@@ -398,9 +410,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: model))
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)

@@ -1988,13 +1988,11 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
-            let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
+            let version = FluidAudioModel.version(for: option.model)
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
                 ifLoadedVersion: version
             )
-            let plan = version == .v2
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: version)
             try plan.delete(fileManager: fm)
         case "parakeet-unified":
             await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
@@ -2058,9 +2056,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
-            let plan = option.model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: option.model))
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)

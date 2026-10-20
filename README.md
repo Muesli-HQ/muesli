@@ -145,7 +145,7 @@ contributors can use the unsigned dev build for local testing; it installs
 `MuesliDev.app` with a separate bundle ID and app data directory.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local development workflow.
 
-The selected transcription model downloads on demand (~565 MB for the default English Parakeet Unified; ~450 MB for multilingual Parakeet v3).
+The selected transcription model downloads on demand (~565 MB for the default English Parakeet Unified; ~450 MB for multilingual Parakeet v3; ~220 MB for Parakeet Redux on macOS 15+). Redux’s first Neural Engine preparation can take several minutes; later loads reuse the compiled cache.
 The app bundle also includes the arm64 LiteRT-LM runtime (~61 MB) for experimental
 Gemma 4 support; its ~2.6 GB model weights download only when Gemma is selected.
 
@@ -199,7 +199,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-tiny-english|whisper-small|whisper-small-english|whisper-medium-english|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-redux|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-tiny-english|whisper-small|whisper-small-english|whisper-medium-english|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
@@ -364,6 +364,7 @@ Important meeting fields:
 | **Apple Speech** | SpeechAnalyzer / SpeechTranscriber | System-managed | No Muesli model download | System-supported locales | Dictation, live + final meetings on macOS 26+ |
 | **Parakeet Unified** (default for English) | FluidAudio | CoreML / Neural Engine | ~565 MB | English | Offline batch |
 | **Parakeet v3** (multilingual) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
+| Parakeet Redux | FluidAudio | CoreML / Neural Engine | ~220 MB | 25 languages; macOS 15+ | — |
 | Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
 | Parakeet Realtime EOU | FluidAudio | CoreML / Neural Engine | ~430 MB | English only | Live preview |
 | **Cohere Transcribe 2B** | CoreML | FP16 encoder + INT8 decoder | ~3.8 GB | 14 languages | ~1s |

@@ -99,6 +99,7 @@ struct BackendOptionTests {
     @Test(
         "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
         arguments: [
+            BackendOption.parakeetRedux,
             BackendOption.nemotron35Multilingual,
             BackendOption.qwen3Asr,
             BackendOption.cohereTranscribe,
@@ -270,6 +271,38 @@ struct BackendOptionTests {
         #expect(throws: CancellationError.self) {
             try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
         }
+    }
+
+    @Test("Redux is selectable for dictation and meetings without changing defaults")
+    func parakeetReduxCatalog() {
+        let redux = BackendOption.parakeetRedux
+        #expect(BackendOption.all.contains(redux))
+        #expect(BackendOption.parakeetFamily.contains(redux))
+        #expect(BackendOption.resolve(backend: redux.backend, model: redux.model) == redux)
+        #expect(redux.supportsMeetingTranscription)
+        #expect(redux.supportsHostedDictationFallback)
+        #expect(!redux.isStreamingDictationBackend)
+        #expect(!redux.recommended)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(BackendOption.parakeetMultilingual.isCompatible(currentOSVersion: Self.macOS14))
+        #expect(BackendOption.parakeetEnglish.isCompatible(currentOSVersion: Self.macOS14))
+    }
+
+    @Test("FluidAudio model routing keeps Redux separate from v2 and v3")
+    func parakeetReduxRouting() {
+        for (option, version) in [
+            (BackendOption.parakeetEnglish, AsrModelVersion.v2),
+            (.parakeetMultilingual, .v3), (.parakeetRedux, .redux),
+        ] {
+            let resolved = FluidAudioModel.version(for: option.model)
+            #expect(resolved == version)
+            let plan = FluidAudioModel.plan(for: resolved)
+            #expect(plan.modelID == option.model)
+            #expect(plan.cacheDirectory == AsrModels.defaultCacheDirectory(for: version))
+        }
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .v3, deletingVersion: .redux))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .v3))
+        #expect(FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .redux))
     }
 
     @Test("Parakeet deletion unloads only the matching runtime variant")
