@@ -1597,23 +1597,36 @@ public final class MuesliController: NSObject {
                 ),
                 dictationBackend: dictationBackend
             )
-            appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
-            appState.config = config
+            publishMeetingTranscriptionSelection(selectedMeetingTranscriptionBackend, configChanged: false)
             return nil
         }
 
         selectedMeetingTranscriptionBackend = resolved
         activeMeetingSession?.updateBackend(resolved)
+        var configChanged = false
         if config.meetingTranscriptionBackend != resolved.backend ||
             config.meetingTranscriptionModel != resolved.model {
             config.meetingTranscriptionBackend = resolved.backend
             config.meetingTranscriptionModel = resolved.model
             configStore.save(config)
+            configChanged = true
             fputs("[muesli-native] meeting transcription model unavailable; switched to \(resolved.label)\n", stderr)
         }
-        appState.selectedMeetingTranscriptionBackend = resolved
-        appState.config = config
+        publishMeetingTranscriptionSelection(resolved, configChanged: configChanged)
         return resolved
+    }
+
+    /// Settings calls the normalizer from `onAppear`. `AppState` is `@Observable`, so any
+    /// assignment, even one with an unchanged value, invalidates every view that reads
+    /// it. Publishing unconditionally re-rendered the whole dashboard and fed a SwiftUI
+    /// update loop that hung the app in the 0.8.5 feature tour (#632).
+    private func publishMeetingTranscriptionSelection(_ backend: BackendOption, configChanged: Bool) {
+        if appState.selectedMeetingTranscriptionBackend != backend {
+            appState.selectedMeetingTranscriptionBackend = backend
+        }
+        if configChanged {
+            appState.config = config
+        }
     }
 
     @discardableResult

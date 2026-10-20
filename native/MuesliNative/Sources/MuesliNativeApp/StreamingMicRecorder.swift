@@ -81,9 +81,10 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     // Construct native graphs only on the driver path, never while a route
     // decision creates a recorder. graphLock owns this storage.
     private var engineStorage: AVAudioEngine?
+    private let makeEngine: () -> AVAudioEngine
     private var engine: AVAudioEngine {
         if let engineStorage { return engineStorage }
-        let created = AVAudioEngine()
+        let created = makeEngine()
         engineStorage = created
         return created
     }
@@ -133,9 +134,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     init(
         directoryName: String = "muesli-meeting-mic",
         recoversFromInputConfigurationChanges: Bool = false,
-        observesInputConfigurationChanges: Bool? = nil
+        observesInputConfigurationChanges: Bool? = nil,
+        makeEngine: @escaping () -> AVAudioEngine = { AVAudioEngine() }
     ) {
         self.directoryName = directoryName
+        self.makeEngine = makeEngine
         self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
         self.observesInputConfigurationChanges = observesInputConfigurationChanges
             ?? recoversFromInputConfigurationChanges
@@ -190,11 +193,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
-        if recoversFromInputConfigurationChanges {
-            if let error = MuesliAudioGraphPrepareEngine(engine) { throw error }
-        } else {
-            engine.prepare()
-        }
+        if let error = MuesliAudioGraphPrepareEngine(engine) { throw error }
         isGraphPrepared = true
         graphPreparedInputDeviceID = preferredInputDeviceID
         emitLatency("app_scoped_prepare_end")
@@ -236,8 +235,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // Invalidate before native teardown/drain can release buffered work.
             clearFailureState()
             bufferedCapture?.close()
-            stopEngineSafely()
-            removeTapIfNeeded()
+            stopEngineAndRemoveTap()
             drainBufferedCapture(finishingConversion: false)
             removeConfigurationChangeObserverIfNeeded()
             let state = lock.withLock { state -> FileState in
@@ -261,22 +259,16 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let tapBlock = try makeBufferedTap(format: hwFormat, recordingID: recordingID)
 
         emitLatency("app_scoped_tap_install_begin")
-        if recoversFromInputConfigurationChanges {
-            if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
-                throw tapError
-            }
-        } else {
-            engine.inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil, block: tapBlock)
+        // Tap installation can raise NSException while an input route is settling;
+        // contain it even when automatic input-configuration recovery is disabled.
+        if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
+            throw tapError
         }
         tapInstalled = true
         emitLatency("app_scoped_tap_install_end")
 
         emitLatency("app_scoped_engine_start_begin")
-        if recoversFromInputConfigurationChanges {
-            if let error = MuesliAudioGraphStartEngine(engine) { throw error }
-        } else {
-            try engine.start()
-        }
+        if let error = MuesliAudioGraphStartEngine(engine) { throw error }
         emitLatency("app_scoped_engine_start_end")
     }
 
@@ -505,15 +497,12 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     var testing_hasActiveRecording: Bool { failureLock.withLock { $0.activeRecordingID != nil } }
 
     private func inputFormatLocked() throws -> AVAudioFormat {
-        if recoversFromInputConfigurationChanges {
-            let state = MuesliAudioGraphReadInputState(engine)
-            if let error = state.error { throw error }
-            guard let format = state.outputFormat else {
-                throw Self.runtimeError(code: 6, message: "Microphone input format is unavailable")
-            }
-            return format
+        let state = MuesliAudioGraphReadInputState(engine)
+        if let error = state.error { throw error }
+        guard let format = state.outputFormat else {
+            throw Self.runtimeError(code: 6, message: "Microphone input format is unavailable")
         }
-        return engine.inputNode.outputFormat(forBus: 0)
+        return format
     }
 
     private var configChangeRestartItem: DispatchWorkItem?
@@ -579,14 +568,15 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         fputs("[streaming-mic] engine configuration changed; restarting input capture\n", stderr)
         emitLatency("engine_config_change_restart_begin")
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         drainBufferedCapture(finishingConversion: true)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
 
         do {
             try prepareLocked()
+            // Failed cleanup can replace the graph and remove its old observer.
+            installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
             try startEngineWithTapLocked(recordingID: recordingID)
             emitLatency("engine_config_change_restart_end")
             fputs("[streaming-mic] microphone capture restarted after configuration change\n", stderr)
@@ -597,8 +587,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // too: once the failure is reported this recording must not silently resume
             // on a later configuration change.
             bufferedCapture?.close()
-            stopEngineSafely()
-            removeTapIfNeeded()
+            stopEngineAndRemoveTap()
             drainBufferedCapture(finishingConversion: true)
             removeConfigurationChangeObserverIfNeeded()
             runState.markConfigurationChangeRestartFailed()
@@ -648,8 +637,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         removeConfigurationChangeObserverIfNeeded()
 
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         // Flush every buffer accepted before Stop, including callback delivery,
         // before invalidating the generation or finalizing the WAV header.
         drainBufferedCapture(finishingConversion: true)
@@ -708,8 +696,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         drainBufferedCapture(finishingConversion: false)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
@@ -735,26 +722,31 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         lock.withLock { $0.latestPowerDB }
     }
 
-    // Call only after stopping the engine: removing a tap from a running
-    // engine reinitializes its input chain and can deadlock behind a route
-    // rebind (captured during the AirPods Stop Transcribing failure).
-    private func removeTapIfNeeded() {
+    /// Removing a tap from a running engine can deadlock during a route rebind.
+    /// If native cleanup fails, abandon that graph instead of reusing uncertain state.
+    private func stopEngineAndRemoveTap() {
+        guard let engine = engineStorage else { return }
+        if let error = MuesliAudioGraphStopEngine(engine) {
+            discardAudioGraph(after: error)
+            return
+        }
         guard tapInstalled else { return }
-        if recoversFromInputConfigurationChanges {
-            _ = MuesliAudioGraphRemoveInputTap(engine, 0)
-        } else {
-            engine.inputNode.removeTap(onBus: 0)
+        if let error = MuesliAudioGraphRemoveInputTap(engine, 0) {
+            discardAudioGraph(after: error)
+            return
         }
         tapInstalled = false
     }
 
-    private func stopEngineSafely() {
-        guard let engine = engineStorage else { return }
-        if recoversFromInputConfigurationChanges {
-            _ = MuesliAudioGraphStopEngine(engine)
-        } else {
-            engine.stop()
-        }
+    private func discardAudioGraph(after error: Error) {
+        fputs("[streaming-mic] discarding graph after cleanup failed: \(error)\n", stderr)
+        removeConfigurationChangeObserverIfNeeded()
+        // These flags describe only the currently owned graph. The failed one
+        // is released without another tap mutation and must never be reused.
+        engineStorage = nil
+        tapInstalled = false
+        isGraphPrepared = false
+        graphPreparedInputDeviceID = nil
     }
 
     private func isCurrentRecording(_ recordingID: UUID) -> Bool {
