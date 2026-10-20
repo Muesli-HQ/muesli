@@ -37,7 +37,7 @@ struct ShortcutHotkeyPolicy {
             return hotkey.isValidDictationShortcut
         case .quil:
             return isValidQuilShortcut(hotkey)
-        case .meetingRecording:
+        case .meetingRecording, .presetCycle:
             return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
         case .computerUse:
             return false
@@ -168,13 +168,18 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         computerUseHotkey: HotkeyConfig,
-        isComputerUseEnabled: Bool
+        isComputerUseEnabled: Bool,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
             return conflict(with: "Dictation", hotkey: dictationHotkey)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
+        }
+        if isPresetCyclingEnabled && hotkeysConflict(hotkey, presetCycleHotkey) {
+            return conflict(with: "Cycle Presets", hotkey: presetCycleHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }

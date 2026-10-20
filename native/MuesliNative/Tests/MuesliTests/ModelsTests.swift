@@ -1738,6 +1738,33 @@ struct AppConfigTests {
         #expect(decoded.presetCycleHotkey == config.presetCycleHotkey)
     }
 
+    @Test("preset cycle hotkey policy validation and conflict rejection")
+    func presetCycleHotkeyPolicyValidationAndConflict() {
+        let presetCycle = HotkeyConfig.presetCycleDefault
+        #expect(ShortcutHotkeyPolicy.allowsCombination(presetCycle, action: .presetCycle))
+        #expect(!ShortcutHotkeyPolicy.allowsCombination(HotkeyConfig.default, action: .presetCycle))
+
+        // Rejects conflict with dictation
+        let dictationResult = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            .default,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        )
+        #expect(!dictationResult.didUpdate)
+
+        // Meeting recording rejects conflict with preset cycling when preset cycling is enabled
+        let meetingConflictResult = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!meetingConflictResult.didUpdate)
+    }
+
     @Test("dictation app context prompt includes OCR text")
     func dictationAppContextPromptIncludesOCRText() {
         let ocrText = String(repeating: "a", count: 3_200) + "tail"
