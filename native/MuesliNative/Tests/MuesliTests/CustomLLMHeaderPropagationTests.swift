@@ -34,7 +34,13 @@ private final class CustomLLMHeaderPropagationURLProtocol: URLProtocol {
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "headers.example.test"
+        guard let url = request.url else { return false }
+        if url.host == "headers.example.test" { return true }
+        lock.lock()
+        defer { lock.unlock() }
+        guard provider != nil else { return false }
+        return (url.host == "api.openai.com" && url.path == "/v1/responses")
+            || (url.host == "openrouter.ai" && url.path == "/api/v1/chat/completions")
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -93,6 +99,7 @@ struct CustomLLMHeaderPropagationTests {
             #expect(request.value(forHTTPHeaderField: "source") == "muesli")
             #expect(request.value(forHTTPHeaderField: "org-id") == "2")
             #expect(request.value(forHTTPHeaderField: "x-api-key") == "static-key")
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":64000}"#.utf8)) }
             return .init(data: Data(#"{"content":[{"type":"text","text":"OK"}]}"#.utf8))
         }
         defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
@@ -105,6 +112,187 @@ struct CustomLLMHeaderPropagationTests {
             config: config
         )
         #expect(result == "OK")
+    }
+
+    @Test("app and CLI summaries omit default caps and honor explicit limits", arguments: ["custom_llm", "custom_anthropic", "lmstudio", "ollama"], [0, 5_000])
+    func summaryOutputLimits(backend: String, cap: Int) async throws {
+        let limit: Int? = cap == 0 ? nil : cap
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":96000}"#.utf8)) }
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            if backend == "custom_anthropic" {
+                #expect(body?["max_tokens"] as? Int == (limit ?? 96_000))
+                #expect(body?["stream"] as? Bool == (limit == nil))
+                let stream = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                return .init(data: limit == nil ? Data(stream.utf8) : Data(#"{"content":[{"type":"text","text":"Complete notes"}]}"#.utf8))
+            }
+            if backend == "ollama" {
+                #expect((body?["options"] as? [String: Int])?["num_predict"] == (limit ?? -1))
+                return .init(data: Data(#"{"message":{"content":"Complete notes"}}"#.utf8))
+            }
+            #expect(body?["max_tokens"] as? Int == limit)
+            #expect(body?["max_completion_tokens"] == nil)
+            return .init(data: Data(#"{"choices":[{"message":{"content":"Complete notes"}}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig()
+        config.meetingSummaryBackend = backend == "custom_anthropic" ? "custom_llm" : backend
+        if backend == "custom_anthropic" {
+            config.customLLMFormat = "anthropic"
+            config.customLLMAPIKey = "test-key"
+        }
+        config.meetingSummaryMaxOutputTokens = limit
+        config.lmStudioURL = config.customLLMURL
+        config.lmStudioModel = "local-model"
+        config.ollamaURL = "https://headers.example.test"
+        let appNotes = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(cliConfig.meetingSummaryMaxOutputTokens == limit)
+        let cliNotes = try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
+        #expect(appNotes == "Complete notes")
+        #expect(cliNotes == appNotes)
+    }
+
+    @Test("hosted OpenAI and OpenRouter app and CLI requests honor optional output limits",
+          arguments: ["openai", "openrouter"], [0, 5_000])
+    func hostedSummaryOutputLimits(backend: String, cap: Int) async throws {
+        let limit: Int? = cap == 0 ? nil : cap
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            requests += 1
+            #expect(request.httpMethod == "POST")
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            #expect(body?["max_completion_tokens"] == nil)
+            if backend == "openai" {
+                #expect(request.url?.absoluteString == "https://api.openai.com/v1/responses")
+                #expect(body?["model"] as? String == "gpt-6.1-sol")
+                #expect(body?["input"] != nil)
+                #expect(body?["max_output_tokens"] as? Int == limit)
+                #expect(body?["max_tokens"] == nil)
+                return .init(data: Data(#"{"output":[{"type":"message","content":[{"type":"output_text","text":"Complete notes"}]}]}"#.utf8))
+            }
+            #expect(request.url?.absoluteString == "https://openrouter.ai/api/v1/chat/completions")
+            #expect(body?["model"] as? String == "anthropic/claude-sonnet-5.5")
+            #expect(body?["messages"] != nil)
+            #expect(body?["max_tokens"] as? Int == limit)
+            #expect(body?["max_output_tokens"] == nil)
+            return .init(data: Data(#"{"choices":[{"message":{"content":"Complete notes"}}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.openAIAPIKey = "test-openai-key"
+        config.openAIModel = "gpt-6.1-sol"
+        config.openRouterAPIKey = "test-openrouter-key"
+        config.openRouterModel = "anthropic/claude-sonnet-5.5"
+        config.meetingSummaryMaxOutputTokens = limit
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        #expect(requests == 1)
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig) == "Complete notes")
+        #expect(requests == 2)
+    }
+
+    @Test("Anthropic app and CLI requests stream above the SDK threshold",
+          arguments: [21_333, 21_334, 32_000])
+    func anthropicStreamingThreshold(cap: Int) async throws {
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { request in
+            requests += 1
+            #expect(request.httpMethod == "POST")
+            let body = try? JSONSerialization.jsonObject(with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)) as? [String: Any]
+            #expect(body?["max_tokens"] as? Int == cap)
+            #expect(body?["stream"] as? Bool == (cap > 21_333))
+            return .init(data: Data(#"{"stop_reason":"end_turn","content":[{"type":"text","text":"Complete notes"}]}"#.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = cap
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig) == "Complete notes")
+        #expect(requests == 2)
+    }
+
+    @Test("Anthropic app and CLI reject truncated summaries and allow a fresh manual retry",
+          arguments: [false, true], ["max_tokens", "model_context_window_exceeded"])
+    func truncatedAnthropicSummaries(stream: Bool, stopReason: String) async throws {
+        var truncated = true
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { _ in
+            requests += 1
+            let reason = truncated ? stopReason : "end_turn"
+            let notes = truncated ? "Partial notes" : "Complete notes"
+            let response = stream
+                ? "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\(notes)\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"\(reason)\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                : #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"\#(notes)"}]}"#
+            return .init(data: Data(response.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = stream ? 32_000 : 5_000
+        config.meetingSummaryRetryCount = 3
+        do {
+            _ = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+            Issue.record("App must not return partial notes as a completed summary")
+        } catch {
+            if stopReason == "model_context_window_exceeded" {
+                #expect(error.localizedDescription.contains("context window before finishing"))
+                #expect(error.localizedDescription.contains("shorten the transcript"))
+            } else {
+                #expect(error.localizedDescription.contains("output token limit before finishing"))
+                #expect(error.localizedDescription.contains("Advanced"))
+            }
+            #expect(!error.localizedDescription.contains("could not be reached"))
+        }
+        #expect(requests == 1)
+        let cliConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        await #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
+            try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: cliConfig)
+        }
+        #expect(requests == 2)
+
+        // A new user-triggered request is independent of the failed automatic retry loop.
+        truncated = false
+        config.meetingSummaryMaxOutputTokens = 64_000
+        config.customLLMModel = "larger-model"
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        let retryConfig = try JSONDecoder().decode(CLISummaryConfig.self, from: JSONEncoder().encode(config))
+        #expect(try await CLISummaryClient.summarize(transcript: "Transcript", title: "Test", config: retryConfig) == "Complete notes")
+        #expect(requests == 4)
+    }
+
+    @Test("streamed summary errors preserve automatic and manual retry behavior",
+          arguments: ["authentication_error", "overloaded_error"])
+    func streamedSummaryErrorRetries(type: String) async throws {
+        var requests = 0
+        CustomLLMHeaderPropagationURLProtocol.install { _ in
+            requests += 1
+            if requests == 1 {
+                return .init(data: Data("data: {\"type\":\"error\",\"error\":{\"type\":\"\(type)\",\"message\":\"reflected secret\"}}\n\n".utf8))
+            }
+            let complete = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Complete notes\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+            return .init(data: Data(complete.utf8))
+        }
+        defer { CustomLLMHeaderPropagationURLProtocol.uninstall() }
+        var config = customConfig(format: .anthropic)
+        config.customLLMAPIKey = "test-key"
+        config.meetingSummaryMaxOutputTokens = 64_000
+        config.meetingSummaryRetryCount = 3
+        do {
+            let notes = try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config)
+            #expect(type == "overloaded_error")
+            #expect(notes == "Complete notes")
+        } catch {
+            #expect(type == "authentication_error")
+            #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+        #expect(requests == (type == "overloaded_error" ? 2 : 1))
+        // Explicit user retries remain possible even after a permanent provider failure.
+        #expect(try await MeetingSummaryClient.summarize(transcript: "Transcript", meetingTitle: "Test", config: config) == "Complete notes")
+        #expect(requests == (type == "overloaded_error" ? 3 : 2))
     }
 
     @Test("generated title sends additional headers")
@@ -177,10 +365,11 @@ struct CustomLLMHeaderPropagationTests {
             } else {
                 #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(expectedKey)")
             }
+            if request.httpMethod == "GET" { return .init(data: Data(#"{"max_tokens":64000}"#.utf8)) }
             let body = try? JSONSerialization.jsonObject(
                 with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)
             ) as? [String: Any]
-            #expect(body?["max_tokens"] as? Int == 2500)
+            #expect(body?["max_tokens"] as? Int == (format == "anthropic" ? 64_000 : nil))
             #expect(body?["max_completion_tokens"] == nil)
             let response = format == "anthropic"
                 ? #"{"content":[{"type":"text","text":"CLI notes"}]}"#
@@ -225,7 +414,6 @@ struct CustomLLMHeaderPropagationTests {
             let body = try? JSONSerialization.jsonObject(
                 with: CustomLLMHeaderPropagationURLProtocol.bodyData(for: request)
             ) as? [String: Any]
-            #expect(body?["max_tokens"] as? Int != nil)
             #expect(body?["max_completion_tokens"] == nil)
             #expect(body?["reasoning_effort"] == nil)
             return .init(statusCode: 401, data: responseBody)

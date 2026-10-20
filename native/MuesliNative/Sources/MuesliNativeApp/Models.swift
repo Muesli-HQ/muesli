@@ -2102,6 +2102,7 @@ struct AppConfig: Codable {
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
+    var meetingSummaryMaxOutputTokens: Int? = nil
     var meetingSummaryRetryCount: Int = MeetingSummaryRetryPolicy.defaultRetryCount
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
@@ -2259,6 +2260,7 @@ struct AppConfig: Codable {
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
+        case meetingSummaryMaxOutputTokens = "meeting_summary_max_output_tokens"
         case meetingSummaryRetryCount = "meeting_summary_retry_count"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
@@ -2482,6 +2484,9 @@ struct AppConfig: Codable {
         meetingSummaryReasoningEffort = try? c.decode(
             ReasoningEffort.self,
             forKey: .meetingSummaryReasoningEffort
+        )
+        meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(
+            try? c.decode(Int.self, forKey: .meetingSummaryMaxOutputTokens)
         )
         meetingSummaryRetryCount = MeetingSummaryRetryPolicy.clampedRetryCount(
             (try? c.decode(Int.self, forKey: .meetingSummaryRetryCount)) ?? defaults.meetingSummaryRetryCount
