@@ -105,9 +105,14 @@ let package = Package(
             url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
             checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
         ),
+        .target(
+            name: "AudioGraphTestSupport",
+            path: "Tests/AudioGraphTestSupport",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
