@@ -299,6 +299,27 @@ final class ComputerUseReferenceRuntime {
         """
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
+        await Self.withCommandActivity { await runAwake(command: command) }
+    }
+
+    // Background browser work generates no human input to reset the idle timer.
+    // Keep this scoped to the whole command (including thinking and cleanup),
+    // not individual tool calls. Explicit locking and forced sleep still win.
+    static func withCommandActivity<T>(
+        begin: () -> NSObjectProtocol = {
+            ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+                reason: "Executing a background Computer Use command")
+        },
+        end: (NSObjectProtocol) -> Void = { ProcessInfo.processInfo.endActivity($0) },
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        let activity = begin()
+        defer { end(activity) }
+        return try await operation()
+    }
+
+    private func runAwake(command: String) async -> ComputerUsePlannerRuntimeResult {
         let driver = ComputerUseReferenceDriver.shared
         let owner: UUID
         do { owner = try driver.claimCommand() }
@@ -342,6 +363,9 @@ final class ComputerUseReferenceRuntime {
         append("context_budget", "model=\(model); estimated input budget=\(budget.inputTokens) tokens; includes tools, instructions and image reserve")
         for step in 1...max(1, maxSteps) {
             try Task.checkCancellation()
+            guard !ComputerUseWindowIdentity.isScreenLocked else {
+                return finish(.failed, "The Mac was locked; CUA stopped without dispatching another action.", kind: "screen_locked")
+            }
             if Date() >= deadline { return finish(.timedOut, "trycua CUA timed out", kind: "timed_out") }
             let allowance = budget.historyAllowance(instructions: instructions, tools: tools,
                 hasImage: image != nil && !ComputerUseLocalPlanner.isLocal(model))
@@ -359,6 +383,9 @@ final class ComputerUseReferenceRuntime {
                     reasoningEffort: config.computerUseReasoningEffort, tools: tools)
             }
             try Task.checkCancellation()
+            guard !ComputerUseWindowIdentity.isScreenLocked else {
+                return finish(.failed, "The Mac was locked while planning; no planned action was dispatched.", kind: "screen_locked")
+            }
             guard Date() < deadline else { return finish(.timedOut, "trycua CUA timed out", kind: "timed_out") }
             guard names.contains(call.name), let data = call.arguments.data(using: .utf8),
                   let arguments = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
