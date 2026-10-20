@@ -380,6 +380,8 @@ final class CalendarMonitor {
             "https://[a-z0-9.-]*zoom\\.us/j/[^\\s\"<>]+",
             "https://meet\\.google\\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}[^\\s\"<>]*",
             "https://teams\\.microsoft\\.com/l/meetup-join/[^\\s\"<>]+",
+            "https://teams\\.microsoft\\.com/meet/[^\\s\"<>]+",
+            "https://teams\\.live\\.com/meet/[^\\s\"<>]+",
             "https://[a-z0-9.-]*webex\\.com/[^\\s\"<>]+/j\\.php[^\\s\"<>]*",
             "https://[a-z0-9.-]*chime\\.aws/[^\\s\"<>]+",
             "https://facetime\\.apple\\.com/join[^\\s\"<>]*",
@@ -413,7 +415,7 @@ final class CalendarMonitor {
         if host == "app.slack.com" {
             return url.path.hasPrefix("/huddle/")
         }
-        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com"]
+        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com", "webex.com", "chime.aws", "facetime.apple.com"]
         return meetingHosts.contains(where: { host.hasSuffix($0) })
     }
 

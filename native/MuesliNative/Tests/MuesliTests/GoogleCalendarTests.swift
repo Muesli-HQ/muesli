@@ -255,6 +255,62 @@ struct GoogleCalendarTests {
         #expect(event.meetingURL == nil)
     }
 
+    @Test("CalendarMonitor extracts short-form Teams join URL from invite notes")
+    func extractsShortFormTeamsURL() {
+        let notes = """
+        Microsoft Teams meeting
+        Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+        Meeting ID: 246 801 357 9
+        Passcode: AbCdEfGh
+        """
+        let url = CalendarMonitor.findMeetingURL(in: notes)
+        #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("CalendarMonitor prefers the Teams Join link over the legacy footer link")
+    func prefersShortFormTeamsJoinLinkOverLegacyFooter() {
+        let notes = """
+        Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+        ________________________________
+        Need help?<https://aka.ms/JoinTeamsMeeting?omkt=en-US> | System reference<https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0>
+        """
+        let url = CalendarMonitor.findMeetingURL(in: notes)
+        #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("CalendarMonitor extracts Teams free (teams.live.com) join URL")
+    func extractsTeamsLiveURL() {
+        let url = CalendarMonitor.findMeetingURL(in: "Join: https://teams.live.com/meet/9312345678901?p=XyZ123")
+        #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
+    }
+
+    @Test("CalendarMonitor ignores the Teams meeting options link")
+    func teamsMeetingOptionsURLNotMatched() {
+        let url = CalendarMonitor.findMeetingURL(
+            in: "For organizers: Meeting options<https://teams.microsoft.com/meetingOptions/?organizerId=abc>"
+        )
+        #expect(url == nil)
+    }
+
+    @Test("Google event picks up short-form Teams URL from description")
+    func googleEventShortFormTeamsFromDescription() throws {
+        let item: [String: Any] = [
+            "id": "teams1",
+            "summary": "Weekly sync",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+            "description": "Microsoft Teams meeting\nJoin: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh",
+        ]
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+        #expect(event.meetingURL?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("MeetingPlatform.detect recognizes Teams free URL")
+    func detectTeamsLive() {
+        let url = URL(string: "https://teams.live.com/meet/9312345678901?p=XyZ123")!
+        #expect(MeetingPlatform.detect(from: url) == .teams)
+    }
+
     @Test("CalendarMonitor returns nil for text without meeting URLs")
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")
