@@ -237,7 +237,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
     /// All planner browser dispatch goes through this gate, including forged
     /// calls. Inspection can detect a stale connection but cannot initiate setup.
     func callInBackground(name: String, arguments: [String: Any], timeout: TimeInterval = 30) async throws -> [String: Any] {
-        refreshChromeAccess()
+        if Self.isBrowserTool(name) { refreshChromeAccess() }
         if name == "browser_prepare" || (Self.isBrowserTool(name) && chromeAccess != .connected) {
             return ["result": ["isError": true, "content": [["type": "text", "text":
                 "Chrome browser access requires connection in Muesli Settings > Permissions. Do not open Chrome setup during this command. Use Accessibility tools if appropriate, or report this prerequisite."]]]]
