@@ -292,6 +292,18 @@ struct GoogleCalendarTests {
         #expect(url == nil)
     }
 
+    @Test("CalendarMonitor skips short-form Teams links without a meeting ID")
+    func shortFormTeamsLinkRequiresMeetingID() {
+        for host in ["teams.microsoft.com", "teams.live.com"] {
+            let notes = """
+            Old link: https://\(host)/meet/?p=Stale
+            Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+            """
+            let url = CalendarMonitor.findMeetingURL(in: notes)
+            #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+        }
+    }
+
     @Test("Google event picks up short-form Teams URL from description")
     func googleEventShortFormTeamsFromDescription() throws {
         let item: [String: Any] = [
