@@ -29,7 +29,8 @@ final class MeetingMonitor {
 
     private let cameraMonitor = CameraActivityMonitor()
     private let sensorAttributionMonitor = ControlCenterSensorAttributionMonitor()
-    private let runningApplicationStore = RunningApplicationStore()
+    private let runningApplicationStore = RunningApplicationStore.shared
+    private let runningApplicationStoreOwner = UUID()
 
     private let microphoneMonitor = MicrophoneActivityMonitor()
     private var lifecycleGeneration = 0
@@ -47,7 +48,7 @@ final class MeetingMonitor {
         runningApplicationStore.onChanged = { [weak self] trigger in
             self?.scheduleEvaluation(trigger)
         }
-        runningApplicationStore.start()
+        runningApplicationStore.start(owner: runningApplicationStoreOwner)
 
         cameraMonitor.onCameraStateChanged = { [weak self] _ in
             self?.scheduleEvaluation(.cameraChanged)
@@ -72,7 +73,7 @@ final class MeetingMonitor {
         let generation = lifecycleGeneration
         microphoneMonitor.stop()
         microphoneMonitor.onActivityChanged = nil
-        runningApplicationStore.stop()
+        runningApplicationStore.stop(owner: runningApplicationStoreOwner)
         runningApplicationStore.onChanged = nil
         cameraMonitor.stop()
         sensorAttributionMonitor.stop()

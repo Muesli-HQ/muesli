@@ -99,6 +99,7 @@ struct MeetingExporter {
 
     static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) -> String {
         var parts: [String] = [metadataHeader(for: meeting)]
+        let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
 
         switch content {
         case .notes:
@@ -111,12 +112,12 @@ struct MeetingExporter {
                 parts.append("")
                 parts.append("## Raw Transcript")
                 parts.append("")
-                parts.append(meeting.rawTranscript)
+                parts.append(transcript)
             }
         case .transcript:
             parts.append("## Raw Transcript")
             parts.append("")
-            parts.append(meeting.rawTranscript)
+            parts.append(transcript)
         case .fullMeeting:
             if meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
@@ -128,7 +129,7 @@ struct MeetingExporter {
             parts.append("")
             parts.append("## Raw Transcript")
             parts.append("")
-            parts.append(meeting.rawTranscript)
+            parts.append(transcript)
         }
 
         return parts.joined(separator: "\n") + MeetingExportBranding.markdownFooter

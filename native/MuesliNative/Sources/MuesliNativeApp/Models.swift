@@ -2063,6 +2063,8 @@ struct AppConfig: Codable {
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
+    /// Splits microphone audio into "Local speaker N" labels for in-person meetings.
+    var diarizeMicrophoneAudio: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
@@ -2166,7 +2168,12 @@ struct AppConfig: Codable {
     var meetingLiveCaptionBackend: String = MeetingLiveCaptionBackend.defaultBackend.rawValue
     /// Reveals a compact live transcript beside the meeting waveform while the
     /// pointer is over either floating surface.
+    var enableMeetingOwnerRecognition: Bool = false
+    var meetingOwnerDisplayName: String = ""
     var showMeetingTranscriptOnIndicatorHover: Bool = true
+    /// Allows experimental speaker names from meeting-app Accessibility evidence.
+    /// Disabled by default until real app layouts and audio are validated.
+    var enableMeetingSpeakerAccessibility: Bool = false
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
@@ -2229,6 +2236,7 @@ struct AppConfig: Codable {
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
+        case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
@@ -2318,6 +2326,9 @@ struct AppConfig: Codable {
         case useCoreAudioTap = "use_core_audio_tap"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
+        case enableMeetingOwnerRecognition = "enable_meeting_owner_recognition"
+        case meetingOwnerDisplayName = "meeting_owner_display_name"
+        case enableMeetingSpeakerAccessibility = "enable_meeting_speaker_accessibility"
         case showMeetingTranscriptOnIndicatorHover = "show_meeting_transcript_on_indicator_hover"
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
@@ -2420,6 +2431,7 @@ struct AppConfig: Codable {
             ?? defaults.meetingRecordingFileFormat
         meetingRecordingFileFormat = MeetingRecordingFileFormat(rawValue: decodedMeetingRecordingFileFormat)?.rawValue
             ?? defaults.meetingRecordingFileFormat
+        diarizeMicrophoneAudio = (try? c.decode(Bool.self, forKey: .diarizeMicrophoneAudio)) ?? defaults.diarizeMicrophoneAudio
         waveformCacheOrphanCleanupMigrationApplied =
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
@@ -2589,6 +2601,9 @@ struct AppConfig: Codable {
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend
             .resolved(try? c.decode(String.self, forKey: .meetingLiveCaptionBackend))
             .rawValue
+        enableMeetingOwnerRecognition = (try? c.decode(Bool.self, forKey: .enableMeetingOwnerRecognition)) ?? false
+        meetingOwnerDisplayName = (try? c.decode(String.self, forKey: .meetingOwnerDisplayName)) ?? ""
+        enableMeetingSpeakerAccessibility = (try? c.decode(Bool.self, forKey: .enableMeetingSpeakerAccessibility)) ?? false
         showMeetingTranscriptOnIndicatorHover = (try? c.decode(Bool.self, forKey: .showMeetingTranscriptOnIndicatorHover)) ?? defaults.showMeetingTranscriptOnIndicatorHover
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath

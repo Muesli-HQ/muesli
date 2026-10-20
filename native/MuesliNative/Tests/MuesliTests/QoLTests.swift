@@ -1278,4 +1278,30 @@ struct MeetingChunkTimingTrackerTests {
         #expect(second?.startTimeSeconds == 0.1)
         #expect(second?.durationSeconds == 0.05)
     }
+
+    @Test("system-only pause samples advance later microphone offsets without extending mic chunks")
+    func systemOnlyPauseSamplesAdvanceMicrophoneTimeline() {
+        var tracker = MeetingChunkTimingTracker()
+        var alignment = MeetingMicrophoneTimelineAlignment()
+        tracker.start()
+        alignment.start()
+
+        tracker.append(sampleCount: 16_000)
+        alignment.appendMicrophoneSamples(16_000)
+        alignment.appendSystemSamples(16_000)
+        #expect(alignment.closeInterval() == 0)
+        #expect(tracker.rotate()?.sampleCount == 16_000)
+
+        alignment.appendSystemSamples(320)
+        tracker.advanceStart(by: alignment.closeInterval())
+        tracker.append(sampleCount: 800)
+        alignment.appendMicrophoneSamples(800)
+        alignment.appendSystemSamples(800)
+        #expect(alignment.closeInterval() == 0)
+
+        let next = tracker.finish()
+        #expect(next?.startSampleIndex == 16_320)
+        #expect(next?.sampleCount == 800)
+        #expect(next?.durationSeconds == 0.05)
+    }
 }

@@ -268,10 +268,7 @@ private struct SearchMeetingRow: View {
         if record.formattedNotes.lowercased().contains(q) {
             return MeetingPreviewText.plainText(from: record.formattedNotes)
         }
-        if record.rawTranscript.lowercased().contains(q) {
-            return MeetingPreviewText.plainText(from: record.rawTranscript)
-        }
-        return ""
+        return MeetingPreviewText.transcriptSearchField(rawTranscript: record.rawTranscript, matching: q) ?? ""
     }
 
     private func formatDuration(_ seconds: Double) -> String {

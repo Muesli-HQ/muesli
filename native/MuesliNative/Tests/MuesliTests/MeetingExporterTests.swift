@@ -84,6 +84,19 @@ struct MeetingExporterTests {
         #expect(md.contains("[00:00:10] Speaker 1: Hi there"))
     }
 
+    @Test("Transcript exports render escaped speaker labels readably")
+    func transcriptMarkdownRendersEscapedSpeakerLabels() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:05", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let meeting = makeMeeting(rawTranscript: stored)
+
+        let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: .transcript)
+
+        #expect(markdown.contains("[00:00:05] Team: Example: Ship Friday."))
+        #expect(!markdown.contains(#"Team\: Example"#))
+    }
+
     @Test("Full meeting export includes both notes and transcript")
     func fullMeetingIncludesBoth() {
         let meeting = makeMeeting()
@@ -175,6 +188,33 @@ struct MeetingExporterTests {
         let empty = MeetingDetailView.copyContent(for: meeting, content: .transcript, editedText: "")
         #expect(empty.contains("**Words:** 0\n"))
         #expect(!empty.contains(meeting.rawTranscript))
+    }
+
+    @Test("Copy transcript renders escaped speaker labels readably")
+    func copyTranscriptRendersEscapedSpeakerLabels() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:05", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let meeting = makeMeeting(rawTranscript: stored)
+
+        let copied = MeetingDetailView.copyContent(for: meeting, content: .transcript)
+
+        #expect(copied.hasSuffix("[00:00:05] Team: Example: Ship Friday."))
+        #expect(!copied.contains(#"Team\: Example"#))
+    }
+
+    @Test("Copying an edited transcript hides its speaker boundary marker")
+    func copyEditedTranscriptHidesSpeakerBoundaryMarker() {
+        let stored = MeetingSpeakerState.renderTranscriptTurn(
+            timestamp: "00:00:05", speaker: "Team: Example", text: "Ship Friday."
+        )
+        let meeting = makeMeeting(rawTranscript: stored)
+        let editor = MeetingSpeakerState.transcriptForEditing(stored)
+
+        let copied = MeetingDetailView.copyContent(for: meeting, content: .transcript, editedText: editor)
+
+        #expect(copied.hasSuffix("[00:00:05] Team: Example: Ship Friday."))
+        #expect(!copied.contains("\u{2063}"))
     }
 
     @Test("Copy manual notes preserves intentional title headings")
