@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MuesliFaultInjectingAudioEngine : AVAudioEngine
 @property(nonatomic, copy) NSArray<NSString *> *failingOperations;
 @property(nonatomic, readonly, copy) NSArray<NSString *> *operations;
+@property(nonatomic, readonly) BOOL hasInstalledTap;
 @end
 
 NS_ASSUME_NONNULL_END

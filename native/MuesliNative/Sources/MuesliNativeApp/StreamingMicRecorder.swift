@@ -235,8 +235,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // Invalidate before native teardown/drain can release buffered work.
             clearFailureState()
             bufferedCapture?.close()
-            stopEngineSafely()
-            removeTapIfNeeded()
+            stopEngineAndRemoveTap()
             drainBufferedCapture(finishingConversion: false)
             removeConfigurationChangeObserverIfNeeded()
             let state = lock.withLock { state -> FileState in
@@ -569,14 +568,15 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         fputs("[streaming-mic] engine configuration changed; restarting input capture\n", stderr)
         emitLatency("engine_config_change_restart_begin")
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         drainBufferedCapture(finishingConversion: true)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
 
         do {
             try prepareLocked()
+            // Failed cleanup can replace the graph and remove its old observer.
+            installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
             try startEngineWithTapLocked(recordingID: recordingID)
             emitLatency("engine_config_change_restart_end")
             fputs("[streaming-mic] microphone capture restarted after configuration change\n", stderr)
@@ -587,8 +587,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // too: once the failure is reported this recording must not silently resume
             // on a later configuration change.
             bufferedCapture?.close()
-            stopEngineSafely()
-            removeTapIfNeeded()
+            stopEngineAndRemoveTap()
             drainBufferedCapture(finishingConversion: true)
             removeConfigurationChangeObserverIfNeeded()
             runState.markConfigurationChangeRestartFailed()
@@ -638,8 +637,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         removeConfigurationChangeObserverIfNeeded()
 
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         // Flush every buffer accepted before Stop, including callback delivery,
         // before invalidating the generation or finalizing the WAV header.
         drainBufferedCapture(finishingConversion: true)
@@ -698,8 +696,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
         bufferedCapture?.close()
-        stopEngineSafely()
-        removeTapIfNeeded()
+        stopEngineAndRemoveTap()
         drainBufferedCapture(finishingConversion: false)
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
@@ -725,18 +722,31 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         lock.withLock { $0.latestPowerDB }
     }
 
-    // Call only after stopping the engine: removing a tap from a running
-    // engine reinitializes its input chain and can deadlock behind a route
-    // rebind (captured during the AirPods Stop Transcribing failure).
-    private func removeTapIfNeeded() {
+    /// Removing a tap from a running engine can deadlock during a route rebind.
+    /// If native cleanup fails, abandon that graph instead of reusing uncertain state.
+    private func stopEngineAndRemoveTap() {
+        guard let engine = engineStorage else { return }
+        if let error = MuesliAudioGraphStopEngine(engine) {
+            discardAudioGraph(after: error)
+            return
+        }
         guard tapInstalled else { return }
-        _ = MuesliAudioGraphRemoveInputTap(engine, 0)
+        if let error = MuesliAudioGraphRemoveInputTap(engine, 0) {
+            discardAudioGraph(after: error)
+            return
+        }
         tapInstalled = false
     }
 
-    private func stopEngineSafely() {
-        guard let engine = engineStorage else { return }
-        _ = MuesliAudioGraphStopEngine(engine)
+    private func discardAudioGraph(after error: Error) {
+        fputs("[streaming-mic] discarding graph after cleanup failed: \(error)\n", stderr)
+        removeConfigurationChangeObserverIfNeeded()
+        // These flags describe only the currently owned graph. The failed one
+        // is released without another tap mutation and must never be reused.
+        engineStorage = nil
+        tapInstalled = false
+        isGraphPrepared = false
+        graphPreparedInputDeviceID = nil
     }
 
     private func isCurrentRecording(_ recordingID: UUID) -> Bool {

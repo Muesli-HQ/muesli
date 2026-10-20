@@ -2,6 +2,8 @@
 
 @interface MuesliFaultInjectingAudioEngine ()
 @property(nonatomic) NSMutableArray<NSString *> *recordedOperations;
+@property(nonatomic) BOOL testRunning;
+@property(nonatomic) BOOL testTapInstalled;
 - (void)recordOperation:(NSString *)operation;
 @end
 
@@ -19,9 +21,17 @@
 - (void)installTapOnBus:(AVAudioNodeBus)bus bufferSize:(AVAudioFrameCount)size
                 format:(AVAudioFormat *)format block:(AVAudioNodeTapBlock)block {
     [self.owner recordOperation:@"install"];
+    if (self.owner.testTapInstalled) {
+        [NSException raise:NSInvalidArgumentException format:@"A microphone tap is already installed"];
+    }
+    self.owner.testTapInstalled = YES;
 }
 - (void)removeTapOnBus:(AVAudioNodeBus)bus {
     [self.owner recordOperation:@"remove"];
+    if (self.owner.testRunning) {
+        [NSException raise:NSInvalidArgumentException format:@"Cannot remove a tap from a running engine"];
+    }
+    self.owner.testTapInstalled = NO;
 }
 @end
 
@@ -39,6 +49,8 @@
 }
 - (AVAudioInputNode *)inputNode { return (AVAudioInputNode *)_testInput; }
 - (NSArray<NSString *> *)operations { return [self.recordedOperations copy]; }
+- (BOOL)hasInstalledTap { return self.testTapInstalled; }
+- (BOOL)isRunning { return self.testRunning; }
 - (void)recordOperation:(NSString *)operation {
     [self.recordedOperations addObject:operation];
     if ([self.failingOperations containsObject:operation]) {
@@ -48,7 +60,11 @@
 - (void)prepare { [self recordOperation:@"prepare"]; }
 - (BOOL)startAndReturnError:(NSError **)error {
     [self recordOperation:@"start"];
+    self.testRunning = YES;
     return YES;
 }
-- (void)stop { [self recordOperation:@"stop"]; }
+- (void)stop {
+    [self recordOperation:@"stop"];
+    self.testRunning = NO;
+}
 @end
