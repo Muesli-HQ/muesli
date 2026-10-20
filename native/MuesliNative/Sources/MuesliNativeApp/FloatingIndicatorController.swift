@@ -512,15 +512,22 @@ final class FloatingIndicatorController: NSObject {
         setState(.recording, config: config)
     }
 
+    /// Revisioned turn changes let both transcript surfaces update stable rows in place.
     func updateMeetingTranscript(
         transcript: String,
         partialYou: String,
-        partialOthers: String
+        partialOthers: String,
+        speakerState: MeetingSpeakerState? = nil,
+        speakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil,
+        microphoneLabel: String = "You",
+        transcriptPrefix: String = ""
     ) {
         meetingTranscriptPanel.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            speakerState: speakerState, speakerUpdate: speakerUpdate, microphoneLabel: microphoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 

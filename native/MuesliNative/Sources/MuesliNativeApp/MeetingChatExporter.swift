@@ -12,7 +12,8 @@ enum MeetingChatExporter {
         for (index, source) in turn.citations.enumerated() {
             parts += ["[\(index + 1)] **\(source.title)** — \(source.startDate.formatted(date: .abbreviated, time: .shortened)) · \(source.kind.label)\(source.timestamp.map { " · \($0)" } ?? "")", ""]
             // Indented code prevents meeting text from becoming active Markdown links/images/HTML.
-            parts += source.excerpt.components(separatedBy: .newlines).map { "    " + $0 }
+            let readableExcerpt = MeetingSpeakerState.modelFacingTranscript(source.excerpt)
+            parts += readableExcerpt.components(separatedBy: .newlines).map { "    " + $0 }
             parts.append("")
         }
         if let coverage = turn.coverage { parts += ["\(coverage.isPartialRecap ? "Partial recap. " : "")Evidence from \(coverage.evidenceMeetingCount) of \(coverage.eligibleMeetingCount) eligible saved meetings.", ""] }

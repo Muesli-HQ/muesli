@@ -1131,10 +1131,12 @@ struct RouteAwareMeetingMicRecorderTests {
         )
         try recorder.start()
         recorder.preferredInputDeviceID = 91
-        #expect(entered.wait(timeout: .now() + 1) == .success)
+        let startEntered = entered.wait(timeout: .now() + 1) == .success
+        #expect(startEntered)
         #expect(timeouts.fireNext())
         #expect(candidate.invalidatedForTeardown)
-        #expect(cancelled.wait(timeout: .now() + 1) == .success)
+        let startCancelled = cancelled.wait(timeout: .now() + 1) == .success
+        #expect(startCancelled)
         recorder.preferredInputDeviceID = 92
         // Cleanup has returned, but the old start is still inside its driver.
         try await Task.sleep(for: .milliseconds(30))

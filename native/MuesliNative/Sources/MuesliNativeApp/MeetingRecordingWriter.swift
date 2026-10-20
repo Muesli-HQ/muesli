@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MuesliCore
 import os
 
 /// Local-only recovery metadata stored beside retained audio until database
@@ -47,6 +48,29 @@ enum MeetingRecordingFileFormat: String, CaseIterable, Sendable {
     }
 }
 
+struct MeetingRecordingWriterPauseBoundary: Equatable, Sendable {
+    let microphoneSampleCount: Int64
+    let systemSampleCount: Int64
+    let recordingSampleCount: Int64
+
+    var speakerSampleTimeMappings: [MeetingSpeakerSampleTimeMapping] {
+        let sampleRate = Double(MeetingChunkTimingTracker.sampleRate)
+        return [
+            .init(channel: .microphone,
+                  sourceTime: Double(microphoneSampleCount) / sampleRate,
+                  recordingTime: Double(recordingSampleCount) / sampleRate),
+            .init(channel: .system,
+                  sourceTime: Double(systemSampleCount) / sampleRate,
+                  recordingTime: Double(recordingSampleCount) / sampleRate)
+        ]
+    }
+
+    var unalignedChannel: MeetingSpeakerKey.Channel? {
+        if microphoneSampleCount == systemSampleCount { return nil }
+        return microphoneSampleCount < systemSampleCount ? .microphone : .system
+    }
+}
+
 final class MeetingRecordingWriter {
     private final class ExportSessionBox: @unchecked Sendable {
         let session: AVAssetExportSession
@@ -60,6 +84,8 @@ final class MeetingRecordingWriter {
         var fileHandle: FileHandle?
         var fileURL: URL?
         var bytesWritten: Int = 0
+        var microphoneSampleCount: Int64 = 0
+        var systemSampleCount: Int64 = 0
         var pendingMic: [Int16] = []
         var pendingSystem: [Int16] = []
     }
@@ -113,9 +139,14 @@ final class MeetingRecordingWriter {
         }
     }
 
-    func markPauseBoundary() {
+    func markPauseBoundary() -> MeetingRecordingWriterPauseBoundary {
         lock.withLock { state in
             writeMixedSamples(state: &state, flushAll: true)
+            return MeetingRecordingWriterPauseBoundary(
+                microphoneSampleCount: state.microphoneSampleCount,
+                systemSampleCount: state.systemSampleCount,
+                recordingSampleCount: Int64(state.bytesWritten / MemoryLayout<Int16>.size)
+            )
         }
     }
 
@@ -170,8 +201,10 @@ final class MeetingRecordingWriter {
         guard !samples.isEmpty else { return }
         lock.withLock { state in
             if toMic {
+                state.microphoneSampleCount += Int64(samples.count)
                 state.pendingMic.append(contentsOf: samples)
             } else {
+                state.systemSampleCount += Int64(samples.count)
                 state.pendingSystem.append(contentsOf: samples)
             }
             writeMixedSamples(state: &state, flushAll: false)

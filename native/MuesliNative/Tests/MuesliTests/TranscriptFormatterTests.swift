@@ -333,6 +333,218 @@ struct TranscriptFormatterTests {
         #expect(result.contains("Speaker 2: Who said this?"))
     }
 
+    @Test("mixed-speaker ASR blocks cannot be used as isolated samples")
+    func mixedSpeakerBlocksAreNotSampleEligible() {
+        let state = TranscriptFormatter.structured(
+            micSegments: [],
+            systemSegments: [SpeechSegment(start: 0, end: 6, text: "Two people spoke")],
+            diarizationSegments: [
+                makeDiarSeg(speakerId: "spk_A", start: 0, end: 2),
+                makeDiarSeg(speakerId: "spk_B", start: 2, end: 6),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = state.turns[0]
+        #expect(turn.speaker.clusterID == "spk_B")
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("consolidated blocks cannot span an untranscribed diarized speaker")
+    func consolidatedSampleCannotIncludeUntranscribedOtherSpeaker() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [],
+            systemSegments: [
+                SpeechSegment(start: 0, end: 1, text: "First words"),
+                SpeechSegment(start: 2, end: 4, text: "Second words"),
+            ],
+            diarizationSegments: [
+                makeDiarSeg(speakerId: "spk_A", start: 0, end: 1),
+                makeDiarSeg(speakerId: "spk_B", start: 1, end: 2),
+                makeDiarSeg(speakerId: "spk_A", start: 2, end: 4),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(state.turns.count == 1)
+        #expect(turn.speaker.clusterID == "spk_A")
+        #expect(turn.start == 0)
+        #expect(turn.end == 4)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("system speaker samples exclude overlapping untranscribed microphone speech")
+    func systemSampleCannotIncludeUntranscribedMicrophoneVoice() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [],
+            systemSegments: [SpeechSegment(start: 0, end: 6, text: "Remote words")],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 0, end: 6)],
+            micDiarizationSegments: [makeDiarSeg(speakerId: "room", start: 2, end: 4)],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(turn.speaker.channel == .system)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("inline samples compare diarization after pause alignment")
+    func inlineSamplesUseRecordingTimelineAfterPause() throws {
+        let mappings = [
+            MeetingSpeakerSampleTimeMapping(channel: .microphone, sourceTime: 3, recordingTime: 3),
+            MeetingSpeakerSampleTimeMapping(channel: .system, sourceTime: 1, recordingTime: 3),
+        ]
+        let micDiarization = [makeDiarSeg(speakerId: "owner", start: 3, end: 4)]
+        var state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 3, end: 4, text: "Local words")],
+            systemSegments: [],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 1, end: 2)],
+            micDiarizationSegments: micDiarization,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: micDiarization,
+            sampleTimeMappings: mappings
+        )
+        state.applySampleTimeMappings(mappings)
+        let turn = try #require(state.turns.first)
+
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("microphone-only diarization enables isolated speaker samples")
+    func microphoneOnlyDiarizationEnablesSamples() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [
+                SpeechSegment(start: 0, end: 6, text: "First room speaker"),
+                SpeechSegment(start: 8, end: 14, text: "Second room speaker"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0, end: 6),
+                makeDiarSeg(speakerId: "room_b", start: 8, end: 14),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+        let microphoneSpeakers = state.speakers.filter { $0.key.channel == .microphone }
+
+        #expect(microphoneSpeakers.count == 2)
+        #expect(state.sampleEligibilityVersion == MeetingSpeakerState.currentSampleEligibilityVersion)
+        for speaker in microphoneSpeakers {
+            #expect(state.sampleRange(for: speaker.key) != nil)
+        }
+
+        let ownerRecognitionState = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 6, text: "Owner voice")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: [makeDiarSeg(speakerId: "owner", start: 0, end: 6)]
+        )
+        let ownerSpeaker = try #require(ownerRecognitionState.speakers.first { $0.key.channel == .microphone })
+
+        #expect(ownerRecognitionState.sampleEligibilityVersion == MeetingSpeakerState.currentSampleEligibilityVersion)
+        #expect(ownerRecognitionState.sampleRange(for: ownerSpeaker.key) != nil)
+    }
+
+    @Test("microphone samples exclude mixed diarized blocks")
+    func mixedMicrophoneBlocksAreNotSampleEligible() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 25, text: "Two people spoke")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0, end: 5),
+                makeDiarSeg(speakerId: "room_b", start: 5, end: 10),
+                makeDiarSeg(speakerId: "room_a", start: 10, end: 25),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: false
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(turn.speaker.clusterID == "room_a")
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("microphone samples exclude other voices joined inside a consolidated gap")
+    func consolidatedMicrophoneSampleCannotIncludeUntranscribedOtherSpeaker() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [
+                SpeechSegment(start: 0, end: 2, text: "First words"),
+                SpeechSegment(start: 3.5, end: 7.5, text: "Second words"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true,
+            microphoneIdentitySegments: [
+                makeDiarSeg(speakerId: "room_a", start: 0, end: 2),
+                makeDiarSeg(speakerId: "room_b", start: 2, end: 3.5),
+                makeDiarSeg(speakerId: "room_a", start: 3.5, end: 7.5),
+            ]
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(state.turns.count == 1)
+        #expect(turn.start == 0)
+        #expect(turn.end == 7.5)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("microphone samples cannot include a diarized system voice")
+    func microphoneSampleCannotIncludeDiarizedSystemVoice() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 4, text: "My words")],
+            systemSegments: [],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 1, end: 2)],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let turn = try #require(state.turns.first)
+        #expect(turn.speaker.channel == .microphone)
+        #expect(turn.sampleEligible == false)
+        #expect(state.sampleRange(for: turn.speaker) == nil)
+    }
+
+    @Test("microphone samples require diarization evidence")
+    func microphoneSampleWithoutDiarizationIsUnavailable() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 4, text: "My words")],
+            systemSegments: [SpeechSegment(start: 0, end: 4, text: "Remote words")],
+            diarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let micTurn = try #require(state.turns.first { $0.speaker.channel == .microphone })
+        #expect(state.sampleRange(for: micTurn.speaker) == nil)
+    }
+
+    @Test("system diarization does not enable microphone samples without mic diarization")
+    func systemDiarizationDoesNotEnableMicrophoneSamples() throws {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 6, text: "Room conversation")],
+            systemSegments: [SpeechSegment(start: 8, end: 10, text: "Remote speech")],
+            diarizationSegments: [makeDiarSeg(speakerId: "remote", start: 8, end: 10)],
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let micTurn = try #require(state.turns.first { $0.speaker.channel == .microphone })
+        #expect(state.sampleEligibilityVersion == MeetingSpeakerState.currentSampleEligibilityVersion)
+        #expect(state.sampleRange(for: micTurn.speaker) == nil)
+    }
+
     @Test("diarization with mic segments interleaves correctly")
     func diarizationWithMicInterleave() {
         let meetingStart = Date(timeIntervalSince1970: 0)
@@ -487,7 +699,223 @@ struct TranscriptFormatterTests {
         #expect(lines.allSatisfy { $0.contains("Others:") })
     }
 
+    // MARK: - Microphone diarization
+
+    @Test("mic diarization with multiple speakers labels mic segments as local speakers")
+    func micDiarizationLabelsLocalSpeakers() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 4.0, text: "Welcome everyone"),
+            SpeechSegment(start: 5.0, end: 9.0, text: "Thanks for having me"),
+            SpeechSegment(start: 10.0, end: 12.0, text: "Let's start"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 4.5),
+            makeDiarSeg(speakerId: "room_b", start: 4.5, end: 9.5),
+            makeDiarSeg(speakerId: "room_a", start: 9.5, end: 12.5),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.count == 3)
+        #expect(lines[0].contains("Local speaker 1: Welcome everyone"))
+        #expect(lines[1].contains("Local speaker 2: Thanks for having me"))
+        #expect(lines[2].contains("Local speaker 1: Let's start"))
+        #expect(!result.contains("You:"))
+    }
+
+    @Test("mic diarization with a single speaker keeps the You label")
+    func micDiarizationSingleSpeakerKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 3.0, text: "Just me here"),
+            SpeechSegment(start: 6.0, end: 8.0, text: "Still me"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 8.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.allSatisfy { $0.contains("You:") })
+        #expect(!result.contains("Local speaker"))
+    }
+
+    @Test("owner recognition keeps the sole raw mic cluster key behind Microphone")
+    func ownerRecognitionUsesSingleMicIdentityKey() {
+        let epoch = UUID()
+        let identitySegments = [makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 60)]
+        var state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 10, text: "Owner words")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: identitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner_cluster")
+
+        #expect(state.speakers.contains { $0.key == ownerKey })
+        #expect(state.labels[ownerKey] == "Microphone")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Example", profileID: UUID())
+        #expect(state.render().contains("Example (You): Owner words"))
+    }
+
+    @Test("Owner recognition keeps low-share guest turns on their own raw cluster")
+    func ownerRecognitionDoesNotLabelGuestTurnsAsOwner() {
+        let epoch = UUID()
+        let identitySegments = [
+            makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 594),
+            makeDiarSeg(speakerId: "guest_cluster", start: 594, end: 603),
+        ]
+        var state = TranscriptFormatter.structured(
+            micSegments: [
+                SpeechSegment(start: 0, end: 594, text: "Owner words"),
+                SpeechSegment(start: 594, end: 603, text: "Guest words"),
+                SpeechSegment(start: 604, end: 610, text: "Uncovered words"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: identitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner_cluster")
+        let guestKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "guest_cluster")
+
+        let unattributedKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "aggregate:unattributed")
+        #expect(state.turns.map(\.speaker) == [ownerKey, guestKey, unattributedKey])
+        #expect(state.speakers.first { $0.key == unattributedKey }?.isAssignable == false)
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Example", profileID: UUID())
+        #expect(state.labels[guestKey] == "Microphone")
+        #expect(state.labels[unattributedKey] == "Microphone")
+        #expect(state.render().contains("Example (You): Owner words"))
+        #expect(state.render().contains("Microphone: Guest words"))
+        #expect(state.render().contains("Microphone: Uncovered words"))
+    }
+
+    @Test("empty mic diarization keeps the You label")
+    func emptyMicDiarizationKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [SpeechSegment(start: 0.0, end: 3.0, text: "Hello")]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [],
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("You: Hello"))
+    }
+
+    @Test("local and remote speakers are numbered independently")
+    func localAndRemoteSpeakersNumberedIndependently() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 3.0, text: "Room person one"),
+            SpeechSegment(start: 8.0, end: 10.0, text: "Room person two"),
+        ]
+        let system = [
+            SpeechSegment(start: 4.0, end: 7.0, text: "Remote person"),
+        ]
+        let micDiarization = significant([
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 3.5),
+            makeDiarSeg(speakerId: "spk_1", start: 7.5, end: 10.5),
+        ])
+        let systemDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 3.5, end: 7.5),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            diarizationSegments: systemDiarization,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.count == 3)
+        #expect(lines[0].contains("Local speaker 1: Room person one"))
+        #expect(lines[1].contains("Speaker 1: Remote person"))
+        #expect(!lines[1].contains("Local"))
+        #expect(lines[2].contains("Local speaker 2: Room person two"))
+    }
+
+    @Test("mic segment without diarization coverage gets a generic local label")
+    func uncoveredMicSegmentGetsGenericLocalLabel() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 2.0, text: "Covered one"),
+            SpeechSegment(start: 3.0, end: 5.0, text: "Covered two"),
+            SpeechSegment(start: 30.0, end: 32.0, text: "Far away"),
+        ]
+        let micDiarization = significant([
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 2.5),
+            makeDiarSeg(speakerId: "room_b", start: 2.5, end: 5.5),
+        ])
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.count == 3)
+        #expect(lines[2].contains("Local speaker: Far away"))
+        #expect(!result.contains("You:"))
+    }
+
+    @Test("a brief extra mic diarizer speaker keeps the You label")
+    func briefExtraMicSpeakerKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 10.0, text: "Talking on a call"),
+            SpeechSegment(start: 20.5, end: 30.0, text: "Still talking"),
+        ]
+        // A cough or AEC residue: 0.4 s under a second diarizer ID.
+        let micDiarization = [
+            makeDiarSeg(speakerId: "room_a", start: 0.0, end: 20.0),
+            makeDiarSeg(speakerId: "room_b", start: 20.0, end: 20.4),
+            makeDiarSeg(speakerId: "room_a", start: 20.4, end: 60.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.allSatisfy { $0.contains("You:") })
+        #expect(!result.contains("Local speaker"))
+    }
+
     // MARK: - Helpers
+
+    /// Adds far-away speech so every speaker passes the significance filter
+    /// without changing who the tested segments resolve to.
+    private func significant(_ segments: [TimedSpeakerSegment]) -> [TimedSpeakerSegment] {
+        let speakerIDs = Set(segments.map(\.speakerId)).sorted()
+        return segments + speakerIDs.enumerated().map { index, speakerID in
+            makeDiarSeg(speakerId: speakerID, start: 1_000 + Float(index) * 10, end: 1_010 + Float(index) * 10)
+        }
+    }
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
@@ -499,4 +927,69 @@ struct TranscriptFormatterTests {
         )
     }
 
+}
+
+extension TranscriptFormatterTests {
+    @Test func soleOwnerMicrophoneClusterRetainsItsVoiceEvidenceKey() throws {
+        let epoch = UUID()
+        let mic = [SpeechSegment(start: 0, end: 6, text: "Owner words")]
+        let identity = [makeDiarSeg(speakerId: "raw-owner", start: 0, end: 6)]
+        var state = TranscriptFormatter.structured(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: identity
+        )
+        let key = try #require(state.turns.first?.speaker)
+
+        #expect(key == MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "raw-owner"))
+        state.applySelfEvidence(accessibility: [], voice: [key], ownerName: "Owner", profileID: UUID())
+        #expect(state.speakers.first { $0.key == key }?.isSelf == true)
+    }
+
+    @Test func accessibilitySpeakerNamingWithholdsMixedSpeakerASRBlocks() throws {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [SpeechSegment(start: 0, end: 6, text: "Words from two speakers")]
+        let diarization = [
+            makeDiarSeg(speakerId: "speaker-a", start: 0, end: 2),
+            makeDiarSeg(speakerId: "speaker-b", start: 2, end: 6),
+        ]
+
+        let defaultState = TranscriptFormatter.structured(
+            micSegments: [], systemSegments: system, diarizationSegments: diarization, meetingStart: meetingStart
+        )
+        #expect(defaultState.turns.first?.speaker.clusterID == "speaker-b")
+
+        let namedState = TranscriptFormatter.structured(
+            micSegments: [], systemSegments: system, diarizationSegments: diarization,
+            meetingStart: meetingStart, accessibilitySpeakerNamingEnabled: true
+        )
+        let mixedTurn = try #require(namedState.turns.first)
+        #expect(mixedTurn.speaker.clusterID == "aggregate:Multiple speakers")
+        #expect(namedState.labels[mixedTurn.speaker] == "Multiple speakers")
+        #expect(mixedTurn.sampleEligible == false)
+    }
+
+    @Test func structuredStateRetainsChannelAndClusterKeys() {
+        let epoch = UUID()
+        let mic = [SpeechSegment(start: 0, end: 1, text: "Local words")]
+        let system = [SpeechSegment(start: 3, end: 4, text: "Remote words")]
+        let diarization = [TimedSpeakerSegment(speakerId: "raw-cluster", embedding: [], startTimeSeconds: 3, endTimeSeconds: 4, qualityScore: 1)]
+        let state = TranscriptFormatter.structured(micSegments: mic, systemSegments: system,
+            diarizationSegments: diarization, meetingStart: Date(timeIntervalSince1970: 0), epoch: epoch)
+        #expect(state.isValid)
+        #expect(state.render() == TranscriptFormatter.merge(micSegments: mic, systemSegments: system,
+            diarizationSegments: diarization, meetingStart: Date(timeIntervalSince1970: 0)))
+        #expect(state.turns[0].speaker.channel == .microphone)
+        #expect(state.turns[1].speaker.clusterID == "raw-cluster")
+        #expect(state.turns.allSatisfy { $0.speaker.epoch == epoch })
+        let fallback = TranscriptFormatter.structured(micSegments: [], systemSegments: system,
+            diarizationSegments: nil, meetingStart: Date())
+        #expect(fallback.speakers.allSatisfy { !$0.isAssignable })
+    }
 }
