@@ -49,6 +49,15 @@ struct BodhanBackendTests {
         #expect(!core.contains(.haryanvi) && flex.contains(.haryanvi))
         #expect(BodhanLanguage.choices(for: "missing").isEmpty)
     }
+
+    @Test("Only Flex Mixed output can measure words before a language switch")
+    func wbcsOutputEligibility() {
+        for model in BodhanModel.allCases {
+            for mode in BodhanOutputMode.allCases {
+                #expect(mode.supportsWordsBeforeCodeSwitch(modelID: model.rawValue) == (!model.isCore && mode == .mixed))
+            }
+        }
+    }
     @Test("Precision variants have independent downloads and exact artifact sets")
     func variantDownloads() {
         #expect(Set(BodhanModel.allCases.map(\.cacheDirectory)).count == 4)

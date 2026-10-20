@@ -3,22 +3,33 @@ import MuesliCore
 
 struct MeetingNotesView: View {
     let markdown: String
+    var highlightedRange: NSRange? = nil
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                 let lines = markdown.components(separatedBy: .newlines)
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     markdownLine(line)
+                        .background(index == highlightedLine ? MuesliTheme.surfaceSelected : Color.clear)
+                        .id(index)
                 }
             }
-            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing24)
             .padding(.vertical, MuesliTheme.spacing16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        }
+    }
+    private var highlightedLine: Int? {
+        guard let range = highlightedRange, range.location >= 0, range.location <= (markdown as NSString).length else { return nil }
+        return (markdown as NSString).substring(to: range.location).components(separatedBy: .newlines).count - 1
     }
 
     @ViewBuilder
@@ -55,22 +66,22 @@ struct MeetingNotesView: View {
         } else if let numbered = Self.numberedListContent(from: line) {
             HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
                 Text(numbered.marker)
-                    .font(MuesliTheme.body())
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 22, alignment: .trailing)
                 Text(Self.inline(numbered.text))
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .lineSpacing(3)
+                    .font(MuesliTheme.reading())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineSpacing(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Text(Self.inline(line))
-                .font(MuesliTheme.body())
+                .font(MuesliTheme.reading())
                 .foregroundStyle(MuesliTheme.textPrimary)
-                .lineSpacing(3)
+                .lineSpacing(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -96,9 +107,9 @@ struct MeetingNotesView: View {
                     .frame(width: 14, alignment: .center)
             }
             Text(Self.inline(text))
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .lineSpacing(3)
+                .font(MuesliTheme.reading())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineSpacing(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)

@@ -379,6 +379,17 @@ public final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
+    private let downloadedBackendOptions: () -> [BackendOption]
+    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    var meetingChatCoordinator: MeetingChatCoordinator {
+        get {
+            if let existing = storedMeetingChatCoordinator { return existing }
+            let coordinator = MeetingChatCoordinator(databaseURL: dictationStore.resolvedDatabaseURL)
+            storedMeetingChatCoordinator = coordinator
+            return coordinator
+        }
+        set { storedMeetingChatCoordinator = newValue }
+    }
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
@@ -388,7 +399,7 @@ public final class MuesliController: NSObject {
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
     private let presetCycleHotkeyMonitor = HotkeyMonitor()
-    private var isRecordingPasteShortcut = false
+    private var isCapturingShortcut = false
     private let computerUseRecorder = RouteAwareDictationRecorder()
     private let quilRecorder = RouteAwareDictationRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
@@ -472,6 +483,7 @@ public final class MuesliController: NSObject {
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
+    private let updateFocusRecovery = SparkleUpdateFocusRecovery()
     private var busyStatusGeneration = 0
 
     let appState = AppState()
@@ -554,10 +566,8 @@ public final class MuesliController: NSObject {
     private var nemotron35StreamingSessionID: UUID?
     private var previousStreamText = ""
     private var openWindowCount = 0
-    private var lastExternalApp: NSRunningApplication?
     private var capturedDictationContext: DictationContext?
     private var capturedDictationCorrectionTargetApp: DictationCorrectionTargetApp?
-    private var workspaceObserver: NSObjectProtocol?
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -625,9 +635,11 @@ public final class MuesliController: NSObject {
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController(),
         openRouterAuth: OpenRouterAuthManager? = nil,
-        openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient()
+        openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient(),
+        downloadedBackendOptions: @escaping () -> [BackendOption] = { BackendOption.downloaded }
     ) {
         self.configStore = configStore
+        self.downloadedBackendOptions = downloadedBackendOptions
         self.openRouterAuth = openRouterAuth ?? .shared
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
@@ -674,7 +686,7 @@ public final class MuesliController: NSObject {
         self.selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: loadedConfig,
             dictationBackend: self.selectedBackend,
-            downloadedOptions: BackendOption.downloaded
+            downloadedOptions: downloadedBackendOptions()
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingBackend,
             dictationBackend: self.selectedBackend
@@ -754,9 +766,17 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
         hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
-        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
+        hotkeyMonitor.onToggleStart = { [weak self] in
+            // A refused start must not leave the next press acting as a stop.
+            guard let self, !self.handleToggleStart() else { return }
+            self.hotkeyMonitor.cancelToggleMode()
+        }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
+        hotkeyMonitor.combinationToggleRequiresHold = false
+        hotkeyMonitor.registersCombinationGlobally = true
+        hotkeyMonitor.allowsStartsWhileEditingText = true
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -867,20 +887,6 @@ public final class MuesliController: NSObject {
             self?.updateConfig {
                 $0.indicatorAnchor = .custom
                 $0.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
-            }
-        }
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard
-                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                app != NSRunningApplication.current
-            else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.lastExternalApp = app
             }
         }
         dataDidChangeObserver = DistributedNotificationCenter.default().addObserver(
@@ -1048,10 +1054,6 @@ public final class MuesliController: NSObject {
     func shutdown() async {
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
-        if let workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
-            self.workspaceObserver = nil
-        }
         if let dataDidChangeObserver {
             DistributedNotificationCenter.default().removeObserver(dataDidChangeObserver)
             self.dataDidChangeObserver = nil
@@ -1335,6 +1337,18 @@ public final class MuesliController: NSObject {
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
             appState.selectedMeetingRecord = nil
+        case .meetingRetranscription:
+            if let meeting = (try? dictationStore.recentMeetings(limit: 100))?.first(where: {
+                $0.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    && ($0.status == .completed || $0.status == .failed)
+            }) {
+                showMeetingDocument(id: meeting.id)
+            } else {
+                appState.selectedTab = .meetings
+                appState.meetingsNavigationState = .browser
+                appState.selectedMeetingID = nil
+                appState.selectedMeetingRecord = nil
+            }
         case .meetingPeople:
             guard let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id else {
                 completeFeatureTour()
@@ -1354,6 +1368,20 @@ public final class MuesliController: NSObject {
             try Task.checkCancellation()
             return try DictationStore(databaseURL: databaseURL).insightsSnapshot(range: range)
         }.value
+    }
+
+    func insightsWordsBeforeCodeSwitch(range: InsightsRange, now: Date) async throws -> Double? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try DictationStore(databaseURL: databaseURL)
+                .insightsWordsBeforeCodeSwitch(range: range, now: now)
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     func truncate(_ text: String, limit: Int) -> String {
@@ -1388,6 +1416,7 @@ public final class MuesliController: NSObject {
     }
 
     func syncAppState() {
+        storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
             limit: appState.timelinePageSize,
             offset: 0,
@@ -1557,7 +1586,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     private func normalizeMeetingTranscriptionSelectionForAvailability(
-        downloadedOptions: [BackendOption] = BackendOption.downloaded
+        downloadedOptions: [BackendOption]? = nil
     ) -> BackendOption? {
         let dictationBackend = BackendOption.resolve(
             backend: config.sttBackend,
@@ -1566,7 +1595,7 @@ public final class MuesliController: NSObject {
         guard let resolved = Self.availableMeetingTranscriptionBackend(
             config: config,
             dictationBackend: dictationBackend,
-            downloadedOptions: downloadedOptions
+            downloadedOptions: downloadedOptions ?? downloadedBackendOptions()
         ) else {
             selectedMeetingTranscriptionBackend = Self.fallbackMeetingTranscriptionBackend(
                 configured: BackendOption.resolve(
@@ -1575,23 +1604,36 @@ public final class MuesliController: NSObject {
                 ),
                 dictationBackend: dictationBackend
             )
-            appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
-            appState.config = config
+            publishMeetingTranscriptionSelection(selectedMeetingTranscriptionBackend, configChanged: false)
             return nil
         }
 
         selectedMeetingTranscriptionBackend = resolved
         activeMeetingSession?.updateBackend(resolved)
+        var configChanged = false
         if config.meetingTranscriptionBackend != resolved.backend ||
             config.meetingTranscriptionModel != resolved.model {
             config.meetingTranscriptionBackend = resolved.backend
             config.meetingTranscriptionModel = resolved.model
             configStore.save(config)
+            configChanged = true
             fputs("[muesli-native] meeting transcription model unavailable; switched to \(resolved.label)\n", stderr)
         }
-        appState.selectedMeetingTranscriptionBackend = resolved
-        appState.config = config
+        publishMeetingTranscriptionSelection(resolved, configChanged: configChanged)
         return resolved
+    }
+
+    /// Settings calls the normalizer from `onAppear`. `AppState` is `@Observable`, so any
+    /// assignment, even one with an unchanged value, invalidates every view that reads
+    /// it. Publishing unconditionally re-rendered the whole dashboard and fed a SwiftUI
+    /// update loop that hung the app in the 0.8.5 feature tour (#632).
+    private func publishMeetingTranscriptionSelection(_ backend: BackendOption, configChanged: Bool) {
+        if appState.selectedMeetingTranscriptionBackend != backend {
+            appState.selectedMeetingTranscriptionBackend = backend
+        }
+        if configChanged {
+            appState.config = config
+        }
     }
 
     @discardableResult
@@ -1660,7 +1702,8 @@ public final class MuesliController: NSObject {
         })
         selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: config,
-            dictationBackend: selectedBackend
+            dictationBackend: selectedBackend,
+            downloadedOptions: downloadedBackendOptions()
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingTranscriptionBackend,
             dictationBackend: selectedBackend
@@ -1737,6 +1780,7 @@ public final class MuesliController: NSObject {
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.combinationActivation = config.dictationCombinationActivation
         quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
@@ -2836,11 +2880,13 @@ public final class MuesliController: NSObject {
         capture.session.setPreferredMicrophoneInputDeviceID(deviceID)
     }
 
-    func updateUpcomingMeetingsWindow(dayCount: Int) {
-        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: dayCount).dayCount
-        guard config.upcomingMeetingsDayCount != resolvedDayCount else { return }
+    func updateUpcomingMeetingsWindow(_ window: UpcomingMeetingsWindow) {
+        guard config.upcomingMeetingsWindow != window else { return }
 
-        updateConfig { $0.upcomingMeetingsDayCount = resolvedDayCount }
+        updateConfig {
+            $0.upcomingMeetingsDayCount = window.dayCount
+            $0.upcomingMeetingsHourCount = window.hourCount
+        }
         Task {
             let refreshed = await refreshUpcomingCalendarEvents()
             guard refreshed else { return }
@@ -2914,13 +2960,23 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func applySetting(_ id: String, value: String) async throws {
-        let definitions = settingsDefinitions()
+    func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
+        if dictationToggleShortcut != nil,
+           id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
+            throw MuesliSettings.Failure.rejected("A captured toggle shortcut can only set dictation Toggle mode.")
+        }
+        let definitions = settingsDefinitions(dictationToggleShortcut: dictationToggleShortcut)
         _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
             snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
             persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
             })
+        if let dictationToggleShortcut {
+            let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath()))
+            guard config.dictationHotkey == dictationToggleShortcut, saved.dictationHotkey == dictationToggleShortcut else {
+                throw MuesliSettings.Failure.rejected("The toggle shortcut could not be verified. Check Shortcuts before using it.")
+            }
+        }
     }
 
     func selectPrimaryDictationModelForComputerUse(_ option: BackendOption) {
@@ -3813,10 +3869,12 @@ public final class MuesliController: NSObject {
         let refreshNow = Date()
         let refreshStartOfDay = Calendar.current.startOfDay(for: refreshNow)
         let disabledIDs = Set(config.disabledCalendarIDs)
-        let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let window = config.upcomingMeetingsWindow
+        let dayCount = window.dayCount
         guard let result = await calendarEventQuery.load({
             CalendarMonitor.upcomingEvents(
                 daysAhead: dayCount,
+                hoursAhead: window.hourCount,
                 disabledCalendarIDs: disabledIDs,
                 now: refreshNow
             )
@@ -3824,9 +3882,9 @@ public final class MuesliController: NSObject {
         let ekEvents = result.events
         let observedEventIDs = Set(ekEvents.map(\.id))
         let currentDisabledIDs = Set(config.disabledCalendarIDs)
-        let currentDayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        let currentWindow = config.upcomingMeetingsWindow
         let currentStartOfDay = Calendar.current.startOfDay(for: Date())
-        guard dayCount == currentDayCount,
+        guard window == currentWindow,
               disabledIDs == currentDisabledIDs,
               refreshStartOfDay == currentStartOfDay else {
             return false
@@ -4500,8 +4558,20 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = validateDictationHotkey(hotkey)
+        guard result.didUpdate else { return result }
+        updateConfig {
+            $0.dictationHotkey = hotkey
+            if !hotkey.isCombination { $0.dictationCombinationActivation = .pushToTalk }
+        }
+        hotkeyMonitor.configure(hotkey)
+        configureComputerUseHotkeyMonitor()
+        return result
+    }
+
+    private func validateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateDictationHotkey(
             hotkey,
@@ -4511,19 +4581,58 @@ public final class MuesliController: NSObject {
             isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
         )
         guard result.didUpdate else {
-            fputs("[hotkeys] rejected dictation hotkey because it matches computer use hotkey\n", stderr)
+            fputs("[hotkeys] rejected dictation hotkey: \(result.message ?? "invalid")\n", stderr)
             return result
         }
-        updateConfig { $0.dictationHotkey = hotkey }
-        hotkeyMonitor.configure(hotkey)
-        configureComputerUseHotkeyMonitor()
+        // Muesli's own paste would trigger a dictation chord registered on the same keys.
+        if hotkey.isCombination,
+           let pasteChord = PasteKeyboardLayout.resolve(config.pasteShortcut),
+           ShortcutHotkeyPolicy.hotkeysConflict(hotkey, Self.hotkey(for: pasteChord)) {
+            return .conflict(message: ShortcutHotkeyPolicy.pasteConflictMessage)
+        }
         return result
+    }
+
+    var dictationActivationUnavailableReason: String? {
+        ShortcutHotkeyPolicy.dictationActivationUnavailableReason(
+            state: dictationState,
+            hasHotkeySession: hotkeyMonitor.hasPendingOrActiveSession,
+            isCapturingShortcut: isCapturingShortcut
+        )
+    }
+
+    func updateDictationCombinationActivation(_ activation: HotkeyMonitor.CombinationActivation, shortcut: HotkeyConfig? = nil) throws {
+        if let reason = dictationActivationUnavailableReason {
+            throw MuesliSettings.Failure.rejected(reason)
+        }
+        let hotkey = shortcut ?? config.dictationHotkey
+        if activation == .toggle && !hotkey.isCombination {
+            throw MuesliSettings.Failure.rejected("Toggle activation needs a dictation key combination. Assign one first.")
+        }
+        if let shortcut {
+            guard activation == .toggle else {
+                throw MuesliSettings.Failure.rejected("Shortcut setup requires Toggle mode.")
+            }
+            let result = validateDictationHotkey(shortcut)
+            guard result.didUpdate else {
+                throw MuesliSettings.Failure.rejected(result.message ?? "Choose another shortcut.")
+            }
+        }
+        guard activation != config.dictationCombinationActivation || shortcut != nil else { return }
+        updateConfig {
+            if let shortcut { $0.dictationHotkey = shortcut }
+            $0.dictationCombinationActivation = activation
+        }
+        if let shortcut {
+            hotkeyMonitor.configure(shortcut)
+            configureComputerUseHotkeyMonitor()
+        }
     }
 
     @discardableResult
     func updateComputerUseHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateComputerUseHotkey(
             hotkey,
@@ -4547,7 +4656,7 @@ public final class MuesliController: NSObject {
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.quilHotkey) {
-                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
             }
             let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
                 currentHotkey: config.computerUseHotkey,
@@ -4556,8 +4665,7 @@ public final class MuesliController: NSObject {
                 isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
             )
             guard resolution.result.didUpdate else {
-                fputs("[hotkeys] rejected computer use enable because fallback conflicts with another shortcut\n", stderr)
-                configureComputerUseHotkeyMonitor()
+                fputs("[hotkeys] rejected computer use enable because it overlaps another shortcut\n", stderr)
                 return resolution.result
             }
             updateConfig { config in
@@ -4598,7 +4706,7 @@ public final class MuesliController: NSObject {
     @discardableResult
     func updateMeetingRecordingHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             hotkey,
@@ -4620,7 +4728,7 @@ public final class MuesliController: NSObject {
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.meetingRecordingHotkey, config.quilHotkey) {
-                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
             }
             let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
                 config.meetingRecordingHotkey,
@@ -4641,7 +4749,7 @@ public final class MuesliController: NSObject {
 
     func updatePresetCycleHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
-            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            return .conflict(message: ShortcutHotkeyPolicy.conflict(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
             hotkey,
@@ -4665,7 +4773,7 @@ public final class MuesliController: NSObject {
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.quilHotkey) {
-                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+                return .conflict(message: ShortcutHotkeyPolicy.conflict(with: "Quill", hotkey: config.quilHotkey))
             }
             let result = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
                 config.presetCycleHotkey,
@@ -4686,8 +4794,17 @@ public final class MuesliController: NSObject {
         }
     }
 
+    var cleanupModelUsesFixedPrompt: Bool {
+        selectedPostProcessorBackend == .local
+            && PostProcessorOption.resolve(id: config.activePostProcessorId).inputFormat == .s1Mini
+    }
+
     func cycleTranscriptCleanupPreset() {
         guard config.enablePostProcessor, config.enablePresetCyclingHotkey else { return }
+        guard !cleanupModelUsesFixedPrompt else {
+            fputs("[presets] preset cycle ignored: active cleanup model uses fixed prompt\n", stderr)
+            return
+        }
         let presets = TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts)
         guard !presets.isEmpty else { return }
         let currentIndex = presets.firstIndex(where: { $0.id == config.activeTranscriptCleanupPromptId }) ?? -1
@@ -4754,21 +4871,26 @@ public final class MuesliController: NSObject {
     func resetShortcutDefaults() {
         updateConfig { config in
             config.dictationHotkey = .default
+            config.dictationCombinationActivation = .pushToTalk
             config.quilHotkey = .quilDefault
             config.enableQuilMode = false
             config.computerUseHotkey = .computerUseDefault
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
+            config.presetCycleHotkey = .presetCycleDefault
+            config.enablePresetCyclingHotkey = true
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
+        hotkeyMonitor.combinationActivation = .pushToTalk
         hotkeyMonitor.configure(.default)
         quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
+        startPresetCycleHotkeyMonitorIfNeeded()
     }
 
     // MARK: - Onboarding
@@ -4942,9 +5064,9 @@ public final class MuesliController: NSObject {
         setState(.idle)
     }
 
-    func startHotkeyMonitor(keyCode: UInt16? = nil) {
-        if let keyCode {
-            hotkeyMonitor.configure(keyCode: keyCode)
+    func startHotkeyMonitor(hotkey: HotkeyConfig? = nil) {
+        if let hotkey {
+            hotkeyMonitor.configure(hotkey)
         }
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
@@ -4957,32 +5079,50 @@ public final class MuesliController: NSObject {
     }
 
     /// Recorder owns a temporary pause, never changes feature enablement/config.
-    func beginPasteShortcutCapture() -> Bool {
+    func beginShortcutCapture() -> Bool {
         let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
-        guard !isRecordingPasteShortcut, dictationState == .idle,
+        guard !isCapturingShortcut, dictationState == .idle,
               !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
               !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
               interactiveAudioSessionOwnership.canStart(.dictation),
               monitors.allSatisfy({ !$0.hasPendingOrActiveSession }) else { return false }
-        isRecordingPasteShortcut = true
+        isCapturingShortcut = true
         monitors.forEach { $0.suspendForShortcutCapture() }
         return true
     }
 
-    func endPasteShortcutCapture() {
-        guard isRecordingPasteShortcut else { return }
-        isRecordingPasteShortcut = false
+    func endShortcutCapture() {
+        guard isCapturingShortcut else { return }
+        isCapturingShortcut = false
         [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
             .forEach { $0.resumeAfterShortcutCapture() }
     }
 
+    private static func hotkey(for chord: PasteKeyChord) -> HotkeyConfig {
+        HotkeyConfig.combination(modifiers: NSEvent.ModifierFlags(rawValue: UInt(chord.modifiers)), keyCode: chord.keyCode)
+    }
+
+    /// Disabled shortcuts count too: re-enabling one does not revisit the paste
+    /// chord, and a registered chord would intercept Muesli's own paste.
     func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
-        let candidate = HotkeyConfig.combination(modifiers: NSEvent.ModifierFlags(rawValue: UInt(chord.modifiers)), keyCode: chord.keyCode)
-        return [(config.enablePushToTalk, config.dictationHotkey),
-                (config.enableComputerUseHotkey, config.computerUseHotkey),
-                (config.enableQuilMode, config.quilHotkey),
-                (config.enableMeetingRecordingHotkey, config.meetingRecordingHotkey)]
-            .contains { $0.0 && $0.1.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0.1) }
+        let candidate = Self.hotkey(for: chord)
+        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
+            .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
+    }
+
+    @discardableResult
+    func updatePasteShortcut(
+        _ shortcut: PasteShortcut,
+        resolve: (PasteShortcut) -> PasteKeyChord? = PasteKeyboardLayout.resolve
+    ) -> ShortcutHotkeyUpdateResult {
+        guard let chord = resolve(shortcut) else {
+            return .unavailable(message: "Could not resolve paste for this keyboard layout. Record a custom paste shortcut instead.")
+        }
+        guard !pasteShortcutConflict(chord) else {
+            return .conflict(message: "That paste shortcut overlaps with another Muesli shortcut. Change it in Shortcuts first.")
+        }
+        updateConfig { $0.pasteShortcut = shortcut }
+        return .updated
     }
 
     func downloadModelForOnboarding(
@@ -5150,7 +5290,7 @@ public final class MuesliController: NSObject {
             }
         }
         selectBackend(backend)
-        hotkeyMonitor.configure(keyCode: hotkey.keyCode)
+        hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
         clearDictationTestLifecycle()
 
@@ -5543,14 +5683,14 @@ public final class MuesliController: NSObject {
             selectedBackendKey: config.sttBackend,
             selectedModelKey: config.sttModel,
             selectedCohereLanguageCode: config.cohereLanguage,
-            hotkeyKeyCode: config.dictationHotkey.keyCode,
-            hotkeyLabel: config.dictationHotkey.label,
+            hotkey: config.dictationHotkey,
             systemAudioRequested: false,
             onboardingUseCaseRawValue: config.onboardingUseCase
         )
     }
 
     func showMeetingsHome(folderID: Int64? = nil) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.selectedFolderID = folderID
         appState.meetingsNavigationState = .browser
@@ -5565,6 +5705,7 @@ public final class MuesliController: NSObject {
     }
 
     func showMeetingDocument(id: Int64) {
+        appState.meetingChatDocumentTarget = nil
         appState.selectedTab = .meetings
         appState.meetingDetailReturnDestination = .meetings
         appState.selectedMeetingID = id
@@ -5579,6 +5720,31 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingRecord = meeting(id: id)
         appState.meetingsNavigationState = .document(id)
     }
+
+    @discardableResult
+    func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
+        appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
+        if let id = meetingID {
+            let coordinator = meetingChatCoordinator
+            // Resume the latest conversation started from this meeting. Broader
+            // archive chats that merely cited it remain separate conversations.
+            if let session = coordinator.sessions.first(where: { session in
+                guard session.anchorMeetingID == id,
+                      case .meetings(let ids) = session.scope.selection else { return false }
+                return ids.contains(id)
+            }) {
+                coordinator.selectChat(id: session.id)
+                return nil
+            }
+            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+        }
+        return nil
+    }
+    func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {
+        guard meeting(id: target.citation.meetingID) != nil else { meetingChatCoordinator.errorMessage = "This source meeting is no longer available."; return }
+        showMeetingDocument(id: target.citation.meetingID); appState.meetingChatDocumentTarget = target
+    }
+    func returnToMeetingChat() { appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil }
 
     private func showActiveMeetingDocumentIfNeeded() {
         guard let activeMeetingID,
@@ -5621,7 +5787,12 @@ public final class MuesliController: NSObject {
     }
 
     @objc func checkForUpdates() {
-        presentStandardUpdateCheck()
+        updateFocusRecovery.cancel()
+        // NSMenu may restore the dashboard's key window as tracking ends.
+        // Let that finish before Sparkle presents or refocuses its own UI.
+        SparkleUpdatePresentation.afterMenuTracking { [weak self] in
+            self?.presentStandardUpdateCheck()
+        }
     }
 
     private func presentStandardUpdateCheck() {
@@ -5629,57 +5800,26 @@ public final class MuesliController: NSObject {
             appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
             return
         }
-        let existingWindows = Set(NSApplication.shared.windows.map(ObjectIdentifier.init))
         activateApplicationForSparkle()
         // Always enter Sparkle's standard path. Sparkle uses this same call to
         // refocus existing updater UI, so local availability gates would make
         // in-app buttons less reliable than the status-bar action.
         updaterController.checkForUpdates(nil)
-        focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
+        focusUpdaterWindowsAfterUpdateAction()
     }
 
-    private func focusUpdaterWindowsCreatedAfterUpdateAction(excluding existingWindows: Set<ObjectIdentifier>) {
-        for delay in [80_000_000, 240_000_000, 600_000_000, 1_200_000_000, 2_500_000_000] {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay))
-                self?.focusUpdaterWindows(excluding: existingWindows)
+    private func focusUpdaterWindowsAfterUpdateAction() {
+        updateFocusRecovery.start { [weak self] in
+            guard let self else { return true }
+            let windows = NSApplication.shared.windows.filter(SparkleUpdatePresentation.isUpdaterWindow)
+            guard !windows.isEmpty else { return false }
+            self.activateApplicationForSparkle()
+            for window in windows {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
             }
-        }
-    }
-
-    private func focusUpdaterWindows(excluding existingWindows: Set<ObjectIdentifier>) {
-        let updaterWindows = NSApplication.shared.windows.filter { window in
-            guard window.isVisible else { return false }
-            return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)
-        }
-        guard !updaterWindows.isEmpty else { return }
-
-        activateApplicationForSparkle()
-        for window in updaterWindows {
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    private func isLikelyUpdaterWindow(_ window: NSWindow) -> Bool {
-        let className = String(describing: type(of: window))
-        if className.localizedCaseInsensitiveContains("SPU") ||
-            className.localizedCaseInsensitiveContains("SU") ||
-            className.localizedCaseInsensitiveContains("Sparkle") {
             return true
         }
-
-        // Sparkle's standard UI can present through AppKit alert/window
-        // classes. Keep this semantic fallback narrow and only apply it to
-        // windows created after the update action.
-        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return false }
-        if title.localizedCaseInsensitiveContains("update") ||
-            title.localizedCaseInsensitiveContains("updater") ||
-            title.localizedCaseInsensitiveContains("new version") ||
-            title.localizedCaseInsensitiveContains("available") {
-            return true
-        }
-        return false
     }
 
     private func showBusyStatus(_ message: String, restoring previousStatus: SparkleUpdateStatus) {
@@ -5833,15 +5973,19 @@ public final class MuesliController: NSObject {
                     participantNames: participantNames,
                     openRouterAPIKeyOverride: openRouterKey
                 )
-                try self.dictationStore.updateMeetingSummary(
-                    id: meeting.id,
-                    title: plan.persistedTitle,
-                    formattedNotes: notes,
-                    selectedTemplateID: templateSnapshot.id,
-                    selectedTemplateName: templateSnapshot.name,
-                    selectedTemplateKind: templateSnapshot.kind,
-                    selectedTemplatePrompt: templateSnapshot.prompt
-                )
+                do {
+                    try self.dictationStore.updateMeetingSummary(
+                        id: meeting.id,
+                        title: plan.persistedTitle,
+                        formattedNotes: notes,
+                        selectedTemplateID: templateSnapshot.id,
+                        selectedTemplateName: templateSnapshot.name,
+                        selectedTemplateKind: templateSnapshot.kind,
+                        selectedTemplatePrompt: templateSnapshot.prompt
+                    )
+                } catch {
+                    throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
+                }
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                     self.syncAppState()
@@ -5849,13 +5993,9 @@ public final class MuesliController: NSObject {
                     completion(.success(()))
                 }
             } catch {
-                fputs("[muesli-native] failed to generate or persist meeting summary: \(error)\n", stderr)
+                fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
                 await MainActor.run {
-                    if error is MeetingSummaryError {
-                        completion(.failure(error))
-                    } else {
-                        completion(.failure(MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)))
-                    }
+                    completion(.failure(error))
                 }
             }
         }
@@ -6862,6 +7002,11 @@ public final class MuesliController: NSObject {
         statusBarController?.setStatus("Meeting: \(activeMeetingDisplayTitle())")
         statusBarController?.refresh()
         syncAppState()
+    }
+
+    @objc func hideCalendarEventFromMenuItem(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? CalendarMenuMeetingPayload else { return }
+        hideCalendarEvent(payload.event)
     }
 
     @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {
@@ -9123,9 +9268,13 @@ public final class MuesliController: NSObject {
             presetCycleHotkeyMonitor.stop()
             return
         }
-        guard !ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.dictationHotkey) else {
+        let conflicts = ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.dictationHotkey)
+            || (config.enableComputerUseHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.computerUseHotkey))
+            || (config.enableMeetingRecordingHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.meetingRecordingHotkey))
+            || (config.enableQuilMode && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.quilHotkey))
+        guard !conflicts else {
             presetCycleHotkeyMonitor.stop()
-            fputs("[presets] preset cycle hotkey disabled because it matches dictation hotkey\n", stderr)
+            fputs("[presets] preset cycle hotkey disabled because of hotkey conflict\n", stderr)
             return
         }
         presetCycleHotkeyMonitor.configure(config.presetCycleHotkey)
@@ -10373,6 +10522,7 @@ public final class MuesliController: NSObject {
         runtime.onEvent = { [weak self] event in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             runTrace.record(event)
+            self.indicator.recordComputerUseToolResult(event, config: self.config)
         }
         runtime.onObservedApplication = { [weak self] name, bundleID in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
@@ -11111,18 +11261,16 @@ public final class MuesliController: NSObject {
         capturedDictationCorrectionTargetApp = nil
     }
 
-    private func externalDictationTargetApp(
+    private func dictationTargetApp(
         from frontmostApplication: NSRunningApplication?
     ) -> DictationCorrectionTargetApp? {
-        return DictationCorrectionTargetApp(
-            app: frontmostApplication == NSRunningApplication.current
-                ? lastExternalApp
-                : frontmostApplication
-        )
+        // Own-app text fields are valid dictation targets. Attribute the actual
+        // recipient instead of substituting an unrelated previously active app.
+        DictationCorrectionTargetApp(app: frontmostApplication)
     }
 
-    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
-        externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
+    private func currentDictationTargetApp() -> DictationCorrectionTargetApp? {
+        dictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
     /// Snapshots the hosted provider configuration before microphone capture and,
@@ -11203,7 +11351,7 @@ public final class MuesliController: NSObject {
     #endif
 
     private func captureDictationCorrectionTargetApp() {
-        capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
+        capturedDictationCorrectionTargetApp = currentDictationTargetApp()
     }
 
     private func handleStart() {
@@ -11633,7 +11781,7 @@ public final class MuesliController: NSObject {
         )
         // If focus moved during streaming, attribute the completed session to the app active at stop.
         let targetApp = shouldPersistTargetApp
-            ? currentExternalDictationTargetApp() ?? capturedDictationCorrectionTargetApp
+            ? currentDictationTargetApp() ?? capturedDictationCorrectionTargetApp
             : nil
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
@@ -11645,7 +11793,9 @@ public final class MuesliController: NSObject {
                 targetAppName: targetApp?.appName,
                 targetAppBundleID: targetApp?.bundleID,
                 startedAt: startedAt,
-                endedAt: Date()
+                endedAt: Date(),
+                transcriptionModel: DictationModelIdentity(backend: BackendOption.nemotron35Multilingual.backend,
+                    model: BackendOption.nemotron35Multilingual.model, name: BackendOption.nemotron35Multilingual.label)
             )
             scheduleICloudSyncAfterLocalChange()
         }
@@ -11683,7 +11833,9 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         outputMode: DictationOutputMode,
         targetApp: DictationCorrectionTargetApp?,
-        backend: String
+        backend: String,
+        bodhanMeasurement: BodhanWBCSMeasurement?,
+        transcriptionModel: DictationModelIdentity
     ) {
         _ = try? dictationStore.insertDictation(
             text: text,
@@ -11692,7 +11844,9 @@ public final class MuesliController: NSObject {
             targetAppName: targetApp?.appName,
             targetAppBundleID: targetApp?.bundleID,
             startedAt: startedAt,
-            endedAt: Date()
+            endedAt: Date(),
+            bodhanMeasurement: bodhanMeasurement,
+            transcriptionModel: transcriptionModel
         )
         scheduleICloudSyncAfterLocalChange()
         statusBarController?.refresh()
@@ -11784,13 +11938,18 @@ public final class MuesliController: NSObject {
             do {
                 let rawText: String
                 let completionBackend: String
+                let completionModel: DictationModelIdentity
+                let bodhanMeasurement: BodhanWBCSMeasurement?
                 if let hostedSession {
                     do {
                         // Hosted transcription models already produce normalized
                         // prose, so hosted success intentionally bypasses cleanup.
                         let result = try await hostedSession.finish(recordedWAVURL: wavURL)
                         rawText = result.text
+                        completionModel = DictationModelIdentity(backend: result.backend,
+                            model: result.model ?? "", name: result.model ?? "Not recorded", endpoint: result.endpoint)
                         completionBackend = result.backend
+                        bodhanMeasurement = nil
                     } catch {
                         guard HostedDictationFallbackPolicy.shouldFallback(
                             after: error,
@@ -11823,7 +11982,10 @@ public final class MuesliController: NSObject {
                             appContext: promptContext
                         )
                         rawText = result.text
+                        completionModel = DictationModelIdentity(backend: fallbackBackend.backend,
+                            model: fallbackBackend.model, name: fallbackBackend.label)
                         completionBackend = fallbackBackend.backend
+                        bodhanMeasurement = result.bodhanMeasurement
                     }
                 } else {
                     let ppOption = self.runtimePostProcessorOption()
@@ -11843,7 +12005,10 @@ public final class MuesliController: NSObject {
                         appContext: promptContext
                     )
                     rawText = result.text
+                    completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,
+                        model: transcriptionBackend.model, name: transcriptionBackend.label)
                     completionBackend = transcriptionBackend.backend
+                    bodhanMeasurement = result.bodhanMeasurement
                 }
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
@@ -11894,7 +12059,7 @@ public final class MuesliController: NSObject {
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
-                                let targetApp = self.externalDictationTargetApp(from: targetApplication)
+                                let targetApp = self.dictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
                                 if didDispatchPaste { self.indicator.showDictationCompletion() }
@@ -11924,7 +12089,9 @@ public final class MuesliController: NSObject {
                                     startedAt: startedAt,
                                     outputMode: outputMode,
                                     targetApp: completionTargetApp,
-                                    backend: completionBackend
+                                    backend: completionBackend,
+                                    bodhanMeasurement: bodhanMeasurement,
+                                    transcriptionModel: completionModel
                                 )
                                 self.finishDictationLatencyTrace(
                                     "bookkeeping_completed",
@@ -11949,7 +12116,9 @@ public final class MuesliController: NSObject {
                             startedAt: startedAt,
                             outputMode: outputMode,
                             targetApp: nil,
-                            backend: completionBackend
+                            backend: completionBackend,
+                            bodhanMeasurement: bodhanMeasurement,
+                            transcriptionModel: completionModel
                         )
                         self.finishDictationLatencyTrace(
                             "bookkeeping_completed",

@@ -6,6 +6,46 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.5</title>
+            <pubDate>Fri, 09 Oct 2026 03:16:28 +0530</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.8.5</h2>
+<h3>Meet Muesli at the notch</h3>
+<p>Choose Notch in Settings → Appearance to follow recording, processing, and Computer Use progress at the top of your screen. Displays without a notch use the Classic indicator.</p>
+<h3>Change settings with your voice</h3>
+<p>Enable Computer Use Command in Shortcuts, then ask Muesli to change a setting or shortcut. Use experimental local Gemma or your connected ChatGPT account. Muesli asks for clarification when needed and checks that changes were saved. AI instructions and prompt settings remain manual-only.</p>
+<h3>Claude for meeting notes</h3>
+<p>Choose Anthropic with your API key, or a signed-in Claude Code installation, as your meeting summary backend. Meeting content is sent to Claude when you choose it.</p>
+<h3>Re-transcribe saved meetings</h3>
+<p>Give an existing meeting another pass using a downloaded meeting model and its retained audio. Follow progress while browsing elsewhere in Muesli, or cancel and keep the original result. Re-transcription needs saved audio and replaces the transcript when completed.</p>
+<h3>No need to hold all the time</h3>
+<p>Choose Press to toggle in Shortcuts → Dictation and assign a modifier + key shortcut. Press once to start dictation, then again to stop.</p>
+<h3>Bodhan, in your preferred script</h3>
+<p>Choose Native, Mixed, or Romanized output for Bodhan Flex. Write Indic speech in Latin letters using the same downloaded model. Mixed remains the default.</p>
+<h3>More control over meetings</h3>
+<ul>
+<li>Show scheduled meetings for the next six or twelve hours, alongside the existing day-based windows.</li>
+<li>Hide an individual event directly from the status-bar menu without deleting it from your calendar.</li>
+<li>Improves meeting detection, stop controls, clipboard pasting, and navigation through long meeting-folder lists.</li>
+<li>Adds a guided What’s New tour using the real app controls.</li>
+</ul>
+<p>Dictation and meeting transcription remain local by default. Hosted features send the input needed for the selected feature to its provider.</p>
+<h3>Everyday fixes</h3>
+<ul>
+<li>Change a disabled shortcut directly to resolve a conflict, without changing Dictation first or enabling the feature automatically.</li>
+<li>Improves Check for Updates window presentation while Muesli is open and brings existing updater windows forward.</li>
+<li>Improves floating-indicator hover behavior, meeting metadata copying, and custom LLM credential handling.</li>
+</ul>
+<h3>Install or update</h3>
+<p>Use Check for Updates in Muesli, download the signed and notarized DMG, or install with <code>brew install --cask muesli</code>.</p>
+]]></description>
+            <sparkle:version>0.8.5</sparkle:version>
+            <sparkle:shortVersionString>0.8.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.5/Muesli-0.8.5.dmg" length="103464944" type="application/octet-stream" sparkle:edSignature="B5hUvoje7/6c1o7P9y05EtovY8FrnxQM/r8z+oRm/wP4gV1yzUXRGvFmuSum5q+El8NDO2YMohPGiKRjq7A6DQ=="/>
+        </item>
+        <item>
             <title>0.8.4</title>
             <pubDate>Thu, 10 Sep 2026 04:14:59 +0530</pubDate>
             <description><![CDATA[

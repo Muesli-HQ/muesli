@@ -201,6 +201,36 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
+    @Test("rapid toggle stop before queued startup never opens the microphone later")
+    func rapidToggleStopBeforeStartup() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.managerQueue.suspend()
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        let sessionID = harness.manager.currentSessionID
+        harness.manager.stop()
+        #expect(sessionID != nil)
+        #expect(harness.manager.currentSessionID == nil)
+        harness.managerQueue.resume()
+        harness.wait()
+
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.manager.currentState == .idle)
+        #expect(harness.events.contains { event in
+            if case .stopped(let stoppedID, let url) = event {
+                return stoppedID == sessionID && url == nil
+            }
+            return false
+        })
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        #expect(harness.manager.currentSessionID != sessionID)
+        #expect(harness.recorder.startCalls == 1)
+        harness.manager.stop()
+        harness.wait()
+        #expect(harness.manager.currentState == .idle)
+    }
+
     @Test("stop restores ducking and emits wav URL")
     func stopRestoresDuckingAndEmitsWavURL() {
         let harness = Harness(routeKind: .speakerLike)

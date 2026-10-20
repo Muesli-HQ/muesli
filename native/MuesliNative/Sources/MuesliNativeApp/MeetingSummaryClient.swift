@@ -18,6 +18,9 @@ enum MeetingSummaryError: LocalizedError {
         case let .emptyResponse(backend):
             return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
         case let .requestFailed(backend, underlying):
+            if underlying is MeetingSummaryOutputPolicy.OutputError {
+                return "\(backend) could not generate meeting notes. \(underlying.localizedDescription)"
+            }
             if backend == "Custom LLM", let guidance = CustomLLMConnectionGuidance.message(for: underlying) {
                 return "Custom LLM could not be reached while generating meeting notes. \(guidance)"
             }
@@ -27,7 +30,6 @@ enum MeetingSummaryError: LocalizedError {
 }
 
 enum AnthropicModelPolicy {
-    static let summaryMaxOutputTokens = AnthropicAPISettings.hostedSummaryMaxOutputTokens
     static let titleMaxOutputTokens = 1_024
     static let cleanupMaxOutputTokens = 12_000
 
@@ -58,7 +60,8 @@ enum MeetingSummaryRetryPolicy {
             switch claudeError {
             case .timedOut, .emptyResponse:
                 return true
-            case .unavailable, .inputTooLarge, .instructionsTooLarge, .failed:
+            case .unavailable, .inputTooLarge, .instructionsTooLarge, .failed,
+                 .invalidResponse, .processFailed, .launchFailed:
                 return false
             }
         }
@@ -106,6 +109,17 @@ enum MeetingSummaryRetryPolicy {
     }
 
     private static func isPermanentRequestFailure(_ error: Error) -> Bool {
+        if let outputError = error as? MeetingSummaryOutputPolicy.OutputError {
+            switch outputError {
+            case .modelLimitUnavailable, .outputLimitReached, .contextWindowExceeded: return true
+            case .modelLimitRequestFailed(let status): return !isTransientHTTPStatus(status)
+            case .provider(let type, _):
+                // SSE errors arrive with HTTP 200. Retry only documented transient types;
+                // unknown or missing types need user action rather than repeated paid calls.
+                return !["rate_limit_error", "api_error", "timeout_error", "overloaded_error"].contains(type ?? "")
+            default: break
+            }
+        }
         if error is CancellationError || error is ChatGPTAuthError {
             return true
         }
@@ -168,7 +182,6 @@ enum MeetingSummaryClient {
     private static let defaultOpenRouterModel = "openrouter/free"
     private static let defaultChatGPTModel = "gpt-6.1-sol"
     private static let defaultOllamaModel = "qwen3.5"
-    private static let defaultSummaryMaxOutputTokens = 2500
     private static let participantPromptNameCharacterLimit = 200
     private static let participantPromptCharacterLimit = 4_000
     private static let titlePromptCharacterLimit = 6_000
@@ -793,8 +806,10 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
             "text": ["verbosity": "low"],
-            "max_output_tokens": defaultSummaryMaxOutputTokens,
         ]
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(config.meetingSummaryMaxOutputTokens) {
+            body["max_output_tokens"] = limit
+        }
         if let effort = ReasoningEffortPolicy.apiValue(
             for: model,
             preferred: config.meetingSummaryReasoningEffort
@@ -858,15 +873,17 @@ enum MeetingSummaryClient {
             visualContext: visualContext,
             previousMeetingNotes: previousMeetingNotes
         )
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": userPrompt],
             ],
-            "max_tokens": defaultSummaryMaxOutputTokens,
         ]
 
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(config.meetingSummaryMaxOutputTokens) {
+            body["max_tokens"] = limit
+        }
         var request = URLRequest(url: openRouterURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -973,7 +990,7 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
             "stream": false,
-            "options": ["num_predict": defaultSummaryMaxOutputTokens],
+            "options": ["num_predict": MeetingSummaryOutputPolicy.normalizedLimit(config.meetingSummaryMaxOutputTokens) ?? -1],
         ]
 
         var request = URLRequest(url: chatURL)
@@ -1200,7 +1217,9 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-        body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = defaultSummaryMaxOutputTokens
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(config.meetingSummaryMaxOutputTokens) {
+            body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = limit
+        }
 
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = timeout
@@ -1264,9 +1283,20 @@ enum MeetingSummaryClient {
             visualContext: visualContext,
             previousMeetingNotes: previousMeetingNotes
         )
+        let outputLimit: Int
+        do {
+            outputLimit = try await MeetingSummaryOutputPolicy.anthropicLimit(
+                model: model, requested: config.meetingSummaryMaxOutputTokens,
+                messagesURL: requestURL, apiKey: apiKey, workspaceID: workspaceID,
+                extraHeaders: extraHeaders, send: send
+            )
+        } catch {
+            throw summaryRequestError(backend: backend, error: error)
+        }
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": backend == "Anthropic" ? AnthropicModelPolicy.summaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
+            "max_tokens": outputLimit,
+            "stream": MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: outputLimit),
             "system": instructions,
             "messages": [
                 ["role": "user", "content": userPrompt],
@@ -1287,11 +1317,8 @@ enum MeetingSummaryClient {
         do {
             let (data, response) = try await send(request)
             try validateHTTPResponse(response, data: data, backend: backend)
-            guard
-                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let text = extractAnthropicText(from: json),
-                !text.isEmpty
-            else {
+            let text = try MeetingSummaryOutputPolicy.anthropicText(from: data, redactProviderErrors: backend == "Custom LLM")
+            guard !text.isEmpty else {
                 if backend != "Custom LLM", let message = extractErrorMessage(from: data) {
                     throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
                 }
@@ -1303,7 +1330,7 @@ enum MeetingSummaryClient {
         }
     }
 
-    private static func extractOpenAIText(from payload: [String: Any]) -> String? {
+    static func extractOpenAIText(from payload: [String: Any]) -> String? {
         if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
             return outputText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -1379,7 +1406,7 @@ enum MeetingSummaryClient {
         return MeetingSummaryError.requestFailed(backend: backend, underlying: error)
     }
 
-    private static func extractOpenRouterText(from payload: [String: Any]) -> String? {
+    static func extractOpenRouterText(from payload: [String: Any]) -> String? {
         let choices = payload["choices"] as? [[String: Any]] ?? []
         guard let message = choices.first?["message"] as? [String: Any] else {
             return nil

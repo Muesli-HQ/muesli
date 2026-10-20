@@ -232,8 +232,11 @@ struct MeetingsView: View {
                     meeting: meeting,
                     controller: controller,
                     appState: appState,
-                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) },
-                    backLabel: "Back to Meetings"
+                    onBack: {
+                        if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
+                        else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
+                    },
+                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {
@@ -287,7 +290,7 @@ struct MeetingsView: View {
                 if presentation.meetings.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: MuesliTheme.spacing12) {
+                    LazyVStack(spacing: 0) {
                         ForEach(presentation.meetings) { meeting in
                             MeetingListItemView(
                                 record: meeting,
@@ -310,7 +313,7 @@ struct MeetingsView: View {
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)

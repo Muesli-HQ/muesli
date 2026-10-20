@@ -3,6 +3,8 @@ import Foundation
 struct HostedDictationResult: Equatable, Sendable {
     let text: String
     let backend: String
+    var model: String? = nil
+    var endpoint: String? = nil
 }
 
 protocol HostedDictationSession: AnyObject {
@@ -14,10 +16,12 @@ protocol HostedDictationSession: AnyObject {
 
 final class OpenAIHostedDictationSession: HostedDictationSession {
     private let stream: OpenAIRealtimeDictationStream
+    private let model: String
 
     let acceptsLiveAudio = true
 
     init(configuration: OpenAIDictationConfiguration) {
+        model = configuration.model
         stream = OpenAIRealtimeDictationStream(configuration: configuration)
     }
 
@@ -26,7 +30,8 @@ final class OpenAIHostedDictationSession: HostedDictationSession {
     }
 
     func finish(recordedWAVURL _: URL) async throws -> HostedDictationResult {
-        HostedDictationResult(text: try await stream.finish(), backend: "openai-realtime")
+        HostedDictationResult(text: try await stream.finish(), backend: "openai-realtime", model: model,
+            endpoint: OpenAIRealtimeProtocol.endpoint.absoluteString)
     }
 
     func cancel() {
@@ -61,7 +66,9 @@ final class OpenRouterHostedDictationSession: HostedDictationSession, @unchecked
         }
         defer { lock.withLock { self.task = nil } }
         let result = try await task.value
-        return HostedDictationResult(text: result.text, backend: "openrouter-stt")
+        return HostedDictationResult(text: result.text, backend: "openrouter-stt",
+            model: OpenRouterTranscriptionClient.normalizedModel(configuration.model),
+            endpoint: OpenRouterTranscriptionClient.endpoint.absoluteString)
     }
 
     func cancel() {

@@ -189,7 +189,7 @@ private final class IdleShortcutPillView: NSView {
 
 @MainActor
 final class FloatingIndicatorController: NSObject {
-    private let notchIndicator = NotchIndicatorController()
+    private let notchIndicator: NotchIndicatorController
     private var question: ComputerUseQuestionSession?
     private var questionReturnFrame: CGRect?
     private var questionHostingView: NSHostingView<ComputerUseQuestionView>?
@@ -263,7 +263,9 @@ final class FloatingIndicatorController: NSObject {
         case waiting
     }
 
-    init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+    init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         notchIndicator injectedNotch: NotchIndicatorController? = nil) {
+        self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
         self.pointerLocation = pointerLocation
         super.init()
@@ -309,6 +311,15 @@ final class FloatingIndicatorController: NSObject {
     enum InstructionMode { case quill, computerUse }
     var instructionMode: InstructionMode?
     private(set) var notchInstruction: String?
+    private(set) var notchToolResults: [NotchToolResult] = []
+
+    func recordComputerUseToolResult(_ event: ComputerUseTraceEvent, config: AppConfig) {
+        guard instructionMode == .computerUse, state == .transcribing,
+              let result = NotchToolResult(event),
+              !notchToolResults.contains(where: { $0.id == result.id }) else { return }
+        notchToolResults = Array((notchToolResults + [result]).suffix(3))
+        setState(state, config: config)
+    }
     private var instructionAppName = ""
     private var instructionAppIcon: NSImage?
     private var instructionAppBundleID = ""
@@ -634,6 +645,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
+        notchToolResults = []
         instructionMode = .computerUse
         notchInstruction = Self.normalizedInstructionTranscript(transcript)
         showInstructionTranscript(
@@ -645,6 +657,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showQuilInstruction(_ instruction: String, config: AppConfig) {
+        notchToolResults = []
         instructionMode = .quill
         notchInstruction = Self.normalizedInstructionTranscript(instruction)
         showInstructionTranscript(
@@ -689,12 +702,21 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .idle {
+            // Activity takes ownership of presentation from background loading.
+            // Late progress/completion must not replace it or reset it to idle.
+            deferredLoadingMessage = nil
+            isShowingLoading = false
+            loadingSpinner?.stopAnimation(nil)
+            loadingSpinner?.isHidden = true
+        }
         if state != .transcribing, let question {
             self.question = nil
             restoreFloatingQuestionSurface()
             question.cancel()
         }
         if state == .idle {
+            notchToolResults = []
             instructionMode = nil
             notchInstruction = nil
             instructionAppName = ""
@@ -744,7 +766,8 @@ final class FloatingIndicatorController: NSObject {
                     (instructionMode == .computerUse ? NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "Computer use") ?? Self.idleIndicatorIcon(config: config) : Self.idleIndicatorIcon(config: config)),
                 accent: RecordingIndicatorPalette.accent(hex: config.recordingColorHex),
                 instruction: notchInstruction, instructionStatus: instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle,
-                appName: instructionAppName, appIcon: instructionAppIcon, question: question) {
+                appName: instructionAppName, appIcon: instructionAppIcon, question: question,
+                toolResults: notchToolResults) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 return
@@ -927,12 +950,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
-        notchIndicator.hide()
         // The cursor bubble reuses this panel and disables its mouse events.
         // While a run is stoppable, deliberately keep the stationary transcript
         // and Stop control for the entire run. A simultaneous cursor bubble
         // requires a separate panel; switching this one would hide Stop.
-        guard !isComputerUseCancellationAvailable else { return }
+        guard state == .idle, !isComputerUseCancellationAvailable else { return }
+        notchIndicator.hide()
         hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
@@ -1129,7 +1152,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
-        guard !isMeetingRecording else { return }
+        guard state == .idle, !isMeetingRecording else { return }
         if isDragging {
             deferredLoadingMessage = message
             return
@@ -1249,8 +1272,8 @@ final class FloatingIndicatorController: NSObject {
         isShowingLoading = false
         loadingSpinner?.stopAnimation(nil)
         loadingSpinner?.isHidden = true
-        // Only reset to idle if no dictation started during the warmup window
-        if state == .idle || state == .preparing {
+        // Loading does not own an activity that started during warmup.
+        if state == .idle {
             setState(.idle, config: configStore.load())
         }
     }
@@ -1603,7 +1626,7 @@ final class FloatingIndicatorController: NSObject {
         frameSize: NSSize,
         config: AppConfig
     ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
-        let title = "Hold \(config.dictationHotkey.label) to dictate"
+        let title = config.dictationStartPrompt
         let font = NSFont.systemFont(ofSize: 13, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
         let pad: CGFloat = 14
@@ -2284,7 +2307,7 @@ final class FloatingIndicatorController: NSObject {
                 size = NSSize(width: pill.width + 4, height: 40)
             } else {
                 size = isHovered
-                    ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
+                    ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width, isToggle: config.isDictationCombinationToggle)
                     : NSSize(width: 44, height: 28)
             }
         case .preparing: size = NSSize(width: 76, height: 22)
@@ -2398,7 +2421,7 @@ final class FloatingIndicatorController: NSObject {
                 .clear,
                 .colorWith(hex: 0xFFFFFF, alpha: isHovered ? 0.14 : 0.22),
                 "",
-                isHovered ? "Hold \(config.dictationHotkey.label) to dictate" : "",
+                isHovered ? config.dictationStartPrompt : "",
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 isHovered ? 1.0 : 0.90
@@ -2507,8 +2530,8 @@ final class FloatingIndicatorController: NSObject {
         transcribingPillSize(title: title, screenWidth: screenWidth)
     }
 
-    static func idleHoverPillSize(hotkeyLabel: String, screenWidth: CGFloat) -> NSSize {
-        let title = "Hold \(hotkeyLabel) to dictate"
+    static func idleHoverPillSize(hotkeyLabel: String, screenWidth: CGFloat, isToggle: Bool = false) -> NSSize {
+        let title = "\(isToggle ? "Press" : "Hold") \(hotkeyLabel) to dictate"
         let font = NSFont.systemFont(ofSize: 11, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         let preferredWidth = 42 + textWidth + 22

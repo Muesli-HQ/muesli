@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "muesli-cli", targets: ["MuesliCLI"]),
     ],
     dependencies: [
+        .package(path: "../AIElementsSwift"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.5"),
@@ -38,6 +39,7 @@ let package = Package(
             name: "MuesliNativeApp",
             dependencies: [
                 "MuesliCore",
+                .product(name: "AIElementsSwift", package: "AIElementsSwift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "LLM", package: "LLM.swift"),
@@ -103,9 +105,14 @@ let package = Package(
             url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
             checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
         ),
+        .target(
+            name: "AudioGraphTestSupport",
+            path: "Tests/AudioGraphTestSupport",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

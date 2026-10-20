@@ -196,15 +196,18 @@ struct ComputerUseSettingsTests {
         #expect(h.applies == 0)
     }
 
-    @Test("planning budget spans requests and rejects a late write")
+    @Test("planning budget spans requests and rejects a late write", .timeLimit(.minutes(1)))
     func cumulativePlanning() async {
         let h = Harness()
+        // Exercise the injected cumulative clock without racing the real per-call
+        // watchdog when parallel CI tests keep the main actor busy.
+        let budget: TimeInterval = 3_600
         var time: TimeInterval = 0
         var calls = 0
         let result = await ComputerUseSettings.run(command: "Switch to notch", settings: [h.setting],
-            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: 10, now: { time }) { _, _ in
+            config: { h.config }, persistedConfig: { h.saved }, planningTimeout: budget, now: { time }) { _, _ in
                 calls += 1
-                time += 6
+                time += budget * 0.6
                 return calls == 1
                     ? ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
                     : ("set_muesli_setting", #"{"setting":"indicator","value":"notch"}"#)
@@ -214,18 +217,21 @@ struct ComputerUseSettingsTests {
         #expect(h.applies == 0)
     }
 
-    @Test("answering a question does not consume the planning budget")
+    @Test("answering a question does not consume the planning budget", .timeLimit(.minutes(1)))
     func questionTimeExcluded() async {
         let h = Harness()
+        // Scale the injected clock, as in cumulativePlanning, so a busy main actor
+        // cannot race the real watchdog. The answer still exceeds the entire budget.
+        let budget: TimeInterval = 3_600
         var time: TimeInterval = 0
         var calls = 0
         let result = await ComputerUseSettings.run(command: "Switch indicator", settings: [h.setting],
             config: { h.config }, persistedConfig: { h.saved }, ask: { _ in
-                time += 1_000
+                time += budget * 2
                 return "Notch"
-            }, planningTimeout: 10, now: { time }) { _, _ in
+            }, planningTimeout: budget, now: { time }) { _, _ in
                 calls += 1
-                time += 1
+                time += budget * 0.1
                 switch calls {
                 case 1: return ("inspect_muesli_setting", #"{"setting":"indicator"}"#)
                 case 2: return ("ask_user_question", #"{"question":"Which indicator?","options":["Notch","Classic"]}"#)
@@ -233,6 +239,7 @@ struct ComputerUseSettingsTests {
                 }
             }
         #expect(result?.status == .done)
+        #expect(calls == 3)
         #expect(h.applies == 1)
     }
 
@@ -445,6 +452,12 @@ struct ComputerUseSettingsTests {
         #expect(settings.first { $0.id == "cua_shortcut" }?.requestPermission != nil)
         #expect(settings.first { $0.id == "bodhan_output" }?.choices.map(\.id) == BodhanOutputMode.allCases.map(\.rawValue))
         #expect(settings.first { $0.id == "bodhan_language" }?.choices.map(\.id) == BodhanLanguage.allCases.map(\.rawValue))
+        #expect(settings.first { $0.id == "whisper_language" }?.choices.map(\.id) == WhisperKitLanguage.allCases.map(\.rawValue))
+        #expect(settings.first { $0.id == "nemotron_language" }?.choices.map(\.id) == Nemotron35Language.allCases.map(\.rawValue))
+        try await controller.applySetting("whisper_language", value: "ta")
+        #expect(configStore.load().resolvedWhisperLanguage == .tamil)
+        try await controller.applySetting("nemotron_language", value: "nl")
+        #expect(configStore.load().resolvedNemotron35Language == .dutch)
 
         #expect(settings.first { $0.id == "summary_anthropic_model" }?.choices.map(\.id) == SummaryModelPreset.anthropicModels.map(\.id))
         #expect(settings.first { $0.id == "summary_claude_code_model" }?.choices.map(\.id) == [""] + SummaryModelPreset.claudeCodeModels.map(\.id))
@@ -488,6 +501,96 @@ struct ComputerUseSettingsTests {
         #expect(!configStore.load().soundEnabled)
     }
 
+    @Test("voice rechecks Cantonese compatibility for both Whisper scopes", arguments: ["dictation", "meeting"])
+    func cantoneseVoiceCompatibility(scope: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.sttBackend = "whisper"
+        initial.sttModel = BackendOption.whisperLargeTurbo.model
+        initial.meetingTranscriptionBackend = "whisper"
+        initial.meetingTranscriptionModel = BackendOption.whisperLargeTurbo.model
+        initial.enableLiveStreamingPartials = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore,
+            downloadedBackendOptions: { [.whisperLargeTurbo, .whisperSmall] })
+        let definitions = controller.settingsDefinitions()
+        let setting = try #require(definitions.first { $0.id == "whisper_language" })
+        let inspected = setting.snapshot(config: controller.config)
+        #expect(inspected.unavailable["yue"] == nil)
+        controller.updateConfig {
+            if scope == "dictation" { $0.sttModel = BackendOption.whisperSmall.model }
+            else { $0.meetingTranscriptionModel = BackendOption.whisperSmall.model }
+        }
+        #expect((scope == "dictation" ? controller.config.sttModel : controller.config.meetingTranscriptionModel)
+            == BackendOption.whisperSmall.model)
+        #expect(setting.snapshot(config: controller.config).unavailable["yue"] != nil)
+        #expect(setting.snapshot(config: controller.config, source: .manualUI).unavailable["yue"] == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await MuesliSettings.apply(.init(setting: "whisper_language", value: "yue"),
+                settings: definitions, snapshots: [inspected], config: { controller.config },
+                persistedConfig: { configStore.load() })
+        }
+        #expect(configStore.load().resolvedWhisperLanguage == .auto)
+        // An inactive Large Turbo model card may configure the shared preference manually.
+        try await controller.applySetting("whisper_language", value: "yue")
+        #expect(configStore.load().resolvedWhisperLanguage == .cantonese)
+    }
+
+    @Test("Cantonese voice selection checks only active meeting transcription models",
+          arguments: MeetingLiveCaptionBackend.allCases)
+    func cantoneseVoiceMeetingFallback(backend: MeetingLiveCaptionBackend) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.sttBackend = "whisper"
+        initial.sttModel = BackendOption.whisperLargeTurbo.model
+        initial.meetingTranscriptionBackend = "whisper"
+        initial.meetingTranscriptionModel = BackendOption.whisperSmall.model
+        initial.enableLiveStreamingPartials = true
+        initial.meetingLiveCaptionBackend = backend.rawValue
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore,
+            downloadedBackendOptions: { [.whisperLargeTurbo, .whisperSmall] })
+        let definitions = controller.settingsDefinitions()
+        let setting = try #require(definitions.first { $0.id == "whisper_language" })
+        let inspected = setting.snapshot(config: controller.config)
+        #expect((inspected.unavailable["yue"] == nil) == backend.producesFinalTranscript)
+
+        if backend.producesFinalTranscript {
+            try await MuesliSettings.apply(.init(setting: "whisper_language", value: "yue"),
+                settings: definitions, snapshots: [inspected], config: { controller.config },
+                persistedConfig: { configStore.load() })
+            #expect(configStore.load().resolvedWhisperLanguage == .cantonese)
+            #expect(controller.config.meetingTranscriptionModel == BackendOption.whisperSmall.model)
+            controller.updateConfig {
+                $0.enableLiveStreamingPartials = false
+                $0.whisperLanguage = "auto"
+            }
+        }
+        // A preview-only or disabled live backend still uses Small for final text.
+        // Recheck even a snapshot taken while Cantonese was available.
+        #expect(setting.snapshot(config: controller.config).unavailable["yue"] != nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await MuesliSettings.apply(.init(setting: "whisper_language", value: "yue"),
+                settings: definitions, snapshots: [inspected], config: { controller.config },
+                persistedConfig: { configStore.load() })
+        }
+        #expect(configStore.load().resolvedWhisperLanguage == .auto)
+    }
+
     @Test("shortcut catalog applies all four assignments, validates combinations, and preserves conflicts")
     func shortcutAssignments() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -524,8 +627,8 @@ struct ComputerUseSettingsTests {
         #expect(await run("quill_hotkey", "key:59")?.status == .done)
         #expect(configStore.load().quilHotkey.keyCode == 59)
         #expect(!controller.config.enableQuilMode) // Assignment does not turn the feature on.
-        #expect(await run("dictation_hotkey", "key:56")?.status == .done)
-        #expect(await run("cua_hotkey", "key:62")?.status == .done)
+        #expect(await run("dictation_hotkey", "key:58")?.status == .done)
+        #expect(await run("cua_hotkey", "key:63")?.status == .done)
         #expect(await run("meeting_hotkey", "command+shift+r")?.status == .done)
         #expect(configStore.load().meetingRecordingHotkey == .meetingRecordingDefault)
         #expect(await run("quill_hotkey", "control+k")?.status == .done)
@@ -535,13 +638,140 @@ struct ComputerUseSettingsTests {
             _ = controller.updateDictationHotkey(HotkeyConfig(keyCode: 60, label: "Right Shift"))
         })
         #expect(conflict?.status == .failed)
-        #expect(conflict?.message == ShortcutHotkeyPolicy.conflictMessage)
+        #expect(conflict?.message == ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: controller.config.dictationHotkey))
         #expect(ShortcutAssignment.value(for: configStore.load().quilHotkey) == "control+k")
         #expect(await run("quill_hotkey", "command+shift+k")?.status == .failed)
-        #expect(await run("dictation_hotkey", "control+k")?.status == .failed)
+        #expect(await run("dictation_hotkey", "command+v")?.status == .failed)
         #expect(await run("cua_hotkey", "key:999")?.status == .failed)
         #expect(await run("meeting_hotkey", "command+escape")?.status == .failed)
         #expect(ShortcutAssignment.value(for: configStore.load().quilHotkey) == "control+k")
+    }
+
+    @Test("toggle setup is offered in the UI and saves the validated shortcut and mode together")
+    func toggleShortcutPreparation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.enableMeetingRecordingHotkey = true
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let setting = try #require(controller.settingsDefinitions().first { $0.id == "dictation_activation" })
+        #expect(setting.shortcutCapturePreparation("toggle") == .dictation)
+        #expect(setting.shortcutCapturePreparation("push_to_talk") == nil)
+        #expect(setting.snapshot(config: initial).unavailable["toggle"] != nil)
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("dictation_activation", value: "toggle")
+        }
+
+        let chord = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 2)
+        #expect(controller.beginShortcutCapture())
+        #expect(setting.shortcutCapturePreparation("toggle") == nil)
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("dictation_activation", value: "toggle", dictationToggleShortcut: chord)
+        }
+        controller.endShortcutCapture()
+        #expect(configStore.load().dictationHotkey == initial.dictationHotkey)
+        #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
+
+        for invalid in [HotkeyConfig.default, .combination(modifiers: .shift, keyCode: 2), .meetingRecordingDefault] {
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("dictation_activation", value: "toggle", dictationToggleShortcut: invalid)
+            }
+            #expect(configStore.load().dictationHotkey == initial.dictationHotkey)
+            #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
+        }
+        try await controller.applySetting("dictation_activation", value: "toggle", dictationToggleShortcut: chord)
+        #expect(configStore.load().dictationHotkey == chord)
+        #expect(configStore.load().dictationCombinationActivation == .toggle)
+        #expect(controller.appState.config.isDictationCombinationToggle)
+        #expect(setting.shortcutCapturePreparation("toggle") == nil)
+    }
+
+    @Test("shared settings reject prefix overlaps without saving or enabling conflicting shortcuts")
+    func shortcutPrefixConflictsPreserveSettings() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.dictationHotkey = HotkeyConfig(keyCode: 59, label: "Left Ctrl")
+        initial.computerUseHotkey = .combination(modifiers: .control, keyCode: 2)
+        initial.enableComputerUseHotkey = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        // UI and voice both reach the same canonical setter.
+        for id in ["quill_hotkey", "cua_hotkey", "meeting_hotkey"] {
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting(id, value: "control+d")
+            }
+            #expect(configStore.load().dictationHotkey == initial.dictationHotkey)
+            #expect(configStore.load().quilHotkey == initial.quilHotkey)
+            #expect(configStore.load().computerUseHotkey == initial.computerUseHotkey)
+            #expect(configStore.load().meetingRecordingHotkey == initial.meetingRecordingHotkey)
+        }
+        let result = controller.updateComputerUseHotkeyEnabled(true)
+        #expect(result.message == ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: initial.dictationHotkey))
+        #expect(!result.didUpdate)
+        #expect(!configStore.load().enableComputerUseHotkey)
+        #expect(configStore.load().computerUseHotkey == initial.computerUseHotkey)
+
+        // Reverse direction: assigning a bare modifier must also reject a chord
+        // owned by an enabled action, including guided Toggle setup.
+        controller.updateConfig {
+            $0.quilHotkey = .combination(modifiers: .option, keyCode: 2)
+            $0.enableQuilMode = true
+        }
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("dictation_hotkey", value: "key:61")
+        }
+        await #expect(throws: MuesliSettings.Failure.self) {
+            try await controller.applySetting("dictation_activation", value: "toggle",
+                dictationToggleShortcut: .combination(modifiers: [.option, .shift], keyCode: 2))
+        }
+        #expect(configStore.load().dictationHotkey == initial.dictationHotkey)
+        #expect(configStore.load().dictationCombinationActivation == .pushToTalk)
+    }
+
+    @Test("a disabled Computer Use shortcut can be repaired without changing Dictation or enabling Computer Use")
+    func repairDisabledComputerUseShortcut() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.dictationHotkey = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+        initial.computerUseHotkey = initial.dictationHotkey
+        initial.enableComputerUseHotkey = false
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+
+        #expect(!controller.updateComputerUseHotkeyEnabled(true).didUpdate)
+        // The Change button uses the shared settings path even with the toggle off.
+        let replacement = HotkeyConfig(keyCode: 61, label: "Right Option")
+        try await controller.applySetting("cua_hotkey", value: ShortcutAssignment.value(for: replacement))
+        let saved = configStore.load()
+        #expect(saved.computerUseHotkey == replacement)
+        #expect(saved.dictationHotkey == initial.dictationHotkey)
+        #expect(saved.enablePushToTalk == initial.enablePushToTalk)
+        #expect(!saved.enableComputerUseHotkey)
+        #expect(ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
+            currentHotkey: saved.computerUseHotkey, dictationHotkey: saved.dictationHotkey,
+            meetingRecordingHotkey: saved.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: saved.enableMeetingRecordingHotkey).result.didUpdate)
     }
 
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")
@@ -550,7 +780,7 @@ struct ComputerUseSettingsTests {
             for key in ShortcutAssignment.singleKeys {
                 #expect(target.hotkey(for: ShortcutAssignment.value(for: key)) == key)
             }
-            for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+1", "control+k+", "run shell"] {
+            for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+k+", "run shell"] {
                 #expect(target.hotkey(for: invalid) == nil)
             }
         }
@@ -558,8 +788,122 @@ struct ComputerUseSettingsTests {
         #expect(ShortcutAssignment.quil.hotkey(for: "command+shift+k") == nil)
         #expect(ShortcutAssignment.meetingRecording.hotkey(for: "command+control+option+shift+k") != nil)
         #expect(ShortcutAssignment.presetCycle.hotkey(for: "control+option+p") != nil)
-        #expect(ShortcutAssignment.dictation.combinationRules == nil)
         #expect(ShortcutAssignment.computerUse.combinationRules == nil)
+    }
+
+    @Test("settings codec and physical capture agree for each supported key and modifier mask")
+    func combinationCodecParity() throws {
+        let flags: [NSEvent.ModifierFlags] = [.command, .control, .option, .shift]
+        for action in ShortcutAssignment.allCases {
+            for code in UInt16(0)...127 where HotkeyConfig.keyLabel(for: code) != nil {
+                for mask in 1..<16 {
+                    let modifiers = flags.enumerated().reduce(into: NSEvent.ModifierFlags()) { result, item in
+                        if mask & (1 << item.offset) != 0 { result.insert(item.element) }
+                    }
+                    let chord = HotkeyConfig.combination(modifiers: modifiers, keyCode: code)
+                    let accepted = ShortcutHotkeyPolicy.allowsCombination(chord, action: action)
+                    let encoded = ShortcutAssignment.value(for: chord)
+                    #expect(action.hotkey(for: encoded) == (accepted ? chord : nil))
+                    var capture = HotkeyShortcutCaptureState(target: action)
+                    capture.keyDown(keyCode: code, flags: modifiers, isRepeat: false)
+                    capture.keyUp(keyCode: code, flags: [])
+                    #expect(capture.completed == (accepted ? chord : nil))
+                }
+            }
+        }
+        let rules = try #require(ShortcutAssignment.dictation.combinationRules)
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(rules)) as? [String: Any])
+        #expect(json["keys"] as? [String] == rules.keys)
+        #expect(rules.keys == rules.keys.sorted())
+        #expect(Set(rules.keys).count == rules.keys.count)
+        for entry in [("control+option+left_bracket", UInt16(33)), ("control+option+f20", 90), ("control+option+space", 49)] {
+            #expect(ShortcutAssignment.dictation.hotkey(for: entry.0)?.combinationKeyCode == entry.1)
+        }
+        for malformed in ["control++d", "Control+d", "option+control+d", "control+escape", "control+return", "control+left ", "command+a", "shift+d"] {
+            #expect(ShortcutAssignment.dictation.hotkey(for: malformed) == nil)
+        }
+    }
+
+    @Test("recording mode uses the same guarded, verified settings transaction for UI and voice", arguments: [false, true])
+    func recordingModeTransactions(manual: Bool) async throws {
+        try await withShortcutSettings { controller, store in
+            @MainActor func select(_ id: String, _ value: String) async throws {
+                let definitions = controller.settingsDefinitions()
+                let source: MuesliSettings.ApplySource = manual ? .manualUI : .voice
+                _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
+                    snapshots: definitions.map { $0.snapshot(config: controller.config, source: source) },
+                    source: source, config: { controller.config }, persistedConfig: { store.load() })
+            }
+            await #expect(throws: MuesliSettings.Failure.self) { try await select("dictation_activation", "toggle") }
+            #expect(store.load().dictationCombinationActivation == .pushToTalk)
+            #expect(throws: MuesliSettings.Failure.self) { try controller.updateDictationCombinationActivation(.toggle) }
+
+            try await select("dictation_hotkey", "control+option+f8")
+            #expect(store.load().dictationHotkey.combinationKeyCode == 100)
+            #expect(store.load().dictationHotkey.resolvedCombinationModifiers == [.control, .option])
+            try await select("dictation_activation", "toggle")
+            #expect(store.load().isDictationCombinationToggle)
+
+            let captureStarted = controller.beginShortcutCapture()
+            #expect(captureStarted)
+            await #expect(throws: MuesliSettings.Failure.self) { try await select("dictation_activation", "push_to_talk") }
+            #expect(store.load().isDictationCombinationToggle)
+            controller.endShortcutCapture()
+
+            try await select("dictation_activation", "push_to_talk")
+            #expect(!store.load().isDictationCombinationToggle)
+            try await select("dictation_activation", "toggle")
+            try await select("dictation_hotkey", "key:58")
+            #expect(store.load().dictationCombinationActivation == .pushToTalk)
+            #expect(controller.config.dictationHotkey.keyCode == 58)
+        }
+    }
+
+    @Test("voice planner discovers extended dictation keys and persists a chord through the shared catalog")
+    func plannerAssignsDictationChord() async throws {
+        try await withShortcutSettings { controller, store in
+            let result = await ComputerUseSettings.run(command: "Set my dictation shortcut",
+                settings: controller.settingsDefinitions(), config: { controller.config }, persistedConfig: { store.load() }, plan: { _, catalog in
+                guard let detail = catalog.first(where: { $0.id == "dictation_hotkey" }), detail.shortcutCombination != nil else {
+                    return ("inspect_muesli_setting", #"{"setting":"dictation_hotkey"}"#)
+                }
+                #expect(detail.shortcutCombination?.keys.contains("right") == true)
+                return ("set_muesli_setting", #"{"setting":"dictation_hotkey","value":"option+right"}"#)
+            })
+            #expect(result?.status == .done)
+            #expect(store.load().dictationHotkey == .combination(modifiers: .option, keyCode: 124))
+        }
+    }
+
+    @Test("summary output limit uses the shared setting and verifies persistence")
+    func summaryOutputSetting() async throws {
+        try await withShortcutSettings { controller, store in
+            controller.updateConfig { $0.meetingSummaryBackend = "openai" }
+            try await controller.applySetting("summary_output_limit", value: "20000")
+            #expect(controller.config.meetingSummaryMaxOutputTokens == 20_000)
+            #expect(store.load().meetingSummaryMaxOutputTokens == 20_000)
+            try await controller.applySetting("summary_output_limit", value: "0")
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
+            controller.updateConfig { $0.meetingSummaryBackend = "chatgpt" }
+            do {
+                try await controller.applySetting("summary_output_limit", value: "20000")
+                Issue.record("Unsupported backend must not silently accept an output cap")
+            } catch {}
+            #expect(store.load().meetingSummaryMaxOutputTokens == nil)
+        }
+    }
+
+    private func withShortcutSettings(_ exercise: @MainActor (MuesliController, ConfigStore) async throws -> Void) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shortcut-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
+        try database.migrateIfNeeded()
+        let config = ConfigStore(supportDirectory: root)
+        config.save(AppConfig())
+        let runtime = RuntimePaths(repoRoot: root, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let subject = MuesliController(runtime: runtime, dictationStore: database, configStore: config)
+        try await exercise(subject, config)
     }
 
     @Test("source-only voice requests ask for a model without changing settings", arguments: [0, 1, 2])

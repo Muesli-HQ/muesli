@@ -3,6 +3,7 @@ import MuesliCore
 
 struct AboutView: View {
     let appState: AppState
+    let onShare: (ContributionMilestoneAction) -> Void
     let onOpenManualDiagnosticReport: () -> Void
     let onSetAutomaticDiagnosticIssuePrompts: (Bool) -> Void
 
@@ -99,6 +100,21 @@ struct AboutView: View {
                         .labelsHidden()
                         .help("Suggest an anonymized GitHub issue after an app error")
                         .accessibilityLabel("Automatic issue reporting prompts")
+                    }
+                }
+
+                if ContributionSocialShare.completedWordMilestone(totalWords: appState.dictationStats.totalWords) != nil {
+                    sectionHeader("Spread the Word")
+                    aboutCard {
+                        aboutRow("Share Muesli") {
+                            HStack(spacing: MuesliTheme.spacing12) {
+                                Button("Post on X") { onShare(.tweetAboutMuesli) }
+                                Button("LinkedIn") { onShare(.postOnLinkedIn) }
+                            }
+                            .buttonStyle(.plain)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.accent)
+                        }
                     }
                 }
 

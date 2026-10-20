@@ -5,19 +5,62 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    /// The menu and voice executor share the same persisted mode and controller
+    /// validation. Only the manual menu may prepare a missing chord by capture.
+    private func recordingModeDefinition(capturedShortcut: HotkeyConfig?) -> MuesliSetting {
+        typealias Mode = HotkeyMonitor.CombinationActivation
+        let modes: [Mode] = [.pushToTalk, .toggle]
+        var definition = MuesliSetting(
+            id: "dictation_activation", label: "Dictation recording mode",
+            choices: modes.map { mode in
+                MuesliSetting.Choice(id: mode.rawValue,
+                    label: mode == .toggle ? "Press to toggle" : "Hold to talk")
+            },
+            read: { config in config.dictationCombinationActivation.rawValue },
+            unavailable: { selection in
+                if let busy = self.dictationActivationUnavailableReason { return busy }
+                switch Mode(rawValue: selection) {
+                case .toggle:
+                    let candidate = capturedShortcut ?? self.config.dictationHotkey
+                    return candidate.isCombination ? nil : "Choose a modifier + key before enabling Press to toggle."
+                case .pushToTalk: return nil
+                case nil: return "Unknown dictation recording mode."
+                }
+            },
+            apply: { selection in
+                guard let mode = Mode(rawValue: selection) else {
+                    throw MuesliSettings.Failure.rejected("Unknown dictation recording mode.")
+                }
+                try self.updateDictationCombinationActivation(mode, shortcut: capturedShortcut)
+            })
+        definition.shortcutCapturePreparation = { selection in
+            if Mode(rawValue: selection) == .toggle && self.dictationActivationUnavailableReason == nil {
+                return self.config.dictationHotkey.isCombination ? nil : .dictation
+            }
+            return nil
+        }
+        return definition
+    }
+
     /// Voice applies to selected transcription models; manual model cards can
     /// also configure a shared preference before switching to another model.
-    private func voiceBodhanModels() -> [BodhanModel] {
+    private func voiceTranscriptionModels() -> [(backend: String, model: String)] {
         var models = [(config.sttBackend, config.sttModel)]
         // The saved meeting model is only a recovery fallback when live speech
         // produces the final transcript; it must not restrict active dictation.
         if !(config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript) {
             models.append((config.meetingTranscriptionBackend, config.meetingTranscriptionModel))
         }
-        return models.compactMap { backend, model in backend == "bodhan" ? BodhanModel(rawValue: model) : nil }
+        return models
     }
 
-    func settingsDefinitions() -> [MuesliSetting] {
+    private func voiceBodhanModels() -> [BodhanModel] {
+        voiceTranscriptionModels().compactMap { backend, model in
+            backend == "bodhan" ? BodhanModel(rawValue: model) : nil
+        }
+    }
+
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -113,6 +156,18 @@ extension MuesliController {
         func shortcutPermission(_ enabled: Bool) -> String? {
             self.settingsShortcutPermission(enabled: enabled, pushToTalk: false)
         }
+        var pasteChoices = [Choice(id: "automatic", label: PasteShortcut.automatic.displayLabel)]
+        if case .custom = config.pasteShortcut {
+            pasteChoices.append(Choice(id: "custom", label: config.pasteShortcut.displayLabel))
+        }
+        add("paste_shortcut", "Paste shortcut", pasteChoices, read: {
+            if case .custom = $0.pasteShortcut { return "custom" }
+            return "automatic"
+        }) { value in
+            // Custom recording is a freeform interaction; this menu only selects
+            // Automatic or revalidates the currently saved custom chord.
+            try checkShortcut(self.updatePasteShortcut(value == "automatic" ? .automatic : self.config.pasteShortcut))
+        }
         for target in ShortcutAssignment.allCases {
             settings.append(MuesliSetting(id: target.settingID, label: target.label,
                 choices: ShortcutAssignment.singleKeys.map {
@@ -129,6 +184,7 @@ extension MuesliController {
                 }, shortcutAssignment: target,
                 voiceRestriction: target == .presetCycle ? "Preset switching shortcut can only be changed manually in Settings." : nil))
         }
+        settings.append(recordingModeDefinition(capturedShortcut: dictationToggleShortcut))
         toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
         toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
         toggle("preset_cycle_shortcut", "Cycle dictation presets shortcut", \.enablePresetCyclingHotkey, voiceRestriction: "Preset switching shortcut can only be changed manually in Settings.") { try checkShortcut(self.updatePresetCycleHotkeyEnabled($0)) }
@@ -214,7 +270,16 @@ extension MuesliController {
         add("apple_speech_language", "Apple Speech language", appState.settingsAppleSpeechLanguages.map { .init(id: $0.id, label: $0.label) },
             read: { $0.resolvedAppleSpeechLanguage }) { self.selectAppleSpeechLanguage($0) }
         textMenu("cohere_language", "Cohere language", CohereTranscribeLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.cohereLanguage)
-        textMenu("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.whisperLanguage)
+        add("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.whisperLanguage }, voiceUnavailable: { value in
+                guard value == WhisperKitLanguage.cantonese.rawValue else { return nil }
+                return self.voiceTranscriptionModels().contains {
+                    $0.backend == "whisper" && !WhisperKitLanguage.cantonese.isSupported(by: $0.model)
+                }
+                    ? "Cantonese requires Whisper Large Turbo. Change the Whisper model in Models first." : nil
+            }) { value in
+                self.updateConfig { $0.whisperLanguage = value }
+            }
         let bodhanTargets = [MuesliSettingActivation.Target(id: "dictation_model", label: "Dictation"),
                              .init(id: "meeting_model", label: "Meetings")]
         func bodhanActivation(supports: @escaping (BodhanModel, String) -> Bool) -> MuesliSettingActivation {
@@ -288,9 +353,9 @@ extension MuesliController {
         textMenu("recording_format", "Meeting recording format", MeetingRecordingFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.meetingRecordingFileFormat)
         textMenu("export_content", "Meeting export content", MeetingExportContent.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportMarkdownContent)
         textMenu("export_format", "Meeting export format", MeetingAutoExportFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportFileFormat)
-        add("upcoming_meetings", "Upcoming meetings window", UpcomingMeetingsWindow.allCases.map { .init(id: String($0.dayCount), label: $0.label) },
-            read: { String($0.upcomingMeetingsDayCount) }) { value in
-            if let count = Int(value) { self.updateUpcomingMeetingsWindow(dayCount: count) }
+        add("upcoming_meetings", "Upcoming meetings window", UpcomingMeetingsWindow.allCases.map { .init(id: $0.settingID, label: $0.label) },
+            read: { $0.upcomingMeetingsWindow.settingID }) { value in
+            if let window = UpcomingMeetingsWindow.fromSettingID(value) { self.updateUpcomingMeetingsWindow(window) }
         }
         add("dictation_fallback_model", "Hosted dictation fallback model", backends.filter(\.supportsHostedDictationFallback).map { .init(id: backendID($0), label: $0.label) },
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
@@ -414,6 +479,18 @@ extension MuesliController {
             }
             return ""
         }, key: \.meetingSummaryReasoningEffort)
+        let summaryLimits = Set(MeetingSummaryOutputPolicy.presets + [config.meetingSummaryMaxOutputTokens].compactMap { $0 }).sorted()
+        add("summary_output_limit", "Meeting summary output token limit",
+            [Choice(id: "0", label: "No added limit (default)")] + summaryLimits.map {
+                Choice(id: String($0), label: "\($0.formatted()) tokens")
+            }, read: { String($0.meetingSummaryMaxOutputTokens ?? 0) }, unavailable: { value in
+                guard value != "0" else { return nil }
+                return [MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(.resolved(self.config.meetingSummaryBackend))
+                    ? "ChatGPT and Claude Code manage their own output limits. Select an API backend to set a limit."
+                    : nil
+            }) { value in
+                self.updateConfig { $0.meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(Int(value)) }
+            }
         for calendar in appState.availableEventKitCalendars {
             add("calendar_" + calendar.id, "Include calendar: " + calendar.sourceTitle + " / " + calendar.title,
                 [.init(id: "on", label: "Included"), .init(id: "off", label: "Hidden")],

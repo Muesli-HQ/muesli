@@ -2,11 +2,20 @@ import Foundation
 import FluidAudio
 import MuesliCore
 
+struct BodhanTranscription: Sendable {
+    let text: String
+    let processingTime: Double
+    let languageSamples: [BodhanLanguageSample]
+}
+
 enum BodhanOutputMode: String, CaseIterable, Codable, Sendable {
     case native, mixed, romanized
     var label: String { rawValue.capitalized }
     static func resolved(_ raw: String?) -> Self { raw.flatMap(Self.init(rawValue:)) ?? .mixed }
     func supported(for model: String) -> Self { BodhanModel(rawValue: model)?.isCore == false ? self : .native }
+    func supportsWordsBeforeCodeSwitch(modelID: String) -> Bool {
+        BodhanModel(rawValue: modelID)?.isCore == false && self == .mixed
+    }
     // Romanized Indic text takes more subword tokens; retain the existing budget for other modes.
     var maximumGeneratedTokens: Int { self == .romanized ? 512 : 256 }
 }
@@ -265,14 +274,17 @@ actor BodhanTranscriber {
     }
 
     func transcribe(wavURL: URL, modelID: String = BodhanModel.flex.rawValue,
-                    language: BodhanLanguage = .defaultLanguage, outputMode: BodhanOutputMode = .mixed) async throws -> (text: String, processingTime: Double) {
+                    language: BodhanLanguage = .defaultLanguage, outputMode: BodhanOutputMode = .mixed) async throws -> BodhanTranscription {
         try await prepare(modelID: modelID)
         guard let runtime, let model else { throw CancellationError() }
         let language = language.supported(for: modelID)
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        guard !samples.isEmpty else { return ("", CFAbsoluteTimeGetCurrent() - start) }
+        guard !samples.isEmpty else {
+            return BodhanTranscription(text: "", processingTime: CFAbsoluteTimeGetCurrent() - start, languageSamples: [])
+        }
         var transcripts: [String] = []
+        var languageSamples: [BodhanLanguageSample] = []
         var offset = 0
         while offset < samples.count {
             try Task.checkCancellation()
@@ -280,12 +292,22 @@ actor BodhanTranscriber {
             let result = try runtime.transcribe(samples: Array(samples[offset..<end]),
                 language: language == .automatic ? nil : language.rawValue, outputMode: outputMode.supported(for: modelID))
             transcripts.append(result.text)
+            languageSamples.append(BodhanLanguageSample(
+                startSeconds: Double(offset) / 16000,
+                endSeconds: Double(end) / 16000,
+                languageCode: result.language,
+                wasAutoDetected: language == .automatic
+            ))
             recordBodhanTiming(result, modelID: modelID, audioSeconds: Double(end - offset) / 16000)
             BodhanLogging.logVerbose("Bodhan language=\(result.language), tokens=\(result.tokens), encoder=\(result.encoderSeconds)s, decode=\(result.decodeSeconds)s")
             if end == samples.count { break }
             offset += 27 * 16000
         }
-        return (BodhanTranscriptMerger.mergeOverlappingTranscripts(transcripts), CFAbsoluteTimeGetCurrent() - start)
+        return BodhanTranscription(
+            text: BodhanTranscriptMerger.mergeOverlappingTranscripts(transcripts),
+            processingTime: CFAbsoluteTimeGetCurrent() - start,
+            languageSamples: languageSamples
+        )
     }
 
     /// Deleting one precision/family must not unload a different active selection.

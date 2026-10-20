@@ -18,6 +18,7 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      InsightsTests
       DictationStoreTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -108,6 +109,7 @@ case "${shard}" in
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
+      HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
       Nemotron35ModelStoreTests
@@ -115,6 +117,9 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMicrophoneCaptureTests
+      MeetingMicrophoneDeliveryTests
+      StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
@@ -128,7 +133,9 @@ case "${shard}" in
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
+      CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
+      DictationAudioGraphExceptionTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
@@ -148,8 +155,20 @@ case "${shard}" in
       CustomLLMRequestHeadersTests
       SettingsModelFieldTests
       MeetingSummaryClientTests
+      MeetingChatStoreTests
+      MeetingChatRetrievalTests
+      MeetingChatClientTests
+      MeetingChatContextBudgetTests
+      MeetingChatNativeBudgetTests
+      MeetingChatNavigationTests
+      MeetingChatExporterTests
+      MeetingChatNotesActionTests
+      MeetingChatReviewTests
+      MeetingChatPresentationTests
+      MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
+      MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests

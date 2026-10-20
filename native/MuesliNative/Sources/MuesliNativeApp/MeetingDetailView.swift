@@ -95,6 +95,7 @@ struct MeetingDetailView: View {
     @State private var isEditingTranscript = false
     @State private var editableTitle: String
     @State private var editableNotes: String
+    @State private var editingNotesCitation: MeetingChatCitation?
     @State private var editableTranscript: String
     @State private var editableManualNotes: String
     @State private var loadedMeetingID: Int64?
@@ -131,14 +132,19 @@ struct MeetingDetailView: View {
         self.appState = appState
         self.onBack = onBack
         self.backLabel = backLabel
+        let sourceTarget = appState.meetingChatDocumentTarget
         let initialTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         _editableTitle = State(initialValue: meeting?.title ?? "")
-        _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0) } ?? "")
+        _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0, citation: sourceTarget?.citation) } ?? "")
         _editableTranscript = State(initialValue: meeting?.rawTranscript ?? "")
         _editableManualNotes = State(initialValue: meeting?.manualNotes ?? "")
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
-        _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        if let sourceTarget, let meeting, sourceTarget.citation.meetingID == meeting.id {
+            _documentMode = State(initialValue: sourceTarget.showsTranscript ? .transcript : .notes)
+        } else {
+            _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        }
     }
 
     var body: some View {
@@ -148,6 +154,20 @@ struct MeetingDetailView: View {
                     header(meeting)
 
                     retranscriptionStatus(for: meeting)
+
+                    if meeting.status != .recording && meeting.status != .processing {
+                        HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
+                            .padding(.horizontal, 40).padding(.bottom, 8)
+                    }
+                    if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                            Text(target.citation.excerpt).textSelection(.enabled)
+                            if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
+                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(16).background(MuesliTheme.surfaceSelected)
+                    }
 
                     Divider()
                         .background(MuesliTheme.surfaceBorder)
@@ -304,8 +324,8 @@ struct MeetingDetailView: View {
             }
         }
         .frame(maxWidth: 980, alignment: .leading)
-        .padding(.horizontal, 40)
-        .padding(.vertical, 24)
+        .padding(.horizontal, MuesliTheme.pageInset)
+        .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("meeting.header.standard")
@@ -663,10 +683,10 @@ struct MeetingDetailView: View {
                     .background(MuesliTheme.backgroundBase)
                     .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
                     .onChange(of: editableNotes) { _, _ in
-                        debounceSaveNotes(meetingID: meeting.id)
+                        debounceSaveNotes(for: meeting)
                     }
             }
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -675,7 +695,7 @@ struct MeetingDetailView: View {
                 contentToolbar(for: meeting)
 
                 TextEditor(text: $editableTranscript)
-                    .font(.system(size: 14))
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .scrollContentBackground(.hidden)
                     .padding(MuesliTheme.spacing24)
@@ -685,21 +705,23 @@ struct MeetingDetailView: View {
                         debounceSaveTranscript(meetingID: meeting.id)
                     }
             }
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
+            let sourceTarget = citationTarget(for: meeting)
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
                 ZStack(alignment: .topLeading) {
-                    MeetingNotesView(markdown: Self.notesContent(for: meeting))
+                    MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
+                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? $0.locate(in: meeting.rawTranscript) : nil })
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -707,7 +729,7 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: 1080, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -723,6 +745,15 @@ struct MeetingDetailView: View {
         .tint(MuesliTheme.accent)
         .frame(width: 220)
         .disabled(isEditingNotes || isEditingTranscript)
+    }
+
+    private func citationText(_ meeting: MeetingRecord, kind: MeetingChatSourceKind) -> String {
+        switch kind { case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
+    }
+
+    private func citationTarget(for meeting: MeetingRecord) -> MeetingChatDocumentTarget? {
+        guard let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id else { return nil }
+        return target
     }
 
     private var recordingModePicker: some View {
@@ -757,6 +788,7 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func compactHeaderActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
+            recordingRecoveryHeaderAction(for: meeting)
             resumeChooserIfAvailable(for: meeting)
             exportMenu(for: meeting)
 
@@ -813,8 +845,9 @@ struct MeetingDetailView: View {
         if isEditingNotes {
             notesSaveTask?.cancel()
             notesSaveTask = nil
-            controller.updateMeetingNotes(id: meeting.id, notes: editableNotes)
+            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, controller: controller)
             isEditingNotes = false
+            editingNotesCitation = nil
         } else if isEditingTranscript {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
@@ -838,7 +871,8 @@ struct MeetingDetailView: View {
             isEditingTranscript = true
         } else {
             documentMode = .notes
-            editableNotes = Self.notesContent(for: meeting)
+            editingNotesCitation = citationTarget(for: meeting)?.citation
+            editableNotes = Self.notesContent(for: meeting, citation: editingNotesCitation)
             isEditingNotes = true
         }
     }
@@ -865,9 +899,8 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func recordingRecoveryHeaderAction(for meeting: MeetingRecord) -> some View {
-        if Self.showsRecordingRecoveryAction(for: meeting) {
-            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
-        }
+        retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.header.models")
+            .featureTourTarget(.meetingRetranscription)
     }
 
     @ViewBuilder
@@ -1138,7 +1171,8 @@ struct MeetingDetailView: View {
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
         Menu {
             Button {
-                MeetingExporter.export(meeting: meeting, content: currentContent)
+                MeetingExporter.export(meeting: meeting, content: currentContent,
+                    notesOverride: Self.notesExportOverride(for: meeting, citation: citationTarget(for: meeting)?.citation))
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
@@ -1682,7 +1716,8 @@ struct MeetingDetailView: View {
         switch documentMode {
         case .notes:
             return Self.copyContent(for: meeting, content: .notes,
-                                    editedText: isEditingNotes ? editableNotes : nil)
+                                    editedText: isEditingNotes ? editableNotes : nil,
+                                    citation: isEditingNotes ? editingNotesCitation : citationTarget(for: meeting)?.citation)
         case .transcript:
             return Self.copyContent(for: meeting, content: .transcript,
                                     editedText: isEditingTranscript ? editableTranscript : nil)
@@ -1693,15 +1728,16 @@ struct MeetingDetailView: View {
     static func copyContent(
         for meeting: MeetingRecord,
         content: MeetingDocumentMode,
-        editedText: String? = nil
+        editedText: String? = nil,
+        citation: MeetingChatCitation? = nil
     ) -> String {
         var body: String
         switch content {
         case .notes:
-            body = editedText ?? notesCopyContent(for: meeting)
+            body = editedText ?? notesCopyContent(for: meeting, citation: citation)
             // The raw-notes editor includes a display-only title. Remove only
             // that exact leading heading before adding the metadata title.
-            if editedText != nil, meeting.status != .noteOnly,
+            if editedText != nil, !usesManualNotes(for: meeting, citation: citation),
                meeting.notesState != .structuredNotes {
                 let title = "# \(meeting.title)"
                 if body == title {
@@ -1757,8 +1793,8 @@ struct MeetingDetailView: View {
         }
     }
 
-    static func notesContent(for meeting: MeetingRecord) -> String {
-        if meeting.status == .noteOnly {
+    static func notesContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {
+        if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
@@ -1767,8 +1803,31 @@ struct MeetingDetailView: View {
         return meeting.formattedNotes
     }
 
-    static func notesCopyContent(for meeting: MeetingRecord) -> String {
-        if meeting.status == .noteOnly {
+    static func saveNotes(
+        for meeting: MeetingRecord,
+        notes: String,
+        citation: MeetingChatCitation? = nil,
+        controller: MuesliController
+    ) {
+        if usesManualNotes(for: meeting, citation: citation) {
+            controller.updateMeetingManualNotes(id: meeting.id, notes: notes)
+        } else {
+            controller.updateMeetingNotes(id: meeting.id, notes: notes)
+        }
+    }
+
+    private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
+        meeting.status == .noteOnly || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
+    }
+
+    /// The notes action exports the same source the detail view displays. Other
+    /// export modes retain their normal transcript/full-meeting composition.
+    static func notesExportOverride(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String? {
+        usesManualNotes(for: meeting, citation: citation) ? meeting.manualNotes : nil
+    }
+
+    static func notesCopyContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {
+        if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
@@ -1802,11 +1861,12 @@ struct MeetingDetailView: View {
         controller.updateMeetingTitle(id: meetingID, title: editableTitle)
     }
 
-    private func debounceSaveNotes(meetingID: Int64) {
+    private func debounceSaveNotes(for meeting: MeetingRecord) {
         notesSaveTask?.cancel()
         let notes = editableNotes
+        let citation = editingNotesCitation
         let c = controller
-        let item = DispatchWorkItem { c.updateMeetingNotes(id: meetingID, notes: notes) }
+        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, controller: c) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
@@ -1930,7 +1990,7 @@ struct MeetingDetailView: View {
         threadContext = meeting.flatMap { controller.meetingThreadContext(for: $0.id) }
         editableTitle = meeting?.title ?? ""
         if meetingChanged || !isEditingNotes {
-            editableNotes = meeting.map { Self.notesContent(for: $0) } ?? ""
+            editableNotes = meeting.map { Self.notesContent(for: $0, citation: citationTarget(for: $0)?.citation) } ?? ""
         }
         if meetingChanged || !isEditingTranscript {
             editableTranscript = meeting?.rawTranscript ?? ""
@@ -1948,6 +2008,7 @@ struct MeetingDetailView: View {
         if meetingChanged {
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
+            editingNotesCitation = nil
             isEditingTranscript = false
             showFolderPopover = false
             showNewFolderPrompt = false
@@ -2220,36 +2281,48 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    var highlightedRange: NSRange? = nil
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(transcript: String, highlightedRange: NSRange? = nil) {
         self.transcript = transcript
+        self.highlightedRange = highlightedRange
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                 if messages.isEmpty {
                     Text("No transcript available")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(maxWidth: 860, alignment: .leading)
+                        .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
                         TranscriptChatBubble(message: message)
+                            .background(message.id == highlightedMessageID ? MuesliTheme.surfaceSelected : Color.clear)
+                            .id(message.id)
                     }
                 }
             }
-            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing24)
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
         .onChange(of: transcript) { _, newTranscript in
             messages = TranscriptChatMessage.messages(from: newTranscript)
         }
+        }
+    }
+    private var highlightedMessageID: Int? {
+        guard let range = highlightedRange else { return nil }
+        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range)
     }
 }
 
@@ -2270,9 +2343,9 @@ struct TranscriptChatBubble: View {
                         .textSelection(.enabled)
                 }
                 Text(message.text)
-                    .font(.system(size: 14))
+                    .font(MuesliTheme.reading())
                     .foregroundStyle(MuesliTheme.textPrimary)
-                    .lineSpacing(2)
+                    .lineSpacing(5)
                     .textSelection(.enabled)
             }
             .padding(.horizontal, MuesliTheme.spacing12)

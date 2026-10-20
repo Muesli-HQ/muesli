@@ -45,10 +45,10 @@ final class PasteShortcutRecorder {
     }
 
     func start(controller: MuesliController) {
-        start(acquire: { controller.beginPasteShortcutCapture() },
-              release: { controller.endPasteShortcutCapture() },
+        start(acquire: { controller.beginShortcutCapture() },
+              release: { controller.endShortcutCapture() },
               conflicts: { controller.pasteShortcutConflict($0) },
-              commit: { chord in controller.updateConfig { $0.pasteShortcut = .custom(chord) } })
+              commit: { [weak self] chord in self?.message = controller.updatePasteShortcut(.custom(chord)).message })
     }
 
     func start(acquire: () -> Bool, release: @escaping () -> Void,
@@ -136,7 +136,7 @@ struct PasteShortcutControl: View {
             ) { option in
                 if option == PasteShortcut.automatic.displayLabel {
                     recorder.cancel()
-                    controller.updateConfig { $0.pasteShortcut = .automatic }
+                    controller.setSettingFromUI("paste_shortcut", value: "automatic")
                 } else if option == "Record custom shortcut…" {
                     recorder.start(controller: controller)
                 }

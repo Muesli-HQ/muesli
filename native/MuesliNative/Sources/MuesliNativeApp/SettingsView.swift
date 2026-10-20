@@ -144,6 +144,7 @@ struct SettingsView: View {
     @State private var isShowingInvalidClaudeCodeExecutableAlert = false
     @State private var isWaitingForClaudeCodeSignIn = false
     @State private var isShowingClaudeCodeAdvanced = false
+    @State private var isShowingSummaryOutputAdvanced = false
     @State private var isEnteringOpenRouterAPIKey = false
     @State private var manualOpenRouterAPIKey = ""
     @State private var pendingDataDestruction: PendingDataDestruction?
@@ -347,7 +348,7 @@ struct SettingsView: View {
     }
 
     private var selectedUpcomingMeetingsWindow: UpcomingMeetingsWindow {
-        UpcomingMeetingsWindow.resolve(dayCount: appState.config.upcomingMeetingsDayCount)
+        appState.config.upcomingMeetingsWindow
     }
 
     private var selectedBodhanLanguage: BodhanLanguage {
@@ -565,6 +566,8 @@ struct SettingsView: View {
               target == .liveCaptionsSetting
                 || target == .cloudCleanupSetting
                 || target == .dictationProviderSetting
+                || target == .recordingIndicatorStyle
+                || target == .meetingSummaryProvider
                 || target == .quillSettings else { return }
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -575,9 +578,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
@@ -737,10 +747,10 @@ struct SettingsView: View {
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
-                    actionButton("Clear dictation history", role: .destructive) {
+                    compactActionButton("Clear dictation history", role: .destructive) {
                         pendingDataDestruction = .dictations
                     }
-                    actionButton("Clear meeting history", role: .destructive) {
+                    compactActionButton("Clear meeting history", role: .destructive) {
                         pendingDataDestruction = .meetings
                     }
                     .disabled(controller.isMeetingRecording())
@@ -1016,7 +1026,7 @@ struct SettingsView: View {
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: displayedDictationBackend?.model ?? appState.config.sttModel)
                 }
             }
         }
@@ -1206,7 +1216,7 @@ struct SettingsView: View {
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             }
         }
@@ -1390,8 +1400,9 @@ struct SettingsView: View {
         settingsControl("nemotron_language")
     }
 
-    private var whisperLanguageMenu: some View {
-        settingsControl("whisper_language")
+    private func whisperLanguageMenu(model: String) -> some View {
+        MuesliSettingControl(controller: controller, id: "whisper_language",
+            allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: model).map(\.rawValue)))
     }
 
     @ViewBuilder
@@ -1591,6 +1602,8 @@ struct SettingsView: View {
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
+                        .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
+                        .featureTourTarget(.meetingSummaryProvider)
                         .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
                     if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
@@ -1759,6 +1772,20 @@ struct SettingsView: View {
                         currentModel: appState.config.openRouterModel,
                         placeholder: "provider/model"
                     ) { val in controller.updateConfig { $0.openRouterModel = val } }
+                }
+            }
+            if ![MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(appState.selectedMeetingSummaryBackend) {
+                Divider().background(MuesliTheme.surfaceBorder)
+                DisclosureGroup(isExpanded: $isShowingSummaryOutputAdvanced) {
+                    settingsRow("Output token limit", controlWidth: meetingControlWidth) {
+                        settingsControl("summary_output_limit")
+                    }
+                    .padding(.top, MuesliTheme.spacing12)
+                    settingsDescription("No added limit lets the model finish naturally. Provider and model limits still apply.")
+                } label: {
+                    Text("Advanced")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
         }
@@ -2145,7 +2172,7 @@ struct SettingsView: View {
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
                     settingsControl("upcoming_meetings")
                 }
-                .help("How many calendar days appear in Coming Up, the menu bar, and meeting reminders.")
+                .help("How far ahead to show scheduled meetings and check meeting reminders.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
@@ -2178,10 +2205,15 @@ struct SettingsView: View {
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
+                .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, 12)
                 if appState.config.recordingIndicatorStyle == .notch {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                     settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 } else {
                     settingsRow("Keep visible when idle") {
                         settingsControl("show_floating_indicator")
@@ -2256,7 +2288,7 @@ struct SettingsView: View {
                     controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
-                        .fill(Color(hex: preset.hex))
+                        .fill(preset.hex == "1e1e2e" ? MuesliTheme.defaultAccent : Color(hex: preset.hex))
                         .frame(width: 22, height: 22)
                         .overlay(
                             Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
@@ -2264,9 +2296,18 @@ struct SettingsView: View {
                         .overlay(
                             Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
                         )
+                        .overlay {
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .help(preset.name)
+                .help(preset.hex == "1e1e2e" ? "Default (adaptive blue)" : preset.name)
+                .accessibilityLabel(preset.name)
+                .accessibilityValue(isSelected ? "Selected" : "Not selected")
             }
         }
     }
@@ -2390,25 +2431,18 @@ struct SettingsView: View {
     @ViewBuilder
     private func chatGPTAccountControl(selectMeetingSummaryBackend: Bool = true) -> some View {
         if appState.isChatGPTAuthenticated {
-            Button {
-                controller.signOutChatGPT()
-            } label: {
-                HStack(spacing: 5) {
-                    OpenAILogoShape()
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                    Text("Signed in · Sign Out")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            HStack(spacing: 10) {
+                Label("Signed in", systemImage: "checkmark.circle.fill")
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.success)
+                Spacer(minLength: 8)
+                Button("Sign Out") { controller.signOutChatGPT() }
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .buttonStyle(.plain)
+                    .help("Sign out of ChatGPT")
             }
-            .buttonStyle(.plain)
+            .frame(minHeight: 28)
         } else if isSigningInChatGPT {
             HStack(spacing: 6) {
                 ProgressView()
@@ -3140,11 +3174,11 @@ struct SettingsView: View {
             .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+            .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isDestructive ? MuesliTheme.recording.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -3700,12 +3734,12 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+                .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 .overlay(
                     RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                         .strokeBorder(
-                            isDestructive ? MuesliTheme.recording.opacity(0.2) : MuesliTheme.surfaceBorder,
+                            MuesliTheme.surfaceBorder,
                             lineWidth: 1
                         )
                 )

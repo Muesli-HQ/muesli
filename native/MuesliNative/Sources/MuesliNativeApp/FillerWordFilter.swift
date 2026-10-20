@@ -6,9 +6,10 @@ import MuesliCore
 struct FillerWordFilter {
 
     /// Filler words to remove (matched case-insensitively as whole words).
+    /// "er" is deliberately absent: it is the Norwegian/Danish verb "is" and must survive meeting cleanup.
     private static let fillers: Set<String> = [
         "uh", "um", "uh,", "um,", "uhh", "umm",
-        "er", "err", "ah", "ahh",
+        "err", "ah", "ahh",
         "hmm", "hm", "mm", "mmm",
         "like,",   // "like" as filler only when followed by comma
         "you know,",

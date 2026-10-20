@@ -35,6 +35,9 @@ struct MuesliSetting {
     var requestPermission: (() -> Void)? = nil
     var voiceUnavailable: (String) -> String? = { _ in nil }
     var activation: MuesliSettingActivation? = nil
+    /// A manual UI may prepare a missing shortcut instead of applying an unavailable choice.
+    /// The executor still rejects that choice until the prerequisite is supplied.
+    var shortcutCapturePreparation: (String) -> ShortcutAssignment? = { _ in nil }
 
     func choice(for value: String) -> Choice? {
         if let choice = choices.first(where: { $0.id == value }) { return choice }
