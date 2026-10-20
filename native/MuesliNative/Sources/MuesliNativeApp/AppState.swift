@@ -157,6 +157,9 @@ final class AppState {
     var timelineRows: [TimelineEntry] = []
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
+    // Entries are removed when a meeting is tombstoned or history is cleared.
+    private var meetingSummaryFreshnessRevisions: [Int64: UInt64] = [:]
+    private var meetingSpeakerStateRevisions: [Int64: UInt64] = [:]
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
     var directMeetingCountsByFolder: [Int64: Int] = [:]
@@ -167,6 +170,55 @@ final class AppState {
     var meetingsNavigationState: MeetingsNavigationState = .browser
     var meetingDetailReturnDestination: MeetingDetailReturnDestination = .meetings
     var meetingNotesFocusRequest = 0
+
+    func meetingSummaryFreshnessRevision(for meetingID: Int64) -> UInt64 {
+        meetingSummaryFreshnessRevisions[meetingID, default: 0]
+    }
+
+    func meetingSpeakerStateRevision(for meetingID: Int64) -> UInt64 {
+        meetingSpeakerStateRevisions[meetingID, default: 0]
+    }
+
+    func meetingSummaryFreshnessObservedMeetingIDs() -> Set<Int64> {
+        var meetingIDs = Set(meetingRows.map(\.id))
+        if let selectedMeetingID {
+            meetingIDs.insert(selectedMeetingID)
+        }
+        return meetingIDs
+    }
+
+    func noteMeetingSummaryFreshnessChanged(for meetingIDs: Set<Int64>) {
+        for meetingID in meetingIDs {
+            meetingSummaryFreshnessRevisions[meetingID, default: 0] &+= 1
+        }
+    }
+
+    func noteMeetingSpeakerStateChanged(for meetingID: Int64) {
+        meetingSpeakerStateRevisions[meetingID, default: 0] &+= 1
+    }
+
+    func noteMeetingSummaryFreshnessChanged(
+        for meetingIDs: Set<Int64>,
+        existingMeetingIDs: Set<Int64>,
+        deletedMeetingIDs: Set<Int64> = []
+    ) {
+        for meetingID in meetingIDs
+            where existingMeetingIDs.contains(meetingID) && !deletedMeetingIDs.contains(meetingID) {
+            meetingSummaryFreshnessRevisions[meetingID, default: 0] &+= 1
+        }
+    }
+
+    func removeMeetingSummaryFreshnessRevisions(for meetingIDs: Set<Int64>) {
+        for meetingID in meetingIDs {
+            meetingSummaryFreshnessRevisions[meetingID] = nil
+            meetingSpeakerStateRevisions[meetingID] = nil
+        }
+    }
+
+    func clearMeetingSummaryFreshnessRevisions() {
+        meetingSummaryFreshnessRevisions.removeAll()
+        meetingSpeakerStateRevisions.removeAll()
+    }
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
@@ -201,6 +253,13 @@ final class AppState {
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var meetingSpeakerLabelingJobs: [Int64: MeetingSpeakerLabelingJob] = [:]
+    var meetingSpeakerLabelingRecovery: Set<Int64> = []
+    var meetingSpeakerRecoveryAudio: [Int64: [URL]] = [:]
+    var meetingSpeakerRecoveryDescriptors: [Int64: [MeetingSpeakerBacklogDescriptor]] = [:]
+    var liveMeetingSpeakerState: MeetingSpeakerState? = nil
+    var liveMeetingSpeakerUpdate: MeetingLiveSpeakerPresentationUpdate? = nil
+    var liveMeetingMicrophoneLabel = "You"
     var liveMeetingPartialYou: String = ""
     var liveMeetingPartialOthers: String = ""
     var activeMeetingAudioWarning: ActiveMeetingAudioWarning?

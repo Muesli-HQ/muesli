@@ -1309,4 +1309,33 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("microphone diarization cannot be disabled while owner recognition is enabled")
+    func ownerRecognitionRequiresMicrophoneDiarization() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var initial = AppConfig()
+        initial.diarizeMicrophoneAudio = true
+        initial.enableMeetingOwnerRecognition = true
+        configStore.save(initial)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let setting = try #require(controller.settingsDefinitions().first { $0.id == "diarize_microphone" })
+        let snapshot = setting.snapshot(config: controller.config, source: .manualUI)
+
+        #expect(snapshot.unavailable["off"] != nil)
+        await #expect(throws: (any Error).self) {
+            try await MuesliSettings.apply(.init(setting: "diarize_microphone", value: "off"),
+                settings: [setting], snapshots: [snapshot], source: .manualUI,
+                config: { controller.config }, persistedConfig: { configStore.load() })
+        }
+        #expect(controller.config.diarizeMicrophoneAudio)
+        #expect(controller.config.enableMeetingOwnerRecognition)
+        #expect(configStore.load().diarizeMicrophoneAudio)
+    }
+
 }

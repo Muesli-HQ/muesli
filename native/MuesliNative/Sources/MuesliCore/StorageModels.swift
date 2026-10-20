@@ -50,6 +50,9 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var text: String
     public var speakerTranscript: String?
     public var summaryText: String?
+    /// Whether the sender considers the meeting summary current for this transcript.
+    /// Nil means the sending client predates this signal or could not determine freshness.
+    public var summaryIsCurrent: Bool?
     public var manualNotes: String?
     public var source: String?
     /// Platform origin for UI badges lives in `source`; this preserves the
@@ -77,6 +80,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         text: String,
         speakerTranscript: String? = nil,
         summaryText: String? = nil,
+        summaryIsCurrent: Bool? = nil,
         manualNotes: String? = nil,
         source: String? = nil,
         localSource: String? = nil,
@@ -99,6 +103,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.text = text
         self.speakerTranscript = speakerTranscript
         self.summaryText = summaryText
+        self.summaryIsCurrent = summaryIsCurrent
         self.manualNotes = manualNotes
         self.source = source
         self.localSource = localSource
