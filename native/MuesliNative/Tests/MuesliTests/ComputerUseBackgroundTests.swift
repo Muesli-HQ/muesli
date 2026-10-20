@@ -5,6 +5,18 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Accessibility-only benchmark excludes every browser tool while retaining vision and AX")
+    func accessibilityOnlyCatalog() {
+        let catalog = ComputerUseReferenceRuntime.allowedTools.map {
+            ["name": $0, "inputSchema": ["type": "object"]] as [String: Any]
+        }
+        let names = Set(ComputerUseReferenceRuntime.definitions(from: catalog,
+            browserToolsEnabled: false).compactMap { $0["name"] as? String })
+        #expect(!names.contains(where: ComputerUseReferenceDriver.isBrowserTool))
+        #expect(names.isSuperset(of: ["get_window_state", "get_accessibility_tree", "click", "type_text", "finish", "fail"]))
+        #expect(ComputerUseReferenceRuntime.definitions(from: catalog).contains { $0["name"] as? String == "get_browser_state" })
+    }
+
     @Test("Command activity survives suspension and releases on success, failure and cancellation")
     func commandActivityLifetime() async {
         enum Failure: Error { case expected }

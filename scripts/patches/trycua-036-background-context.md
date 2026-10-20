@@ -118,3 +118,18 @@ versus the recorded 300/467 partial snapshot. Outline length fell from 16,763 to
 page state can change, so these are observed context measurements, not a controlled
 claim about planner call count. All 23 observed relative links resolved and
 "Switch account" returned no spurious matches. No new post or text mutation.
+
+### Accessibility/vision-only comparison
+
+DevA accepts `--trycua-accessibility-only` alongside `--trycua-driver`. This
+removes all browser tools from the planner catalog and dispatch allowlist and
+uses Accessibility/window-screenshot instructions. Do not pass
+`--computer-use-wait-for-chrome` for this mode. Non-browser calls do not probe
+Chrome connection status. Background delivery restrictions remain in place.
+
+An off-Space Chrome window may expose stale Accessibility content or fail window
+capture. Treat that as an observation limitation, not permission to activate the
+window, enable debugging, or submit an unverified action. The October 20 live X
+reply comparison stopped after window inspection, without mutation: SkyLight,
+ScreenCaptureKit and screenshot fallback could not capture window 84 on another
+Space. This is not evidence that all Accessibility-only browser tasks fail.
