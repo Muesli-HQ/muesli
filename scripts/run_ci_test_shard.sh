@@ -167,6 +167,7 @@ case "${shard}" in
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
+      MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
