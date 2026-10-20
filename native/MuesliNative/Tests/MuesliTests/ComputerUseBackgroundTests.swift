@@ -5,6 +5,39 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Command activity survives suspension and releases on success, failure and cancellation")
+    func commandActivityLifetime() async {
+        enum Failure: Error { case expected }
+        for outcome in 0...2 {
+            let token = NSObject()
+            var active = false
+            var releases = 0
+            do {
+                try await ComputerUseReferenceRuntime.withCommandActivity(begin: {
+                    active = true
+                    return token
+                }, end: { released in
+                    #expect(released === token)
+                    active = false
+                    releases += 1
+                }) {
+                    #expect(active)
+                    await Task.yield() // Model/network suspension must retain the assertion.
+                    #expect(active)
+                    if outcome == 1 { throw Failure.expected }
+                    if outcome == 2 { throw CancellationError() }
+                }
+                #expect(outcome == 0)
+            } catch is CancellationError {
+                #expect(outcome == 2)
+            } catch {
+                #expect(outcome == 1)
+            }
+            #expect(!active)
+            #expect(releases == 1)
+        }
+    }
+
     @Test("Observation feedback distinguishes unchanged reads from new scope and mutations")
     func observationProgressFeedback() {
         var progress = ComputerUseReferenceRuntime.ObservationProgress()
