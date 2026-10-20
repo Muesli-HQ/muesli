@@ -135,6 +135,7 @@ case "${shard}" in
       MeetingSystemAudioWatchdogTests
       CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
+      DictationAudioGraphExceptionTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
