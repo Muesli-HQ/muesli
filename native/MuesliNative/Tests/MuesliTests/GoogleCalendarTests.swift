@@ -311,6 +311,32 @@ struct GoogleCalendarTests {
         #expect(MeetingPlatform.detect(from: url) == .teams)
     }
 
+    @Test("EventKit event URL accepts a Teams free meeting link")
+    func eventKitURLAcceptsTeamsLiveMeeting() {
+        let event = EKEvent(eventStore: EKEventStore())
+        event.url = URL(string: "https://teams.live.com/meet/9312345678901?p=XyZ123")
+        event.notes = "Join: https://meet.google.com/abc-defg-hij"
+
+        let url = CalendarMonitor.extractMeetingURL(from: event)
+        #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
+    }
+
+    @Test("EventKit event URL ignores non-meeting Teams free pages and lookalike hosts")
+    func eventKitURLRejectsNonMeetingTeamsLivePages() {
+        for nonMeetingURL in [
+            "https://teams.live.com/v2/",
+            "https://teams.live.com/meet/",
+            "https://notteams.live.com/meet/9312345678901",
+        ] {
+            let event = EKEvent(eventStore: EKEventStore())
+            event.url = URL(string: nonMeetingURL)
+            event.notes = "Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh"
+
+            let url = CalendarMonitor.extractMeetingURL(from: event)
+            #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+        }
+    }
+
     @Test("CalendarMonitor returns nil for text without meeting URLs")
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")

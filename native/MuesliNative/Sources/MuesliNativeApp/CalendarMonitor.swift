@@ -415,7 +415,12 @@ final class CalendarMonitor {
         if host == "app.slack.com" {
             return url.path.hasPrefix("/huddle/")
         }
-        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com", "webex.com", "chime.aws", "facetime.apple.com"]
+        // Teams free: only /meet/<id> links are meetings, matching the text patterns.
+        if host == "teams.live.com" {
+            let parts = url.pathComponents
+            return parts.count > 2 && parts[1] == "meet"
+        }
+        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com"]
         return meetingHosts.contains(where: { host.hasSuffix($0) })
     }
 
