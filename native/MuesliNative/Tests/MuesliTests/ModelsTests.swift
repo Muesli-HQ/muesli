@@ -1744,14 +1744,58 @@ struct AppConfigTests {
         #expect(ShortcutHotkeyPolicy.allowsCombination(presetCycle, action: .presetCycle))
         #expect(!ShortcutHotkeyPolicy.allowsCombination(HotkeyConfig.default, action: .presetCycle))
 
-        // Rejects conflict with dictation
-        let dictationResult = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+        // Preset cycling rejects conflict with dictation
+        let dictationConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
             .default,
             dictationHotkey: .default,
             computerUseHotkey: .computerUseDefault,
             isComputerUseEnabled: false
         )
-        #expect(!dictationResult.didUpdate)
+        #expect(!dictationConflict.didUpdate)
+
+        // Preset cycling rejects conflict with Quill when Quill is enabled
+        let quilConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            .quilDefault,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            quilHotkey: .quilDefault,
+            isQuilEnabled: true
+        )
+        #expect(!quilConflict.didUpdate)
+
+        // Dictation rejects conflict with preset cycling when preset cycling is enabled
+        let dictationVsPreset = ShortcutHotkeyPolicy.validateDictationHotkey(
+            presetCycle,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!dictationVsPreset.didUpdate)
+
+        // Computer Use rejects conflict with preset cycling when preset cycling is enabled
+        let cuaVsPreset = ShortcutHotkeyPolicy.validateComputerUseHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!cuaVsPreset.didUpdate)
+
+        // Quill rejects conflict with preset cycling when preset cycling is enabled
+        let quilVsPreset = ShortcutHotkeyPolicy.validateQuilHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!quilVsPreset.didUpdate)
 
         // Meeting recording rejects conflict with preset cycling when preset cycling is enabled
         let meetingConflictResult = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
@@ -1763,6 +1807,17 @@ struct AppConfigTests {
             isPresetCyclingEnabled: true
         )
         #expect(!meetingConflictResult.didUpdate)
+
+        // When preset cycling is disabled, shortcuts are allowed
+        let meetingAllowed = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: false
+        )
+        #expect(meetingAllowed.didUpdate)
     }
 
     @Test("dictation app context prompt includes OCR text")

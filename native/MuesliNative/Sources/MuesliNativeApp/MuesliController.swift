@@ -4578,7 +4578,9 @@ public final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected dictation hotkey: \(result.message ?? "invalid")\n", stderr)
@@ -4639,7 +4641,9 @@ public final class MuesliController: NSObject {
             dictationHotkey: config.dictationHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected computer use hotkey because it matches dictation hotkey\n", stderr)
@@ -4662,7 +4666,9 @@ public final class MuesliController: NSObject {
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                presetCycleHotkey: config.presetCycleHotkey,
+                isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
             )
             guard resolution.result.didUpdate else {
                 fputs("[hotkeys] rejected computer use enable because it overlaps another shortcut\n", stderr)
@@ -4761,7 +4767,9 @@ public final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            quilHotkey: config.quilHotkey,
+            isQuilEnabled: config.enableQuilMode
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected preset cycle hotkey due to conflict\n", stderr)
@@ -4785,7 +4793,9 @@ public final class MuesliController: NSObject {
                 computerUseHotkey: config.computerUseHotkey,
                 isComputerUseEnabled: config.enableComputerUseHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                quilHotkey: config.quilHotkey,
+                isQuilEnabled: config.enableQuilMode
             )
             guard result.didUpdate else { return result }
             updateConfig { $0.enablePresetCyclingHotkey = true }
@@ -4826,7 +4836,9 @@ public final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else { return result }
         updateConfig { $0.quilHotkey = hotkey }
@@ -4845,7 +4857,9 @@ public final class MuesliController: NSObject {
                 computerUseHotkey: config.computerUseHotkey,
                 isComputerUseEnabled: config.enableComputerUseHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                presetCycleHotkey: config.presetCycleHotkey,
+                isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
             )
             guard result.didUpdate else { return result }
             validationResult = result
@@ -9349,9 +9363,7 @@ public final class MuesliController: NSObject {
             config.meetingRecordingHotkey,
             dictationHotkey: config.dictationHotkey,
             computerUseHotkey: config.computerUseHotkey,
-            isComputerUseEnabled: config.enableComputerUseHotkey,
-            presetCycleHotkey: config.presetCycleHotkey,
-            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
+            isComputerUseEnabled: config.enableComputerUseHotkey
         )
         guard validation.didUpdate else {
             meetingRecordingHotkeyMonitor.stop()
