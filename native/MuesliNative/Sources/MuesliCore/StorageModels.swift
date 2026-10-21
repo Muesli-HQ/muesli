@@ -50,6 +50,9 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var text: String
     public var speakerTranscript: String?
     public var summaryText: String?
+    /// Whether a meeting summary corresponds to the synchronized transcript.
+    /// Nil means the source predates explicit freshness tracking.
+    public var summaryIsCurrent: Bool?
     public var manualNotes: String?
     public var source: String?
     /// Platform origin for UI badges lives in `source`; this preserves the
@@ -77,6 +80,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         text: String,
         speakerTranscript: String? = nil,
         summaryText: String? = nil,
+        summaryIsCurrent: Bool? = nil,
         manualNotes: String? = nil,
         source: String? = nil,
         localSource: String? = nil,
@@ -99,6 +103,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.text = text
         self.speakerTranscript = speakerTranscript
         self.summaryText = summaryText
+        self.summaryIsCurrent = summaryIsCurrent
         self.manualNotes = manualNotes
         self.source = source
         self.localSource = localSource
@@ -337,6 +342,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let selectedTemplateKind: MeetingTemplateKind?
     public let selectedTemplatePrompt: String?
     public let source: MeetingSource
+    /// Whether the saved notes still correspond to this meeting's transcript.
+    public let summaryIsStale: Bool
     /// Self-referencing link: the meeting this one is a follow-up to. A meeting
     /// can have multiple follow-ups; root meetings have nil.
     public let followUpToID: Int64?
@@ -368,6 +375,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
+        summaryIsStale: Bool = false,
         followUpToID: Int64? = nil,
         followUpToRecordName: String? = nil,
         visualContext: String? = nil
@@ -392,6 +400,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.selectedTemplateKind = selectedTemplateKind
         self.selectedTemplatePrompt = selectedTemplatePrompt
         self.source = source
+        self.summaryIsStale = summaryIsStale
         self.followUpToID = followUpToID
         self.followUpToRecordName = followUpToRecordName
         self.visualContext = visualContext
@@ -418,6 +427,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case selectedTemplateKind
         case selectedTemplatePrompt
         case source
+        case summaryIsStale
         case followUpToID
         case followUpToRecordName
         case visualContext
@@ -446,6 +456,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             selectedTemplateKind: try c.decodeIfPresent(MeetingTemplateKind.self, forKey: .selectedTemplateKind),
             selectedTemplatePrompt: try c.decodeIfPresent(String.self, forKey: .selectedTemplatePrompt),
             source: (try? c.decode(MeetingSource.self, forKey: .source)) ?? .meeting,
+            summaryIsStale: (try? c.decode(Bool.self, forKey: .summaryIsStale)) ?? false,
             followUpToID: try c.decodeIfPresent(Int64.self, forKey: .followUpToID),
             followUpToRecordName: try c.decodeIfPresent(String.self, forKey: .followUpToRecordName),
             visualContext: try c.decodeIfPresent(String.self, forKey: .visualContext)

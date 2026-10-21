@@ -32,6 +32,16 @@ enum MeetingResumePolicy {
         combinedResumeTranscript(prior: prior, new: new) != prior
     }
 
+    /// A no-content resume keeps the prior summary and its freshness. If the
+    /// existing meeting could not be loaded, the new result's notes may describe
+    /// only the resumed session, so the freshness must stay conservative.
+    static func summaryIsCurrentAfterUnchangedResume(
+        existingSummaryIsStale: Bool?
+    ) -> Bool {
+        guard let existingSummaryIsStale else { return false }
+        return !existingSummaryIsStale
+    }
+
     /// Combined visual context is prefix-capped so repeated resumes cannot grow
     /// the stored value without bound (each session's drain is already capped
     /// by MeetingScreenContextCollector).

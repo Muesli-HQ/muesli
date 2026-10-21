@@ -165,7 +165,7 @@ struct AudioFileImportControllerTests {
         #expect(result == "Hello world")
     }
 
-    @Test("formatTranscriptWithSpeakers returns raw text for single speaker")
+    @Test("a single imported speaker retains an explicit identity label")
     func formatTranscriptWithSpeakersSingleSpeaker() {
         let segments = [
             makeDiarSeg(speakerId: "SPEAKER_0", start: 0, end: 5),
@@ -176,7 +176,7 @@ struct AudioFileImportControllerTests {
             diarizationSegments: segments,
             duration: 10.0
         )
-        #expect(result == "Hello world")
+        #expect(result.contains("Speaker 1: Hello world"))
     }
 
     @Test("formatTranscriptWithSpeakers adds speaker labels for multiple speakers")
@@ -346,5 +346,19 @@ struct AudioFileImportControllerTests {
 
     private func localMidnight() -> Date {
         Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 0))
+    }
+}
+
+extension AudioFileImportControllerTests {
+    @Test func emptyASRSegmentsDoNotDiscardImportedIdentity() {
+        let transcription = SpeechTranscriptionResult(text: "Original words", segments: [
+            SpeechSegment(start: 0, end: 1, text: "Original words"),
+            SpeechSegment(start: 8, end: 9, text: "  ")])
+        let result = AudioFileImportController.structuredTranscriptWithSpeakers(transcription: transcription,
+            diarizationSegments: [makeDiarSeg(speakerId: "cluster", start: 0, end: 10)],
+            meetingStart: AudioFileImportController.importedTranscriptTimelineStart())
+        #expect(result.speakerState?.turns.count == 1)
+        #expect(result.speakerState?.render() == result.transcript)
+        #expect(result.transcript.contains("Speaker 1: Original words"))
     }
 }

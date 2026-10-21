@@ -1259,6 +1259,91 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting?.savedRecordingPath == nil)
     }
 
+    @Test("a current resumed summary clears staleness without speaker state")
+    func currentSummaryDoesNotRequireSpeakerState() throws {
+        let store = try makeStore()
+        let start = Date()
+        let meetingID = try store.createLiveMeeting(title: "Resumed", calendarEventID: nil, startTime: start)
+        try store.updateMeetingTranscript(id: meetingID, rawTranscript: "Combined transcript")
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+
+        let result = MeetingSessionResult(
+            title: "Resumed", originalTitle: "Resumed", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(30), durationSeconds: 30,
+            rawTranscript: "Combined transcript", formattedNotes: "Fresh combined summary",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot, summaryIsCurrent: true
+        )
+        let controller = makeController(dictationStore: store)
+        _ = try controller.persistCompletedMeetingResult(
+            result,
+            existingMeetingID: meetingID,
+            preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try !store.meetingSummaryIsStale(id: meetingID))
+    }
+
+    @Test("failed summary on a new completed meeting syncs as stale")
+    func failedSummaryOnCompletedMeetingInsertStaysStaleInSync() throws {
+        let store = try makeStore()
+        let start = Date()
+        let result = MeetingSessionResult(
+            title: "Failed summary",
+            originalTitle: "Failed summary",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Imported transcript.",
+            formattedNotes: "Summary generation failed.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot,
+            summaryIsCurrent: false
+        )
+        let controller = makeController(dictationStore: store)
+        let persistence = try controller.persistCompletedMeetingResult(
+            result,
+            preparedRecordingSave: PreparedMeetingRecordingSave(path: nil, error: nil)
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: persistence.meetingID))
+        let syncRecord = try #require(try store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        #expect(syncRecord.text == "Imported transcript.")
+        #expect(syncRecord.summaryIsCurrent == false)
+    }
+
+    @Test("failed imported audio summary syncs as stale")
+    func failedImportedAudioSummaryStaysStaleInSync() throws {
+        let store = try makeStore()
+        let controller = makeController(dictationStore: store)
+        let template = MeetingTemplates.auto.snapshot
+        let start = Date()
+        let meetingID = try controller.persistImportedAudioMeeting(
+            title: "Imported audio",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(30),
+            rawTranscript: "Imported transcript.",
+            formattedNotes: "Summary generation failed.",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: template.id,
+            selectedTemplateName: template.name,
+            selectedTemplateKind: template.kind,
+            selectedTemplatePrompt: template.prompt,
+            summaryIsCurrent: false
+        )
+
+        #expect(try store.meetingSummaryIsStale(id: meetingID))
+        let syncRecord = try #require(try store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        #expect(syncRecord.text == "Imported transcript.")
+        #expect(syncRecord.summaryIsCurrent == false)
+    }
+
     @Test("persistCompletedMeetingResult honors prompt recording save decision")
     func persistCompletedMeetingResultHonorsPromptRecordingSaveDecision() async throws {
         let store = try makeStore()
