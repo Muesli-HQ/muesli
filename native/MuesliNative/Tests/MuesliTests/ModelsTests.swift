@@ -170,6 +170,38 @@ struct BackendOptionTests {
         #expect(BackendOption.resolvedOnboardingBackend(.appleSpeechAnalyzer, currentOSVersion: Self.macOS26) == .onboardingDefault)
     }
 
+    @Test("model menus hide unsupported OS choices but retain supported Parakeet variants", arguments: [14, 15, 26])
+    func modelChoicesRespectOSVersion(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let options = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(options.contains(.parakeetRedux) == (major >= 15))
+        #expect(options.contains(.appleSpeechAnalyzer) == (major >= 26 && BackendOption.all.contains(.appleSpeechAnalyzer)))
+        #expect(options.contains(.parakeetUnified))
+        #expect(options.contains(.parakeetMultilingual))
+        #expect(options.contains(.parakeetEnglish))
+        #expect(options.allSatisfy { $0.isCompatible(currentOSVersion: version) })
+        let variants = BackendOption.compatibleOptions(BackendOption.parakeetFamily, currentOSVersion: version)
+        #expect(variants.contains(.parakeetRedux) == (major >= 15))
+    }
+
+    @Test("cached Redux cannot displace a supported downloaded model on macOS 14")
+    func restoredDownloadedReduxRespectsOSVersion() {
+        let redux = BackendOption.parakeetRedux
+        let downloaded: [BackendOption] = [redux, .parakeetEnglish]
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS14
+        ) == .parakeetEnglish)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: [redux], currentOSVersion: Self.macOS14
+        ) == nil)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: .parakeetEnglish,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS15
+        ) == redux)
+    }
+
     @Test("model descriptions explain usage without implementation jargon")
     func modelDescriptionsAreProductFacing() {
         let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]

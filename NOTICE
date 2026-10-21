@@ -15,3 +15,15 @@ SwiftUI adaptation of Vercel AI Elements concepts, licensed under Apache-2.0.
 It includes Lucide icons under ISC/MIT. Attribution, pinned revisions, and
 complete license notices are retained in native/AIElementsSwift/NOTICE and
 native/AIElementsSwift/Licenses/.
+
+Parakeet Redux model attribution (optional, downloaded on demand):
+  Parakeet Redux by Moondream:
+    https://huggingface.co/moondream/parakeet-redux
+  Based on NVIDIA Parakeet TDT 0.6B v3:
+    https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+  Core ML conversion by FluidInference:
+    https://huggingface.co/FluidInference/parakeet-redux-coreml
+  Model weights are licensed under Creative Commons Attribution 4.0 International:
+    https://creativecommons.org/licenses/by/4.0/
+  FluidInference converted the model to Core ML; Muesli uses those converted
+  weights without further modification. Attribution is also shown in Models.

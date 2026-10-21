@@ -282,9 +282,17 @@ struct BackendOption: Equatable {
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
 
-    /// Only models that have been downloaded and are ready for inference.
+    /// Choices offered by model pickers; retain the full catalog for saved-ID resolution.
+    static func compatibleOptions(
+        _ options: [BackendOption] = all,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        options.filter { $0.isCompatible(currentOSVersion: currentOSVersion) }
+    }
+
+    /// Only installed models supported by this Mac are ready for inference.
     static var downloaded: [BackendOption] {
-        all.filter { $0.isDownloaded }
+        compatibleOptions().filter { $0.isDownloaded }
     }
 
     /// Models that can keep up with post-meeting and imported recording transcription.
@@ -391,8 +399,10 @@ struct BackendOption: Equatable {
         backend: String,
         model: String,
         fallback: BackendOption?,
-        downloadedOptions: [BackendOption]
+        downloadedOptions: [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
     ) -> BackendOption? {
+        let downloadedOptions = compatibleOptions(downloadedOptions, currentOSVersion: currentOSVersion)
         if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
             return selected
         }
@@ -401,6 +411,42 @@ struct BackendOption: Equatable {
             return fallback
         }
         return downloadedOptions.first
+    }
+
+    /// Repair selections restored from a newer OS, preferring compatible installed models.
+    /// File availability alone cannot make an unsupported model usable.
+    @discardableResult
+    static func normalizeRestoredSelections(
+        in config: inout AppConfig,
+        downloadedOptions: @autoclosure () -> [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> Bool {
+        let dictation = resolve(backend: config.sttBackend, model: config.sttModel)
+        let meeting = resolve(backend: config.meetingTranscriptionBackend, model: config.meetingTranscriptionModel)
+        let unsupportedDictation = dictation?.isCompatible(currentOSVersion: currentOSVersion) == false
+        let unsupportedMeeting = meeting?.isCompatible(currentOSVersion: currentOSVersion) == false
+        guard unsupportedDictation || unsupportedMeeting else { return false }
+        let available = compatibleOptions(downloadedOptions(), currentOSVersion: currentOSVersion)
+        var changed = false
+        if unsupportedDictation {
+            let replacement = available.first ?? .whisper
+            config.sttBackend = replacement.backend
+            config.sttModel = replacement.model
+            changed = true
+        }
+        if unsupportedMeeting {
+            let replacement = resolveDownloaded(
+                backend: config.meetingTranscriptionBackend,
+                model: config.meetingTranscriptionModel,
+                fallback: resolve(backend: config.sttBackend, model: config.sttModel),
+                downloadedOptions: available.filter(\.supportsMeetingTranscription),
+                currentOSVersion: currentOSVersion
+            ) ?? .whisper
+            config.meetingTranscriptionBackend = replacement.backend
+            config.meetingTranscriptionModel = replacement.model
+            changed = true
+        }
+        return changed
     }
 
     /// Check if this model's files exist on disk.

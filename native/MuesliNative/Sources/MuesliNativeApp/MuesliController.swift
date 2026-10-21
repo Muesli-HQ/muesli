@@ -380,6 +380,7 @@ public final class MuesliController: NSObject {
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
     private let downloadedBackendOptions: () -> [BackendOption]
+    private let modelOSVersion: OperatingSystemVersion
     private var storedMeetingChatCoordinator: MeetingChatCoordinator?
     var meetingChatCoordinator: MeetingChatCoordinator {
         get {
@@ -635,13 +636,22 @@ public final class MuesliController: NSObject {
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController(),
         openRouterAuth: OpenRouterAuthManager? = nil,
         openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient(),
-        downloadedBackendOptions: @escaping () -> [BackendOption] = { BackendOption.downloaded }
+        downloadedBackendOptions: @escaping () -> [BackendOption] = { BackendOption.downloaded },
+        modelOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion
     ) {
         self.configStore = configStore
-        self.downloadedBackendOptions = downloadedBackendOptions
+        self.modelOSVersion = modelOSVersion
+        self.downloadedBackendOptions = {
+            BackendOption.compatibleOptions(downloadedBackendOptions(), currentOSVersion: modelOSVersion)
+        }
         self.openRouterAuth = openRouterAuth ?? .shared
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
+        let repairedModelSelection = BackendOption.normalizeRestoredSelections(
+            in: &loadedConfig,
+            downloadedOptions: downloadedBackendOptions(),
+            currentOSVersion: modelOSVersion
+        )
         let loadedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
@@ -658,7 +668,7 @@ public final class MuesliController: NSObject {
             loadedConfig.enablePostProcessor = false
             repairedCleanupConfiguration = true
         }
-        if repairedCleanupConfiguration {
+        if repairedCleanupConfiguration || repairedModelSelection {
             configStore.save(loadedConfig)
         }
         self.runtime = runtime
@@ -685,7 +695,7 @@ public final class MuesliController: NSObject {
         self.selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: loadedConfig,
             dictationBackend: self.selectedBackend,
-            downloadedOptions: downloadedBackendOptions()
+            downloadedOptions: self.downloadedBackendOptions()
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingBackend,
             dictationBackend: self.selectedBackend
@@ -1568,13 +1578,13 @@ public final class MuesliController: NSObject {
         configured: BackendOption?,
         dictationBackend: BackendOption
     ) -> BackendOption {
-        if let configured, configured.supportsMeetingTranscription {
+        if let configured, configured.supportsMeetingTranscription, configured.isCompatible() {
             return configured
         }
-        if dictationBackend.supportsMeetingTranscription {
+        if dictationBackend.supportsMeetingTranscription, dictationBackend.isCompatible() {
             return dictationBackend
         }
-        return BackendOption.all.first(where: \.supportsMeetingTranscription) ?? .whisper
+        return BackendOption.compatibleOptions().first(where: \.supportsMeetingTranscription) ?? .whisper
     }
 
     @discardableResult
@@ -1653,6 +1663,11 @@ public final class MuesliController: NSObject {
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
         mutate(&config)
+        BackendOption.normalizeRestoredSelections(
+            in: &config,
+            downloadedOptions: downloadedBackendOptions(),
+            currentOSVersion: modelOSVersion
+        )
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()
@@ -2981,7 +2996,8 @@ public final class MuesliController: NSObject {
         _ option: BackendOption,
         makePrimaryDictationModel: Bool
     ) {
-        guard ensureNoMeetingRetranscription() else { return }
+        guard option.isCompatible(currentOSVersion: modelOSVersion),
+              ensureNoMeetingRetranscription() else { return }
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
@@ -3173,7 +3189,8 @@ public final class MuesliController: NSObject {
     }
 
     func selectMeetingTranscriptionBackend(_ option: BackendOption, requireDownloaded: Bool = true) {
-        guard ensureNoMeetingRetranscription() else { return }
+        guard option.isCompatible(currentOSVersion: modelOSVersion),
+              ensureNoMeetingRetranscription() else { return }
         guard option.supportsMeetingTranscription else {
             presentErrorAlert(
                 title: "Meeting model unavailable",

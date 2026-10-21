@@ -244,7 +244,7 @@ extension MuesliController {
             read: { $0.dictationProvider }) { value in
             if let provider = DictationProvider(rawValue: value) { self.selectDictationProvider(provider) }
         }
-        let backends = BackendOption.all
+        let backends = BackendOption.compatibleOptions()
         func backendID(_ option: BackendOption) -> String { option.backend + ":" + option.model }
         add("dictation_model", "Dictation model", backends.map { .init(id: backendID($0), label: $0.label) },
             read: { ($0.dictationProvider == DictationProvider.local.rawValue ? "" : "fallback:") + $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in

@@ -196,7 +196,7 @@ struct ModelsView: View {
     private var selectedCategoryContent: some View {
         switch appState.selectedModelsCategory {
         case .dictation:
-            ForEach(BackendOption.systemManaged, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.systemManaged), id: \.model) { option in
                 let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
                     ? .appleSpeechCard
                     : nil
@@ -215,7 +215,7 @@ struct ModelsView: View {
                 defaultBadge: "Recommended: Unified",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
-                options: BackendOption.parakeetFamily
+                options: BackendOption.compatibleOptions(BackendOption.parakeetFamily)
             )
             .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
             .featureTourTarget(.parakeetFamilyCard)
@@ -226,10 +226,12 @@ struct ModelsView: View {
                 defaultBadge: "Default: Small",
                 logo: "openai-logo",
                 selection: $selectedWhisperModel,
-                options: BackendOption.whisperFamily
+                options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
             )
 
-            modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            if BackendOption.cohereTranscribe.isCompatible() {
+                modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            }
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
@@ -333,7 +335,7 @@ struct ModelsView: View {
                 )
             }
 
-            ForEach(BackendOption.streaming, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.streaming), id: \.model) { option in
                 if let liveCaptionBackend = MeetingLiveCaptionBackend(rawValue: option.backend) {
                     modelCard(
                         option: option,
@@ -591,7 +593,7 @@ struct ModelsView: View {
 
             if showExperimental {
                 VStack(spacing: MuesliTheme.spacing12) {
-                    ForEach(BackendOption.experimental, id: \.model) { option in
+                    ForEach(BackendOption.compatibleOptions(BackendOption.experimental), id: \.model) { option in
                         if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
                             modelCard(
                                 option: option,
@@ -620,7 +622,7 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
-        let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
+        let variants = BackendOption.compatibleOptions(BackendOption.bodhanFamily).filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
         if let selected = variants.first(where: { $0.model == selection.wrappedValue }) ?? variants.first {
             modelCard(option: selected, logo: "bodhan-logo",
                          title: isCore ? "Bodhan Core" : "Bodhan Flex",
@@ -657,7 +659,7 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
-                ForEach(Gemma4LiteRTModel.allCases) { model in
+                ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                     gemmaCleanupModelCard(model)
                 }
 
@@ -676,7 +678,7 @@ struct ModelsView: View {
             Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
-            ForEach(Gemma4LiteRTModel.allCases) { model in
+            ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
             ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
@@ -920,6 +922,12 @@ struct ModelsView: View {
             Text(selectedOption.description)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
+
+            if selectedOption == .parakeetRedux {
+                Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
 
             if selectedOption.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
