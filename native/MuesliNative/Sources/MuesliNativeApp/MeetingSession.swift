@@ -584,14 +584,20 @@ final class MeetingSession {
     var testingConsumeChunk: ((String, URL, MeetingChunkTimingSnapshot) -> Void)?
 
     func testingStartCapture() async throws {
-        try chunkRotationQueue.sync {
-            startTime = Date()
-            chunkTimingTracker.start()
-            systemChunkTimingTracker.start()
-            try prepareRealtimeAudioPipeline(vadManager: nil)
-            retainedRecordingWriter = try MeetingRecordingWriter()
+        do {
+            try chunkRotationQueue.sync {
+                startTime = Date()
+                chunkTimingTracker.start()
+                systemChunkTimingTracker.start()
+                try prepareRealtimeAudioPipeline(vadManager: nil)
+                retainedRecordingWriter = try MeetingRecordingWriter()
+            }
+            try await captureLifecycle.start()
+        } catch {
+            // Do not leave partial recorders or their temp files behind.
+            discard()
+            throw error
         }
-        try await captureLifecycle.start()
     }
 
     func testingPipelineBarrier(_ inspect: () -> Void = {}) { chunkRotationQueue.sync(execute: inspect) }
@@ -1242,9 +1248,10 @@ final class MeetingSession {
     }
 
     private func setupMicDiarizationRecorderIfNeeded() {
-        micDiarizationRecorder = nil
         micDiarizationSetupError = nil
-        guard config.diarizeMicrophoneAudio else { return }
+        // A repeated start while capture is active must keep the live track;
+        // stop and discard clear the recorder, so a new meeting starts with nil.
+        guard micDiarizationRecorder == nil, config.diarizeMicrophoneAudio else { return }
         do {
             micDiarizationRecorder = try PCMChunkRecorder(directoryName: Self.micDiarizationDirectoryName)
         } catch {
