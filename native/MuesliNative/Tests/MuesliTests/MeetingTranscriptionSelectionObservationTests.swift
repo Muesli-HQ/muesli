@@ -11,6 +11,21 @@ private final class ObservationInvalidationFlag: @unchecked Sendable {
 @Suite("Meeting transcription selection observation")
 @MainActor
 struct MeetingTranscriptionSelectionObservationTests {
+    @Test("meeting fallback uses the supplied OS even when both saved models are unsupported", arguments: [14, 15])
+    func meetingFallbackUsesInjectedOS(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let expected: BackendOption = major == 14 ? .parakeetUnified : .parakeetRedux
+        for configured in [BackendOption.parakeetRedux, nil] {
+            let fallback = MuesliController.fallbackMeetingTranscriptionBackend(
+                configured: configured,
+                dictationBackend: .parakeetRedux,
+                currentOSVersion: version
+            )
+            #expect(fallback == expected)
+            #expect(fallback.isCompatible(currentOSVersion: version))
+        }
+    }
+
     @Test("startup and config restore reject unsupported Redux even when cached", arguments: [14, 15], [false, true])
     func restoredReduxSelection(major: Int, hasSupportedDownload: Bool) throws {
         let directory = FileManager.default.temporaryDirectory

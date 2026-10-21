@@ -695,10 +695,12 @@ public final class MuesliController: NSObject {
         self.selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: loadedConfig,
             dictationBackend: self.selectedBackend,
-            downloadedOptions: self.downloadedBackendOptions()
+            downloadedOptions: self.downloadedBackendOptions(),
+            currentOSVersion: modelOSVersion
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingBackend,
-            dictationBackend: self.selectedBackend
+            dictationBackend: self.selectedBackend,
+            currentOSVersion: modelOSVersion
         )
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
@@ -1562,7 +1564,8 @@ public final class MuesliController: NSObject {
     private static func availableMeetingTranscriptionBackend(
         config: AppConfig,
         dictationBackend: BackendOption,
-        downloadedOptions: [BackendOption] = BackendOption.downloaded
+        downloadedOptions: [BackendOption] = BackendOption.downloaded,
+        currentOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion
     ) -> BackendOption? {
         let meetingOptions = downloadedOptions.filter(\.supportsMeetingTranscription)
         let fallback = dictationBackend.supportsMeetingTranscription ? dictationBackend : nil
@@ -1570,21 +1573,23 @@ public final class MuesliController: NSObject {
             backend: config.meetingTranscriptionBackend,
             model: config.meetingTranscriptionModel,
             fallback: fallback,
-            downloadedOptions: meetingOptions
+            downloadedOptions: meetingOptions,
+            currentOSVersion: currentOSVersion
         )
     }
 
-    private static func fallbackMeetingTranscriptionBackend(
+    static func fallbackMeetingTranscriptionBackend(
         configured: BackendOption?,
-        dictationBackend: BackendOption
+        dictationBackend: BackendOption,
+        currentOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion
     ) -> BackendOption {
-        if let configured, configured.supportsMeetingTranscription, configured.isCompatible() {
+        if let configured, configured.supportsMeetingTranscription, configured.isCompatible(currentOSVersion: currentOSVersion) {
             return configured
         }
-        if dictationBackend.supportsMeetingTranscription, dictationBackend.isCompatible() {
+        if dictationBackend.supportsMeetingTranscription, dictationBackend.isCompatible(currentOSVersion: currentOSVersion) {
             return dictationBackend
         }
-        return BackendOption.compatibleOptions().first(where: \.supportsMeetingTranscription) ?? .whisper
+        return BackendOption.compatibleOptions(currentOSVersion: currentOSVersion).first(where: \.supportsMeetingTranscription) ?? .whisper
     }
 
     @discardableResult
@@ -1598,14 +1603,16 @@ public final class MuesliController: NSObject {
         guard let resolved = Self.availableMeetingTranscriptionBackend(
             config: config,
             dictationBackend: dictationBackend,
-            downloadedOptions: downloadedOptions ?? downloadedBackendOptions()
+            downloadedOptions: downloadedOptions ?? downloadedBackendOptions(),
+            currentOSVersion: modelOSVersion
         ) else {
             selectedMeetingTranscriptionBackend = Self.fallbackMeetingTranscriptionBackend(
                 configured: BackendOption.resolve(
                     backend: config.meetingTranscriptionBackend,
                     model: config.meetingTranscriptionModel
                 ),
-                dictationBackend: dictationBackend
+                dictationBackend: dictationBackend,
+                currentOSVersion: modelOSVersion
             )
             publishMeetingTranscriptionSelection(selectedMeetingTranscriptionBackend, configChanged: false)
             return nil
@@ -1711,10 +1718,12 @@ public final class MuesliController: NSObject {
         selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
             config: config,
             dictationBackend: selectedBackend,
-            downloadedOptions: downloadedBackendOptions()
+            downloadedOptions: downloadedBackendOptions(),
+            currentOSVersion: modelOSVersion
         ) ?? Self.fallbackMeetingTranscriptionBackend(
             configured: configuredMeetingTranscriptionBackend,
-            dictationBackend: selectedBackend
+            dictationBackend: selectedBackend,
+            currentOSVersion: modelOSVersion
         )
         if config.meetingTranscriptionBackend != selectedMeetingTranscriptionBackend.backend ||
             config.meetingTranscriptionModel != selectedMeetingTranscriptionBackend.model {

@@ -41,6 +41,7 @@ struct ModelsView: View {
     @State private var selectedBodhanCoreModel: String
     @State private var selectedBodhanFlexModel: String
     @State private var showExperimental: Bool
+    @State private var showUnavailableDownloads = false
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
     @State private var isDownloadingLiveCaptionModel = false
@@ -101,6 +102,7 @@ struct ModelsView: View {
                     .featureTourTarget(.modelLibrary)
 
                     selectedCategoryContent
+                    unavailableDownloadsSection
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
             .padding(.top, MuesliTheme.pageTop)
@@ -176,6 +178,33 @@ struct ModelsView: View {
             Text("Live meetings will fall back to standard chunk-by-chunk captions until this model is downloaded again.")
         }
 
+    }
+
+    @ViewBuilder
+    private var unavailableDownloadsSection: some View {
+        let options = BackendOption.incompatibleDownloadedOptions(downloadedModels)
+        if !options.isEmpty {
+            DisclosureGroup("Unavailable downloads", isExpanded: $showUnavailableDownloads) {
+                VStack(spacing: MuesliTheme.spacing12) {
+                    ForEach(options, id: \.model) { option in
+                        HStack {
+                            Text(option.label)
+                            Spacer()
+                            Button("Delete", role: .destructive) {
+                                modelToDelete = option
+                            }
+                            .disabled(!controller.canModifyModelFiles)
+                        }
+                    }
+                }
+                .padding(.top, MuesliTheme.spacing12)
+            }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(MuesliTheme.spacing16)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        }
     }
 
     private var modelsCategorySelection: Binding<ModelsCategory> {
@@ -1927,9 +1956,9 @@ struct ModelsView: View {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
-            let fallback = downloadedModels
-                .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
+            let fallback = BackendOption.compatibleOptions().first {
+                $0 != option && downloadedModels.contains($0.model)
+            } ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]

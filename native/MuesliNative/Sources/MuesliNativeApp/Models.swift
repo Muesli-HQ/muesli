@@ -290,6 +290,16 @@ struct BackendOption: Equatable {
         options.filter { $0.isCompatible(currentOSVersion: currentOSVersion) }
     }
 
+    /// Cached unsupported models remain deletable, separately from inference choices.
+    static func incompatibleDownloadedOptions(
+        _ downloadedModelIDs: Set<String>,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        all.filter {
+            downloadedModelIDs.contains($0.model) && !$0.isCompatible(currentOSVersion: currentOSVersion)
+        }
+    }
+
     /// Only installed models supported by this Mac are ready for inference.
     static var downloaded: [BackendOption] {
         compatibleOptions().filter { $0.isDownloaded }

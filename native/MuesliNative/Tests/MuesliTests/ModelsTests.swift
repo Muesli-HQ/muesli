@@ -184,6 +184,17 @@ struct BackendOptionTests {
         #expect(variants.contains(.parakeetRedux) == (major >= 15))
     }
 
+    @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
+    func incompatibleDownloadsRemainDeletable(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let cached: Set<String> = [BackendOption.parakeetRedux.model, BackendOption.parakeetEnglish.model]
+        let cleanup = BackendOption.incompatibleDownloadedOptions(cached, currentOSVersion: version)
+        #expect(cleanup == (major == 14 ? [.parakeetRedux] : []))
+        #expect(BackendOption.incompatibleDownloadedOptions([], currentOSVersion: version).isEmpty)
+        let selectable = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(!cleanup.contains(where: { selectable.contains($0) }))
+    }
+
     @Test("cached Redux cannot displace a supported downloaded model on macOS 14")
     func restoredDownloadedReduxRespectsOSVersion() {
         let redux = BackendOption.parakeetRedux
