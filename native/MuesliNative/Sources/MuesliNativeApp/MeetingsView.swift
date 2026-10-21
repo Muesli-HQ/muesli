@@ -513,18 +513,22 @@ struct MeetingsView: View {
                                     joinActionControl(for: event, meetingURL: meetingURL)
                                 }
 
+                                let plannedFolder = appState.config.plannedFolderID(
+                                    for: event.resolvedCalendarOccurrence.identityKey,
+                                    existingFolderIDs: Set(appState.folders.map(\.id))
+                                ).flatMap { id in appState.folders.first { $0.id == id } }
                                 Menu {
                                     Button("All Meetings") {
-                                        controller.createMeetingFromCalendarEvent(event, folderID: nil)
+                                        controller.planFolder(nil, for: event)
                                     }
                                     Divider()
                                     ForEach(appState.folders) { folder in
                                         Button(folder.name) {
-                                            controller.createMeetingFromCalendarEvent(event, folderID: folder.id)
+                                            controller.planFolder(folder.id, for: event)
                                         }
                                     }
                                 } label: {
-                                    Text("Add to folder")
+                                    Text(plannedFolder?.name ?? "Add to folder")
                                         .font(.system(size: 10, weight: .medium))
                                         .foregroundStyle(MuesliTheme.textSecondary)
                                         .padding(.horizontal, 8)
