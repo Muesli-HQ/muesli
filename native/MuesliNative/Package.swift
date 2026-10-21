@@ -16,7 +16,7 @@ let package = Package(
         .package(path: "../AIElementsSwift"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.5"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", branch: "main"), // TODO: pin to tagged release once one ships post-PR #455 (swift-transformers removal)
         // Ghost Pepper uses this LLM.swift fork for local Qwen cleanup. Before production, replace it with upstream
         // eastriverlee/LLM.swift once explicit Qwen/ChatML template behavior is validated against our GGUF models.
@@ -105,9 +105,14 @@ let package = Package(
             url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
             checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
         ),
+        .target(
+            name: "AudioGraphTestSupport",
+            path: "Tests/AudioGraphTestSupport",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

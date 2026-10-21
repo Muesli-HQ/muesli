@@ -3,7 +3,25 @@ import AppKit
 import Foundation
 import MuesliCore
 import SQLite3
+import Observation
 @testable import MuesliNativeApp
+
+@MainActor
+private final class HistoryRefreshPublicationCounter {
+    private(set) var count = 0
+
+    func observe(_ state: AppState) {
+        withObservationTracking {
+            _ = state.dictationStats
+        } onChange: { [weak self, weak state] in
+            MainActor.assumeIsolated {
+                guard let self, let state else { return }
+                self.count += 1
+                self.observe(state)
+            }
+        }
+    }
+}
 
 private enum OpenRouterDisconnectTestError: Error {
     case expected
@@ -95,6 +113,42 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+
+    @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
+    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
+        let directory = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        configStore.save(config)
+        let controller = makeController(dictationStore: store, configStore: configStore)
+        let history = controller.installRefreshWindowsForTesting(
+            history: hasHistoryWindow, preferences: hasPreferencesWindow
+        )
+        defer { _ = controller.installRefreshWindowsForTesting(history: false, preferences: false) }
+        let counter = HistoryRefreshPublicationCounter()
+        counter.observe(controller.appState)
+
+        for expectedCount in 1...2 {
+            let id = try store.insertDictation(
+                text: "Fresh history", durationSeconds: 1,
+                startedAt: Date(), endedAt: Date()
+            )
+            controller.refreshUI()
+            #expect(counter.count == expectedCount)
+            #expect(controller.appState.dictationRows.contains { $0.id == id })
+            #expect(controller.appState.dictationStats.totalSessions == expectedCount)
+        }
+
+        // Standalone reload callers must still refresh history themselves.
+        if let history {
+            history.reload()
+            #expect(counter.count == 3)
+        }
+    }
 
     private func makeController(
         dictationStore: DictationStore? = nil,
@@ -2181,6 +2235,27 @@ struct MeetingBrowserLogicTests {
         #expect(formatted.contains("Jun 15, 2025"))
         #expect(formatted.contains("12:30"))
         #expect(formatted.localizedCaseInsensitiveContains("PM"))
+    }
+
+    @Test("local timestamps follow time-zone changes while explicit offsets stay fixed")
+    func localDatesFollowTimeZoneChanges() async {
+        // Keep process-wide TZ changes isolated from other tests and macOS settings.
+        await #expect(processExitsWith: .success) {
+            setenv("TZ", "UTC", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let local = "2025-01-01T12:00:00"
+            let absolute = "2025-01-01T12:00:00Z"
+            let before = try #require(MeetingBrowserLogic.parseDate(local))
+            let fixed = try #require(MeetingBrowserLogic.parseDate(absolute))
+
+            setenv("TZ", "America/Los_Angeles", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let after = try #require(MeetingBrowserLogic.parseDate(local))
+            #expect(after.timeIntervalSince(before) == 8 * 60 * 60)
+            #expect(MeetingBrowserLogic.parseDate(absolute) == fixed)
+        }
     }
 
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {
