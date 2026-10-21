@@ -3,7 +3,7 @@ import Foundation
 import MuesliCore
 
 /// Native Swift transcription backend using FluidAudio's Parakeet TDT model
-/// running on Apple's Neural Engine (ANE) via CoreML.
+/// running via Core ML with a model-specific encoder compute policy.
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
@@ -36,9 +36,7 @@ actor FluidAudioTranscriber {
         }
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
         let plan = FluidAudioModel.plan(for: version)
-        let preparingMessage = version == .redux
-            ? "Preparing Parakeet Redux (first load may take several minutes)..."
-            : "Loading Parakeet into Core ML..."
+        let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
@@ -50,7 +48,11 @@ actor FluidAudioTranscriber {
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let models = try await AsrModels.load(from: modelDirectory, version: version)
+            let models = try await AsrModels.load(
+                from: modelDirectory,
+                version: version,
+                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+            )
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager

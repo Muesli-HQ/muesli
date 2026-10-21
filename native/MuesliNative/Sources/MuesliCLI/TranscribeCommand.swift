@@ -686,8 +686,12 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
         ) { modelDirectory in
-            progress("preparing model")
-            let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
+            progress(ParakeetRuntimePolicy.preparingMessage(for: plan.modelID))
+            let models = try await AsrModels.load(
+                from: modelDirectory,
+                version: asrModelVersion,
+                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+            )
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager
