@@ -306,6 +306,9 @@ struct MuesliCLITests {
     func transcribeEnumsAcceptDocumentedValues() {
         #expect(TranscribeModel(argument: "parakeet-v3") == .parakeetV3)
         #expect(TranscribeModel(argument: "parakeet-v2") == .parakeetV2)
+        #expect(TranscribeModel(argument: "parakeet-redux") == .parakeetRedux)
+        #expect(TranscribeModel.parakeetRedux.asrModelVersion == .redux)
+        #expect(TranscribeModel.parakeetRedux.whisperKitModelName == nil)
         #expect(TranscribeModel(argument: "parakeet-eou-320ms") == .parakeetEou320ms)
         #expect(TranscribeModel(argument: "sensevoice") == .senseVoice)
         #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
