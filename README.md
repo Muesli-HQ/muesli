@@ -20,6 +20,10 @@
   <img src="https://img.shields.io/badge/Apple%20Silicon-optimized-green" alt="Apple Silicon" />
 </p>
 
+<p align="center">
+  <a href="https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa">Get the Muesli plugin for ChatGPT and Codex</a> · <a href="https://muesli.works/blog/muesli-chatgpt-codex-plugin/">Setup guide</a>
+</p>
+
 ---
 
 ## What is Muesli?
@@ -148,6 +152,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local development workflow.
 The selected transcription model downloads on demand (~565 MB for the default English Parakeet Unified; ~450 MB for multilingual Parakeet v3; ~220 MB for Parakeet Redux on macOS 15+). Redux uses a CPU encoder to avoid Neural Engine compilation failures on some Macs.
 The app bundle also includes the arm64 LiteRT-LM runtime (~61 MB) for experimental
 Gemma 4 support; its ~2.6 GB model weights download only when Gemma is selected.
+
+---
+
+## ChatGPT and Codex plugin
+
+[Install the official Muesli plugin](https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa) to turn meeting transcripts into summaries, decisions, action items, and implementation plans.
+
+- **Codex on your Mac:** With local shell access, the agent can use Muesli's bundled CLI to find saved meetings and dictations, read transcripts, transcribe local audio, and save revised meeting notes when requested.
+- **ChatGPT or sessions without local access:** Export the selected meeting as Markdown from Muesli and attach it for analysis. Installing the plugin alone does not give a session access to your Mac's meeting database.
+
+Muesli records and transcribes locally by default. When you share a transcript with ChatGPT or a hosted Codex model, that text becomes part of the assistant's context and may be processed by its provider.
+
+See the [plugin setup guide and example prompts](https://muesli.works/blog/muesli-chatgpt-codex-plugin/) for meeting follow-ups, implementation plans, and saving reviewed notes back to Muesli.
 
 ---
 
