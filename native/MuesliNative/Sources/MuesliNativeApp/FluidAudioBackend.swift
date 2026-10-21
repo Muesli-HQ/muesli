@@ -3,18 +3,21 @@ import Foundation
 import MuesliCore
 
 /// Native Swift transcription backend using FluidAudio's Parakeet TDT model
-/// running on Apple's Neural Engine (ANE) via CoreML.
+/// running via Core ML with a model-specific encoder compute policy.
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
+        case reduxRequiresMacOS15
 
         var errorDescription: String? {
             switch self {
             case .notLoaded:
                 return "FluidAudio models not loaded. Call loadModels() first."
+            case .reduxRequiresMacOS15:
+                return "Parakeet Redux requires macOS 15 or later."
             }
         }
     }
@@ -28,8 +31,12 @@ actor FluidAudioTranscriber {
     ) async throws {
         if loadedVersion == version, asrManager != nil { return }
 
+        if version == .redux, #unavailable(macOS 15) {
+            throw TranscriberError.reduxRequiresMacOS15
+        }
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
-        let plan = version == .v2 ? ManagedASRModelPlans.parakeetV2() : ManagedASRModelPlans.parakeetV3()
+        let plan = FluidAudioModel.plan(for: version)
+        let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
@@ -37,11 +44,15 @@ actor FluidAudioTranscriber {
         ) { modelDirectory in
             let preparing = ModelDownloadProgress.preparing(
                 modelID: plan.modelID,
-                message: "Loading Parakeet into Core ML..."
+                message: preparingMessage
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let models = try await AsrModels.load(from: modelDirectory, version: version)
+            let models = try await AsrModels.load(
+                from: modelDirectory,
+                version: version,
+                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+            )
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager
@@ -50,7 +61,7 @@ actor FluidAudioTranscriber {
         self.loadedVersion = version
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
-            message: "Loading Parakeet into Core ML..."
+            message: preparingMessage
         )
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
@@ -87,5 +98,21 @@ enum FluidAudioUnloadPolicy {
         deletingVersion: AsrModelVersion
     ) -> Bool {
         loadedVersion == deletingVersion
+    }
+}
+
+/// One routing policy for loading, installed-state checks and deleting model files.
+enum FluidAudioModel {
+    static func version(for modelID: String) -> AsrModelVersion {
+        if modelID == BackendOption.parakeetRedux.model { return .redux }
+        return modelID.contains("v2") ? .v2 : .v3
+    }
+
+    static func plan(for version: AsrModelVersion) -> ManagedASRModelPlan {
+        switch version {
+        case .v2: return ManagedASRModelPlans.parakeetV2()
+        case .redux: return ManagedASRModelPlans.parakeetRedux()
+        default: return ManagedASRModelPlans.parakeetV3()
+        }
     }
 }

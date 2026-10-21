@@ -1213,6 +1213,35 @@ struct ModelDownloadCoordinatorTests {
         #expect(fallbackTracker.requestCount == 0)
     }
 
+    @Test("Redux installs and deletes independently of existing Parakeet models")
+    func parakeetReduxArtifacts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let redux = ManagedASRModelPlans.parakeetRedux(modelsRoot: root)
+        let v3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(redux.repository == "FluidInference/parakeet-redux-coreml")
+        #expect(redux.cacheDirectory.lastPathComponent == "parakeet-redux")
+        #expect(redux.cacheDirectory != v3.cacheDirectory)
+        #expect(redux.mirror == nil)
+        #expect(redux.selections[0].includedPaths == v3.selections[0].includedPaths)
+        #expect(!redux.isAvailableLocally())
+        for plan in [redux, v3] {
+            for alternatives in plan.requiredArtifactAlternatives {
+                let url = plan.cacheDirectory.appendingPathComponent(alternatives[0])
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([1]).write(to: url)
+            }
+        }
+        #expect(redux.isAvailableLocally())
+        let encoderWeights = redux.cacheDirectory.appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: encoderWeights)
+        #expect(!redux.isAvailableLocally())
+        try Data([1]).write(to: encoderWeights)
+        try redux.delete()
+        #expect(!redux.isAvailableLocally())
+        #expect(v3.isAvailableLocally())
+    }
+
     @Test("managed ASR plans require complete compiled artifacts")
     func managedASRPlanCompleteness() throws {
         let root = try makeTemporaryDirectory()
