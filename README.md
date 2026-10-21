@@ -40,7 +40,8 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 
 ## Features
 
-- **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal, cleanup, and a personal dictionary.
+- **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
+- **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting notes and answers** — Use templates, re-summarize with another model, and ask questions across meetings with references to source passages. Export notes, transcripts, and answers as Markdown or PDF.
@@ -48,7 +49,7 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
 - **Calendar and meeting detection** — Show upcoming events from macOS Calendar accounts, choose calendars and time windows, and join or record from reminders. Optional camera and microphone activity detection recognizes meeting apps.
 - **Shortcuts and Siri** — Start or stop dictation and meetings, retrieve the last dictation or meeting notes, and connect these actions to your own automations.
-- **Voice commands** — Use the optional Computer Use planner for app and browser actions or supported Muesli settings. Choose experimental on-device Gemma on macOS 15+ or a connected ChatGPT account. AI prompt settings remain manual-only.
+- **Voice commands** — Use the optional Computer Use planner for app and browser actions or supported Muesli settings. Choose on-device Gemma on macOS 15+ or a connected ChatGPT account. AI prompt settings remain manual-only.
 - **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
 - **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
 
@@ -107,6 +108,22 @@ Data commands return JSON; file transcription returns plain text unless another 
 
 See the [CLI quickstart](https://muesli.works/docs/), [coding agent guide](https://muesli.works/docs/agents/), and [full CLI reference](https://muesli.works/docs/cli/) for write-back, dictionaries, output formats, and troubleshooting. The repository's [agent skill](skills/muesli-agent/SKILL.md) provides reusable instructions.
 
+### Custom vocabulary and dictionary
+
+Use the app's **Dictionary** tab to add custom words and replacement phrases, or import and export entries as JSON. Imports merge by match word, update changed definitions, and append new entries. The same file can be used for CLI transcription:
+
+```bash
+muesli-cli transcribe interview.m4a --dictionary dictionary.json
+```
+
+Each entry specifies a word, its replacement, and a matching threshold:
+
+```json
+[
+  { "word": "museli", "replacement": "muesli", "matching_threshold": 0.85 }
+]
+```
+
 ---
 
 ## Models
@@ -123,9 +140,9 @@ Choose and download models in the **Models** tab. English defaults to Parakeet U
 | Qwen3 ASR | Multilingual transcription | 1.3 GB |
 | Bodhan Core / Flex | Indic languages and English; FP16 or INT8; macOS 15+ | 2.46 GB / 1.27 GB weights |
 | Whisper | Tiny and Small in English or multilingual variants, Medium English, Large Turbo Multilingual | 153 MB–1.5 GB |
-| Gemma 4 E2B | Experimental transcription and cleanup | 2.6 GB |
+| Gemma 4 E2B | On-device transcription and cleanup | 2.6 GB |
 
-Download sizes are storage estimates, not RAM requirements. Gemma transcription is experimental; it cannot be selected for transcription and cleanup simultaneously.
+Download sizes are storage estimates, not RAM requirements. Gemma cannot be selected for transcription and cleanup simultaneously.
 
 Live transcription is off by default. Apple Speech and Nemotron provide live and final transcripts; Parakeet Realtime EOU provides an English preview alongside a separate final meeting model. Enable it under **Settings → Meetings → Transcription**.
 
@@ -208,7 +225,7 @@ Muesli has been possible because of the generosity of companies such as:
 - [Bodhan AI Core](https://huggingface.co/bodhan-ai/indic-transcribe-core) and [Flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) — multilingual Indic/English ASR; community [Core](https://huggingface.co/phequals/indic-transcribe-core-coreml) and [Flex](https://huggingface.co/phequals/indic-transcribe-flex-coreml) CoreML/MLX conversions
 - [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon decoding for both FP16 and INT8 Bodhan hybrid runtimes
 - [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — Native on-device Gemma runtime with Swift APIs and Metal acceleration
-- [Gemma 4 E2B LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) — Experimental multimodal transcription and cleanup model
+- [Gemma 4 E2B LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) — Multimodal transcription and cleanup model
 - [pyannote](https://github.com/pyannote/pyannote-audio) — Speaker diarization (via FluidAudio CoreML conversion)
 
 ---
@@ -221,11 +238,19 @@ Muesli has been possible because of the generosity of companies such as:
 
 ## Resources
 
-- [Muesli website](https://muesli.works/) · [Documentation](https://muesli.works/docs/) · [Release history](https://github.com/Muesli-HQ/muesli/releases)
-- [Privacy policy](https://muesli.works/privacy) · [Terms of service](https://muesli.works/terms)
+- [Apple Neural Engine speech-to-text on Mac](https://muesli.works/apple-neural-engine-speech-to-text-mac) — how Muesli uses Apple Silicon, CoreML, and local ASR for fast dictation.
+- [Local speech-to-text glossary](https://muesli.works/local-speech-to-text-glossary) — ASR, VAD, diarization, acoustic echo cancellation, Parakeet, Whisper, and Qwen3 ASR.
 - [Best dictation apps for Mac](https://muesli.works/best-dictation-apps-mac) — a practical comparison of Mac dictation tools.
 - [Offline dictation for Mac](https://muesli.works/offline-dictation-mac) — why local-first voice typing matters.
 - [Local meeting transcription for Mac](https://muesli.works/local-meeting-transcription-mac) — meeting notes without adding a bot.
+- [Use Muesli meeting notes in ChatGPT and Codex](https://muesli.works/blog/muesli-chatgpt-codex-plugin/) — install the plugin and turn transcripts into notes and implementation plans.
+- [Hinglish and Indic language meeting notes on Mac](https://muesli.works/blog/hinglish-indic-meeting-notes-mac/) — capture and review multilingual conversations with Muesli.
+- [Hinglish dictation on Mac](https://muesli.works/blog/hinglish-dictation-mac/) — Hindi-English voice typing with Muesli.
+- [Bodhan Indic speech-to-text on Mac](https://muesli.works/blog/bodhan-indic-transcription-mac/) — Bodhan Core and Flex for multilingual dictation and transcription.
+- [Dictate in Hindi, Tamil, and other Indian languages](https://muesli.works/blog/indian-language-dictation-mac/) — set up Indic language dictation on your Mac.
+- [Running Bodhan on Apple Silicon with CoreML and MLX Swift](https://muesli.works/blog/bodhan-coreml-mlx-apple-silicon/) — how Muesli runs Bodhan locally.
+- [Muesli website](https://muesli.works/) · [Documentation](https://muesli.works/docs/) · [Release history](https://github.com/Muesli-HQ/muesli/releases)
+- [Privacy policy](https://muesli.works/privacy) · [Terms of service](https://muesli.works/terms)
 
 ---
 
