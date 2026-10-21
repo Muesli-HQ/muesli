@@ -160,6 +160,53 @@ struct MeetingRecordingTranscriberTests {
     func overlap() {
         #expect(MeetingRecordingTranscriber.removingOverlap(previous: "we will review this tomorrow.", next: "this tomorrow and review this tomorrow again") == "and review this tomorrow again")
         #expect(MeetingRecordingTranscriber.removingOverlap(previous: "first topic", next: "second topic") == "second topic")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们喜欢头发", next: "头发设计", outputLanguage: "zh-TW") == "设计")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们使用ChatGPT", next: "使用ChatGPT继续", outputLanguage: "zh-TW") == "继续")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们喜欢头发。", next: "头发！设计", outputLanguage: "zh-TW") == "设计")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "这是 beta", next: "and 中文", outputLanguage: "zh-TW") == "and 中文")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们用 model", next: "let's 继续", outputLanguage: "zh-TW") == "let's 继续")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们说 some time", next: "sometime 再讨论", outputLanguage: "zh") == "sometime 再讨论")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们看了", next: "了后来", outputLanguage: "zh-TW") == "了后来")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们喜欢头发", next: "头发设计", outputLanguage: "zh") == "设计")
+        #expect(MeetingRecordingTranscriber.removingOverlap(previous: "我们喜欢头发", next: "头发设计", outputLanguage: "en") == "头发设计")
+    }
+
+    @Test("Traditional replay converts phrase context across windows and retains timing")
+    func traditionalReplayWindowBoundary() async throws {
+        let url = try recording(seconds: 11)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let probe = ReplayPhraseProbe(texts: ["头", "发", ""])
+
+        let result = try await MeetingRecordingTranscriber().transcribe(
+            url: url,
+            outputLanguage: "zh-TW",
+            infer: { _ in await probe.next() },
+            progress: { _, _ in }
+        )
+
+        #expect(result.text == "頭髮")
+        #expect(result.segments.map(\.text) == ["頭", "髮"])
+        #expect(result.segments.map(\.start) == [0, 4.6])
+        #expect(result.segments.map(\.end) == [5, 9.6])
+    }
+
+    @Test("Simplified replay deduplicates and joins Han window boundaries")
+    func simplifiedReplayWindowBoundary() async throws {
+        let url = try recording(seconds: 11)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let probe = ReplayPhraseProbe(texts: ["我们喜欢头发", "头发设计", ""])
+
+        let result = try await MeetingRecordingTranscriber().transcribe(
+            url: url,
+            outputLanguage: "zh",
+            infer: { _ in await probe.next() },
+            progress: { _, _ in }
+        )
+
+        #expect(result.text == "我们喜欢头发设计")
+        #expect(result.segments.map(\.text) == ["我们喜欢头发", "设计"])
+        #expect(result.segments.map(\.start) == [0, 4.6])
+        #expect(result.segments.map(\.end) == [5, 9.6])
     }
 
     @Test("diarization reads an hour in ten-second windows without overlap or retained PCM")
@@ -309,5 +356,20 @@ private actor RecordingWindowProbe {
         #expect(value >= fraction)
         fraction = value
         maximumPreview = max(maximumPreview, preview.count)
+    }
+}
+
+private actor ReplayPhraseProbe {
+    private let texts: [String]
+    private var index = 0
+
+    init(texts: [String]) {
+        self.texts = texts
+    }
+
+    func next() -> SpeechTranscriptionResult {
+        defer { index += 1 }
+        let text = index < texts.count ? texts[index] : ""
+        return SpeechTranscriptionResult(text: text, segments: [])
     }
 }

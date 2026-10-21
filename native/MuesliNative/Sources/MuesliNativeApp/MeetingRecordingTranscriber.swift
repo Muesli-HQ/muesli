@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Shared disk-backed reader for ASR and diarization. Only one window exists
 /// at a time; the caller must finish inference before requesting the next one.
@@ -138,9 +139,12 @@ final class RecordedAudioDiarizationSession {
 actor MeetingRecordingTranscriber {
     static let windowSeconds: Double = 5
     static let overlapSeconds: Double = 0.4
+    private static let hanCharacterExpression = try? NSRegularExpression(pattern: #"\p{Han}"#)
+    private static let kanaHangulExpression = try? NSRegularExpression(pattern: #"[\p{Hiragana}\p{Katakana}\p{Hangul}]"#)
 
     func transcribe(
         url: URL,
+        outputLanguage: String? = nil,
         infer: @Sendable (URL) async throws -> SpeechTranscriptionResult,
         progress: @Sendable (Double, String) async -> Void
     ) async throws -> SpeechTranscriptionResult {
@@ -152,23 +156,95 @@ actor MeetingRecordingTranscriber {
         while let window = try reader.next() {
             let result = try await infer(window.url)
             try Task.checkCancellation()
-            let addition = Self.removingOverlap(previous: previousWindowText, next: result.text)
+            let addition = Self.removingOverlap(
+                previous: previousWindowText,
+                next: result.text,
+                outputLanguage: outputLanguage
+            )
             // A silent window breaks the shared-word boundary. Never match text
             // from an earlier, non-overlapping speech region.
             previousWindowText = String(result.text.suffix(400))
             if !addition.isEmpty {
-                transcript += transcript.isEmpty ? addition : " " + addition
+                let joinsHanRun = Self.isChineseOutput(outputLanguage)
+                    && ChineseTranscriptionOutput.joinsHanBoundary(previous: transcript, next: addition)
+                let separator = transcript.isEmpty || joinsHanRun ? "" : " "
+                transcript += separator + addition
                 segments.append(SpeechSegment(start: window.start, end: window.end, text: addition))
             }
             try FileManager.default.removeItem(at: window.url)
-            await progress(window.fraction, String(transcript.suffix(2_000)))
+            let preview = String(transcript.suffix(2_000))
+            await progress(window.fraction, ChineseTranscriptionOutput.apply(preview, language: outputLanguage))
         }
         return SpeechTranscriptionResult(text: transcript, segments: segments)
+            .convertingChineseOutput(language: outputLanguage)
     }
 
     /// Only reconcile the short shared boundary; never deduplicate the body of a chunk.
-    static func removingOverlap(previous: String, next: String) -> String {
-        let old = previous.suffix(400).split(whereSeparator: \.isWhitespace)
+    static func removingOverlap(previous: String, next: String, outputLanguage: String? = nil) -> String {
+        let previousTail = String(previous.suffix(400))
+        if isChineseOutput(outputLanguage),
+           supportsHanOverlap(previousTail), supportsHanOverlap(next) {
+            let oldCharacters = previousTail.enumerated()
+                .filter { !$0.element.isWhitespace }
+            let newCharacters = next.enumerated()
+                .filter { !$0.element.isWhitespace }
+            var comparableOldCharacters = oldCharacters
+            while comparableOldCharacters.last?.element.isPunctuation == true {
+                comparableOldCharacters.removeLast()
+            }
+            let characterLimit = min(16, comparableOldCharacters.count, newCharacters.count)
+            if characterLimit > 0 {
+                func isHan(_ character: Character) -> Bool {
+                    let value = String(character)
+                    guard let hanExpression = Self.hanCharacterExpression else { return false }
+                    let range = NSRange(value.startIndex..., in: value)
+                    return hanExpression.firstMatch(in: value, range: range) != nil
+                }
+                func isNonHanWordCharacter(_ character: Character) -> Bool {
+                    character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+                        && !isHan(character)
+                }
+                func hasNonHanWordSpace(_ characters: [(offset: Int, element: Character)]) -> Bool {
+                    zip(characters, characters.dropFirst()).contains { previous, current in
+                        current.offset > previous.offset + 1
+                            && isNonHanWordCharacter(previous.element)
+                            && isNonHanWordCharacter(current.element)
+                    }
+                }
+
+                for count in stride(from: characterLimit, through: 1, by: -1) {
+                    let nextPrefix = newCharacters.prefix(count).map(\.element)
+                    let oldStart = comparableOldCharacters.count - count
+                    guard comparableOldCharacters.suffix(count).map(\.element).elementsEqual(nextPrefix) else { continue }
+                    let matchedHanCount = nextPrefix.filter(isHan).count
+                    let matchedNonHanWord = nextPrefix.contains(where: isNonHanWordCharacter)
+                    guard matchedHanCount >= 2 || matchedNonHanWord else { continue }
+                    guard !hasNonHanWordSpace(Array(comparableOldCharacters.suffix(count))),
+                          !hasNonHanWordSpace(Array(newCharacters.prefix(count))) else { continue }
+
+                    let startsInsideNonHanWord = oldStart > 0
+                        && comparableOldCharacters[oldStart].offset == comparableOldCharacters[oldStart - 1].offset + 1
+                        && isNonHanWordCharacter(comparableOldCharacters[oldStart].element)
+                        && isNonHanWordCharacter(comparableOldCharacters[oldStart - 1].element)
+                    let endsInsideNonHanWord = count < newCharacters.count
+                        && newCharacters[count].offset == newCharacters[count - 1].offset + 1
+                        && isNonHanWordCharacter(newCharacters[count - 1].element)
+                        && isNonHanWordCharacter(newCharacters[count].element)
+                    guard !startsInsideNonHanWord, !endsInsideNonHanWord else { continue }
+
+                    let consumedThrough = newCharacters[count - 1].offset + 1
+                    var remainder = Array(next.dropFirst(consumedThrough))
+                        .drop(while: \.isWhitespace)
+                    if previousTail.last?.isPunctuation == true,
+                       remainder.first?.isPunctuation == true {
+                        remainder = remainder.dropFirst()
+                    }
+                    return String(remainder)
+                }
+            }
+        }
+
+        let old = previousTail.split(whereSeparator: \.isWhitespace)
         let new = next.split(whereSeparator: \.isWhitespace)
         func key(_ word: Substring) -> String {
             word.lowercased().trimmingCharacters(in: .punctuationCharacters)
@@ -182,6 +258,29 @@ actor MeetingRecordingTranscriber {
             }
         }
         return next.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func supportsHanOverlap(_ text: String) -> Bool {
+        guard containsHan(text), let expression = kanaHangulExpression else {
+            return false
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.firstMatch(in: text, range: range) == nil
+    }
+
+    private static func isChineseOutput(_ language: String?) -> Bool {
+        guard let language = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return false
+        }
+        return language == "zh" || language.hasPrefix("zh-")
+    }
+
+    private static func containsHan(_ text: String) -> Bool {
+        guard !text.isEmpty, let expression = hanCharacterExpression else {
+            return false
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.firstMatch(in: text, range: range) != nil
     }
 }
 

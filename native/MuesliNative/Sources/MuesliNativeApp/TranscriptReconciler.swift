@@ -308,6 +308,10 @@ enum TranscriptReconciler {
             return lhs + rhs
         }
 
+        if ChineseTranscriptionOutput.joinsHanBoundary(previous: lhs, next: rhs) {
+            return lhs + rhs
+        }
+
         if lhsLast.isWhitespace || rhsFirst.isWhitespace || rhsFirst.isPunctuation {
             return lhs + rhs
         }

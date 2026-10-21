@@ -63,7 +63,7 @@ struct Qwen3LanguageSelectionTests {
         #expect(Qwen3AsrLanguage.auto.label == "Auto-detect")
         #expect(Qwen3AsrLanguage.pinned(.english).pinnedCode == "en")
         #expect(Qwen3AsrLanguage.pinned(.english).label == "English")
-        #expect(Qwen3AsrLanguage.allCases.count == MuesliQwen3AsrConfig.Language.allCases.count + 1)
+        #expect(Qwen3AsrLanguage.allCases.count == MuesliQwen3AsrConfig.Language.allCases.count + 2)
     }
 
     @available(macOS 15, *)

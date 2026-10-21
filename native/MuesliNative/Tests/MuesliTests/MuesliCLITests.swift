@@ -331,6 +331,76 @@ struct MuesliCLITests {
         #expect(TranscribeOutputFormat(argument: "xml") == nil)
     }
 
+    @Test("Traditional Chinese CLI choice validates model capability")
+    func traditionalLanguageOption() throws {
+        let command = try TranscribeCommand.parse(["recording.wav", "--model", "whisper-small", "--language", "zh-TW"])
+        #expect(command.language == .chineseTraditional)
+        for model in TranscribeModel.allCases {
+            let accepts = [TranscribeModel.qwen3Asr, .nemotron35, .whisperTiny, .whisperSmall, .whisperLargeTurbo].contains(model)
+            #expect(model.supportsChineseLanguage == accepts)
+            if !accepts {
+                #expect(throws: (any Error).self) {
+                    try TranscribeCommand.parse(["recording.wav", "--model", model.rawValue, "--language", "zh-TW"])
+                }
+            }
+        }
+    }
+
+    @Test("Nemotron CLI prompt IDs follow the shared language catalog")
+    func nemotronPromptUsesLanguageCatalog() {
+        #expect(Nemotron35CLITranscriber.resolvedPromptId(for: nil) == Nemotron35Language.auto.promptId)
+        #expect(Nemotron35CLITranscriber.resolvedPromptId(for: .chinese) == Nemotron35Language.chinese.promptId)
+        #expect(Nemotron35CLITranscriber.resolvedPromptId(for: .chineseTraditional) == Nemotron35Language.chineseTraditional.promptId)
+    }
+
+    @Test("Traditional CLI output converts dictionary results before saving and formatting")
+    func traditionalPipelineOutput() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionary = fixture.directory.appendingPathComponent("dictionary.json")
+        try Data(#"[{"word":"demo","replacement":"头发发展"}]"#.utf8).write(to: dictionary)
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "demo"),
+            summarizer: SuccessfulSummarizer(notes: "unused"), dataChangePoster: {}
+        )
+        let result = try await pipeline.run(request: MuesliAudioTranscriptionRequest(
+            sourceURL: fixture.sourceURL, model: .whisperSmall, title: "Traditional",
+            summarize: false, saveMeeting: true, dictionaryURL: dictionary, language: .chineseTraditional
+        ), context: fixture.context)
+        #expect(result.transcript == "頭髮發展")
+        #expect(result.textOutput == "頭髮發展\n")
+        #expect(result.markdownOutput.contains("頭髮發展"))
+        #expect(TranscribeJSONPayload(result).transcript == "頭髮發展")
+        let id = try #require(result.savedMeetingID)
+        #expect(try fixture.context.store.meeting(id: id)?.rawTranscript == "頭髮發展")
+    }
+
+    @Test("CLI routes explicit Chinese hints to each capable model family")
+    func routesChineseLanguage() async throws {
+        let spy = LanguageSpyTranscriber()
+        var router = RoutingAudioTranscriber()
+        router.qwen3Asr = spy
+        router.nemotron35 = spy
+        router.whisper = spy
+        for model in TranscribeModel.allCases.filter(\.supportsChineseLanguage) {
+            for language in TranscribeLanguage.allCases {
+                _ = try await router.transcribe(wavURL: URL(fileURLWithPath: "/unused.wav"), model: model, language: language, progress: { _ in })
+                #expect(await spy.lastLanguage == language)
+            }
+        }
+    }
+
+    @Test("CLI Whisper uses Chinese tokens with a Traditional conditioning prompt")
+    func cliTraditionalWhisperPrompt() {
+        let options = WhisperCLITranscriber.makeDecodeOptions(modelName: "small", language: .chineseTraditional, promptTokens: [11, 22])
+        #expect(options.language == "zh")
+        #expect(options.promptTokens == [11, 22])
+        #expect(!options.detectLanguage)
+        #expect(options.skipSpecialTokens)
+        #expect(WhisperCLITranscriber.makeDecodeOptions(modelName: "small", language: nil).detectLanguage)
+        #expect(WhisperCLITranscriber.makeDecodeOptions(modelName: "tiny.en", language: nil).language == nil)
+    }
+
     @Test("--dictionary parses into the request")
     func dictionaryOptionParses() throws {
         let command = try TranscribeCommand.parse(["recording.wav", "--dictionary", "/tmp/dictionary.json"])
@@ -735,5 +805,16 @@ private struct SuccessfulSummarizer: MeetingSummarizing {
 private struct FailingSummarizer: MeetingSummarizing {
     func summarize(transcript: String, title: String, supportDirectory: URL) async throws -> String {
         throw CLISummaryError.unavailable("summary backend unavailable")
+    }
+}
+
+private actor LanguageSpyTranscriber: AudioTranscribing {
+    var lastLanguage: TranscribeLanguage?
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        HeadlessTranscription(text: "unused", durationSeconds: nil)
+    }
+    func transcribe(wavURL: URL, model: TranscribeModel, language: TranscribeLanguage?, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        lastLanguage = language
+        return HeadlessTranscription(text: "unused", durationSeconds: nil)
     }
 }

@@ -20,6 +20,29 @@ struct SpeechTranscriptionResult: Sendable {
     }
 }
 
+extension SpeechTranscriptionResult {
+    func convertingChineseOutput(language: String?) -> Self {
+        guard ChineseTranscriptionOutput.isTraditional(language) else { return self }
+        let combined = segments.map(\.text).joined()
+        let combinedCount = combined.unicodeScalars.count
+        let converted = Array(ChineseTranscriptionOutput.apply(combined, language: language).unicodeScalars)
+        var offset = 0
+        let mapped = segments.map { segment -> SpeechSegment in
+            let count = segment.text.unicodeScalars.count
+            let text: String
+            if converted.count == combinedCount {
+                text = String(String.UnicodeScalarView(converted[offset..<(offset + count)]))
+            } else {
+                text = ChineseTranscriptionOutput.apply(segment.text, language: language)
+            }
+            offset += count
+            return SpeechSegment(start: segment.start, end: segment.end, text: text)
+        }
+        return Self(text: ChineseTranscriptionOutput.apply(text, language: language),
+                    segments: mapped, bodhanMeasurement: bodhanMeasurement)
+    }
+}
+
 actor AppleSpeechUseLifecycle {
     typealias Cleanup = @Sendable () async -> Void
 
@@ -166,7 +189,7 @@ actor TranscriptionCoordinator {
     private var _nemotron35Transcriber: Any?
     /// Selected Nemotron 3.5 language prompt id (101 = auto). Stored so it survives
     /// lazy (re)creation of the transcriber and is applied whenever it loads.
-    private var nemotron35PromptId: Int32 = 101
+    private var nemotron35Language: Nemotron35Language = .defaultLanguage
 
     @available(macOS 15, *)
     private var nemotron35Transcriber: Nemotron35StreamingTranscriber {
@@ -181,21 +204,22 @@ actor TranscriptionCoordinator {
     /// reach the actor while its CoreML models are still unloaded.
     @available(macOS 15, *)
     func getLoadedNemotron35Transcriber(
+        language: Nemotron35Language? = nil,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Nemotron35StreamingTranscriber {
         let transcriber = nemotron35Transcriber
-        await transcriber.setPromptId(nemotron35PromptId)
+        await transcriber.setPromptId((language ?? nemotron35Language).promptId)
         try await transcriber.loadModels(progress: progress, progressSnapshot: progressSnapshot)
         return transcriber
     }
 
-    /// Set the Nemotron 3.5 language prompt id (from app config). Applies to the
+    /// Retain the output script as well as the decoder hint. Applies to the
     /// live transcriber if it already exists.
-    func setNemotron35PromptId(_ id: Int32) async {
-        nemotron35PromptId = id
+    func setNemotron35Language(_ language: Nemotron35Language) async {
+        nemotron35Language = language
         if #available(macOS 15, *), let t = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
-            await t.setPromptId(id)
+            await t.setPromptId(language.promptId)
         }
     }
 
@@ -960,6 +984,15 @@ actor TranscriptionCoordinator {
         customWords: [[String: Any]] = [],
         appContext: String? = nil
     ) async throws -> SpeechTranscriptionResult {
+        let nemotronLanguage = nemotron35Language
+        let outputLanguage = Self.chineseOutputLanguage(
+            backend: backend,
+            whisper: whisperLanguage,
+            qwen: qwen3AsrLanguage,
+            cohere: cohereLanguage,
+            nemotron: nemotronLanguage
+        )
+
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
         if backend.backend == "cohere", let vadManager {
@@ -982,6 +1015,7 @@ actor TranscriptionCoordinator {
             bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            nemotronLanguage: nemotronLanguage,
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
@@ -1004,7 +1038,7 @@ actor TranscriptionCoordinator {
             postProcessorSnapshot: postProcessorSnapshot,
             appContext: appContext
         ) ?? removeFillersWithLogging(result)
-        let final = applyCustomWords(result, customWords: customWords)
+        let final = applyCustomWords(result, customWords: customWords).convertingChineseOutput(language: outputLanguage)
         if !final.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
         }
@@ -1022,12 +1056,14 @@ actor TranscriptionCoordinator {
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
-        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
+        nemotronLanguage: Nemotron35Language,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
-        // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
-        cleanMeetingTranscript(try await route(
+        // Keep repaired Han raw until MeetingSession merges adjacent segments for full-context conversion.
+        // Meetings also intentionally skip Qwen/custom-word post-processing.
+        return cleanMeetingTranscript(try await route(
             url: url,
             backend: backend,
             cohereLanguage: cohereLanguage,
@@ -1035,6 +1071,7 @@ actor TranscriptionCoordinator {
             bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            nemotronLanguage: nemotronLanguage,
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
@@ -1049,24 +1086,38 @@ actor TranscriptionCoordinator {
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
-        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
+        nemotronLanguage: Nemotron35Language,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
     ) async throws -> SpeechTranscriptionResult {
-        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
-            try await self.transcribeMeetingChunk(
-                at: chunk,
-                backend: backend,
-                cohereLanguage: cohereLanguage,
-                bodhanLanguage: bodhanLanguage,
-                bodhanOutputMode: bodhanOutputMode,
-                whisperLanguage: whisperLanguage,
-                qwen3AsrLanguage: qwen3AsrLanguage,
-                parakeetLanguage: parakeetLanguage,
-                appleSpeechLanguage: appleSpeechLanguage
-            )
-        }, progress: progress)
+        let outputLanguage = Self.chineseOutputLanguage(
+            backend: backend,
+            whisper: whisperLanguage,
+            qwen: qwen3AsrLanguage,
+            cohere: cohereLanguage,
+            nemotron: nemotronLanguage
+        )
+        return try await MeetingRecordingTranscriber().transcribe(
+            url: url,
+            outputLanguage: outputLanguage,
+            infer: { chunk in
+                try await self.transcribeMeetingChunk(
+                    at: chunk,
+                    backend: backend,
+                    cohereLanguage: cohereLanguage,
+                    bodhanLanguage: bodhanLanguage,
+                    bodhanOutputMode: bodhanOutputMode,
+                    whisperLanguage: whisperLanguage,
+                    qwen3AsrLanguage: qwen3AsrLanguage,
+                    nemotronLanguage: nemotronLanguage,
+                    parakeetLanguage: parakeetLanguage,
+                    appleSpeechLanguage: appleSpeechLanguage
+                )
+            },
+            progress: progress
+        )
     }
 
     func transcribeMeetingChunk(
@@ -1076,11 +1127,13 @@ actor TranscriptionCoordinator {
         bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         bodhanOutputMode: BodhanOutputMode = .mixed,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
-        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
+        nemotronLanguage: Nemotron35Language,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
-        // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
+        // Meeting chunks stay raw for reconciliation and final full-context conversion.
+        // They intentionally skip Qwen/custom-word post-processing.
         // Run VAD to skip silent chunks (prevents hallucinations)
         if let vadManager {
             do {
@@ -1102,6 +1155,7 @@ actor TranscriptionCoordinator {
             bodhanOutputMode: bodhanOutputMode,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            nemotronLanguage: nemotronLanguage,
             parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
@@ -1452,6 +1506,19 @@ actor TranscriptionCoordinator {
         return SpeechTranscriptionResult(text: correctedText, segments: result.segments)
     }
 
+    static func chineseOutputLanguage(
+        backend: BackendOption, whisper: WhisperKitLanguage, qwen: Qwen3AsrLanguage,
+        cohere: CohereTranscribeLanguage, nemotron: Nemotron35Language
+    ) -> String? {
+        switch backend.backend {
+        case "whisper": return backend.supportsWhisperLanguageSelection ? whisper.rawValue : nil
+        case "qwen": return qwen.rawValue
+        case "cohere": return cohere.rawValue
+        case "nemotron35": return nemotron.rawValue
+        default: return nil // Apple Speech's native zh-TW output must never be converted.
+        }
+    }
+
     private func route(
         url: URL,
         backend: BackendOption,
@@ -1460,6 +1527,7 @@ actor TranscriptionCoordinator {
         bodhanOutputMode: BodhanOutputMode,
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
+        nemotronLanguage: Nemotron35Language,
         parakeetLanguage: ParakeetLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
@@ -1470,7 +1538,7 @@ actor TranscriptionCoordinator {
                 : WhisperKitLanguage.defaultLanguage
             return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
-            return try await transcribeWithNemotron35(url: url)
+            return try await transcribeWithNemotron35(url: url, language: nemotronLanguage)
         case "parakeet-unified":
             return try await transcribeWithParakeetUnified(url: url)
         case "qwen":
@@ -1650,11 +1718,11 @@ actor TranscriptionCoordinator {
 
     // MARK: - Nemotron 3.5 Streaming (RNNT CoreML on ANE)
 
-    private func transcribeWithNemotron35(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithNemotron35(url: URL, language: Nemotron35Language) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Nemotron 3.5: \(url.lastPathComponent)\n", stderr)
-            let transcriber = try await getLoadedNemotron35Transcriber()
-            let result = try await transcriber.transcribe(wavURL: url)
+            let transcriber = try await getLoadedNemotron35Transcriber(language: language)
+            let result = try await transcriber.transcribe(wavURL: url, language: language)
             fputs("[muesli-native] Nemotron 3.5 result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

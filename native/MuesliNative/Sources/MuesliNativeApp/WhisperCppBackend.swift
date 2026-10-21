@@ -67,7 +67,9 @@ actor WhisperKitTranscriber {
         guard let loadedModel else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let decodeOptions = Self.makeDecodeOptions(language: language, modelName: loadedModel)
+        let promptTokens = language == .chineseTraditional
+            ? whisperKit.tokenizer?.encode(text: ChineseTranscriptionOutput.whisperPrompt) : nil
+        let decodeOptions = Self.makeDecodeOptions(language: language, modelName: loadedModel, promptTokens: promptTokens)
         let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
@@ -80,7 +82,8 @@ actor WhisperKitTranscriber {
     /// English-only checkpoints ignore language preference and keep default English decoding.
     static func makeDecodeOptions(
         language: WhisperKitLanguage,
-        modelName: String
+        modelName: String,
+        promptTokens: [Int]? = nil
     ) -> DecodingOptions {
         guard let effective = WhisperKitLanguage.preferenceForLoadedModel(language, modelName: modelName) else {
             return DecodingOptions(skipSpecialTokens: true)
@@ -91,7 +94,9 @@ actor WhisperKitTranscriber {
             // which silently forces English. Request detection explicitly for multilingual models.
             return DecodingOptions(detectLanguage: true, skipSpecialTokens: true)
         default:
-            return DecodingOptions(language: effective.rawValue, skipSpecialTokens: true)
+            var options = DecodingOptions(language: effective.decoderCode, skipSpecialTokens: true)
+            if effective == .chineseTraditional { options.promptTokens = promptTokens }
+            return options
         }
     }
 

@@ -28,6 +28,19 @@ struct NemotronRNNTConfig {
     let promptId: Int32?
     /// Drop `<…>` tag pieces on decode (3.5 emits `<lang>`/`<unk>` tags; EN does not).
     let stripAngleBracketTags: Bool
+
+    func withPromptId(_ promptId: Int32?) -> Self {
+        Self(
+            chunkSamples: chunkSamples,
+            cacheChannelFrames: cacheChannelFrames,
+            totalMelFrames: totalMelFrames,
+            encoderDim: encoderDim,
+            decoderHiddenSize: decoderHiddenSize,
+            blankTokenId: blankTokenId,
+            promptId: promptId,
+            stripAngleBracketTags: stripAngleBracketTags
+        )
+    }
 }
 
 /// Carries all mutable state between chunk-by-chunk transcription calls. Neutral
@@ -40,6 +53,7 @@ struct RNNTStreamState {
     var cState: MLMultiArray         // [2, 1, 640]
     var lastToken: Int32             // SOS/blank = 0
     var allTokens: [Int]             // accumulated token IDs
+    let promptId: Int32?             // immutable language selection for this stream
 }
 
 enum NemotronRNNTError: Error, LocalizedError {
@@ -80,7 +94,7 @@ func nemotronMakeStreamState(config: NemotronRNNTConfig) throws -> RNNTStreamSta
 
     return RNNTStreamState(
         cacheChannel: cacheChannel, cacheTime: cacheTime, cacheLen: cacheLen,
-        hState: hState, cState: cState, lastToken: 0, allTokens: []
+        hState: hState, cState: cState, lastToken: 0, allTokens: [], promptId: config.promptId
     )
 }
 
