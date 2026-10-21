@@ -85,6 +85,52 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.3) == expectedMic) // Mic diarization shares the cleaned mic timeline.
     }
 
+    @Test("a repeated start is rejected without resetting the running pipeline")
+    func repeatedStartKeepsRunningPipeline() async throws {
+        let producer = ContractProducer(useQueue: false, wrapped: false)
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
+        let system = ContractSystemAudio()
+        var config = Self.micDiarizationConfig
+        config.enableLiveStreamingPartials = false
+        let session = MeetingSession(title: "repeated start regression", calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                  menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: config,
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+        try await session.start()
+        let diarizationURL = try #require(session.testingMicDiarizationFileURL)
+        let captureStart = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - 4096
+        func emit(_ index: Int) throws {
+            system.onPCMSamples?([Int16](repeating: 0, count: 512))
+            try producer.emit(Array(repeating: index + 1, count: 512), at: captureStart + Int64(index * 512))
+        }
+        for index in 0..<4 { try emit(index) }
+        // The rejected start must find already-recorded audio it could otherwise reset.
+        let deadline = Date().addingTimeInterval(5)
+        while Self.fileSize(diarizationURL) <= 44, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(Self.fileSize(diarizationURL) > 44)
+
+        await #expect(throws: CancellationError.self) { try await session.start() }
+
+        for index in 4..<8 { try emit(index) }
+        let urls = await session.testingFinishCapture()
+        defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        func pcm(_ url: URL?) throws -> [Int16] {
+            let url = try #require(url)
+            return try Data(contentsOf: url).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        }
+        let expectedMic = (1...8).flatMap { [Int16](repeating: Int16(Float($0) / 16 * 32767), count: 512) }
+        #expect(urls.3 == diarizationURL) // Same track; not replaced by the rejected start.
+        #expect(try pcm(urls.0) == expectedMic) // Mic chunk not restarted at offset zero.
+        #expect(try pcm(urls.3) == expectedMic)
+    }
+
     @Test("steady microphone delivery never deduplicates consecutive PCM using timestamps",
           arguments: [0, -80, -4096, 800])
     func sameSourceJitter(offset: Int) {
@@ -238,6 +284,10 @@ struct MeetingMicrophoneDeliveryTests {
         // One track across chunk rotation, pause/resume and the final flush.
         #expect(urls.3 == diarizationURL)
         #expect(try pcm(urls.3) == before + after)
+    }
+
+    private static func fileSize(_ url: URL) -> Int {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
     }
 
     private static var micDiarizationConfig: AppConfig {

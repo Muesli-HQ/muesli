@@ -179,6 +179,9 @@ final class MeetingSession {
     private let systemAudioRecorder: SystemAudioCapturing
     private let captureLifecycle: MeetingCaptureLifecycle
     private let discardCleanup = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// One-shot: a repeated start must not reset timing, recorders or AEC of the
+    /// running pipeline (mic turns would restart at zero against the diarization track).
+    private let startClaimed = OSAllocatedUnfairLock(initialState: false)
     var capturePhase: MeetingCapturePhase { captureLifecycle.phase }
     func beginStoppingCapture() { captureLifecycle.requestStop() }
     private let neuralAec: MeetingNeuralAec
@@ -388,6 +391,11 @@ final class MeetingSession {
     func start() async throws {
         try Task.checkCancellation()
         guard !captureLifecycle.isEnding else { throw CancellationError() }
+        let isFirstStart = startClaimed.withLock { claimed in
+            defer { claimed = true }
+            return !claimed && capturePhase == .preparing
+        }
+        guard isFirstStart else { throw CancellationError() }
         let inputDeviceID = meetingMicRecorder.preferredInputDeviceID
         inputObservationQueue.async { [inputObserver, inputMuted, captureLifecycle] in
             guard !captureLifecycle.isEnding else { return }
