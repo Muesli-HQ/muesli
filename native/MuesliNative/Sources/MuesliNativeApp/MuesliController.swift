@@ -1395,11 +1395,9 @@ public final class MuesliController: NSObject {
     func refreshUI() {
         statusBarController?.setStatus("Idle")
         statusBarController?.refresh()
-        historyWindowController?.updateBackendLabel()
         historyWindowController?.applyThemeAppearance()
-        historyWindowController?.reload()
-        preferencesWindowController?.refresh()
         refreshIndicatorVisibility()
+        // Window reload/label helpers also sync state; publish history just once here.
         syncAppState()
     }
 
@@ -11256,6 +11254,13 @@ public final class MuesliController: NSObject {
     }
 
     #if DEBUG
+    func installRefreshWindowsForTesting(history: Bool, preferences: Bool) -> RecentHistoryWindowController? {
+        historyWindowController = history
+            ? RecentHistoryWindowController(store: dictationStore, controller: self) : nil
+        preferencesWindowController = preferences ? PreferencesWindowController(controller: self) : nil
+        return historyWindowController
+    }
+
     func installHostedDictationSessionsForTesting(
         recording: (any HostedDictationSession)? = nil,
         finalizing: (any HostedDictationSession)? = nil
