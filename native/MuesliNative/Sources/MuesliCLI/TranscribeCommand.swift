@@ -14,6 +14,7 @@ enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
 enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetV3 = "parakeet-v3"
     case parakeetV2 = "parakeet-v2"
+    case parakeetRedux = "parakeet-redux"
     case parakeetUnified = "parakeet-unified"
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
@@ -32,6 +33,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
+        case .parakeetRedux: return .redux
         case .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
@@ -49,7 +51,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .parakeetV3, .parakeetV2, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+        case .parakeetV3, .parakeetV2, .parakeetRedux, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
     }
@@ -109,7 +111,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-redux, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -627,7 +629,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
-        case .parakeetV3, .parakeetV2: transcriber = batch
+        case .parakeetV3, .parakeetV2, .parakeetRedux: transcriber = batch
         case .parakeetUnified: transcriber = parakeetUnified
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
@@ -669,17 +671,27 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
             )
         }
         progress("loading \(model.rawValue)")
-        let plan = asrModelVersion == .v2
-            ? ManagedASRModelPlans.parakeetV2()
-            : ManagedASRModelPlans.parakeetV3()
+        if asrModelVersion == .redux, #unavailable(macOS 15) {
+            throw CLIError.invalidInput("Parakeet Redux requires macOS 15 or later.", fix: "Choose parakeet-v3 or parakeet-v2.")
+        }
+        let plan: ManagedASRModelPlan
+        switch asrModelVersion {
+        case .v2: plan = ManagedASRModelPlans.parakeetV2()
+        case .redux: plan = ManagedASRModelPlans.parakeetRedux()
+        default: plan = ManagedASRModelPlans.parakeetV3()
+        }
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
         ) { modelDirectory in
-            progress("preparing model")
-            let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
+            progress(ParakeetRuntimePolicy.preparingMessage(for: plan.modelID))
+            let models = try await AsrModels.load(
+                from: modelDirectory,
+                version: asrModelVersion,
+                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+            )
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager
