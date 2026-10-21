@@ -14,6 +14,7 @@ enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
 enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetV3 = "parakeet-v3"
     case parakeetV2 = "parakeet-v2"
+    case parakeetRedux = "parakeet-redux"
     case parakeetUnified = "parakeet-unified"
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
@@ -32,6 +33,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
+        case .parakeetRedux: return .redux
         case .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
@@ -49,7 +51,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .parakeetV3, .parakeetV2, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+        case .parakeetV3, .parakeetV2, .parakeetRedux, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
     }
@@ -109,7 +111,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-redux, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -627,7 +629,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
-        case .parakeetV3, .parakeetV2: transcriber = batch
+        case .parakeetV3, .parakeetV2, .parakeetRedux: transcriber = batch
         case .parakeetUnified: transcriber = parakeetUnified
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
@@ -669,17 +671,27 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
             )
         }
         progress("loading \(model.rawValue)")
-        let plan = asrModelVersion == .v2
-            ? ManagedASRModelPlans.parakeetV2()
-            : ManagedASRModelPlans.parakeetV3()
+        if asrModelVersion == .redux, #unavailable(macOS 15) {
+            throw CLIError.invalidInput("Parakeet Redux requires macOS 15 or later.", fix: "Choose parakeet-v3 or parakeet-v2.")
+        }
+        let plan: ManagedASRModelPlan
+        switch asrModelVersion {
+        case .v2: plan = ManagedASRModelPlans.parakeetV2()
+        case .redux: plan = ManagedASRModelPlans.parakeetRedux()
+        default: plan = ManagedASRModelPlans.parakeetV3()
+        }
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
         ) { modelDirectory in
-            progress("preparing model")
-            let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
+            progress(ParakeetRuntimePolicy.preparingMessage(for: plan.modelID))
+            let models = try await AsrModels.load(
+                from: modelDirectory,
+                version: asrModelVersion,
+                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+            )
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager
@@ -862,13 +874,13 @@ actor WhisperCLITranscriber: AudioTranscribing {
             throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
         }
         let start = CFAbsoluteTimeGetCurrent()
-        // English-only `.en` checkpoints have no multilingual tokens — keep default DecodingOptions.
+        // English-only `.en` checkpoints have no multilingual tokens — keep default English language decoding.
         // Multilingual variants need detectLanguage; WhisperKit defaults otherwise force English.
         let decodeOptions: DecodingOptions
         if modelName.hasSuffix(".en") {
-            decodeOptions = DecodingOptions()
+            decodeOptions = DecodingOptions(skipSpecialTokens: true)
         } else {
-            decodeOptions = DecodingOptions(detectLanguage: true)
+            decodeOptions = DecodingOptions(detectLanguage: true, skipSpecialTokens: true)
         }
         let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1088,6 +1100,7 @@ struct ConfiguredCLIMeetingSummarizer: MeetingSummarizing {
 
 struct CLISummaryConfig: Decodable {
     var meetingSummaryBackend = "chatgpt"
+    var meetingSummaryMaxOutputTokens: Int? = nil
     var openAIAPIKey = ""
     var anthropicAPIKey = ""
     var anthropicWorkspaceID = ""
@@ -1109,6 +1122,7 @@ struct CLISummaryConfig: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case meetingSummaryBackend = "meeting_summary_backend"
+        case meetingSummaryMaxOutputTokens = "meeting_summary_max_output_tokens"
         case openAIAPIKey = "openai_api_key"
         case anthropicAPIKey = "anthropic_api_key"
         case anthropicWorkspaceID = "anthropic_workspace_id"
@@ -1134,6 +1148,9 @@ struct CLISummaryConfig: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         meetingSummaryBackend = try container.decodeIfPresent(String.self, forKey: .meetingSummaryBackend) ?? meetingSummaryBackend
+        meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(
+            try? container.decode(Int.self, forKey: .meetingSummaryMaxOutputTokens)
+        )
         openAIAPIKey = try container.decodeIfPresent(String.self, forKey: .openAIAPIKey) ?? openAIAPIKey
         anthropicAPIKey = try container.decodeIfPresent(String.self, forKey: .anthropicAPIKey) ?? anthropicAPIKey
         anthropicWorkspaceID = try container.decodeIfPresent(String.self, forKey: .anthropicWorkspaceID) ?? anthropicWorkspaceID
@@ -1195,7 +1212,6 @@ enum CLISummaryClient {
     private static let defaultOpenAIModel = "gpt-6.1-sol"
     private static let defaultAnthropicModel = "claude-sonnet-5-5"
     private static let defaultOpenRouterModel = "openrouter/free"
-    private static let defaultSummaryMaxOutputTokens = 2500
 
     static func resolvedOpenRouterModel(_ configuredModel: String) -> String {
         configuredModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultOpenRouterModel : configuredModel
@@ -1225,7 +1241,8 @@ enum CLISummaryClient {
                 apiKey: key,
                 model: config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "anthropic":
             let key = AnthropicAPISettings.resolvedValue(
@@ -1245,6 +1262,7 @@ enum CLISummaryClient {
                 model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
                 transcript: transcript,
                 title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens,
                 backend: "Anthropic",
                 workspaceID: workspaceID
             )
@@ -1259,7 +1277,8 @@ enum CLISummaryClient {
                 apiKey: key,
                 model: resolvedOpenRouterModel(config.openRouterModel),
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "ollama":
             let baseURL = URL(string: config.ollamaURL.isEmpty ? "http://localhost:11434" : config.ollamaURL)
@@ -1268,7 +1287,8 @@ enum CLISummaryClient {
                 url: baseURL.appendingPathComponent("api/chat"),
                 model: config.ollamaModel.isEmpty ? "qwen3.5" : config.ollamaModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "lmstudio":
             guard !config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1283,7 +1303,8 @@ enum CLISummaryClient {
                 apiKey: "",
                 model: config.lmStudioModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "custom_llm":
             guard !config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1313,6 +1334,7 @@ enum CLISummaryClient {
                     model: config.customLLMModel,
                     transcript: transcript,
                     title: title,
+                    maxOutputTokens: config.meetingSummaryMaxOutputTokens,
                     extraHeaders: extraHeaders
                 )
             }
@@ -1326,6 +1348,7 @@ enum CLISummaryClient {
                 model: config.customLLMModel,
                 transcript: transcript,
                 title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens,
                 extraHeaders: extraHeaders
             )
         default:
@@ -1356,8 +1379,8 @@ enum CLISummaryClient {
         "Meeting title: \(title)\n\nRaw transcript:\n\(transcript)"
     }
 
-    private static func responsesSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
-        let body: [String: Any] = [
+    private static func responsesSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String, maxOutputTokens: Int?) async throws -> String {
+        var body: [String: Any] = [
             "model": model,
             "input": [
                 ["role": "system", "content": systemPrompt()],
@@ -1365,8 +1388,8 @@ enum CLISummaryClient {
             ],
             "reasoning": ["effort": "low"],
             "text": ["verbosity": "low"],
-            "max_output_tokens": defaultSummaryMaxOutputTokens,
         ]
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) { body["max_output_tokens"] = limit }
         let data = try await postJSON(url: url, apiKey: apiKey, body: body, backend: backend)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = extractOpenAIText(from: json),
@@ -1383,16 +1406,19 @@ enum CLISummaryClient {
         model: String,
         transcript: String,
         title: String,
+        maxOutputTokens: Int?,
         extraHeaders: [String: String] = [:]
     ) async throws -> String {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt()],
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
-            "max_tokens": defaultSummaryMaxOutputTokens,
         ]
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) {
+            body[url.host == "api.openai.com" ? "max_completion_tokens" : "max_tokens"] = limit
+        }
         let data = try await postJSON(
             url: url,
             apiKey: apiKey,
@@ -1408,7 +1434,7 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func ollamaSummary(url: URL, model: String, transcript: String, title: String) async throws -> String {
+    private static func ollamaSummary(url: URL, model: String, transcript: String, title: String, maxOutputTokens: Int?) async throws -> String {
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -1416,7 +1442,7 @@ enum CLISummaryClient {
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
             "stream": false,
-            "options": ["num_predict": defaultSummaryMaxOutputTokens],
+            "options": ["num_predict": MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) ?? -1],
         ]
         let data = try await postJSON(url: url, apiKey: "", body: body, backend: "Ollama")
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1434,13 +1460,20 @@ enum CLISummaryClient {
         model: String,
         transcript: String,
         title: String,
+        maxOutputTokens: Int?,
         backend: String = "Custom LLM",
         workspaceID: String = "",
         extraHeaders: [String: String] = [:]
     ) async throws -> String {
+        let outputLimit = try await MeetingSummaryOutputPolicy.anthropicLimit(
+            model: model, requested: maxOutputTokens, messagesURL: url, apiKey: apiKey,
+            workspaceID: workspaceID, extraHeaders: extraHeaders,
+            send: { try await URLSession.shared.data(for: $0) }
+        )
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": backend == "Anthropic" ? AnthropicAPISettings.hostedSummaryMaxOutputTokens : defaultSummaryMaxOutputTokens,
+            "max_tokens": outputLimit,
+            "stream": MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: outputLimit),
             "system": systemPrompt(),
             "messages": [
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
@@ -1457,11 +1490,7 @@ enum CLISummaryClient {
             request.setValue(value, forHTTPHeaderField: name)
         }
         let data = try await send(request: request, backend: backend)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]] else {
-            throw CLISummaryError.emptyResponse("\(backend) returned an empty summary response.")
-        }
-        let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = try MeetingSummaryOutputPolicy.anthropicText(from: data, redactProviderErrors: backend == "Custom LLM")
         guard !text.isEmpty else {
             throw CLISummaryError.emptyResponse("\(backend) returned an empty summary response.")
         }

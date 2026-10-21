@@ -599,7 +599,7 @@ actor TranscriptionCoordinator {
 
         switch backend.backend {
         case "fluidaudio":
-            let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
+            let version = FluidAudioModel.version(for: backend.model)
             try await fluidTranscriber.loadModels(
                 version: version,
                 progress: progress,
@@ -1194,7 +1194,8 @@ actor TranscriptionCoordinator {
 
     private func removeArtifacts(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
         let filtered = TranscriptionEngineArtifactsFilter.apply(result.text)
-        return SpeechTranscriptionResult(text: filtered, segments: filtered.isEmpty ? [] : result.segments)
+        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments)
+        return SpeechTranscriptionResult(text: filtered, segments: segments)
     }
 
     private func postProcessDictationIfNeeded(

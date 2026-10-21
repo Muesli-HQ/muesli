@@ -117,6 +117,9 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMicrophoneCaptureTests
+      MeetingMicrophoneDeliveryTests
+      StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
@@ -132,6 +135,7 @@ case "${shard}" in
       MeetingSystemAudioWatchdogTests
       CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
+      DictationAudioGraphExceptionTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
@@ -164,6 +168,7 @@ case "${shard}" in
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
+      MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests

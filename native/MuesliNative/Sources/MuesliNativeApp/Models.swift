@@ -35,6 +35,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let parakeetRedux = BackendOption(
+        backend: "fluidaudio",
+        model: "FluidInference/parakeet-redux-coreml",
+        label: "Parakeet Redux",
+        sizeLabel: "~220 MB",
+        description: "A smaller download for dictation in 25 languages.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -186,7 +195,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetUnified, .parakeetMultilingual, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -273,9 +282,27 @@ struct BackendOption: Equatable {
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
 
-    /// Only models that have been downloaded and are ready for inference.
+    /// Choices offered by model pickers; retain the full catalog for saved-ID resolution.
+    static func compatibleOptions(
+        _ options: [BackendOption] = all,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        options.filter { $0.isCompatible(currentOSVersion: currentOSVersion) }
+    }
+
+    /// Cached unsupported models remain deletable, separately from inference choices.
+    static func incompatibleDownloadedOptions(
+        _ downloadedModelIDs: Set<String>,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        all.filter {
+            downloadedModelIDs.contains($0.model) && !$0.isCompatible(currentOSVersion: currentOSVersion)
+        }
+    }
+
+    /// Only installed models supported by this Mac are ready for inference.
     static var downloaded: [BackendOption] {
-        all.filter { $0.isDownloaded }
+        compatibleOptions().filter { $0.isDownloaded }
     }
 
     /// Models that can keep up with post-meeting and imported recording transcription.
@@ -320,6 +347,9 @@ struct BackendOption: Equatable {
     /// Shared OS requirements for model selection in onboarding and the library.
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
+        if self == .parakeetRedux {
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        }
         switch backend {
         case "nemotron35", "qwen", "cohere", "bodhan", "gemma4-litert":
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
@@ -379,8 +409,10 @@ struct BackendOption: Equatable {
         backend: String,
         model: String,
         fallback: BackendOption?,
-        downloadedOptions: [BackendOption]
+        downloadedOptions: [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
     ) -> BackendOption? {
+        let downloadedOptions = compatibleOptions(downloadedOptions, currentOSVersion: currentOSVersion)
         if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
             return selected
         }
@@ -391,6 +423,42 @@ struct BackendOption: Equatable {
         return downloadedOptions.first
     }
 
+    /// Repair selections restored from a newer OS, preferring compatible installed models.
+    /// File availability alone cannot make an unsupported model usable.
+    @discardableResult
+    static func normalizeRestoredSelections(
+        in config: inout AppConfig,
+        downloadedOptions: @autoclosure () -> [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> Bool {
+        let dictation = resolve(backend: config.sttBackend, model: config.sttModel)
+        let meeting = resolve(backend: config.meetingTranscriptionBackend, model: config.meetingTranscriptionModel)
+        let unsupportedDictation = dictation?.isCompatible(currentOSVersion: currentOSVersion) == false
+        let unsupportedMeeting = meeting?.isCompatible(currentOSVersion: currentOSVersion) == false
+        guard unsupportedDictation || unsupportedMeeting else { return false }
+        let available = compatibleOptions(downloadedOptions(), currentOSVersion: currentOSVersion)
+        var changed = false
+        if unsupportedDictation {
+            let replacement = available.first ?? .whisper
+            config.sttBackend = replacement.backend
+            config.sttModel = replacement.model
+            changed = true
+        }
+        if unsupportedMeeting {
+            let replacement = resolveDownloaded(
+                backend: config.meetingTranscriptionBackend,
+                model: config.meetingTranscriptionModel,
+                fallback: resolve(backend: config.sttBackend, model: config.sttModel),
+                downloadedOptions: available.filter(\.supportsMeetingTranscription),
+                currentOSVersion: currentOSVersion
+            ) ?? .whisper
+            config.meetingTranscriptionBackend = replacement.backend
+            config.meetingTranscriptionModel = replacement.model
+            changed = true
+        }
+        return changed
+    }
+
     /// Check if this model's files exist on disk.
     var isDownloaded: Bool {
         let fm = FileManager.default
@@ -398,9 +466,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: model))
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
@@ -432,55 +498,117 @@ struct BackendOption: Equatable {
 /// `prompt_dictionary`). `auto` (101) lets the model detect the language.
 enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
     case auto
-    case english = "en"
-    case hindi = "hi"
-    case spanish = "es"
-    case french = "fr"
-    case german = "de"
-    case italian = "it"
-    case portuguese = "pt"
+    case arabic = "ar"
+    case bulgarian = "bg"
     case chinese = "zh"
+    case croatian = "hr"
+    case czech = "cs"
+    case danish = "da"
+    case dutch = "nl"
+    case english = "en"
+    case englishBritish = "en-gb"
+    case estonian = "et"
+    case finnish = "fi"
+    case french = "fr"
+    case frenchCanadian = "fr-ca"
+    case german = "de"
+    case hindi = "hi"
+    case hungarian = "hu"
+    case italian = "it"
     case japanese = "ja"
     case korean = "ko"
+    case norwegianBokmal = "nb"
+    case polish = "pl"
+    case portuguese = "pt"
+    case portugueseBrazil = "pt-br"
+    case romanian = "ro"
     case russian = "ru"
-    case arabic = "ar"
+    case slovak = "sk"
+    case spanish = "es"
+    case spanishSpain = "es-es"
+    case swedish = "sv"
+    case turkish = "tr"
+    case ukrainian = "uk"
+    case vietnamese = "vi"
 
     static let defaultLanguage: Self = .auto
 
-    /// `prompt_id` value fed to the encoder. 101 = auto-detect.
+    /// IDs from the multilingual/2240ms checkpoint's metadata.json, limited to NVIDIA's
+    /// transcription-ready and broad-coverage locales. Reserved and adaptation-ready
+    /// prompts need model changes, not just a picker entry. 101 = auto-detect.
     var promptId: Int32 {
         switch self {
         case .auto: return 101
-        case .english: return 0
-        case .hindi: return 6
-        case .spanish: return 3
-        case .french: return 8
-        case .german: return 9
-        case .italian: return 15
-        case .portuguese: return 13
+        case .arabic: return 7
+        case .bulgarian: return 30
         case .chinese: return 4
+        case .croatian: return 29
+        case .czech: return 22
+        case .danish: return 25
+        case .dutch: return 16
+        case .english: return 0
+        case .englishBritish: return 1
+        case .estonian: return 60
+        case .finnish: return 26
+        case .french: return 8
+        case .frenchCanadian: return 100
+        case .german: return 9
+        case .hindi: return 6
+        case .hungarian: return 23
+        case .italian: return 15
         case .japanese: return 10
         case .korean: return 14
+        case .norwegianBokmal: return 103
+        case .polish: return 17
+        case .portuguese: return 13
+        case .portugueseBrazil: return 12
+        case .romanian: return 20
         case .russian: return 11
-        case .arabic: return 7
+        case .slovak: return 28
+        case .spanish: return 3
+        case .spanishSpain: return 2
+        case .swedish: return 24
+        case .turkish: return 18
+        case .ukrainian: return 19
+        case .vietnamese: return 33
         }
     }
 
     var label: String {
         switch self {
         case .auto: return "Auto-detect"
-        case .english: return "English"
-        case .hindi: return "Hindi"
-        case .spanish: return "Spanish"
-        case .french: return "French"
-        case .german: return "German"
-        case .italian: return "Italian"
-        case .portuguese: return "Portuguese"
+        case .arabic: return "Arabic"
+        case .bulgarian: return "Bulgarian"
         case .chinese: return "Chinese"
+        case .croatian: return "Croatian"
+        case .czech: return "Czech"
+        case .danish: return "Danish"
+        case .dutch: return "Dutch"
+        case .english: return "English"
+        case .englishBritish: return "English (UK)"
+        case .estonian: return "Estonian"
+        case .finnish: return "Finnish"
+        case .french: return "French"
+        case .frenchCanadian: return "French (Canada)"
+        case .german: return "German"
+        case .hindi: return "Hindi"
+        case .hungarian: return "Hungarian"
+        case .italian: return "Italian"
         case .japanese: return "Japanese"
         case .korean: return "Korean"
+        case .norwegianBokmal: return "Norwegian Bokmål"
+        case .polish: return "Polish"
+        case .portuguese: return "Portuguese"
+        case .portugueseBrazil: return "Portuguese (Brazil)"
+        case .romanian: return "Romanian"
         case .russian: return "Russian"
-        case .arabic: return "Arabic"
+        case .slovak: return "Slovak"
+        case .spanish: return "Spanish"
+        case .spanishSpain: return "Spanish (Spain)"
+        case .swedish: return "Swedish"
+        case .turkish: return "Turkish"
+        case .ukrainian: return "Ukrainian"
+        case .vietnamese: return "Vietnamese"
         }
     }
 
@@ -646,36 +774,212 @@ enum ParakeetLanguage: String, CaseIterable, Codable, Sendable {
 /// `auto` enables WhisperKit `detectLanguage`; explicit codes pin decoding language.
 enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
     case auto
-    case english = "en"
-    case hindi = "hi"
-    case spanish = "es"
-    case french = "fr"
-    case german = "de"
-    case italian = "it"
-    case portuguese = "pt"
-    case chinese = "zh"
-    case japanese = "ja"
-    case korean = "ko"
-    case russian = "ru"
+    case afrikaans = "af"
+    case albanian = "sq"
+    case amharic = "am"
     case arabic = "ar"
+    case armenian = "hy"
+    case assamese = "as"
+    case azerbaijani = "az"
+    case bashkir = "ba"
+    case basque = "eu"
+    case belarusian = "be"
+    case bengali = "bn"
+    case bosnian = "bs"
+    case breton = "br"
+    case bulgarian = "bg"
+    case burmese = "my"
+    case cantonese = "yue"
+    case catalan = "ca"
+    case chinese = "zh"
+    case croatian = "hr"
+    case czech = "cs"
+    case danish = "da"
+    case dutch = "nl"
+    case english = "en"
+    case estonian = "et"
+    case faroese = "fo"
+    case finnish = "fi"
+    case french = "fr"
+    case galician = "gl"
+    case georgian = "ka"
+    case german = "de"
+    case greek = "el"
+    case gujarati = "gu"
+    case haitianCreole = "ht"
+    case hausa = "ha"
+    case hawaiian = "haw"
+    case hebrew = "he"
+    case hindi = "hi"
+    case hungarian = "hu"
+    case icelandic = "is"
+    case indonesian = "id"
+    case italian = "it"
+    case japanese = "ja"
+    case javanese = "jw"
+    case kannada = "kn"
+    case kazakh = "kk"
+    case khmer = "km"
+    case korean = "ko"
+    case lao = "lo"
+    case latin = "la"
+    case latvian = "lv"
+    case lingala = "ln"
+    case lithuanian = "lt"
+    case luxembourgish = "lb"
+    case macedonian = "mk"
+    case malagasy = "mg"
+    case malay = "ms"
+    case malayalam = "ml"
+    case maltese = "mt"
+    case maori = "mi"
+    case marathi = "mr"
+    case mongolian = "mn"
+    case nepali = "ne"
+    case norwegian = "no"
+    case nynorsk = "nn"
+    case occitan = "oc"
+    case pashto = "ps"
+    case persian = "fa"
+    case polish = "pl"
+    case portuguese = "pt"
+    case punjabi = "pa"
+    case romanian = "ro"
+    case russian = "ru"
+    case sanskrit = "sa"
+    case serbian = "sr"
+    case shona = "sn"
+    case sindhi = "sd"
+    case sinhala = "si"
+    case slovak = "sk"
+    case slovenian = "sl"
+    case somali = "so"
+    case spanish = "es"
+    case sundanese = "su"
+    case swahili = "sw"
+    case swedish = "sv"
+    case tagalog = "tl"
+    case tajik = "tg"
+    case tamil = "ta"
+    case tatar = "tt"
+    case telugu = "te"
+    case thai = "th"
+    case tibetan = "bo"
+    case turkish = "tr"
+    case turkmen = "tk"
+    case ukrainian = "uk"
+    case urdu = "ur"
+    case uzbek = "uz"
+    case vietnamese = "vi"
+    case welsh = "cy"
+    case yiddish = "yi"
+    case yoruba = "yo"
 
     static let defaultLanguage: Self = .auto
 
     var label: String {
         switch self {
         case .auto: return "Auto-detect"
-        case .english: return "English"
-        case .hindi: return "Hindi"
-        case .spanish: return "Spanish"
-        case .french: return "French"
-        case .german: return "German"
-        case .italian: return "Italian"
-        case .portuguese: return "Portuguese"
-        case .chinese: return "Chinese"
-        case .japanese: return "Japanese"
-        case .korean: return "Korean"
-        case .russian: return "Russian"
+        case .afrikaans: return "Afrikaans"
+        case .albanian: return "Albanian"
+        case .amharic: return "Amharic"
         case .arabic: return "Arabic"
+        case .armenian: return "Armenian"
+        case .assamese: return "Assamese"
+        case .azerbaijani: return "Azerbaijani"
+        case .bashkir: return "Bashkir"
+        case .basque: return "Basque"
+        case .belarusian: return "Belarusian"
+        case .bengali: return "Bengali"
+        case .bosnian: return "Bosnian"
+        case .breton: return "Breton"
+        case .bulgarian: return "Bulgarian"
+        case .burmese: return "Burmese"
+        case .cantonese: return "Cantonese"
+        case .catalan: return "Catalan"
+        case .chinese: return "Chinese"
+        case .croatian: return "Croatian"
+        case .czech: return "Czech"
+        case .danish: return "Danish"
+        case .dutch: return "Dutch"
+        case .english: return "English"
+        case .estonian: return "Estonian"
+        case .faroese: return "Faroese"
+        case .finnish: return "Finnish"
+        case .french: return "French"
+        case .galician: return "Galician"
+        case .georgian: return "Georgian"
+        case .german: return "German"
+        case .greek: return "Greek"
+        case .gujarati: return "Gujarati"
+        case .haitianCreole: return "Haitian Creole"
+        case .hausa: return "Hausa"
+        case .hawaiian: return "Hawaiian"
+        case .hebrew: return "Hebrew"
+        case .hindi: return "Hindi"
+        case .hungarian: return "Hungarian"
+        case .icelandic: return "Icelandic"
+        case .indonesian: return "Indonesian"
+        case .italian: return "Italian"
+        case .japanese: return "Japanese"
+        case .javanese: return "Javanese"
+        case .kannada: return "Kannada"
+        case .kazakh: return "Kazakh"
+        case .khmer: return "Khmer"
+        case .korean: return "Korean"
+        case .lao: return "Lao"
+        case .latin: return "Latin"
+        case .latvian: return "Latvian"
+        case .lingala: return "Lingala"
+        case .lithuanian: return "Lithuanian"
+        case .luxembourgish: return "Luxembourgish"
+        case .macedonian: return "Macedonian"
+        case .malagasy: return "Malagasy"
+        case .malay: return "Malay"
+        case .malayalam: return "Malayalam"
+        case .maltese: return "Maltese"
+        case .maori: return "Maori"
+        case .marathi: return "Marathi"
+        case .mongolian: return "Mongolian"
+        case .nepali: return "Nepali"
+        case .norwegian: return "Norwegian"
+        case .nynorsk: return "Norwegian Nynorsk"
+        case .occitan: return "Occitan"
+        case .pashto: return "Pashto"
+        case .persian: return "Persian"
+        case .polish: return "Polish"
+        case .portuguese: return "Portuguese"
+        case .punjabi: return "Punjabi"
+        case .romanian: return "Romanian"
+        case .russian: return "Russian"
+        case .sanskrit: return "Sanskrit"
+        case .serbian: return "Serbian"
+        case .shona: return "Shona"
+        case .sindhi: return "Sindhi"
+        case .sinhala: return "Sinhala"
+        case .slovak: return "Slovak"
+        case .slovenian: return "Slovenian"
+        case .somali: return "Somali"
+        case .spanish: return "Spanish"
+        case .sundanese: return "Sundanese"
+        case .swahili: return "Swahili"
+        case .swedish: return "Swedish"
+        case .tagalog: return "Tagalog"
+        case .tajik: return "Tajik"
+        case .tamil: return "Tamil"
+        case .tatar: return "Tatar"
+        case .telugu: return "Telugu"
+        case .thai: return "Thai"
+        case .tibetan: return "Tibetan"
+        case .turkish: return "Turkish"
+        case .turkmen: return "Turkmen"
+        case .ukrainian: return "Ukrainian"
+        case .urdu: return "Urdu"
+        case .uzbek: return "Uzbek"
+        case .vietnamese: return "Vietnamese"
+        case .welsh: return "Welsh"
+        case .yiddish: return "Yiddish"
+        case .yoruba: return "Yoruba"
         }
     }
 
@@ -696,13 +1000,25 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
         modelName.hasSuffix(".en")
     }
 
+    /// Cantonese's token was added in large-v3; older multilingual models have 99 languages.
+    func isSupported(by modelName: String) -> Bool {
+        if Self.isEnglishOnlyModel(modelName) { return self == .auto }
+        return self != .cantonese || modelName.contains("large-v3")
+    }
+
+    static func choices(for modelName: String) -> [Self] {
+        allCases.filter { $0.isSupported(by: modelName) }
+    }
+
     /// Preference to apply for a loaded WhisperKit model.
     /// Returns `nil` for English-only variants so callers use default `DecodingOptions`.
     static func preferenceForLoadedModel(
         _ preference: WhisperKitLanguage,
         modelName: String
     ) -> WhisperKitLanguage? {
-        isEnglishOnlyModel(modelName) ? nil : preference
+        guard !isEnglishOnlyModel(modelName) else { return nil }
+        // Missing Cantonese tokens must not silently fall back to English in WhisperKit.
+        return preference.isSupported(by: modelName) ? preference : .auto
     }
 }
 
@@ -1851,6 +2167,7 @@ struct AppConfig: Codable {
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
+    var meetingSummaryMaxOutputTokens: Int? = nil
     var meetingSummaryRetryCount: Int = MeetingSummaryRetryPolicy.defaultRetryCount
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
@@ -2007,6 +2324,7 @@ struct AppConfig: Codable {
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
+        case meetingSummaryMaxOutputTokens = "meeting_summary_max_output_tokens"
         case meetingSummaryRetryCount = "meeting_summary_retry_count"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
@@ -2229,6 +2547,9 @@ struct AppConfig: Codable {
         meetingSummaryReasoningEffort = try? c.decode(
             ReasoningEffort.self,
             forKey: .meetingSummaryReasoningEffort
+        )
+        meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(
+            try? c.decode(Int.self, forKey: .meetingSummaryMaxOutputTokens)
         )
         meetingSummaryRetryCount = MeetingSummaryRetryPolicy.clampedRetryCount(
             (try? c.decode(Int.self, forKey: .meetingSummaryRetryCount)) ?? defaults.meetingSummaryRetryCount

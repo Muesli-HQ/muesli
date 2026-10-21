@@ -144,6 +144,7 @@ struct SettingsView: View {
     @State private var isShowingInvalidClaudeCodeExecutableAlert = false
     @State private var isWaitingForClaudeCodeSignIn = false
     @State private var isShowingClaudeCodeAdvanced = false
+    @State private var isShowingSummaryOutputAdvanced = false
     @State private var isEnteringOpenRouterAPIKey = false
     @State private var manualOpenRouterAPIKey = ""
     @State private var pendingDataDestruction: PendingDataDestruction?
@@ -577,9 +578,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
@@ -1018,7 +1026,7 @@ struct SettingsView: View {
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: displayedDictationBackend?.model ?? appState.config.sttModel)
                 }
             }
         }
@@ -1208,7 +1216,7 @@ struct SettingsView: View {
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             }
         }
@@ -1392,8 +1400,9 @@ struct SettingsView: View {
         settingsControl("nemotron_language")
     }
 
-    private var whisperLanguageMenu: some View {
-        settingsControl("whisper_language")
+    private func whisperLanguageMenu(model: String) -> some View {
+        MuesliSettingControl(controller: controller, id: "whisper_language",
+            allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: model).map(\.rawValue)))
     }
 
     @ViewBuilder
@@ -1763,6 +1772,20 @@ struct SettingsView: View {
                         currentModel: appState.config.openRouterModel,
                         placeholder: "provider/model"
                     ) { val in controller.updateConfig { $0.openRouterModel = val } }
+                }
+            }
+            if ![MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(appState.selectedMeetingSummaryBackend) {
+                Divider().background(MuesliTheme.surfaceBorder)
+                DisclosureGroup(isExpanded: $isShowingSummaryOutputAdvanced) {
+                    settingsRow("Output token limit", controlWidth: meetingControlWidth) {
+                        settingsControl("summary_output_limit")
+                    }
+                    .padding(.top, MuesliTheme.spacing12)
+                    settingsDescription("No added limit lets the model finish naturally. Provider and model limits still apply.")
+                } label: {
+                    Text("Advanced")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
         }
