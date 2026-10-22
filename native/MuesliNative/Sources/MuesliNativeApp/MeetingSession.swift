@@ -869,7 +869,7 @@ final class MeetingSession {
         if let systemAudioURL {
             // Run speaker diarization on system audio (batch post-processing)
             if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult.segments
+                diarizationSegments = diarizationResult
             }
         }
 
