@@ -28,6 +28,10 @@ final class PCMChunkRecorder {
         }
     }
 
+    var currentFileURL: URL? {
+        lock.withLock { $0.fileURL }
+    }
+
     func rotateFile() -> URL? {
         let newState: State
         do {
@@ -74,6 +78,7 @@ final class PCMChunkRecorder {
         let fileURL = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         guard let fileHandle = FileHandle(forWritingAtPath: fileURL.path) else {
+            try? FileManager.default.removeItem(at: fileURL)
             throw NSError(
                 domain: "PCMChunkRecorder",
                 code: 2,

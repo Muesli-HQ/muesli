@@ -1176,6 +1176,14 @@ struct SettingsView: View {
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
             Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Identify in-room speakers",
+                description: "Speaker playback may cause duplicate labels; headphones help.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("diarize_microphone")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
                     Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
