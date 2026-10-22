@@ -2933,6 +2933,28 @@ public final class MuesliController: NSObject {
         requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
     }
 
+    @objc func selectCleanupModelFromMenu(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? CleanupMenuSelection else { return }
+        Task { @MainActor in
+            do {
+                if let backend = selection.backend {
+                    let model = selection.setting == "cleanup_source"
+                        ? TranscriptCleanupClient.configuredModel(for: backend, config: config) : selection.value
+                    guard TranscriptCleanupClient.hasRequiredSettings(for: backend, config: config,
+                        isChatGPTAuthenticated: appState.isChatGPTAuthenticated, modelOverride: model) else {
+                        throw MuesliSettings.Failure.rejected("Configure \(backend.label) in Settings first.")
+                    }
+                }
+                try await applySetting(selection.setting, value: selection.value)
+                if let backend = selection.backend, selection.setting != "cleanup_source" {
+                    try await applySetting("cleanup_source", value: backend.backend)
+                }
+            } catch {
+                presentErrorAlert(title: "Cleanup model could not be changed", message: error.localizedDescription)
+            }
+        }
+    }
+
     func setSettingFromUI(_ id: String, value: String) {
         Task { @MainActor in
             do { try await applySetting(id, value: value) }

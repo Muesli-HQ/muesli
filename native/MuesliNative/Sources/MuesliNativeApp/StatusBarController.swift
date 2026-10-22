@@ -18,6 +18,19 @@ final class CalendarMenuMeetingPayload: NSObject {
     }
 }
 
+/// Stable setting IDs are revalidated by the shared settings executor on selection.
+final class CleanupMenuSelection: NSObject {
+    let setting: String
+    let value: String
+    let backend: TranscriptCleanupBackendOption?
+
+    init(setting: String, value: String, backend: TranscriptCleanupBackendOption? = nil) {
+        self.setting = setting
+        self.value = value
+        self.backend = backend
+    }
+}
+
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let controller: MuesliController
@@ -216,6 +229,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.setSubmenu(dictationModelMenu, for: dictationModelItem)
         menu.addItem(dictationModelItem)
 
+        menu.addItem(cleanupModelMenuItem())
+
         let meetingBackendItem = NSMenuItem(title: "Meetings Backend", action: nil, keyEquivalent: "")
         let meetingBackendMenu = NSMenu()
         for option in MeetingSummaryBackendOption.selectable(
@@ -241,6 +256,76 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(checkForUpdatesItem())
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Quit", action: #selector(MuesliController.quitApp)))
+    }
+
+    private func cleanupModelMenuItem() -> NSMenuItem {
+        let root = NSMenuItem(title: "Cleanup Model", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let config = controller.config
+        let definitions = controller.settingsDefinitions()
+        let selectedBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
+
+        func item(_ title: String, selection: CleanupMenuSelection, selected: Bool = false, reason: String? = nil) -> NSMenuItem {
+            let result = NSMenuItem(title: title, action: #selector(MuesliController.selectCleanupModelFromMenu(_:)), keyEquivalent: "")
+            result.target = controller
+            result.representedObject = selection
+            result.state = selected ? .on : .off
+            result.isEnabled = reason == nil
+            result.toolTip = reason
+            return result
+        }
+        submenu.addItem(item("Enable Cleanup", selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on"), selected: config.enablePostProcessor))
+        submenu.addItem(.separator())
+        submenu.addItem(.sectionHeader(title: "Local Models"))
+        if let local = definitions.first(where: { $0.id == "cleanup_on_device_model" }) {
+            for choice in local.choices {
+                submenu.addItem(item(choice.label,
+                    selection: .init(setting: local.id, value: choice.id),
+                    selected: selectedBackend.isOnDevice && local.read(config) == choice.id,
+                    reason: local.availability(choice.id, source: .manualUI)))
+            }
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(.sectionHeader(title: "Hosted & Server Models"))
+        for backend in TranscriptCleanupBackendOption.all where !backend.isOnDevice {
+            let provider = NSMenuItem(title: backend.label, action: nil, keyEquivalent: "")
+            let models = NSMenu()
+            models.autoenablesItems = false
+            let settingID = "cleanup_\(backend.backend)_model"
+            let definition = definitions.first { $0.id == settingID }
+            let configured = TranscriptCleanupClient.configuredModel(for: backend, config: config)
+            let current = definition?.read(config) ?? configured
+            var choices = definition?.choices ?? []
+            // Custom/server model IDs remain editable in Settings. Here, selecting
+            // their saved value only switches the source, without creating a new value.
+            if !current.isEmpty && !choices.contains(where: { $0.id == current }) {
+                choices.append(.init(id: current, label: current))
+            }
+            for choice in choices {
+                let isPreset = definition?.choices.contains(where: { $0.id == choice.id }) == true
+                let ready = TranscriptCleanupClient.hasRequiredSettings(for: backend, config: config,
+                    isChatGPTAuthenticated: controller.appState.isChatGPTAuthenticated, modelOverride: choice.id)
+                models.addItem(item(choice.label,
+                    selection: .init(setting: isPreset ? settingID : "cleanup_source", value: isPreset ? choice.id : backend.backend, backend: backend),
+                    selected: selectedBackend == backend && current == choice.id,
+                    reason: ready ? definition?.availability(choice.id, source: .manualUI) : "Configure \(backend.label) in Settings first."))
+            }
+            if choices.isEmpty {
+                let empty = NSMenuItem(title: "Choose a model in Settings…", action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                models.addItem(empty)
+            }
+            models.addItem(.separator())
+            models.addItem(actionItem(title: "Configure in Settings…", action: #selector(MuesliController.openSettingsTab)))
+            provider.state = selectedBackend == backend ? .on : .off
+            provider.submenu = models
+            submenu.addItem(provider)
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
+        root.submenu = submenu
+        return root
     }
 
     private func addUpcomingEventsSection(_ events: [UnifiedCalendarEvent]) {
