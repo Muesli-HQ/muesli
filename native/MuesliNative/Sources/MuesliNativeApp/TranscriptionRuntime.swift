@@ -1107,7 +1107,8 @@ actor TranscriptionCoordinator {
         ))
     }
 
-    /// Recorded-file replay only. Live meeting finalization remains unchanged.
+    /// Bounded recorded-file diarization, also used for the cleaned microphone
+    /// track at meeting finalization. System-channel finalization is separate.
     func diarizeRecordedAudio(
         at url: URL,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }

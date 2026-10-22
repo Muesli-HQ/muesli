@@ -6,10 +6,10 @@ import Foundation
 /// labels them), so both always agree on who spoke a segment.
 enum SpeakerAttribution {
     static let nearestSpeakerMaxGapSeconds: Float = 2.0
-    /// A room-mic diarizer regularly emits short extra IDs for coughs, doors or
-    /// AEC residue of the remote party; those must not split a one-voice call.
+    /// Provisional minimum evidence for a separate local identity, not an echo
+    /// detector. Do not require a fraction of meeting duration: brief guests
+    /// remain legitimate speakers even in long meetings.
     static let minimumLocalSpeakerSeconds: Float = 5
-    static let minimumLocalSpeakerShare: Float = 0.05
 
     /// Diarizer IDs that spoke long enough to count as a distinct in-room voice.
     static func significantSpeakerIDs(in diarizationSegments: [TimedSpeakerSegment]) -> Set<String> {
@@ -22,7 +22,7 @@ enum SpeakerAttribution {
         }
         guard total > 0 else { return [] }
         return Set(durationBySpeaker.filter { _, duration in
-            duration >= minimumLocalSpeakerSeconds && duration / total >= minimumLocalSpeakerShare
+            duration >= minimumLocalSpeakerSeconds
         }.keys)
     }
 

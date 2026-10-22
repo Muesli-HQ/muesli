@@ -63,14 +63,14 @@ struct SpeakerAttributionTests {
         #expect(ids == ["a", "b"])
     }
 
-    @Test("a speaker under the minimum share is not significant even past the minimum duration")
-    func minimumShareFiltersLongMeetings() {
-        // 6 s of 600 s is 1 %: AEC residue accumulated over a long call.
+    @Test("a brief guest remains significant in a long meeting")
+    func briefGuestSurvivesLongMeetings() {
+        // Duration alone cannot distinguish a brief guest from residual echo.
         let ids = SpeakerAttribution.significantSpeakerIDs(in: [
             makeDiarSeg(speakerId: "a", start: 0, end: 594),
-            makeDiarSeg(speakerId: "residue", start: 594, end: 600),
+            makeDiarSeg(speakerId: "guest", start: 594, end: 600),
         ])
-        #expect(ids == ["a"])
+        #expect(ids == ["a", "guest"])
     }
 
     @Test("local diarization is nil unless several significant voices remain")

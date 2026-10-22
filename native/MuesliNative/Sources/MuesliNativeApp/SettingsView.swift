@@ -2086,7 +2086,7 @@ struct SettingsView: View {
                 settingsRow("Identify in-room speakers") {
                     settingsControl("diarize_microphone")
                 }
-                settingsDescription("For in-person meetings: splits microphone audio into Local speaker 1, 2, … after the meeting ends. Takes longer to process.")
+                settingsDescription("Identifies local speakers after the meeting using echo-cleaned microphone audio. Speaker playback may cause duplicate labels; headphones help. Takes longer to process.")
             }
 
             settingsSection("Auto Export") {
