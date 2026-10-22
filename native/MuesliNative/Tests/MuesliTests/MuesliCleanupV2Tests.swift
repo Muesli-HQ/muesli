@@ -3,8 +3,28 @@ import Testing
 import MuesliCore
 @testable import MuesliNativeApp
 
+@Suite
 struct MuesliCleanupV2Tests {
+    @Test func truncatedOutputPreservesEntireTranscript() {
+        let input = "First send the report. Then email the customer. Finally archive the results."
+        #expect(MuesliCleanupV2Prompt.guardedOutput("First send the report.", input: input, generationCompleted: false) == input)
+        #expect(MuesliCleanupV2Prompt.guardResult("First send the report.", input: input, generationCompleted: false).didFallback)
+        #expect(MuesliCleanupV2Prompt.guardResult("", input: input).didFallback)
+        #expect(!MuesliCleanupV2Prompt.guardResult(input, input: input).didFallback)
+    }
+
+    @Test func blankCleanupOverridesUseManagedCache() {
+        let model = Gemma4LiteRTModel.muesliCleanupV2
+        for path in ["", "  ", "\n\t"] {
+            let environment = ["MUESLI_CLEANUP_V2_MODEL_PATH": path]
+            #expect(Gemma4LiteRTModelStore.cleanupOverrideURL(environment: environment) == nil)
+            #expect(Gemma4LiteRTModelStore.resolvedModelURL(for: model, environment: environment) == Gemma4LiteRTModelStore.managedModelURL(for: model))
+        }
+        #expect(Gemma4LiteRTModelStore.cleanupOverrideURL(environment: ["MUESLI_CLEANUP_V2_MODEL_PATH": " /tmp/model "]) == URL(fileURLWithPath: "/tmp/model"))
+    }
+
     @Test func trainingContract() {
+
         let request = MuesliCleanupV2Prompt.request("hello", appContext: String(repeating: "x", count: 1300))
         #expect(request == MuesliCleanupV2Prompt.systemPrompt + "\n\n<APP-CONTEXT>\n" + String(repeating: "x", count: 1200) + "\n</APP-CONTEXT>\n\nhello")
         #expect(!request.contains("<USER-INPUT>"))
@@ -54,6 +74,7 @@ struct MuesliCleanupV2Tests {
 
 }
 
+@Suite
 struct ManagedCleanupV12Tests {
     @Test func rawPromptContracts() {
         let user = MuesliCleanupV2Prompt.request("hello", appContext: nil)

@@ -1272,7 +1272,7 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor final output: \(trimmed)")
             logPostProcPair(raw: result.text, processed: trimmed, model: postProcessorSnapshot.modelId, asr: backend.backend)
             TranscriptCleanupDebugLogger.append(
-                status: "applied",
+                status: cleanup.didFallback ? "fallback_original_transcript" : "applied",
                 cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
@@ -1332,7 +1332,7 @@ actor TranscriptionCoordinator {
                 asr: backend.backend
             )
             TranscriptCleanupDebugLogger.append(
-                status: "applied",
+                status: cleanup.didFallback ? "fallback_original_transcript" : "applied",
                 cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,

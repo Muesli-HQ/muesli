@@ -168,12 +168,19 @@ enum Gemma4LiteRTModelStore {
         return URL(fileURLWithPath: rawPath)
     }
 
+    static func cleanupOverrideURL(environment: [String: String]) -> URL? {
+        guard let path = environment["MUESLI_CLEANUP_V2_MODEL_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
     static func resolvedModelURL(
+
         for model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> URL {
-        if model.isCleanupOnly, let path = environment["MUESLI_CLEANUP_V2_MODEL_PATH"], !path.isEmpty { return URL(fileURLWithPath: path) }
+        if model.isCleanupOnly, let url = cleanupOverrideURL(environment: environment) { return url }
         if model.isCleanupOnly { return managedModelURL(for: model, fileManager: fileManager) }
         return localOverrideURL(environment: environment) ?? managedModelURL(for: model, fileManager: fileManager)
     }
@@ -234,7 +241,7 @@ enum Gemma4LiteRTModelStore {
             return modelURL
         }
 
-        if (!model.isCleanupOnly && localOverrideURL(environment: environment) != nil) || (model.isCleanupOnly && environment["MUESLI_CLEANUP_V2_MODEL_PATH"] != nil) {
+        if (!model.isCleanupOnly && localOverrideURL(environment: environment) != nil) || (model.isCleanupOnly && cleanupOverrideURL(environment: environment) != nil) {
             throw NSError(domain: "Gemma4LiteRTModelStore", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Gemma 4 LiteRT-LM model is missing at \(modelURL.path).",
             ])
@@ -585,7 +592,7 @@ actor Gemma4LiteRTTranscriber {
         systemPrompt: String,
         appContext: String?,
         model: Gemma4LiteRTModel
-    ) async throws -> (text: String, rawOutput: String, processingTime: Double) {
+    ) async throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
         await acquireOperation()
         defer { releaseOperation() }
         try await prepareEngine(model: model)
@@ -597,7 +604,7 @@ actor Gemma4LiteRTTranscriber {
         systemPrompt: String,
         appContext: String?,
         model: Gemma4LiteRTModel
-    ) throws -> (text: String, rawOutput: String, processingTime: Double) {
+    ) throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
         guard let engine else { throw TranscriberError.notLoaded }
         let userInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
         let effectiveSystemPrompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
@@ -677,7 +684,8 @@ actor Gemma4LiteRTTranscriber {
         let rawOutput = try Self.textContent(fromResponseJSON: response)
         Gemma4LiteRTLogging.log("cleanup raw output: \(rawOutput)")
         if model.isCleanupOnly {
-            return (MuesliCleanupV2Prompt.guardedOutput(rawOutput, input: text), rawOutput, CFAbsoluteTimeGetCurrent() - start)
+            let guarded = MuesliCleanupV2Prompt.guardResult(rawOutput, input: text)
+            return (guarded.text, rawOutput, CFAbsoluteTimeGetCurrent() - start, guarded.didFallback)
         }
         let cleaned = TranscriptCleanupClient.cleanOutput(rawOutput)
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -695,7 +703,7 @@ actor Gemma4LiteRTTranscriber {
             "cleanup_completed input_chars=\(text.count) output_chars=\(trimmed.count) " +
                 "processing_seconds=\(String(format: "%.3f", elapsed))"
         )
-        return (trimmed, rawOutput, elapsed)
+        return (trimmed, rawOutput, elapsed, false)
     }
 
     /// Interpret an audio instruction and generate the requested text in one conversation call.

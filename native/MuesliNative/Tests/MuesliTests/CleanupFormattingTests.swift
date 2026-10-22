@@ -1,6 +1,7 @@
 import Testing
 @testable import MuesliNativeApp
 
+@Suite
 struct CleanupFormattingTests {
     @Test func preservesListsAndParagraphs() {
         for text in [

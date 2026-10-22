@@ -263,7 +263,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let config = controller.config
-        let definitions = controller.settingsDefinitions()
+        let definitions = controller.cleanupModelDefinitions()
         let selectedBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
 
         func item(_ title: String, selection: CleanupMenuSelection, selected: Bool = false, reason: String? = nil) -> NSMenuItem {

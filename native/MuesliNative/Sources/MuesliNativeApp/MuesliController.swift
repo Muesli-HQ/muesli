@@ -3413,9 +3413,8 @@ public final class MuesliController: NSObject {
             available = model.supportsQuil
                 && (model.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil)
         case .gemma4LiteRT:
-            available = Gemma4LiteRTModelStore.isAvailableLocally(
-                model: Gemma4LiteRTModel.resolved(config.quilModel)
-            )
+            let model = Gemma4LiteRTModel.resolved(config.quilModel)
+            available = !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
         default:
             available = !config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && TranscriptCleanupClient.hasRequiredSettings(

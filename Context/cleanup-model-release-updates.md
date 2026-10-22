@@ -14,6 +14,8 @@ For a Gemma v13 or a later LFM/Qwen fine-tune with the same architecture, artifa
 
 Do not make a beta the default during a weight update. Production `qwen35-postproc-v3` remains Muesli Cleanup Light unless a separate decision changes it. Local environment overrides remain available for pre-upload testing and must pass artifact verification.
 
+The earlier Gemma v10 beta selection migrates to the v12 cleanup selection. Users must download the v12 artifact through Models; the old weights are not reused as v12.
+
 ## Boundaries
 
 Gemma uses LiteRT-LM; LFM/Qwen GGUF use the pinned llama.cpp through the local LLM.swift wrapper. A runtime or tokenizer upgrade is separate from an artifact revision. MLX integration and a newer llama.xcframework are not implemented here.
@@ -21,3 +23,5 @@ Gemma uses LiteRT-LM; LFM/Qwen GGUF use the pinned llama.cpp through the local L
 ## Diagnosing formatting after a model update
 
 Compare the exact prompt, raw generation, guarded output and pasted text for the same dictation. For GGUF, `Qwen3PostProcessor.processResult` returns raw and guarded output together; `TranscriptionRuntime` records `rawOutput` as `rawCleanupOutputText`. Do not substitute the guarded text for the raw response when adding a model adapter. A missing list in the raw response is a different failure from a list that disappears during cleanup or paste. Keep private dictation and screen-context logs out of the repository.
+
+Guard rejection preserves the raw transcript, as required by the v12 integration specification §4E, and logs `fallback_original_transcript`. It does not silently report successful cleanup or apply a different deletion/filler policy. GGUF generation reports its stop reason; reaching the generation or context budget also preserves the full original transcript.

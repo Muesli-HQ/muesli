@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MuesliNativeApp
 
+@Suite
 struct CleanupFormattingReplayTests {
     @Test func replay() async throws {
         guard #available(macOS 15, *), let path = ProcessInfo.processInfo.environment["MUESLI_FORMATTING_REPLAY"] else { return }

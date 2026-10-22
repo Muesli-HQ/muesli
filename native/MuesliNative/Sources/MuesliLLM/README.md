@@ -16,3 +16,8 @@ EOS/stop-sequence handling remains in place. Zero/negative budgets emit no
 new tokens. Nil preserves the existing behavior. Input tokens are excluded.
 Only v12 cleanup calls set the budget (1024); production Qwen uses the existing
 respond/template path with the default nil budget.
+
+`getCompletionResult` pairs text with its stop reason before releasing the
+request gate. Cleanup preserves the original transcript when generation hits
+the token/context limit or otherwise fails to complete normally. The wrapper
+awaits initial stop-sequence setup before inference, including the first call.

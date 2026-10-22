@@ -310,14 +310,19 @@ private actor Qwen3PostProcessorManager {
                 formattedInput = MuesliCleanupV2Prompt.ggufRequest(text, appContext: appContext, format: inputFormat)
             }
             if inputFormat.isTrainedV12 {
-                let raw = await bot.getCompletion(from: formattedInput, maxNewTokens: 1024)
+                let completion = await bot.getCompletionResult(from: formattedInput, maxNewTokens: 1024)
+                let raw = completion.text
                 try Task.checkCancellation()
-                let cleaned = MuesliCleanupV2Prompt.guardedOutput(raw, input: text)
+                // Never replace a complete dictation with a budget-truncated prefix.
+                let guarded = MuesliCleanupV2Prompt.guardResult(raw, input: text,
+                    generationCompleted: completion.stopReason == .endOfSequence)
+                let cleaned = guarded.text
+                Qwen3PostProcessorLogging.logVerbose("v12 GGUF stop reason: \(completion.stopReason)")
                 Qwen3PostProcessorLogging.logVerbose("v12 GGUF exact prompt: \(String(reflecting: formattedInput))")
                 Qwen3PostProcessorLogging.logVerbose("v12 GGUF raw output: \(String(reflecting: raw))")
                 Qwen3PostProcessorLogging.logVerbose("v12 GGUF guarded output: \(String(reflecting: cleaned))")
                 await inferenceGate.release()
-                return Qwen3PostProcessor.Result(text: cleaned, rawOutput: raw)
+                return Qwen3PostProcessor.Result(text: cleaned, rawOutput: raw, didFallback: guarded.didFallback)
             }
             await bot.respond(to: formattedInput, thinking: .suppressed)
 
@@ -393,6 +398,7 @@ actor Qwen3PostProcessor {
     struct Result: Sendable {
         let text: String
         let rawOutput: String
+        var didFallback = false
     }
 
     struct Configuration: Hashable, Sendable {

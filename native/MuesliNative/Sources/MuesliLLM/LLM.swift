@@ -2,7 +2,17 @@ import Foundation
 import llama
 @_exported import LLMMacros
 
+public enum CompletionStopReason: Sendable {
+    case endOfSequence, tokenLimit, contextLimit, interrupted, inputRejected, busy
+}
+
+public struct CompletionResult: Sendable {
+    public let text: String
+    public let stopReason: CompletionStopReason
+}
+
 public enum ThinkingMode: Sendable {
+
     case none
     case suppressed
     case enabled
@@ -69,6 +79,7 @@ public actor LLMCore {
     private var shouldContinuePredicting = false
     private var currentTokenCount: Int32 = 0
     private(set) var lastCompletionTokenCount = 0
+    private(set) var lastCompletionStopReason: CompletionStopReason = .inputRejected
     private var debugLastGeneratedTokens: [Token] = []
     
     private var sampler: UnsafeMutablePointer<llama_sampler>?
@@ -339,6 +350,8 @@ public actor LLMCore {
         let responseStream = AsyncStream<String> { responseContinuation = $0 }
         
         Task {
+            lastCompletionTokenCount = 0
+            lastCompletionStopReason = .inputRejected
             guard prepareContext(for: input) else {
                 thinkingContinuation.finish()
                 responseContinuation.finish()
@@ -429,6 +442,7 @@ public actor LLMCore {
                         continue
                     }
                     
+                    lastCompletionStopReason = .endOfSequence
                     streamPendingText()
                     finishAllStreams()
                     return
@@ -446,6 +460,8 @@ public actor LLMCore {
                 streamOldestPendingTextIfNeeded()
             }
             
+            lastCompletionStopReason = generatedTokenCount >= generationBudget ? .tokenLimit
+                : currentTokenCount >= Int32(maxTokenCount) ? .contextLimit : .interrupted
             streamPendingText()
             finishAllStreams()
         }
@@ -1383,7 +1399,7 @@ open class LLM: ObservableObject {
             )
             
             if let stopSequence {
-                Task {
+                initializationTask = Task {
                     await core.setStopSequence(stopSequence)
                 }
             }
@@ -1577,7 +1593,11 @@ open class LLM: ObservableObject {
         Task { await core.resetContext() }
     }
 
+    private var initializationTask: Task<Void, Never>?
+
     private func resetContextIfHistoryIsEmpty() async {
+        await initializationTask?.value
+        initializationTask = nil
         guard history.isEmpty else { return }
         await core.resetContext()
     }
@@ -1587,7 +1607,13 @@ open class LLM: ObservableObject {
     }
     
     public func getCompletion(from input: borrowing String, maxNewTokens: Int? = nil) async -> String {
-        guard isAvailable else { return "LLM is being used" }
+        await getCompletionResult(from: input, maxNewTokens: maxNewTokens).text
+    }
+
+    /// Returns the stop reason while still holding the request's availability gate.
+    public func getCompletionResult(from input: borrowing String, maxNewTokens: Int? = nil) async -> CompletionResult {
+
+        guard isAvailable else { return CompletionResult(text: "LLM is being used", stopReason: .busy) }
         
         isAvailable = false
         defer { isAvailable = true }
@@ -1601,7 +1627,7 @@ open class LLM: ObservableObject {
             output += content
         }
         
-        return output
+        return CompletionResult(text: output, stopReason: await core.lastCompletionStopReason)
     }
     
     public func respond(to input: String, thinking: ThinkingMode = .none, with makeOutputFrom: @escaping (AsyncStream<String>) async -> String) async {

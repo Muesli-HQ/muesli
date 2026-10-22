@@ -1253,10 +1253,6 @@ struct ModelsView: View {
                     .buttonStyle(.plain)
                     .disabled(!controller.canModifyModelFiles)
                 }
-            } else if option.model == Gemma4LiteRTModel.muesliCleanupV2.repoID {
-                Text("Local beta model required")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
             } else {
                 Button("Download") {
                     startDownload(option)

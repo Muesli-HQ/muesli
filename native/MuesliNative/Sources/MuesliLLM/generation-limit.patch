@@ -1,36 +1,32 @@
 --- a/Sources/LLM/LLM.swift
 +++ b/Sources/LLM/LLM.swift
-@@ -68,6 +68,7 @@
-     
-     private var shouldContinuePredicting = false
-     private var currentTokenCount: Int32 = 0
+@@ -3,0 +4,9 @@
++
++public enum CompletionStopReason: Sendable {
++    case endOfSequence, tokenLimit, contextLimit, interrupted, inputRejected, busy
++}
++
++public struct CompletionResult: Sendable {
++    public let text: String
++    public let stopReason: CompletionStopReason
++}
+@@ -5,0 +15 @@
++
+@@ -70,0 +81,2 @@
 +    private(set) var lastCompletionTokenCount = 0
-     private var debugLastGeneratedTokens: [Token] = []
-     
-     private var sampler: UnsafeMutablePointer<llama_sampler>?
-@@ -322,15 +323,15 @@
-         }
-     }
-     
++    private(set) var lastCompletionStopReason: CompletionStopReason = .inputRejected
+@@ -325,2 +337,2 @@
 -    func generateResponseStream(from input: String, thinking: ThinkingMode = .none) -> AsyncStream<String> {
 -        generateResponseStreamWithThinking(from: input, thinking: thinking).response
 +    func generateResponseStream(from input: String, thinking: ThinkingMode = .none, maxNewTokens: Int? = nil) -> AsyncStream<String> {
 +        generateResponseStreamWithThinking(from: input, thinking: thinking, maxNewTokens: maxNewTokens).response
-     }
-     
-     func generateThinkingStream(from input: String) -> AsyncStream<String> {
-         generateResponseStreamWithThinking(from: input, thinking: .enabled).thinking
-     }
-     
+@@ -333 +345 @@
 -    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
 +    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none, maxNewTokens: Int? = nil) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
-         var thinkingContinuation: AsyncStream<String>.Continuation!
-         var responseContinuation: AsyncStream<String>.Continuation!
-         
-@@ -402,9 +403,15 @@
-                 pendingText.removeFirst(overflowLength)
-             }
-             
+@@ -340,0 +353,2 @@
++            lastCompletionTokenCount = 0
++            lastCompletionStopReason = .inputRejected
+@@ -405 +419,6 @@
 -            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount) {
 +            var generatedTokenCount = 0
 +            lastCompletionTokenCount = 0
@@ -38,27 +34,36 @@
 +            let generationBudget = maxNewTokens.map { max(0, $0) } ?? Int.max
 +            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount)
 +                && generatedTokenCount < generationBudget {
-                 let excludedTokens = shouldGuaranteeOutput ? [endToken] : []
-                 let token = predictNextToken(excluding: excludedTokens)
+@@ -407,0 +427 @@
 +                generatedTokenCount += 1
-                 shouldGuaranteeOutput = false
-                 
-                 let reachedEndOfGeneration = token == endToken
-@@ -1579,7 +1586,7 @@
-         output.yield("TL;DR")
-     }
-     
+@@ -424,0 +445 @@
++                    lastCompletionStopReason = .endOfSequence
+@@ -441,0 +463,2 @@
++            lastCompletionStopReason = generatedTokenCount >= generationBudget ? .tokenLimit
++                : currentTokenCount >= Int32(maxTokenCount) ? .contextLimit : .interrupted
+@@ -1379 +1402 @@
+-                Task {
++                initializationTask = Task {
+@@ -1572,0 +1596,2 @@
++    private var initializationTask: Task<Void, Never>?
++
+@@ -1573,0 +1599,2 @@
++        await initializationTask?.value
++        initializationTask = nil
+@@ -1582,2 +1609,8 @@
 -    public func getCompletion(from input: borrowing String) async -> String {
+-        guard isAvailable else { return "LLM is being used" }
 +    public func getCompletion(from input: borrowing String, maxNewTokens: Int? = nil) async -> String {
-         guard isAvailable else { return "LLM is being used" }
-         
-         isAvailable = false
-@@ -1587,7 +1594,7 @@
- 
-         await resetContextIfHistoryIsEmpty()
-         
++        await getCompletionResult(from: input, maxNewTokens: maxNewTokens).text
++    }
++
++    /// Returns the stop reason while still holding the request's availability gate.
++    public func getCompletionResult(from input: borrowing String, maxNewTokens: Int? = nil) async -> CompletionResult {
++
++        guard isAvailable else { return CompletionResult(text: "LLM is being used", stopReason: .busy) }
+@@ -1590 +1623 @@
 -        let response = await core.generateResponseStream(from: input)
 +        let response = await core.generateResponseStream(from: input, maxNewTokens: maxNewTokens)
-         var output = ""
-         
-         for await content in response {
+@@ -1597 +1630 @@
+-        return output
++        return CompletionResult(text: output, stopReason: await core.lastCompletionStopReason)

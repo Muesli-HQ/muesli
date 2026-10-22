@@ -30,9 +30,20 @@ enum MuesliCleanupV2Prompt {
         return prefix + "<|im_start|>user\n" + userText + "<|im_end|>\n<|im_start|>assistant\n" + suffix
     }
 
-    static func guardedOutput(_ output: String, input: String) -> String {
+    struct GuardedOutput {
+        let text: String
+        let didFallback: Bool
+    }
+
+    static func guardedOutput(_ output: String, input: String, generationCompleted: Bool = true) -> String {
+        guardResult(output, input: input, generationCompleted: generationCompleted).text
+    }
+
+    static func guardResult(_ output: String, input: String, generationCompleted: Bool = true) -> GuardedOutput {
         let cleaned = TranscriptCleanupClient.cleanOutput(cleanOutput(output))
-        return cleaned.isEmpty || cleaned.count > input.count * 3 || Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: input) ? input : cleaned
+        let rejected = !generationCompleted || cleaned.isEmpty || cleaned.count > input.count * 3
+            || Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: input)
+        return GuardedOutput(text: rejected ? input : cleaned, didFallback: rejected)
     }
 
     static func cleanOutput
