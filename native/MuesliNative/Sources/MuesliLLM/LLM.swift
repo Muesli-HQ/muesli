@@ -80,6 +80,7 @@ public actor LLMCore {
     private var currentTokenCount: Int32 = 0
     private(set) var lastCompletionTokenCount = 0
     private(set) var lastCompletionStopReason: CompletionStopReason = .inputRejected
+    private var predictionFailed = false
     private var debugLastGeneratedTokens: [Token] = []
     
     private var sampler: UnsafeMutablePointer<llama_sampler>?
@@ -261,7 +262,10 @@ public actor LLMCore {
             return endToken
         }
         
-        guard let sampler = sampler else { return endToken }
+        guard let sampler = sampler else {
+            predictionFailed = true
+            return endToken
+        }
         
         let batchIndex = batch.n_tokens - 1
         
@@ -295,6 +299,7 @@ public actor LLMCore {
         
         if llama_decode(context, batch) != 0 {
             shouldContinuePredicting = false
+            predictionFailed = true
             return endToken
         }
         
@@ -352,6 +357,7 @@ public actor LLMCore {
         Task {
             lastCompletionTokenCount = 0
             lastCompletionStopReason = .inputRejected
+            predictionFailed = false
             guard prepareContext(for: input) else {
                 thinkingContinuation.finish()
                 responseContinuation.finish()
@@ -430,6 +436,12 @@ public actor LLMCore {
                 let reachedEndOfGeneration = token == endToken
                 
                 if reachedEndOfGeneration {
+                    if predictionFailed {
+                        lastCompletionStopReason = .interrupted
+                        streamPendingText()
+                        finishAllStreams()
+                        return
+                    }
                     let stuckInThinkingPhase = currentlyInThinkingPhase && thinkingEndTokens != nil
                     
                     if stuckInThinkingPhase {

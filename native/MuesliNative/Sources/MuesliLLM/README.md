@@ -21,3 +21,5 @@ respond/template path with the default nil budget.
 request gate. Cleanup preserves the original transcript when generation hits
 the token/context limit or otherwise fails to complete normally. The wrapper
 awaits initial stop-sequence setup before inference, including the first call.
+Decode errors and a missing sampler report interruption rather than successful
+end-of-sequence, so a partial response cannot pass cleanup's completion guard.

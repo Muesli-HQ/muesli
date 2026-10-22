@@ -76,6 +76,23 @@ struct MuesliCleanupV2Tests {
 
 @Suite
 struct ManagedCleanupV12Tests {
+    @Test func gemmaLimitPreservesOriginalTranscript() async throws {
+        guard #available(macOS 15, *),
+              ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"] != nil else { return }
+        let transcriber = Gemma4LiteRTTranscriber()
+        let input = "First send the report tomorrow morning. Then email the customer and archive the results."
+        let capped = try await transcriber.cleanTranscript(input, systemPrompt: "", appContext: nil,
+            model: .muesliCleanupV2, maxOutputTokens: 1)
+        #expect(capped.didFallback)
+        #expect(capped.text == input)
+        #expect(capped.rawOutput != input)
+        let completed = try await transcriber.cleanTranscript(input, systemPrompt: "", appContext: nil,
+            model: .muesliCleanupV2)
+        #expect(!completed.didFallback)
+        #expect(!completed.text.isEmpty)
+        await transcriber.shutdown()
+    }
+
     @Test func rawPromptContracts() {
         let user = MuesliCleanupV2Prompt.request("hello", appContext: nil)
         #expect(MuesliCleanupV2Prompt.ggufRequest("hello", appContext: nil, format: .muesliTrainedV12LFM) == "<|startoftext|><|im_start|>user\n" + user + "<|im_end|>\n<|im_start|>assistant\n")

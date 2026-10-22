@@ -494,6 +494,8 @@ actor Gemma4LiteRTTranscriber {
         }
         defer { litert_lm_engine_settings_delete(settings) }
         litert_lm_engine_settings_set_max_num_tokens(settings, contextTokens)
+        // Cleanup needs the exact decode count to reject a length-capped response.
+        if model.isCleanupOnly { litert_lm_engine_settings_enable_benchmark(settings) }
         litert_lm_engine_settings_set_cache_dir(settings, cacheDirectory.path)
         let modelSupportsMTP = Self.supportsMTP(modelURL: modelURL)
         let enableMTP = Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: modelSupportsMTP)
@@ -591,19 +593,21 @@ actor Gemma4LiteRTTranscriber {
         _ text: String,
         systemPrompt: String,
         appContext: String?,
-        model: Gemma4LiteRTModel
+        model: Gemma4LiteRTModel,
+        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens
     ) async throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
         await acquireOperation()
         defer { releaseOperation() }
         try await prepareEngine(model: model)
-        return try cleanTranscriptPrepared(text, systemPrompt: systemPrompt, appContext: appContext, model: model)
+        return try cleanTranscriptPrepared(text, systemPrompt: systemPrompt, appContext: appContext, model: model, maxOutputTokens: maxOutputTokens)
     }
 
     private func cleanTranscriptPrepared(
         _ text: String,
         systemPrompt: String,
         appContext: String?,
-        model: Gemma4LiteRTModel
+        model: Gemma4LiteRTModel,
+        maxOutputTokens: Int32
     ) throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
         guard let engine else { throw TranscriberError.notLoaded }
         let userInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
@@ -630,7 +634,7 @@ actor Gemma4LiteRTTranscriber {
             throw TranscriberError.failedToCreateSessionConfig
         }
         defer { litert_lm_session_config_delete(sessionConfig) }
-        litert_lm_session_config_set_max_output_tokens(sessionConfig, Self.maxCleanupOutputTokens)
+        litert_lm_session_config_set_max_output_tokens(sessionConfig, maxOutputTokens)
         // Cleanup must remain deterministic and should not introduce creative transcript changes.
         var sampler = LiteRtLmSamplerParams(
             type: kLiteRtLmSamplerTypeTopP,
@@ -684,7 +688,19 @@ actor Gemma4LiteRTTranscriber {
         let rawOutput = try Self.textContent(fromResponseJSON: response)
         Gemma4LiteRTLogging.log("cleanup raw output: \(rawOutput)")
         if model.isCleanupOnly {
-            let guarded = MuesliCleanupV2Prompt.guardResult(rawOutput, input: text)
+            // A response at the limit may be an unfinished prefix. Missing count
+            // information also fails closed rather than risking transcript loss.
+            var decodeCount: Int32?
+            if let info = litert_lm_conversation_get_benchmark_info(conversation) {
+                defer { litert_lm_benchmark_info_delete(info) }
+                let turns = litert_lm_benchmark_info_get_num_decode_turns(info)
+                if turns > 0 {
+                    decodeCount = litert_lm_benchmark_info_get_decode_token_count_at(info, turns - 1)
+                }
+            }
+            let completed = decodeCount.map { $0 >= 0 && $0 < maxOutputTokens } ?? false
+            Gemma4LiteRTLogging.log("cleanup decode_tokens=\(decodeCount.map(String.init) ?? "unknown") limit=\(maxOutputTokens) completed=\(completed)")
+            let guarded = MuesliCleanupV2Prompt.guardResult(rawOutput, input: text, generationCompleted: completed)
             return (guarded.text, rawOutput, CFAbsoluteTimeGetCurrent() - start, guarded.didFallback)
         }
         let cleaned = TranscriptCleanupClient.cleanOutput(rawOutput)
