@@ -463,8 +463,8 @@ struct BackendCoverageTests {
         #expect(backendCounts["whisper"]! >= 1, "Whisper should have at least 1 model")
         #expect(backendCounts["sensevoice"]! >= 1, "SenseVoice should have at least 1 model")
         #expect(backendCounts["nemotron35"]! == 1, "Nemotron 3.5 should be the only Nemotron backend")
-        #expect(backendCounts["gemma4-litert"]! == Gemma4LiteRTModel.allCases.count,
-                "Gemma 4 LiteRT should expose every managed model variant")
+        #expect(backendCounts["gemma4-litert"]! == Gemma4LiteRTModel.generalPurpose.count,
+                "Gemma ASR should expose only general-purpose model variants")
     }
 
     @Test("size labels are human-readable")

@@ -410,7 +410,7 @@ extension MuesliController {
         let localQuill = allLocalCleanup.filter {
             switch $0 {
             case .gguf(let option): return option.supportsQuil && option.isDownloaded
-            case .gemma4(let model): return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
+            case .gemma4(let model): return !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
             }
         }
         add("cleanup_on_device_model", "On-device cleanup model", allLocalCleanup.map { .init(id: $0.quilModelID, label: $0.label) },

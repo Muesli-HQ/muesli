@@ -1,0 +1,18 @@
+# Pinned LLM.swift wrapper with an independent generation budget
+
+Source: https://github.com/obra/LLM.swift at f1e1e11982dbc59662be191b8bed408dfb48e9df,
+`Sources/LLM/LLM.swift`. MIT license is copied alongside the source and bundled.
+
+This target depends on the original pinned LLM product to reuse its existing
+llama binary and macro modules. It does not copy the XCFramework, alter shared
+checkouts, add an external dependency, or change the llama runtime version.
+Only the local wrapper is imported by Muesli's postprocessor.
+
+`generation-limit.patch` records the complete difference from upstream.
+`getCompletion(from:maxNewTokens:)` accepts an optional per-request budget.
+The core generation loop counts sampling steps after prefill and stops before
+sampling beyond that budget, flushing pending text and closing both streams.
+EOS/stop-sequence handling remains in place. Zero/negative budgets emit no
+new tokens. Nil preserves the existing behavior. Input tokens are excluded.
+Only v12 cleanup calls set the budget (1024); production Qwen uses the existing
+respond/template path with the default nil budget.

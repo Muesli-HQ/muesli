@@ -297,9 +297,9 @@ enum TranscriptCleanupClient {
         var result = Qwen3PostProcessorOutputCleaner.clean(text)
         result = result.replacingOccurrences(of: #"\r\n?"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: #"[ \t]+([,.;:!?])"#, with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"(?<=\S)[ \t]{2,}"#, with: " ", options: .regularExpression)
         result = result.replacingOccurrences(of: #"(?m)[ \t]+$"#, with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"[ \t]*\n"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }

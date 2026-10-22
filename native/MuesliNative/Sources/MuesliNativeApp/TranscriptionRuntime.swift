@@ -1243,7 +1243,7 @@ actor TranscriptionCoordinator {
             // Trigger heuristics were removed; the only remaining heuristic here preserves deletion-cue empty output.
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor forced by toggle")
             let start = CFAbsoluteTimeGetCurrent()
-            let processed = try await qwen3PostProcessor.process(
+            let cleanup = try await qwen3PostProcessor.processResult(
                 result.text,
                 appContext: appContext,
                 configuration: Qwen3PostProcessor.Configuration(
@@ -1253,6 +1253,7 @@ actor TranscriptionCoordinator {
                 )
             )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            let processed = cleanup.text
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty,
                postProcessorSnapshot.inputFormat != .s1Mini,
@@ -1265,7 +1266,7 @@ actor TranscriptionCoordinator {
                     asrBackend: backend.backend,
                     appContextText: appContext,
                     rawASRText: result.text,
-                    rawCleanupOutputText: processed,
+                    rawCleanupOutputText: cleanup.rawOutput,
                     cleanupOutputText: trimmed,
                     elapsedMs: elapsedMs
                 )
@@ -1281,7 +1282,7 @@ actor TranscriptionCoordinator {
                 asrBackend: backend.backend,
                 appContextText: appContext,
                 rawASRText: result.text,
-                rawCleanupOutputText: processed,
+                rawCleanupOutputText: cleanup.rawOutput,
                 cleanupOutputText: trimmed,
                 elapsedMs: elapsedMs
             )

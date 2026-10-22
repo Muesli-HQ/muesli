@@ -1,0 +1,64 @@
+--- a/Sources/LLM/LLM.swift
++++ b/Sources/LLM/LLM.swift
+@@ -68,6 +68,7 @@
+     
+     private var shouldContinuePredicting = false
+     private var currentTokenCount: Int32 = 0
++    private(set) var lastCompletionTokenCount = 0
+     private var debugLastGeneratedTokens: [Token] = []
+     
+     private var sampler: UnsafeMutablePointer<llama_sampler>?
+@@ -322,15 +323,15 @@
+         }
+     }
+     
+-    func generateResponseStream(from input: String, thinking: ThinkingMode = .none) -> AsyncStream<String> {
+-        generateResponseStreamWithThinking(from: input, thinking: thinking).response
++    func generateResponseStream(from input: String, thinking: ThinkingMode = .none, maxNewTokens: Int? = nil) -> AsyncStream<String> {
++        generateResponseStreamWithThinking(from: input, thinking: thinking, maxNewTokens: maxNewTokens).response
+     }
+     
+     func generateThinkingStream(from input: String) -> AsyncStream<String> {
+         generateResponseStreamWithThinking(from: input, thinking: .enabled).thinking
+     }
+     
+-    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
++    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none, maxNewTokens: Int? = nil) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
+         var thinkingContinuation: AsyncStream<String>.Continuation!
+         var responseContinuation: AsyncStream<String>.Continuation!
+         
+@@ -402,9 +403,15 @@
+                 pendingText.removeFirst(overflowLength)
+             }
+             
+-            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount) {
++            var generatedTokenCount = 0
++            lastCompletionTokenCount = 0
++            defer { lastCompletionTokenCount = generatedTokenCount }
++            let generationBudget = maxNewTokens.map { max(0, $0) } ?? Int.max
++            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount)
++                && generatedTokenCount < generationBudget {
+                 let excludedTokens = shouldGuaranteeOutput ? [endToken] : []
+                 let token = predictNextToken(excluding: excludedTokens)
++                generatedTokenCount += 1
+                 shouldGuaranteeOutput = false
+                 
+                 let reachedEndOfGeneration = token == endToken
+@@ -1579,7 +1586,7 @@
+         output.yield("TL;DR")
+     }
+     
+-    public func getCompletion(from input: borrowing String) async -> String {
++    public func getCompletion(from input: borrowing String, maxNewTokens: Int? = nil) async -> String {
+         guard isAvailable else { return "LLM is being used" }
+         
+         isAvailable = false
+@@ -1587,7 +1594,7 @@
+ 
+         await resetContextIfHistoryIsEmpty()
+         
+-        let response = await core.generateResponseStream(from: input)
++        let response = await core.generateResponseStream(from: input, maxNewTokens: maxNewTokens)
+         var output = ""
+         
+         for await content in response {
