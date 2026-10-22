@@ -981,6 +981,361 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.platform == .slack)
     }
 
+    @Test("full-duplex Slack helper resolves without camera, calendar, or a Slack window")
+    func slackHelperFullDuplexResolvesWithoutCameraCalendarOrWindow() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder"
+        ))
+
+        #expect(candidate?.id == "app:com.tinyspeck.slackmacgap:session:1800000000")
+        #expect(candidate?.suppressionID == candidate?.id)
+        #expect(candidate?.platform == .slack)
+        #expect(candidate?.appName == "Slack")
+        #expect(candidate?.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(candidate?.sourcePID == 9876)
+        #expect(candidate?.evidence.contains(.audioInputProcess) == true)
+        #expect(candidate?.evidence.contains(.dedicatedApp) == true)
+        #expect(candidate?.evidence.contains(.cameraActive) == false)
+        #expect(candidate?.evidence.contains(.foregroundApp) == false)
+        #expect(candidate?.evidence.contains(.calendarEvent) == false)
+    }
+
+    @Test("calendar full-duplex Slack helper keeps the event and parent suppression ID")
+    func calendarSlackHelperKeepsEventAndParentSuppressionID() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            calendarEvent: CalendarEventContext(id: "evt-slack", title: "Team sync"),
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder"
+        ))
+
+        #expect(candidate?.id == "cal:evt-slack")
+        #expect(candidate?.meetingTitle == "Team sync")
+        #expect(candidate?.suppressionID == "app:com.tinyspeck.slackmacgap:session:1800000000")
+        #expect(candidate?.platform == .slack)
+        #expect(candidate?.appName == "Slack")
+        #expect(candidate?.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(candidate?.sourcePID == 9876)
+    }
+
+    @Test("dedicated app helpers follow the parent full-duplex and calendar rules")
+    func dedicatedAppHelpersFollowParentFullDuplexAndCalendarRules() {
+        let calendarFullDuplexBundleIDs: Set<String> = [
+            "com.tinyspeck.slackmacgap",
+            "net.whatsapp.WhatsApp",
+        ]
+
+        for (bundleID, app) in MeetingCandidateResolver.dedicatedApps {
+            let helperBundleID = "\(bundleID).helper"
+            let fullDuplex = resolver().resolve(snapshot(
+                micActive: false,
+                cameraActive: false,
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: helperBundleID,
+                        appName: "\(app.name) Helper",
+                        isRunningInput: true,
+                        isRunningOutput: true
+                    ),
+                ],
+                foregroundBundleID: "com.apple.finder"
+            ))
+
+            #expect(fullDuplex?.id == "app:\(bundleID):session:1800000000")
+            #expect(fullDuplex?.suppressionID == fullDuplex?.id)
+            #expect(fullDuplex?.sourceBundleID == bundleID)
+            #expect(fullDuplex?.appName == app.name)
+            #expect(fullDuplex?.platform == app.platform)
+            #expect(fullDuplex?.sourcePID == 4321)
+
+            let inputOnly = resolver().resolve(snapshot(
+                micActive: false,
+                cameraActive: false,
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: helperBundleID,
+                        appName: "\(app.name) Helper",
+                        isRunningInput: true,
+                        isRunningOutput: false
+                    ),
+                ],
+                foregroundBundleID: "com.apple.finder"
+            ))
+            #expect(inputOnly == nil)
+
+            let outputOnly = resolver().resolve(snapshot(
+                micActive: false,
+                cameraActive: false,
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: helperBundleID,
+                        appName: "\(app.name) Helper",
+                        isRunningInput: false,
+                        isRunningOutput: true
+                    ),
+                ],
+                foregroundBundleID: "com.apple.finder"
+            ))
+            #expect(outputOnly == nil)
+
+            let calendarInputOnly = resolver().resolve(snapshot(
+                micActive: false,
+                cameraActive: false,
+                calendarEvent: CalendarEventContext(id: "evt-helper", title: "Team sync"),
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: helperBundleID,
+                        appName: "\(app.name) Helper",
+                        isRunningInput: true,
+                        isRunningOutput: false
+                    ),
+                ],
+                foregroundBundleID: "com.apple.finder"
+            ))
+            #expect(calendarInputOnly?.id == "cal:evt-helper")
+            #expect(calendarInputOnly?.meetingTitle == "Team sync")
+            if calendarFullDuplexBundleIDs.contains(bundleID) {
+                #expect(calendarInputOnly?.platform == .unknown)
+                #expect(calendarInputOnly?.appName == "Meeting")
+                #expect(calendarInputOnly?.sourceBundleID == nil)
+                #expect(calendarInputOnly?.sourcePID == nil)
+            } else {
+                #expect(calendarInputOnly?.platform == app.platform)
+                #expect(calendarInputOnly?.appName == app.name)
+                #expect(calendarInputOnly?.sourceBundleID == bundleID)
+                #expect(calendarInputOnly?.sourcePID == 4321)
+            }
+        }
+    }
+
+    @Test("strong meeting app helper outranks full-duplex Slack helper")
+    func strongMeetingAppHelperOutranksSlackHelper() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 6789,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+                AudioProcessActivity(
+                    pid: 4321,
+                    bundleID: "us.zoom.xos.helper",
+                    appName: "Zoom Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder"
+        ))
+
+        #expect(candidate?.sourceBundleID == "us.zoom.xos")
+        #expect(candidate?.platform == .zoom)
+        #expect(candidate?.appName == "Zoom")
+        #expect(candidate?.sourcePID == 4321)
+    }
+
+    @Test("unknown, near-prefix, and self helpers do not resolve as dedicated apps")
+    func unknownNearPrefixAndSelfHelpersDoNotResolve() {
+        let unknown = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 111,
+                    bundleID: "com.example.unknown.helper",
+                    appName: "Unknown Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ]
+        ))
+        #expect(unknown == nil)
+
+        let nearPrefix = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 112,
+                    bundleID: "com.tinyspeck.slackmacgaphelper",
+                    appName: "Slack",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ]
+        ))
+        #expect(nearPrefix == nil)
+
+        let selfResolver = resolver()
+        selfResolver.selfBundleID = "us.zoom.xos"
+        let selfApp = selfResolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 113,
+                    bundleID: "us.zoom.xos",
+                    appName: "Zoom",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ]
+        ))
+        #expect(selfApp == nil)
+
+        let selfHelper = selfResolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 114,
+                    bundleID: "us.zoom.xos.helper",
+                    appName: "Zoom Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ]
+        ))
+        #expect(selfHelper == nil)
+    }
+
+    @Test("dedicated helper suffix case follows the browser convention")
+    func dedicatedHelperSuffixCaseFollowsBrowserConvention() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 6789,
+                    bundleID: "com.tinyspeck.slackmacgap.Helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder"
+        ))
+
+        #expect(candidate?.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(candidate?.platform == .slack)
+        #expect(candidate?.appName == "Slack")
+        #expect(candidate?.sourcePID == 6789)
+    }
+
+    @Test("parent and helper audio keep one session until the idle gap")
+    func parentAndHelperAudioKeepOneSessionUntilIdleGap() {
+        let resolver = resolver()
+        let parent = resolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 6789,
+                    bundleID: "com.tinyspeck.slackmacgap",
+                    appName: "Slack",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder",
+            now: now
+        ))
+
+        let helper = resolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9999,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder",
+            now: now.addingTimeInterval(5)
+        ))
+
+        #expect(parent?.id == "app:com.tinyspeck.slackmacgap:session:1800000000")
+        #expect(helper?.id == parent?.id)
+        #expect(helper?.suppressionID == parent?.suppressionID)
+        #expect(helper?.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(parent?.sourcePID == 6789)
+        #expect(helper?.sourcePID == 9999)
+
+        let afterGap = resolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9999,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder",
+            now: now.addingTimeInterval(16)
+        ))
+
+        #expect(afterGap?.id == "app:com.tinyspeck.slackmacgap:session:1800000016")
+        #expect(afterGap?.suppressionID == afterGap?.id)
+        #expect(afterGap?.sourcePID == 9999)
+        #expect(afterGap?.id != helper?.id)
+    }
+
+    @Test("invalid dedicated helper PID is omitted")
+    func invalidDedicatedHelperPIDIsOmitted() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 0,
+                    bundleID: "com.tinyspeck.slackmacgap.helper",
+                    appName: "Slack Helper",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.apple.finder"
+        ))
+
+        #expect(candidate?.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(candidate?.platform == .slack)
+        #expect(candidate?.sourcePID == nil)
+    }
+
     @Test("different Meet URLs are different candidates")
     func differentMeetURLsAreDifferentCandidates() {
         let first = resolver().resolve(snapshot(browserMeetings: [

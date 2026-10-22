@@ -243,6 +243,16 @@ final class MeetingCandidateResolver {
         var lastSeenAt: Date
     }
 
+    /// Attributed audio for a registered dedicated app. `bundleID`, `appName`,
+    /// and `platform` are the canonical parent; `process` keeps the helper's
+    /// PID and its own input/output flags.
+    private struct DedicatedAudioMatch {
+        let process: AudioProcessActivity
+        let bundleID: String
+        let appName: String
+        let platform: MeetingCandidate.Platform
+    }
+
     static let dedicatedApps: [String: (name: String, platform: MeetingCandidate.Platform)] = [
         "us.zoom.xos": ("Zoom", .zoom),
         "us.zoom.ZoomPhone": ("Zoom Phone", .zoom),
@@ -349,16 +359,20 @@ final class MeetingCandidateResolver {
             }
 
             if let audioApp = bestCalendarMeetingAudioProcess(from: snapshot.audioInputProcesses) {
-                let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
+                let appSessionID = appAudioSessionID(
+                    forBundleID: audioApp.bundleID,
+                    prefix: "app",
+                    now: snapshot.now
+                )
                 return candidate(
                     id: "cal:\(calendarEvent.id)",
-                    platform: platform(for: audioApp.bundleID) ?? .unknown,
+                    platform: audioApp.platform,
                     appName: audioApp.appName,
                     url: nil,
                     title: calendarEvent.title,
                     evidence: mediaEvidence(from: snapshot).union([.calendarEvent, .audioInputProcess]),
                     sourceBundleID: audioApp.bundleID,
-                    sourcePID: validSourcePID(audioApp.pid),
+                    sourcePID: validSourcePID(audioApp.process.pid),
                     suppressionID: appSessionID,
                     now: snapshot.now
                 )
@@ -419,17 +433,20 @@ final class MeetingCandidateResolver {
         }
 
         if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses) {
-            let platform = platform(for: audioApp.bundleID) ?? .unknown
-            let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
+            let appSessionID = appAudioSessionID(
+                forBundleID: audioApp.bundleID,
+                prefix: "app",
+                now: snapshot.now
+            )
             return candidate(
                 id: appSessionID,
-                platform: platform,
+                platform: audioApp.platform,
                 appName: audioApp.appName,
                 url: nil,
                 title: nil,
                 evidence: mediaEvidence(from: snapshot).union([.audioInputProcess, .dedicatedApp]),
                 sourceBundleID: audioApp.bundleID,
-                sourcePID: validSourcePID(audioApp.pid),
+                sourcePID: validSourcePID(audioApp.process.pid),
                 suppressionID: appSessionID,
                 now: snapshot.now
             )
@@ -488,41 +505,77 @@ final class MeetingCandidateResolver {
         return nil
     }
 
-    private func bestCalendarMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
-        let candidates = processes.filter { process in
-            guard process.bundleID != selfBundleID else { return false }
-            guard process.isRunningInput else { return false }
-            guard Self.dedicatedApps[process.bundleID] != nil else { return false }
-            if !Self.weakDedicatedAppBundleIDs.contains(process.bundleID) {
-                return true
+    private func bestCalendarMeetingAudioProcess(
+        from processes: [AudioProcessActivity]
+    ) -> DedicatedAudioMatch? {
+        let candidates = processes.compactMap { process -> DedicatedAudioMatch? in
+            guard let match = dedicatedAudioMatch(for: process) else { return nil }
+            // Weak-app and full-duplex calendar rules follow the parent app.
+            // Input and output stay on this process and are not merged with siblings.
+            if Self.weakDedicatedAppBundleIDs.contains(match.bundleID),
+               Self.calendarFullDuplexAudioRequiredBundleIDs.contains(match.bundleID),
+               !process.isRunningOutput {
+                return nil
             }
-            guard Self.calendarFullDuplexAudioRequiredBundleIDs.contains(process.bundleID) else {
-                return true
-            }
-            return process.isRunningOutput
+            return match
         }
 
-        return candidates.sorted { lhs, rhs in
-            let lhsWeak = Self.weakDedicatedAppBundleIDs.contains(lhs.bundleID)
-            let rhsWeak = Self.weakDedicatedAppBundleIDs.contains(rhs.bundleID)
-            if lhsWeak != rhsWeak { return !lhsWeak && rhsWeak }
-            return lhs.appName < rhs.appName
-        }.first
+        return rankedDedicatedAudioMatch(from: candidates)
     }
 
-    private func bestMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
-        let candidates = processes.filter { process in
-            guard process.bundleID != selfBundleID else { return false }
-            guard process.isRunningInput else { return false }
-            guard Self.dedicatedApps[process.bundleID] != nil else { return false }
-            return process.isRunningOutput
+    private func bestMeetingAudioProcess(
+        from processes: [AudioProcessActivity]
+    ) -> DedicatedAudioMatch? {
+        let candidates = processes.compactMap { process -> DedicatedAudioMatch? in
+            guard process.isRunningOutput else { return nil }
+            return dedicatedAudioMatch(for: process)
         }
 
-        return candidates.sorted { lhs, rhs in
+        return rankedDedicatedAudioMatch(from: candidates)
+    }
+
+    /// Exact registered IDs keep the process display name. Helper bundle IDs
+    /// use the registered parent name so attribution stays on that app.
+    private func dedicatedAudioMatch(for process: AudioProcessActivity) -> DedicatedAudioMatch? {
+        guard process.bundleID != selfBundleID,
+              process.isRunningInput,
+              let parent = dedicatedAppParent(for: process.bundleID),
+              parent.bundleID != selfBundleID else {
+            return nil
+        }
+        let appName = process.bundleID == parent.bundleID ? process.appName : parent.name
+        return DedicatedAudioMatch(
+            process: process,
+            bundleID: parent.bundleID,
+            appName: appName,
+            platform: parent.platform
+        )
+    }
+
+    /// Exact registered IDs win. A dot-delimited, case-insensitive suffix maps
+    /// to that parent, matching browser helper attribution.
+    private func dedicatedAppParent(
+        for processBundleID: String
+    ) -> (bundleID: String, name: String, platform: MeetingCandidate.Platform)? {
+        if let match = Self.dedicatedApps[processBundleID] {
+            return (processBundleID, match.name, match.platform)
+        }
+        guard let bundleID = Self.dedicatedApps.keys.first(where: { parentBundleID in
+            isHelperBundleID(processBundleID, for: parentBundleID)
+        }), let match = Self.dedicatedApps[bundleID] else {
+            return nil
+        }
+        return (bundleID, match.name, match.platform)
+    }
+
+    private func rankedDedicatedAudioMatch(
+        from candidates: [DedicatedAudioMatch]
+    ) -> DedicatedAudioMatch? {
+        candidates.sorted { lhs, rhs in
             let lhsWeak = Self.weakDedicatedAppBundleIDs.contains(lhs.bundleID)
             let rhsWeak = Self.weakDedicatedAppBundleIDs.contains(rhs.bundleID)
             if lhsWeak != rhsWeak { return !lhsWeak && rhsWeak }
-            return lhs.appName < rhs.appName
+            return lhs.process.appName < rhs.process.appName
         }.first
     }
 
@@ -603,16 +656,8 @@ final class MeetingCandidateResolver {
         helperBundleID.lowercased().hasPrefix("\(parentBundleID.lowercased()).")
     }
 
-    private func platform(for bundleID: String) -> MeetingCandidate.Platform? {
-        Self.dedicatedApps[bundleID]?.platform
-    }
-
     private func validSourcePID(_ pid: pid_t) -> pid_t? {
         pid > 0 ? pid : nil
-    }
-
-    private func appAudioSessionID(for process: AudioProcessActivity, now: Date) -> String {
-        appAudioSessionID(forBundleID: process.bundleID, prefix: "app", now: now)
     }
 
     private func appAudioSessionID(forBundleID key: String, prefix: String, now: Date) -> String {
