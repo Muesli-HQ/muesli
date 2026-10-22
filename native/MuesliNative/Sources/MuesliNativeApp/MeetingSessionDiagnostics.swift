@@ -175,11 +175,29 @@ final class MeetingSessionDiagnostics {
         let systemChunks: ChunkStats
         let diarizationSegments: Int
         let diarizationSpeakers: Int
+        /// nil when in-room speaker identification is off.
+        let micDiarization: MicDiarizationStats?
         let protectedSystemSegments: Int
         let rawMic: AudioSampleStatsSnapshot?
         let cleanedMicAec: AudioSampleStatsSnapshot?
         let systemAudio: AudioSampleStatsSnapshot?
         let aecDelayEstimate: AecDelayEstimate?
+    }
+
+    /// Tells "the diarizer found one voice" apart from "the track never diarized".
+    struct MicDiarizationStats: Codable {
+        let segments: Int
+        let speakers: Int
+        /// Speakers that passed the significance filter; < 2 keeps the mic as "You".
+        let localSpeakers: Int
+        let error: String?
+
+        init(rawSegments: [TimedSpeakerSegment]?, error: Error?) {
+            segments = rawSegments?.count ?? 0
+            speakers = Set((rawSegments ?? []).map(\.speakerId)).count
+            localSpeakers = SpeakerAttribution.significantSpeakerIDs(in: rawSegments ?? []).count
+            self.error = error.map { String(describing: $0) }
+        }
     }
 
     struct AecDelayEstimate: Codable {
@@ -276,6 +294,7 @@ final class MeetingSessionDiagnostics {
         micChunks: MeetingTranscriptChunkHealthSnapshot,
         systemChunks: MeetingTranscriptChunkHealthSnapshot,
         diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarization: MicDiarizationStats? = nil,
         protectedSystemSegmentCount: Int
     ) {
         guard enabled, let outputDirectory else { return }
@@ -314,6 +333,7 @@ final class MeetingSessionDiagnostics {
             ),
             diarizationSegments: diarizationSegments?.count ?? 0,
             diarizationSpeakers: speakerCount,
+            micDiarization: micDiarization,
             protectedSystemSegments: protectedSystemSegmentCount,
             rawMic: rawMicStats,
             cleanedMicAec: cleanedMicStats,

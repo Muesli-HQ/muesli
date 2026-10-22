@@ -6,6 +6,61 @@ import Testing
 
 @Suite("Bounded meeting recording transcription")
 struct MeetingRecordingTranscriberTests {
+    @Test("direct diarization PCM preserves mono samples and converts stereo bounded windows",
+          arguments: [16_000.0, 44_100.0, 48_000.0])
+    func directPCM(rate: Double) throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("direct-pcm-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let channels: AVAudioChannelCount = rate == 16_000 ? 1 : 2
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: rate, channels: channels))
+        let frames = Int(rate * 20.25)
+        func sample(_ i: Int) -> Float { Float(sin(Double(i) * 2 * .pi * 200 / rate) * 0.25) }
+        do {
+            let writer = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
+            var offset = 0
+            while offset < frames {
+                let count = min(4096, frames - offset)
+                buffer.frameLength = AVAudioFrameCount(count)
+                for channel in 0..<Int(channels) {
+                    for i in 0..<count { buffer.floatChannelData![channel][i] = sample(offset + i) }
+                }
+                try writer.write(from: buffer)
+                offset += count
+            }
+        }
+        let reader = try DiarizationPCMWindowReader(url: url)
+        var end = 0.0
+        var count = 0
+        while let window = try reader.next() {
+            #expect(window.start == end)
+            #expect(window.samples.count <= 160_000)
+            #expect(abs(Double(window.samples.count) / 16_000 - (window.end - window.start)) < 0.01)
+            #expect(window.samples.allSatisfy { $0.isFinite })
+            if rate == 16_000 {
+                let start = Int((window.start * rate).rounded())
+                #expect(window.samples.enumerated().allSatisfy { $0.element == sample(start + $0.offset) })
+            }
+            end = window.end
+            count += 1
+        }
+        #expect(count == 3)
+        #expect(abs(end - 20.25) < 0.0001)
+        #expect(try reader.next() == nil)
+    }
+
+    @Test("direct PCM reader honors cancellation before reading")
+    func directPCMCancellation() async throws {
+        let url = try recording(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let task = Task {
+            let reader = try DiarizationPCMWindowReader(url: url)
+            withUnsafeCurrentTask { $0?.cancel() }
+            #expect(throws: CancellationError.self) { try reader.next() }
+        }
+        try await task.value
+    }
+
     @Test("replay windows preserve every PCM sample without duplication", arguments: [5.0, 10.0])
     func windowSampleIntegrity(seconds: Double) throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("sample-integrity-\(UUID()).wav")
@@ -166,24 +221,19 @@ struct MeetingRecordingTranscriberTests {
     func diarizationWindows() throws {
         let url = try recording(seconds: 3_601)
         defer { try? FileManager.default.removeItem(at: url) }
-        let reader = try RecordingAudioWindowReader(url: url, seconds: RecordedAudioDiarizationSession.windowSeconds, overlapSeconds: 0)
+        let reader = try DiarizationPCMWindowReader(url: url)
         var end: Double = 0
         var count = 0
-        var directory: URL?
         while let window = try reader.next() {
             #expect(window.start == end)
             #expect(window.end - window.start <= 10)
-            let chunk = try AVAudioFile(forReading: window.url)
-            #expect(chunk.length <= 160_000)
-            directory = window.url.deletingLastPathComponent()
-            #expect(try FileManager.default.contentsOfDirectory(atPath: directory!.path).count == 1)
+            #expect(window.samples.count <= 160_000)
+            #expect(window.samples.count == Int(((window.end - window.start) * 16_000).rounded()))
             end = window.end
             count += 1
         }
         #expect(count == 361)
         #expect(end == 3_601)
-        reader.close()
-        #expect(!FileManager.default.fileExists(atPath: try #require(directory).path))
     }
 
     @Test("diarization clips padded tail, drops embeddings and bounds speaker tracking")
@@ -273,13 +323,13 @@ struct MeetingRecordingTranscriberTests {
         let compressed = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
             from: source, meetingTitle: "Test", startedAt: Date(), supportDirectory: directory, fileFormat: .m4a
         )
-        let reader = try RecordingAudioWindowReader(url: compressed, seconds: 10, overlapSeconds: 0)
-        defer { reader.close() }
+        let reader = try DiarizationPCMWindowReader(url: compressed)
         var end: Double = 0
         var count = 0
         while let window = try reader.next() {
             #expect(window.start == end)
             #expect(window.end - window.start <= 10)
+            #expect(!window.samples.isEmpty && window.samples.count <= 160_000)
             end = window.end
             count += 1
         }
