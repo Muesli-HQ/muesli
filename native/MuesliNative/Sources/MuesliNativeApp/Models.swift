@@ -299,7 +299,8 @@ struct BackendOption: Equatable {
         _ downloadedModelIDs: Set<String>,
         currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
     ) -> [BackendOption] {
-        all.filter {
+        let deletableOptions = all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(Self.gemma4LiteRT)
+        return deletableOptions.filter {
             downloadedModelIDs.contains($0.model) && !$0.isCompatible(currentOSVersion: currentOSVersion)
         }
     }
