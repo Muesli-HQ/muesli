@@ -1179,7 +1179,7 @@ struct SettingsView: View {
             settingsRow("Identify in-room speakers", controlWidth: meetingControlWidth) {
                 settingsControl("diarize_microphone")
             }
-            settingsDescription("Identifies local speakers after the meeting using echo-cleaned microphone audio. Speaker playback may cause duplicate labels; headphones help. Takes longer to process.")
+            settingsDescription("Speaker playback may cause duplicate labels; headphones help.")
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
