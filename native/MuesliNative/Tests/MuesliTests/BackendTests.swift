@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CoreML
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -27,6 +28,20 @@ struct WhisperKitTranscriberTests {
 
 @Suite("FluidAudioTranscriber")
 struct FluidAudioTranscriberTests {
+
+    @Test("Only Redux bypasses ANE encoder compilation")
+    func reduxEncoderComputePolicy() {
+        let redux = ManagedASRModelPlans.parakeetRedux()
+        #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: redux.modelID) == .cpuOnly)
+        for modelID in [
+            ManagedASRModelPlans.parakeetV2().modelID,
+            ManagedASRModelPlans.parakeetV3().modelID,
+            ManagedASRModelPlans.parakeetUnified().modelID,
+            "unknown-model",
+        ] {
+            #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: modelID) == nil)
+        }
+    }
 
     @Test("parakeet models use FluidInference repo")
     func parakeetModels() {

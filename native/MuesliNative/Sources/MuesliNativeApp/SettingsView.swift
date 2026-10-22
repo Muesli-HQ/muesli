@@ -580,9 +580,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
@@ -1170,6 +1177,14 @@ struct SettingsView: View {
             }
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Identify in-room speakers",
+                description: "Speaker playback may cause duplicate labels; headphones help.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("diarize_microphone")
+            }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {

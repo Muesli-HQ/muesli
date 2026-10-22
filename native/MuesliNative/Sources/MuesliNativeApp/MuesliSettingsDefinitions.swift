@@ -244,13 +244,15 @@ extension MuesliController {
             read: { $0.dictationProvider }) { value in
             if let provider = DictationProvider(rawValue: value) { self.selectDictationProvider(provider) }
         }
-        let backends = BackendOption.all
+        let backends = BackendOption.compatibleOptions()
         func backendID(_ option: BackendOption) -> String { option.backend + ":" + option.model }
         add("dictation_model", "Dictation model", backends.map { .init(id: backendID($0), label: $0.label) },
             read: { ($0.dictationProvider == DictationProvider.local.rawValue ? "" : "fallback:") + $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
-                guard let option = backends.first(where: { backendID($0) == value }), option.isDownloaded else {
-                    return "Download this dictation model from Models first."
+                guard let option = backends.first(where: { backendID($0) == value }) else {
+                    return "Unknown dictation model."
                 }
+                if let reason = option.incompatibilityReason() { return reason }
+                guard option.isDownloaded else { return "Download this dictation model from Models first." }
                 if !TranscriptCleanupBackendOption.resolved(self.config.postProcessorBackend).isCompatible(with: option) {
                     return "This model conflicts with the selected cleanup backend. Change cleanup first."
                 }
@@ -341,6 +343,7 @@ extension MuesliController {
         toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
+        toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)
         menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })
         menu("meeting_reminder_time", "Meeting reminder timing", ScheduledMeetingNotificationLeadTime.allCases, \.scheduledMeetingNotificationLeadTime,
              title: { $0 == .atStart ? "At start" : "\(Int($0.seconds / 60)) minutes before" })
@@ -354,7 +357,9 @@ extension MuesliController {
         }
         add("dictation_fallback_model", "Hosted dictation fallback model", backends.filter(\.supportsHostedDictationFallback).map { .init(id: backendID($0), label: $0.label) },
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
-                backends.first(where: { backendID($0) == value })?.isDownloaded == true ? nil : "Download this model first."
+                guard let option = backends.first(where: { backendID($0) == value }) else { return "Unknown dictation model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                return option.isDownloaded ? nil : "Download this model first."
             }) { value in
             if let option = backends.first(where: { backendID($0) == value }) { self.selectBackend(option) }
         }
@@ -364,7 +369,9 @@ extension MuesliController {
                 if self.config.enableLiveStreamingPartials && self.config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript {
                     return "The live transcript model also produces the final transcript. Change the live transcript model instead."
                 }
-                return meetingModels.first(where: { backendID($0) == value })?.isDownloaded == true ? nil : "Download this meeting model from Models first."
+                guard let option = meetingModels.first(where: { backendID($0) == value }) else { return "Unknown meeting model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                return option.isDownloaded ? nil : "Download this meeting model from Models first."
             }) { value in
             if let option = meetingModels.first(where: { backendID($0) == value }) { self.selectMeetingTranscriptionBackend(option) }
         }

@@ -92,8 +92,8 @@ struct OnboardingView: View {
     }
 
     private var onboardingAlternativeModels: [BackendOption] {
-        var options = BackendOption.onboarding.filter { $0 != BackendOption.onboardingDefault }
-        if BackendOption.onboarding.contains(selectedBackend),
+        var options = BackendOption.compatibleOptions(BackendOption.onboarding).filter { $0 != BackendOption.onboardingDefault }
+        if BackendOption.compatibleOptions(BackendOption.onboarding).contains(selectedBackend),
            selectedBackend != BackendOption.onboardingDefault,
            !options.contains(selectedBackend) {
             options.insert(selectedBackend, at: 0)

@@ -242,6 +242,19 @@ public enum ManagedASRModelPlans {
         )
     }
 
+    public static func parakeetRedux(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
+        fluidAudioPlan(
+            modelID: "FluidInference/parakeet-redux-coreml",
+            repository: "FluidInference/parakeet-redux-coreml",
+            directoryName: "parakeet-redux",
+            required: [
+                "Preprocessor.mlmodelc", "Encoder.mlmodelc", "Decoder.mlmodelc",
+                "JointDecisionv3.mlmodelc", "parakeet_vocab.json",
+            ],
+            modelsRoot: modelsRoot
+        )
+    }
+
     /// Parakeet Unified 0.6B (FastConformer-RNNT), English-focused offline batch
     /// path: int8 full-attention encoder + decoder + joint + vocabulary.
     public static func parakeetUnified(modelsRoot: URL? = nil) -> ManagedASRModelPlan {

@@ -34,6 +34,15 @@ enum MicTurnNormalizer {
         return mergedSegments
     }
 
+    /// Splits each turn into sentences with times interpolated inside the turn.
+    /// Mic diarization needs these boundaries: upstream paths (timed-segment
+    /// merging, finalized streaming chunks) can hand over a whole chunk as one turn.
+    static func sentenceSegments(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+        segments.flatMap { segment in
+            sentenceSplit(text: segment.text, startTime: segment.start, endTime: max(segment.end, segment.start + 0.1))
+        }
+    }
+
     private static func timedSegments(
         from result: SpeechTranscriptionResult,
         startTime: TimeInterval,

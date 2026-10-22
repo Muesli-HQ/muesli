@@ -599,7 +599,7 @@ actor TranscriptionCoordinator {
 
         switch backend.backend {
         case "fluidaudio":
-            let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
+            let version = FluidAudioModel.version(for: backend.model)
             try await fluidTranscriber.loadModels(
                 version: version,
                 progress: progress,
@@ -1107,7 +1107,8 @@ actor TranscriptionCoordinator {
         ))
     }
 
-    /// Recorded-file replay only. Live meeting finalization remains unchanged.
+    /// Shared bounded PCM diarization for imported/retained recordings and both
+    /// meeting channels. Each invocation has independent speaker identities.
     func diarizeRecordedAudio(
         at url: URL,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
@@ -1115,10 +1116,7 @@ actor TranscriptionCoordinator {
         try Task.checkCancellation()
         guard let diarizerManager, diarizerManager.isAvailable else { throw DiarizerError.notInitialized }
         let session = RecordedAudioDiarizationSession(manager: diarizerManager)
-        let reader = try RecordingAudioWindowReader(
-            url: url, seconds: RecordedAudioDiarizationSession.windowSeconds, overlapSeconds: 0
-        )
-        defer { reader.close() }
+        let reader = try DiarizationPCMWindowReader(url: url)
         var segments: [TimedSpeakerSegment] = []
         while let window = try reader.next() {
             segments.append(contentsOf: try session.process(window))
@@ -1128,17 +1126,15 @@ actor TranscriptionCoordinator {
         return segments
     }
 
-    func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
+    func diarizeSystemAudio(at url: URL) async throws -> [TimedSpeakerSegment]? {
         guard let diarizerManager, diarizerManager.isAvailable else {
             fputs("[muesli-native] diarization not available, skipping\n", stderr)
             return nil
         }
         fputs("[muesli-native] running speaker diarization on system audio...\n", stderr)
-        let converter = AudioConverter()
-        let samples = try converter.resampleAudioFile(url)
-        let result = try diarizerManager.performCompleteDiarization(samples, sampleRate: 16000)
-        let speakerCount = Set(result.segments.map(\.speakerId)).count
-        fputs("[muesli-native] diarization complete: \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
+        let result = try await diarizeRecordedAudio(at: url)
+        let speakerCount = Set(result.map(\.speakerId)).count
+        fputs("[muesli-native] diarization complete: \(result.count) segments, \(speakerCount) speakers\n", stderr)
         return result
     }
 

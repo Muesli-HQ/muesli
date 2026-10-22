@@ -99,6 +99,7 @@ struct BackendOptionTests {
     @Test(
         "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
         arguments: [
+            BackendOption.parakeetRedux,
             BackendOption.nemotron35Multilingual,
             BackendOption.qwen3Asr,
             BackendOption.cohereTranscribe,
@@ -167,6 +168,49 @@ struct BackendOptionTests {
     func onboardingRejectsNonOnboardingModels() {
         #expect(BackendOption.resolvedOnboardingBackend(.gemma4E2BLiteRT, currentOSVersion: Self.macOS15) == .onboardingDefault)
         #expect(BackendOption.resolvedOnboardingBackend(.appleSpeechAnalyzer, currentOSVersion: Self.macOS26) == .onboardingDefault)
+    }
+
+    @Test("model menus hide unsupported OS choices but retain supported Parakeet variants", arguments: [14, 15, 26])
+    func modelChoicesRespectOSVersion(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let options = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(options.contains(.parakeetRedux) == (major >= 15))
+        #expect(options.contains(.appleSpeechAnalyzer) == (major >= 26 && BackendOption.all.contains(.appleSpeechAnalyzer)))
+        #expect(options.contains(.parakeetUnified))
+        #expect(options.contains(.parakeetMultilingual))
+        #expect(options.contains(.parakeetEnglish))
+        #expect(options.allSatisfy { $0.isCompatible(currentOSVersion: version) })
+        let variants = BackendOption.compatibleOptions(BackendOption.parakeetFamily, currentOSVersion: version)
+        #expect(variants.contains(.parakeetRedux) == (major >= 15))
+    }
+
+    @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
+    func incompatibleDownloadsRemainDeletable(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let cached: Set<String> = [BackendOption.parakeetRedux.model, BackendOption.parakeetEnglish.model]
+        let cleanup = BackendOption.incompatibleDownloadedOptions(cached, currentOSVersion: version)
+        #expect(cleanup == (major == 14 ? [.parakeetRedux] : []))
+        #expect(BackendOption.incompatibleDownloadedOptions([], currentOSVersion: version).isEmpty)
+        let selectable = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(!cleanup.contains(where: { selectable.contains($0) }))
+    }
+
+    @Test("cached Redux cannot displace a supported downloaded model on macOS 14")
+    func restoredDownloadedReduxRespectsOSVersion() {
+        let redux = BackendOption.parakeetRedux
+        let downloaded: [BackendOption] = [redux, .parakeetEnglish]
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS14
+        ) == .parakeetEnglish)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: [redux], currentOSVersion: Self.macOS14
+        ) == nil)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: .parakeetEnglish,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS15
+        ) == redux)
     }
 
     @Test("model descriptions explain usage without implementation jargon")
@@ -270,6 +314,38 @@ struct BackendOptionTests {
         #expect(throws: CancellationError.self) {
             try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
         }
+    }
+
+    @Test("Redux is selectable for dictation and meetings without changing defaults")
+    func parakeetReduxCatalog() {
+        let redux = BackendOption.parakeetRedux
+        #expect(BackendOption.all.contains(redux))
+        #expect(BackendOption.parakeetFamily.contains(redux))
+        #expect(BackendOption.resolve(backend: redux.backend, model: redux.model) == redux)
+        #expect(redux.supportsMeetingTranscription)
+        #expect(redux.supportsHostedDictationFallback)
+        #expect(!redux.isStreamingDictationBackend)
+        #expect(!redux.recommended)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(BackendOption.parakeetMultilingual.isCompatible(currentOSVersion: Self.macOS14))
+        #expect(BackendOption.parakeetEnglish.isCompatible(currentOSVersion: Self.macOS14))
+    }
+
+    @Test("FluidAudio model routing keeps Redux separate from v2 and v3")
+    func parakeetReduxRouting() {
+        for (option, version) in [
+            (BackendOption.parakeetEnglish, AsrModelVersion.v2),
+            (.parakeetMultilingual, .v3), (.parakeetRedux, .redux),
+        ] {
+            let resolved = FluidAudioModel.version(for: option.model)
+            #expect(resolved == version)
+            let plan = FluidAudioModel.plan(for: resolved)
+            #expect(plan.modelID == option.model)
+            #expect(plan.cacheDirectory == AsrModels.defaultCacheDirectory(for: version))
+        }
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .v3, deletingVersion: .redux))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .v3))
+        #expect(FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .redux))
     }
 
     @Test("Parakeet deletion unloads only the matching runtime variant")
@@ -1083,6 +1159,7 @@ struct AppConfigTests {
         #expect(config.userName.isEmpty)
         #expect(config.customMeetingTemplates.isEmpty)
         #expect(config.meetingHookEnabled == false)
+        #expect(config.diarizeMicrophoneAudio == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
         #expect(config.autoExportMarkdownEnabled == false)
@@ -1283,6 +1360,7 @@ struct AppConfigTests {
             )
         ]
         config.meetingHookEnabled = true
+        config.diarizeMicrophoneAudio = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
         config.autoExportMarkdownEnabled = true
@@ -1376,6 +1454,7 @@ struct AppConfigTests {
         #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
         #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
         #expect(decoded.meetingHookEnabled == true)
+        #expect(decoded.diarizeMicrophoneAudio == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
         #expect(decoded.autoExportMarkdownEnabled == true)
@@ -1517,6 +1596,7 @@ struct AppConfigTests {
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
         #expect(json["custom_meeting_templates"] != nil)
         #expect(json["meeting_hook_enabled"] != nil)
+        #expect(json["diarize_microphone_audio"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
         #expect(json["auto_export_markdown_enabled"] != nil)
