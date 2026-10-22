@@ -1546,15 +1546,15 @@ struct PostProcessorOption: Identifiable, Equatable {
     )
 
     static let lfmV12 = PostProcessorOption(
-        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5 (Beta)", sizeLabel: "~731 MB",
+        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5 (Beta)", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
         description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
-        filename: ManagedCleanupModel.lfm.files[0].relativePath, inputFormat: .muesliTrainedV12LFM)
+        filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5 (Beta)", sizeLabel: "~1.3 GB",
+        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5 (Beta)", sizeLabel: ManagedCleanupModel.qwen.sizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
         downloadURL: ManagedCleanupModel.qwen.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwen.files[0].relativePath, inputFormat: .muesliTrainedV12Qwen)
+        filename: ManagedCleanupModel.qwen.modelFilename, inputFormat: .muesliTrainedV12Qwen)
     static let all: [PostProcessorOption] = [.finetunedV3, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
     static let defaultOption: PostProcessorOption = .finetunedV3

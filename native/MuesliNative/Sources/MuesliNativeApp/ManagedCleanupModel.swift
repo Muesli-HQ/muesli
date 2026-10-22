@@ -7,8 +7,14 @@ struct ManagedCleanupModel: Sendable {
     let repoID: String
     let revision: String
     let files: [ModelDownloadFile]
+    let modelByteCount: Int64
+
+    var modelFilename: String { files[0].relativePath }
+    var sizeLabel: String { "~" + ByteCountFormatter.string(fromByteCount: modelByteCount, countStyle: .file) }
 
     init(_ repoID: String, _ revision: String, _ artifacts: [(String, Int64, String)]) {
+        precondition(!artifacts.isEmpty, "A cleanup release must include its model artifact first.")
+        modelByteCount = artifacts[0].1
         self.repoID = repoID
         self.revision = revision
         files = artifacts.map { name, size, hash in

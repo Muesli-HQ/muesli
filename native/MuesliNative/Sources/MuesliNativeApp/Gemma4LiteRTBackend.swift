@@ -61,7 +61,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: "gemma-4-E2B-it.litertlm"
         case .e4b: "gemma-4-E4B-it.litertlm"
-        case .muesliCleanupV2: "gemma4-e2b-muesli-v12-mixed48b32.litertlm"
+        case .muesliCleanupV2: ManagedCleanupModel.gemma.modelFilename
         }
     }
 
@@ -77,7 +77,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: "~2.6 GB"
         case .e4b: "~3.7 GB"
-        case .muesliCleanupV2: "~2.9 GB"
+        case .muesliCleanupV2: ManagedCleanupModel.gemma.sizeLabel
         }
     }
 
@@ -93,7 +93,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: 2_588_147_712
         case .e4b: 3_659_530_240
-        case .muesliCleanupV2: 2_859_751_568
+        case .muesliCleanupV2: ManagedCleanupModel.gemma.modelByteCount
         }
     }
 
@@ -101,7 +101,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: 2_000_000_000
         case .e4b: 3_000_000_000
-        case .muesliCleanupV2: 2_859_751_568
+        case .muesliCleanupV2: ManagedCleanupModel.gemma.modelByteCount
         }
     }
 
