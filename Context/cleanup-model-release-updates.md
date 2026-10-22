@@ -17,3 +17,7 @@ Do not make a beta the default during a weight update. Production `qwen35-postpr
 ## Boundaries
 
 Gemma uses LiteRT-LM; LFM/Qwen GGUF use the pinned llama.cpp through the local LLM.swift wrapper. A runtime or tokenizer upgrade is separate from an artifact revision. MLX integration and a newer llama.xcframework are not implemented here.
+
+## Diagnosing formatting after a model update
+
+Compare the exact prompt, raw generation, guarded output and pasted text for the same dictation. For GGUF, `Qwen3PostProcessor.processResult` returns raw and guarded output together; `TranscriptionRuntime` records `rawOutput` as `rawCleanupOutputText`. Do not substitute the guarded text for the raw response when adding a model adapter. A missing list in the raw response is a different failure from a list that disappears during cleanup or paste. Keep private dictation and screen-context logs out of the repository.
