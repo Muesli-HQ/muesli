@@ -759,7 +759,7 @@ struct ModelsView: View {
                 Spacer()
 
                 if isActive {
-                    Text(forQuill ? "Quill Selected" : "Active")
+                    Text(forQuill ? "Quill Selected" : "Cleanup Active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -800,7 +800,7 @@ struct ModelsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button(forQuill ? "Use for Quill" : "Set Active") {
+                        Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
