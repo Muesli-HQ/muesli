@@ -1176,6 +1176,11 @@ struct SettingsView: View {
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
             Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Identify in-room speakers", controlWidth: meetingControlWidth) {
+                settingsControl("diarize_microphone")
+            }
+            settingsDescription("Identifies local speakers after the meeting using echo-cleaned microphone audio. Speaker playback may cause duplicate labels; headphones help. Takes longer to process.")
+            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
                     Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
@@ -2082,11 +2087,6 @@ struct SettingsView: View {
                     }
                     settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Identify in-room speakers") {
-                    settingsControl("diarize_microphone")
-                }
-                settingsDescription("Identifies local speakers after the meeting using echo-cleaned microphone audio. Speaker playback may cause duplicate labels; headphones help. Takes longer to process.")
             }
 
             settingsSection("Auto Export") {
