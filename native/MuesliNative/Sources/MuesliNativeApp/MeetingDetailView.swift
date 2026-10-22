@@ -2275,6 +2275,10 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
+        // In-room speakers from microphone diarization; unnumbered when not attributable.
+        if label.range(of: #"^Local speaker(\s+\d+)?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
         return false
     }
 }
