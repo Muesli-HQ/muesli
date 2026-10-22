@@ -277,16 +277,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
         submenu.addItem(item("Enable Cleanup", selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on"), selected: config.enablePostProcessor))
         submenu.addItem(.separator())
-        submenu.addItem(.sectionHeader(title: "Local Models"))
+        let downloadedLocalIDs = PostProcessorOption.downloadedIDs.union(
+            Gemma4LiteRTModel.allCases.filter { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }.map(\.repoID)
+        )
         if let local = definitions.first(where: { $0.id == "cleanup_on_device_model" }) {
-            for choice in local.choices {
+            let choices = local.choices.filter { downloadedLocalIDs.contains($0.id) }
+            if !choices.isEmpty { submenu.addItem(.sectionHeader(title: "Local Models")) }
+            for choice in choices {
                 submenu.addItem(item(choice.label,
                     selection: .init(setting: local.id, value: choice.id),
                     selected: selectedBackend.isOnDevice && local.read(config) == choice.id,
                     reason: local.availability(choice.id, source: .manualUI)))
             }
+            if !choices.isEmpty { submenu.addItem(.separator()) }
         }
-        submenu.addItem(.separator())
         submenu.addItem(.sectionHeader(title: "Hosted & Server Models"))
         for backend in TranscriptCleanupBackendOption.all where !backend.isOnDevice {
             let provider = NSMenuItem(title: backend.label, action: nil, keyEquivalent: "")
