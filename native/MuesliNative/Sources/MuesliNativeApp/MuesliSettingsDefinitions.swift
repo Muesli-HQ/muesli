@@ -109,7 +109,11 @@ extension MuesliController {
                 guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return "Unknown model." }
                 switch model {
                 case .gguf(let option): return option.isDownloaded && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
-                case .gemma4(let model): return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
+                case .gemma4(let model):
+                    guard BackendOption.gemma4LiteRT(model).isCompatible() else {
+                        return "Gemma cleanup requires macOS 15 or later."
+                    }
+                    return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
                 }
             }) { value in
             guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return }
