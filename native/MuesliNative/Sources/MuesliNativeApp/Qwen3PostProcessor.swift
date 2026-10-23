@@ -100,7 +100,7 @@ enum Qwen3PostProcessorOutputCleaner {
             options: .regularExpression
         )
         result = result.replacingOccurrences(
-            of: #"[ \t]+([,.;:!?])"#,
+            of: #"[ \t]+([,;:!?]|\.(?![./\w]))"#,
             with: "$1",
             options: .regularExpression
         )

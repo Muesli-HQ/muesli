@@ -296,7 +296,7 @@ enum TranscriptCleanupClient {
         guard !text.isEmpty else { return text }
         var result = Qwen3PostProcessorOutputCleaner.clean(text)
         result = result.replacingOccurrences(of: #"\r\n?"#, with: "\n", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]+([,.;:!?])"#, with: "$1", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"[ \t]+([,;:!?]|\.(?![./\w]))"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"(?<=\S)[ \t]{2,}"#, with: " ", options: .regularExpression)
         result = result.replacingOccurrences(of: #"(?m)[ \t]+$"#, with: "", options: .regularExpression)
         result = result.replacingOccurrences(of: #"[ \t]*\n"#, with: "\n", options: .regularExpression)

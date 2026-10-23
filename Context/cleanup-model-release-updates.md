@@ -20,6 +20,18 @@ The earlier Gemma v10 beta selection migrates to the v12 cleanup selection. User
 
 Gemma uses LiteRT-LM; LFM/Qwen GGUF use the pinned llama.cpp through the local LLM.swift wrapper. A runtime or tokenizer upgrade is separate from an artifact revision. MLX integration and a newer llama.xcframework are not implemented here.
 
+### Gemma v12 MTP artifact
+
+The Gemma descriptor now pins `gemma4-e2b-muesli-v12-mtp.litertlm` at revision `ce4656b3be4788e48d7b8e2b4fbfaef77c31d939`. The existing LiteRT-LM runtime detects its drafter and enables speculative decoding automatically; `MUESLI_GEMMA4_LITERT_MTP=0` disables it. Check `mtp=true` in the `engine_ready` profile log. The prompt, persisted model ID, and runtime version are unchanged. Existing no-drafter downloads need the new artifact downloaded through Models; they are not silently treated as the MTP file.
+
+Use `v12gpu_mtp_held.jsonl` for Gemma reference comparisons. The opt-in native test checks all 400 held-out rows with at least 96% exact matches, allowing the updated spec's GPU rounding tolerance; GGUF comparisons remain exact. Run `gemmaLongDictationTiming` in separate processes with MTP enabled/disabled and `MUESLI_MTP_TIMING_REPORT` set to distinct output paths. It uses the same five longest coverage inputs, excludes warm-up, and records guarded/raw output and timing. These are app-backend timings, not microphone-to-paste latency.
+
+The training-side benchmark reported occasional LiteRT engine crashes after roughly 100 requests under load, including with the old no-MTP artifact. Keep this as a beta stability follow-up and exercise long-lived engines. A fatal native crash cannot be caught and retried by the Swift error handler; do not claim automatic crash recovery. MTP's reported long-output improvement does not resolve the latency acceptance item below.
+
+Native comparison on Apple M5 (2026-10-23, Debug backend, five longest coverage inputs, about 320 output words, warm-up excluded): median MTP on **4.30 s**, off **8.31 s**, about **48% lower** latency. All five final outputs matched across the isolated runs, with no guard fallback. This small sequential comparison is not a general speed guarantee. Both runs used the same verified MTP artifact; engine logs confirmed `mtp=true` and `mtp=false` respectively.
+
+The full native MTP-on held-out run matched **387/400 (96.75%)** reference outputs, passing the 96% threshold. Median backend generation time was **0.822 s** across the held-out set and **0.652 s** across six short synthetic smoke inputs. One engine completed warm-up, all 400 rows, and the six smoke requests without a crash. This does not prove the reported intermittent crash is resolved. The comparison also exposed a shared punctuation-cleanup bug that removed whitespace before relative paths such as `../hotfix-4.2`; the cleaner now preserves relative paths, dotfiles, and leading-dot decimals, with a regression test. Remaining reference differences were not used to change training prompts or relax the acceptance threshold.
+
 ## Outstanding latency work for the merge handover
 
 User feedback on 2026-10-23: cleanup latency during actual dictation is **not good enough and still needs improvement**. Carry this limitation into the eventual PR #660 merge handover. A successful integration, passing CI, or backend-only benchmark is not latency acceptance.

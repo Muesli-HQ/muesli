@@ -54,8 +54,8 @@ struct ManagedCleanupModel: Sendable {
         }
     }
 
-    static let gemma = Self("phequals/gemma4-e2b-muesli-cleanup-v12-litert", "c7bb7cb5", [
-        ("gemma4-e2b-muesli-v12-mixed48b32.litertlm", 2_859_751_568, "acfe8d5adcad645de89ee1f5b48539516e6929d1984d113a8666f326811f2f69")
+    static let gemma = Self("phequals/gemma4-e2b-muesli-cleanup-v12-litert", "ce4656b3be4788e48d7b8e2b4fbfaef77c31d939", [
+        ("gemma4-e2b-muesli-v12-mtp.litertlm", 2_946_098_832, "4d907d149a49c6b25c388b54e2e6b86bf34d50ba7f5bc78182ddf6350a1a7230")
     ])
     static let lfm = Self("phequals/lfm25-1.2b-muesli-cleanup-v12-gguf", "9f8b4e25", [
         ("lfm25-muesli-v12-Q4_K_M.gguf", 730_898_432, "da13d32708d27d29446c895314e50aa7fb700b76460057fed2ad773e9fa9c258"),
