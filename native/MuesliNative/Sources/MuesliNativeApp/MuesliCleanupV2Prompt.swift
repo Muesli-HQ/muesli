@@ -40,21 +40,25 @@ enum MuesliCleanupV2Prompt {
     }
 
     static func guardResult(_ output: String, input: String, generationCompleted: Bool = true) -> GuardedOutput {
-        let cleaned = TranscriptCleanupClient.cleanOutput(cleanOutput(output))
+        let cleaned = TranscriptCleanupClient.cleanOutput(cleanOutput(output, input: input))
         let rejected = !generationCompleted || cleaned.isEmpty || cleaned.count > input.count * 3
             || Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: input)
         return GuardedOutput(text: rejected ? input : cleaned, didFallback: rejected)
     }
 
-    static func cleanOutput
-(_ output: String) -> String {
+    static func cleanOutput(_ output: String, input: String = "") -> String {
         var text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A dictated opening word is content, even when formatting puts it on its own line.
+        let inputStartsWithModel = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            .range(of: #"^model\b"#, options: [.regularExpression, .caseInsensitive]) != nil
         // Only strip exact leading markers or verbatim training instructions.
         let paragraphs = systemPrompt.components(separatedBy: "\n\n").filter { $0.count >= 30 }
         while !text.isEmpty {
             let previous = text
-            if text == "model" { text = "" }
-            else if text.hasPrefix("model\n") { text = String(text.dropFirst(6)) }
+            if !inputStartsWithModel {
+                if text == "model" { text = "" }
+                else if text.hasPrefix("model\n") { text = String(text.dropFirst(6)) }
+            }
             for marker in ["</APP-CONTEXT>", "<APP-CONTEXT>"] where text.hasPrefix(marker) {
                 text = String(text.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             }

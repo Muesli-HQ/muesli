@@ -36,6 +36,18 @@ struct MuesliCleanupV2Tests {
         #expect(MuesliCleanupV2Prompt.cleanOutput("model training is useful") == "model training is useful")
         #expect(MuesliCleanupV2Prompt.cleanOutput("Hello\nmodel") == "Hello\nmodel")
     }
+    @Test func preservesDictatedOpeningModelLine() {
+        for input in ["model training is useful", "Model training is useful", "  model\ntraining is useful"] {
+            let result = MuesliCleanupV2Prompt.guardResult("model\ntraining is useful", input: input)
+            #expect(result.text == "model\ntraining is useful")
+            #expect(!result.didFallback)
+        }
+        #expect(MuesliCleanupV2Prompt.guardResult("model", input: "model").text == "model")
+        #expect(!MuesliCleanupV2Prompt.guardResult("model", input: "model").didFallback)
+        #expect(MuesliCleanupV2Prompt.cleanOutput("model\nHello", input: "Hello") == "Hello")
+        #expect(MuesliCleanupV2Prompt.cleanOutput("model\nModeling is useful", input: "Modeling is useful") == "Modeling is useful")
+    }
+
     @Test func cleanupOnlyIdentity() {
         let model = Gemma4LiteRTModel.muesliCleanupV2
         #expect(!Gemma4LiteRTModel.generalPurpose.contains(model))
