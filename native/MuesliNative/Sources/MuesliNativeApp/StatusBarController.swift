@@ -273,8 +273,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             result.toolTip = reason
             return result
         }
-        submenu.addItem(item(config.enablePostProcessor ? "Turn Off Cleanup" : "Turn On Cleanup",
-            selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on")))
+        let toggle = item(config.enablePostProcessor ? "Turn Off Cleanup" : "Turn On Cleanup",
+            selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on"))
+        toggle.target = self
+        toggle.action = #selector(toggleCleanupFromMenu(_:))
+        submenu.addItem(toggle)
         submenu.addItem(.separator())
         guard config.enablePostProcessor else {
             submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
@@ -336,6 +339,26 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
         root.submenu = submenu
         return root
+    }
+
+    @objc private func toggleCleanupFromMenu(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? CleanupMenuSelection else { return }
+        Task { @MainActor in
+            do {
+                try await controller.applySetting(selection.setting, value: selection.value)
+                // AppKit dismisses action menus. After enabling succeeds, open the
+                // model picker directly so choosing a model needs no second trip.
+                guard selection.value == "on", controller.config.enablePostProcessor,
+                      let button = statusItem.button,
+                      let picker = cleanupModelMenuItem().submenu else { return }
+                picker.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Cleanup could not be changed"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
     }
 
     private func addUpcomingEventsSection(_ events: [UnifiedCalendarEvent]) {
