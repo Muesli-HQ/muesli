@@ -707,7 +707,7 @@ struct ModelsView: View {
             Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
-            ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
+            ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
             ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
@@ -735,7 +735,7 @@ struct ModelsView: View {
 
         return modelCard(
             option: option,
-            logo: "google-logo",
+            logo: model.isCleanupOnly ? "muesli_app_icon" : "google-logo",
             isActive: isDownloaded
                 && (forQuill
                     ? appState.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend && appState.config.quilModel == model.repoID
@@ -747,7 +747,7 @@ struct ModelsView: View {
                     controller.selectGemma4PostProcessor(model)
                 }
             },
-            description: forQuill
+            description: model.isCleanupOnly ? option.description : forQuill
                 ? "An experimental local model for rewriting and generating text with Quill. Shares its download with dictation and cleanup."
                 : "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
             activeLabel: forQuill ? "Quill Selected" : "Cleanup Active",
@@ -790,7 +790,7 @@ struct ModelsView: View {
                 Spacer()
 
                 if isActive {
-                    Text(forQuill ? "Quill Selected" : "Active")
+                    Text(forQuill ? "Quill Selected" : "Cleanup Active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -831,7 +831,7 @@ struct ModelsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button(forQuill ? "Use for Quill" : "Set Active") {
+                        Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
@@ -1634,7 +1634,7 @@ struct ModelsView: View {
     }
 
     private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws {
-        let manifest = ModelDownloadManifest(
+        let manifest = option.managedModel?.manifest(id: option.id) ?? ModelDownloadManifest(
             id: option.id,
             version: "main",
             files: [ModelDownloadFile(relativePath: option.filename, remoteURL: option.downloadURL)],
@@ -2051,7 +2051,7 @@ struct ModelsView: View {
 
     private func checkDownloadedModels() {
         let fm = FileManager.default
-        for option in BackendOption.all {
+        for option in BackendOption.all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(BackendOption.gemma4LiteRT) {
             if isModelDownloaded(option, fm: fm) {
                 downloadedModels.insert(option.model)
             }

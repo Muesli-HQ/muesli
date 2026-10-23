@@ -11,7 +11,7 @@ enum ComputerUseLocalPlanner {
         var available: Bool { backend.available }
     }
     static var models: [Model] {
-        Gemma4LiteRTModel.allCases.map {
+        Gemma4LiteRTModel.generalPurpose.map {
             Model(id: "local:gemma4-litert:" + $0.repoID, label: $0.label + " (on device)",
                   backend: GemmaComputerUseInference(model: $0))
         }
