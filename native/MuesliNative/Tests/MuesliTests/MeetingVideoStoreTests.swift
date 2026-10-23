@@ -106,6 +106,54 @@ struct MeetingVideoStoreTests {
         }
     }
 
+    @Test func interruptedCaptureIsOwnedAndRecoveredOnlyAfterFinalization() throws {
+        try withStore { store, _, _ in
+            let item = VisualMemoryItem(kind: .meetingVideo, meetingID: 42, source: "Display", path: "interrupted.mp4")
+            try store.beginRecording(item)
+            try Data([1]).write(to: store.url(for: item.path))
+            try store.maintain(recoverRecording: { _ in 12 })
+            #expect(try store.items().isEmpty) // still writing
+            #expect(try store.hasMedia(meetingID: 42))
+            store.endRecording(item)
+            try store.maintain(recoverRecording: { _ in nil })
+            #expect(try store.items().isEmpty) // not playable yet, retain ownership
+            try store.maintain(recoverRecording: { _ in 12 })
+            #expect(try store.items().first?.duration == 12)
+        }
+    }
+
+    @Test func discardUnfinishedVideoRetriesRemovalDespiteCorruptJournal() throws {
+        try withStore { store, _, _ in
+            let item = VisualMemoryItem(kind: .meetingVideo, meetingID: 42, source: "Display", path: "discard.mp4")
+            try store.beginRecording(item)
+            try Data([1]).write(to: store.url(for: item.path))
+            store.endRecording(item)
+            try Data("broken".utf8).write(to: store.url(for: "corrupt.pending.json"))
+            // A symlink escaping the media root forces removal to fail after journaling.
+            let file = try store.url(for: item.path)
+            try FileManager.default.removeItem(at: file)
+            try FileManager.default.createSymbolicLink(atPath: file.path, withDestinationPath: "/tmp")
+            #expect(throws: (any Error).self) { try store.delete(ids: [item.id]) }
+            try FileManager.default.removeItem(at: file)
+            try Data([1]).write(to: file)
+            try store.maintain()
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+            #expect(!(try store.hasMedia(meetingID: 42)))
+        }
+    }
+
+    @Test func deletedOwnerCleansUnfinalizedVideo() throws {
+        try withStore { store, db, _ in
+            let item = VisualMemoryItem(kind: .meetingVideo, meetingID: 42, source: "Display", path: "unfinished.mp4")
+            try store.beginRecording(item)
+            try Data([1]).write(to: store.url(for: item.path))
+            store.endRecording(item)
+            #expect(sqlite3_exec(db, "DELETE FROM meetings WHERE id=42", nil, nil, nil) == SQLITE_OK)
+            try store.maintain()
+            #expect(!FileManager.default.fileExists(atPath: try store.url(for: item.path).path))
+        }
+    }
+
     private func withStore(_ body: (MeetingVideoStore, OpaquePointer?, URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

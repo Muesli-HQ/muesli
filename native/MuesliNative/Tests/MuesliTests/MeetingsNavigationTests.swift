@@ -912,6 +912,24 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
+    @Test("a failed initial meeting keeps video without retained audio or notes")
+    func failedMeetingKeepsVideo() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let config = ConfigStore(supportDirectory: support)
+        let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
+        let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try Data([1]).write(to: videos.url(for: clip.path))
+        try videos.save([clip])
+        let controller = makeController(dictationStore: store, configStore: config)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(try videos.items() == [clip])
+    }
+
     @Test("a failed initial meeting keeps its retained audio even without manual notes")
     func failedMeetingKeepsRetainedAudio() throws {
         let store = try makeStore()

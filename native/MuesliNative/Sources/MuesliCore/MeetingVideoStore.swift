@@ -5,6 +5,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     public let root: URL
     private var db: OpaquePointer?
     private let lock = NSRecursiveLock()
+    private var activeRecordings: Set<String> = []
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(databaseURL: URL, root: URL) throws {
@@ -94,6 +95,30 @@ public final class MeetingVideoStore: @unchecked Sendable {
         guard status == SQLITE_DONE else { throw failure() }
         return result
     }
+    /// Persist ownership before capture/finalization; active files are never recovered mid-write.
+    public func beginRecording(_ item: VisualMemoryItem) throws {
+        lock.lock(); defer { lock.unlock() }
+        try JSONEncoder().encode(item).write(to: url(for: item.path + ".recording.json"), options: .atomic)
+        activeRecordings.insert(item.id)
+    }
+
+    public func endRecording(_ item: VisualMemoryItem) {
+        lock.lock(); defer { lock.unlock() }
+        activeRecordings.remove(item.id)
+    }
+
+    public func hasMedia(meetingID: Int64) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if try items().contains(where: { $0.meetingID == meetingID }) { return true }
+        return try journals().contains { $0.meetingID == meetingID }
+    }
+
+    private func journals() throws -> [VisualMemoryItem] {
+        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix(".pending.json") || $0.lastPathComponent.hasSuffix(".recording.json") }
+            .compactMap { try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: $0)) }
+    }
+
     /// Journal completed recordings before attempting the database write. A busy DB
     /// leaves both the MP4 and its owner metadata available for recovery on next launch.
     public func persistCompleted(_ item: VisualMemoryItem) throws {
@@ -102,15 +127,18 @@ public final class MeetingVideoStore: @unchecked Sendable {
         try JSONEncoder().encode(item).write(to: pending, options: .atomic)
         try save([item])
         try FileManager.default.removeItem(at: pending)
+        let recording = try url(for: item.path + ".recording.json")
+        if FileManager.default.fileExists(atPath: recording.path) { try FileManager.default.removeItem(at: recording) }
     }
 
-    public func maintain() throws {
+    public func maintain(recoverRecording: ((URL) -> Double?)? = nil) throws {
         lock.lock(); defer { lock.unlock() }
         var firstError: Error?
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            where file.lastPathComponent.hasSuffix(".pending.json") {
+            where file.lastPathComponent.hasSuffix(".pending.json") || file.lastPathComponent.hasSuffix(".recording.json") {
             do {
-                let item = try JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: file))
+                guard var item = try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: file)) else { continue }
+                if activeRecordings.contains(item.id) { continue }
                 var stmt: OpaquePointer?
                 guard sqlite3_prepare_v2(db, "SELECT 1 FROM meetings WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM meeting_video_cleanup WHERE id=?)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
                 defer { sqlite3_finalize(stmt) }
@@ -118,7 +146,13 @@ public final class MeetingVideoStore: @unchecked Sendable {
                 sqlite3_bind_text(stmt, 2, item.id, -1, transient)
                 let status = sqlite3_step(stmt)
                 if status == SQLITE_ROW {
-                    guard FileManager.default.fileExists(atPath: try url(for: item.path).path) else { continue }
+                    let video = try url(for: item.path)
+                    guard FileManager.default.fileExists(atPath: video.path) else { continue }
+                    if file.lastPathComponent.hasSuffix(".recording.json") {
+                        guard let duration = recoverRecording?(video), duration.isFinite, duration > 0 else { continue }
+                        item.duration = duration
+                        item.bytes = (try FileManager.default.attributesOfItem(atPath: video.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    }
                     try save([item])
                 } else if status == SQLITE_DONE {
                     let video = try url(for: item.path)
@@ -141,7 +175,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
         for item in pending {
             do {
                 if !retained.contains(item.path) {
-                    for path in [item.path, item.path + ".pending.json"] {
+                    for path in [item.path, item.path + ".pending.json", item.path + ".recording.json"] {
                         let file = try url(for: path)
                         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
                     }
@@ -159,9 +193,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     public func delete(ids: Set<String>) throws {
         lock.lock(); defer { lock.unlock() }
         // Include recovery journals whose database save has not succeeded yet.
-        let journals = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasSuffix(".pending.json") }
-        let pending = try journals.map { try JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: $0)) }
+        let pending = try journals()
         for item in pending where ids.contains(item.id) {
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meeting_video_cleanup VALUES(?,?)", -1, &statement, nil) == SQLITE_OK else { throw failure() }

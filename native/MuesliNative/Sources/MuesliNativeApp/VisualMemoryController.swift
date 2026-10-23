@@ -26,6 +26,8 @@ final class VisualMemoryController {
     @ObservationIgnored private(set) var store: VisualMemoryStore?
     @ObservationIgnored private var meetingStore: MeetingVideoStore?
     @ObservationIgnored private var recorder: ScreenVideoRecorder?
+    @ObservationIgnored private var recordingItem: VisualMemoryItem?
+    @ObservationIgnored var flushRecordingAudio: (() -> Void)?
     @ObservationIgnored private var announcementSound: NSSound?
     @ObservationIgnored private var confirmationWindow: NSWindow?
     @ObservationIgnored private var startTask: Task<Void, Never>?
@@ -36,14 +38,14 @@ final class VisualMemoryController {
     @ObservationIgnored private var token = UUID()
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
-    init(databaseURL: URL) {
+    init(databaseURL: URL, supportDirectory: URL = AppIdentity.supportDirectoryURL) {
         do {
-            let legacyRoot = AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory")
+            let legacyRoot = supportDirectory.appendingPathComponent("visual-memory")
             if FileManager.default.fileExists(atPath: legacyRoot.appendingPathComponent("catalog.sqlite").path) {
                 store = try VisualMemoryStore(root: legacyRoot)
             }
             meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
-                root: AppIdentity.supportDirectoryURL.appendingPathComponent("meeting-recordings/videos"))
+                root: supportDirectory.appendingPathComponent("meeting-recordings/videos"))
             reload()
         }
         catch { message = error.localizedDescription }
@@ -51,7 +53,7 @@ final class VisualMemoryController {
         maintenanceTask = Task { [weak self] in
             await Task.detached(priority: .utility) {
                 do {
-                    try videos?.maintain()
+                    try videos?.maintain(recoverRecording: Self.recoverableDuration)
                     if let legacy { try videos?.migrateLegacyVideos(from: legacy) }
                 } catch { NSLog("Meeting video recovery: %@", error.localizedDescription) }
             }.value
@@ -60,7 +62,7 @@ final class VisualMemoryController {
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
                 guard self != nil else { return }
                 await Task.detached(priority: .utility) {
-                    do { try videos?.maintain() } catch { NSLog("Meeting video cleanup: %@", error.localizedDescription) }
+                    do { try videos?.maintain(recoverRecording: Self.recoverableDuration) } catch { NSLog("Meeting video cleanup: %@", error.localizedDescription) }
                 }.value
                 self?.reload()
             }
@@ -71,6 +73,19 @@ final class VisualMemoryController {
         observers.append(DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.suspendForPrivacy() }
         })
+    }
+
+    // Called only on the utility maintenance task, never during UI rendering.
+    nonisolated private static func recoverableDuration(_ url: URL) -> Double? {
+        let asset = AVURLAsset(url: url)
+        guard asset.isPlayable, !asset.tracks(withMediaType: .video).isEmpty else { return nil }
+        let duration = CMTimeGetSeconds(asset.duration)
+        return duration.isFinite && duration > 0 ? duration : nil
+    }
+
+    func hasMedia(meetingID: Int64) -> Bool {
+        // On a read error preserve the meeting rather than deleting potentially retained video.
+        (try? meetingStore?.hasMedia(meetingID: meetingID)) ?? true
     }
 
     func reload() {
@@ -203,36 +218,52 @@ final class VisualMemoryController {
                 self.message = reason; await self.stopRecording()
             }
         }
-        recorder = recording; clipStart = Date(); audioRouter.set(recording)
+        clipStart = Date()
+        let item = VisualMemoryItem(kind: .meetingVideo, meetingID: recordingMeetingID, capturedAt: clipStart,
+            source: sourceName, path: url.lastPathComponent, meetingOffset: max(0, clipStart.timeIntervalSince(meetingStart)))
+        try store.beginRecording(item)
+        recordingItem = item
+        if let sessionID = recordingSessionID { sessionClipIDs[sessionID, default: []].insert(item.id) }
+        recorder = recording; audioRouter.set(recording)
         let scale = Double(filter.pointPixelScale)
         let rect = filter.contentRect
         let factor = min(1, 2560 / max(1, rect.width * scale))
         do { try await recording.start(filter: filter, width: Int(rect.width * scale * factor), height: Int(rect.height * scale * factor)) }
-        catch { audioRouter.set(nil); recorder = nil; try? FileManager.default.removeItem(at: url); throw error }
+        catch {
+            audioRouter.set(nil); recorder = nil; recordingItem = nil
+            store.endRecording(item)
+            try? store.delete(ids: [item.id]) // durable cleanup survives a failed removal
+            throw error
+        }
 
     }
     private func finishClip(discard: Bool = false) async {
         if let pending = finalizationTask { await pending.value; return }
-        guard let recording = recorder else { return }
-        recorder = nil; audioRouter.set(nil); isFinalizing = true
-        let owner = recordingMeetingID, start = clipStart, source = sourceName, sessionID = recordingSessionID
-        let offset = max(0, start.timeIntervalSince(meetingStart))
+        guard let recording = recorder, var item = recordingItem else { return }
+        flushRecordingAudio?()
+        recorder = nil; recordingItem = nil; audioRouter.set(nil); isFinalizing = true
         let task = Task {
-        defer { isFinalizing = false }
-        do {
-            let duration = try await recording.stop()
-            if discard { try? FileManager.default.removeItem(at: recording.url); return }
-            let bytes = (try FileManager.default.attributesOfItem(atPath: recording.url.path)[.size] as? NSNumber)?.int64Value ?? 0
-            let item = VisualMemoryItem(kind: .meetingVideo, meetingID: owner, capturedAt: start, source: source,
-                path: recording.url.lastPathComponent, duration: duration, meetingOffset: offset, bytes: bytes)
-            if let sessionID { sessionClipIDs[sessionID, default: []].insert(item.id) }
-            guard let meetingStore else { throw ScreenVideoRecorder.error("Video storage is unavailable; the recording file was preserved.") }
-            try await Task.detached(priority: .utility) { try meetingStore.persistCompleted(item) }.value
-            reload()
-        } catch {
-            messageMeetingID = owner
-            message = "Screen recording needs recovery; its file was preserved: \(error.localizedDescription)"
-        }
+            defer { isFinalizing = false; meetingStore?.endRecording(item) }
+            do {
+                item.duration = try await recording.stop()
+                if !discard {
+                    item.bytes = (try FileManager.default.attributesOfItem(atPath: recording.url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    guard let meetingStore else { throw ScreenVideoRecorder.error("Video storage is unavailable.") }
+                    let completed = item
+                    try await Task.detached(priority: .utility) { try meetingStore.persistCompleted(completed) }.value
+                    reload()
+                }
+            } catch {
+                messageMeetingID = item.meetingID
+                message = "Screen recording was interrupted. Its file and recovery information were retained: \(error.localizedDescription)"
+            }
+            if discard {
+                meetingStore?.endRecording(item)
+                let videos = meetingStore, id = item.id
+                do {
+                    try await Task.detached(priority: .utility) { try videos?.delete(ids: [id]) }.value
+                } catch { message = "Video cleanup will be retried: \(error.localizedDescription)" }
+            }
         }
         finalizationTask = task
         await task.value

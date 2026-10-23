@@ -21,6 +21,7 @@ struct LocalStorageUsageTests {
         }
         let model = try write("models/speech/weights.bin", count: 20_000)
         try FileManager.default.linkItem(at: model, to: models.appendingPathComponent("speech/duplicate.bin"))
+        let localVQE = try write("support/Models/localvqe/model.gguf", count: 8_000)
         let audio = try write("support/meeting-recordings/audio.m4a", count: 6_000)
         let video = try write("support/meeting-recordings/videos/clip.mp4", count: 9_000)
         let database = try write("support/muesli.db", count: 4_000)
@@ -29,14 +30,15 @@ struct LocalStorageUsageTests {
         let other = try write("support/config.json", count: 200)
         let outside = try write("private.txt", count: 10_000)
         try FileManager.default.createSymbolicLink(at: support.appendingPathComponent("outside"), withDestinationURL: outside)
-        let usage = LocalStorageUsage.scan(support: support, modelRoots: [models, models.appendingPathComponent("speech")])
-        #expect(try usage.bytes[.models] == allocated(model))
+        let usage = LocalStorageUsage.scan(support: support, modelRoots: [support.appendingPathComponent("Models"), models, models.appendingPathComponent("speech")])
+        #expect(try usage.bytes[.models] == allocated(model) + allocated(localVQE))
         #expect(try usage.bytes[.meetingAudio] == allocated(audio))
         #expect(try usage.bytes[.meetingVideo] == allocated(video))
         #expect(try usage.bytes[.database] == allocated(database) + allocated(wal))
         #expect(try usage.bytes[.waveformCache] == allocated(waveform))
         #expect(try usage.bytes[.other] == allocated(other))
-        #expect(usage.models.count == 1)
+        #expect(usage.models.count == 2)
+        #expect(usage.models.contains { $0.name == "localvqe" })
         #expect(usage.unavailableLocations == 0)
     }
     @Test func missingFoldersDoNotGetCreated() {

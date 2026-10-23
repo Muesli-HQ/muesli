@@ -84,7 +84,7 @@ struct LocalStorageUsageView: View {
             isScanning = true
             let support = AppIdentity.supportDirectoryURL
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let roots = [home.appendingPathComponent(".cache/muesli/models"),
+            let roots = [support.appendingPathComponent("Models"), home.appendingPathComponent(".cache/muesli/models"),
                          ManagedASRModelPlans.fluidAudioModelsRoot(),
                          home.appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml")]
             let scan = Task.detached(priority: .utility) { LocalStorageUsage.scan(support: support, modelRoots: roots) }
