@@ -96,6 +96,133 @@ struct MuesliCleanupV2Tests {
 
 @Suite
 struct ManagedCleanupV12Tests {
+    @Test func warmupSkipsUnloadedEngine() async {
+        guard #available(macOS 15, *) else { return }
+        let transcriber = Gemma4LiteRTTranscriber()
+        let ran = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
+        #expect(!ran)
+    }
+
+    @Test func gemmaLongIdleWarmup() async throws {
+        guard #available(macOS 15, *),
+              let fixturePath = ProcessInfo.processInfo.environment["MUESLI_LATENCY_FIXTURE"],
+              let reportPath = ProcessInfo.processInfo.environment["MUESLI_IDLE_REPORT"] else { return }
+        struct Fixture: Decodable {
+            let rawASRText: String
+            let appContextText: String?
+            let cleanupOutputText: String
+        }
+        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
+        let inputs = [fixture.rawASRText,
+                      "Put this in bullet points. First send the report tomorrow. Second check the formatting. Third compare the latency.",
+                      "Make a numbered list. First open the settings. Second select the cleanup model. Third test the output."]
+        let transcriber = Gemma4LiteRTTranscriber()
+        var baseline: [String] = []
+        var rows: [[String: Any]] = []
+        for input in inputs {
+            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
+                appContext: fixture.appContextText, model: .muesliCleanupV2)
+            baseline.append(result.text)
+            #expect(!result.didFallback)
+        }
+        #expect(baseline[0] == fixture.cleanupOutputText)
+        let recent = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
+        #expect(!recent)
+        Gemma4LiteRTLogging.profile("idle_test waiting_seconds=180")
+        try await Task.sleep(for: .seconds(180))
+        let expired = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime - 3)
+        #expect(!expired)
+        let cancelledTask = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
+        }
+        let cancelled = await cancelledTask.value
+        #expect(!cancelled)
+        let warmStart = ProcessInfo.processInfo.systemUptime
+        let ran = await transcriber.warmUpCleanupIfIdle(requestedAt: warmStart)
+        #expect(ran)
+        let warmSeconds = ProcessInfo.processInfo.systemUptime - warmStart
+        let duplicate = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
+        #expect(!duplicate)
+        try await Task.sleep(for: .seconds(15))
+        for (index, input) in inputs.enumerated() {
+            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
+                appContext: fixture.appContextText, model: .muesliCleanupV2)
+            #expect(!result.didFallback)
+            #expect(result.text == baseline[index])
+            #expect(result.rawOutput == result.text)
+            rows.append(["index": index, "seconds": result.processingTime, "output": result.text,
+                         "baseline": baseline[index], "warmupSeconds": warmSeconds])
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+            .write(to: URL(fileURLWithPath: reportPath))
+        await transcriber.shutdown()
+    }
+
+    /// Private fixture is a cleanup debug log row, kept outside the repository.
+    @Test func gemmaLatencyInvestigation() async throws {
+        guard #available(macOS 15, *),
+              let fixturePath = ProcessInfo.processInfo.environment["MUESLI_LATENCY_FIXTURE"],
+              let reportPath = ProcessInfo.processInfo.environment["MUESLI_LATENCY_REPORT"] else { return }
+        struct Fixture: Decodable {
+            let rawASRText: String
+            let appContextText: String?
+            let cleanupOutputText: String
+        }
+        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
+        var rows: [[String: Any]] = []
+        let warmupExperiment = ProcessInfo.processInfo.environment["MUESLI_LATENCY_WARMUP"] == "1"
+        for (label, contextTokens, context) in [
+            ("full_4096", Int32(4096), fixture.appContextText),
+            ("full_2048", Int32(2048), fixture.appContextText),
+            ("app_only_4096", Int32(4096), Optional("App: ChatGPT")),
+            ("full_4096_repeat", Int32(4096), fixture.appContextText)
+        ] {
+            if warmupExperiment && label != "full_4096" { continue }
+            let transcriber = Gemma4LiteRTTranscriber()
+            if warmupExperiment {
+                Gemma4LiteRTLogging.profile("experiment warmup=unrelated_short_input")
+                _ = try await transcriber.cleanTranscript("The meeting starts tomorrow morning.",
+                    systemPrompt: "", appContext: "App: Notes", model: .muesliCleanupV2)
+            }
+            for iteration in 0..<4 {
+                if warmupExperiment && iteration == 2 {
+                    try await Task.sleep(for: .seconds(15))
+                }
+                Gemma4LiteRTLogging.profile("experiment variant=\(label) iteration=\(iteration)")
+                let result = try await transcriber.cleanTranscript(fixture.rawASRText,
+                    systemPrompt: "", appContext: context, model: .muesliCleanupV2, contextTokens: contextTokens)
+                rows.append(["variant": label, "iteration": iteration, "generationSeconds": result.processingTime,
+                             "output": result.text, "rawOutput": result.rawOutput, "fallback": result.didFallback,
+                             "matchesRecordedOutput": result.text == fixture.cleanupOutputText])
+                #expect(!result.didFallback)
+            }
+            await transcriber.shutdown()
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+            .write(to: URL(fileURLWithPath: reportPath))
+    }
+
+    /// Diagnostic replay of stored final text, not a reconstruction of the missing ASR/OCR logs.
+    @Test func gemmaBulletDiagnosticReplay() async throws {
+        guard #available(macOS 15, *),
+              let report = ProcessInfo.processInfo.environment["MUESLI_BULLET_REPLAY_REPORT"] else { return }
+        let original = "I am trying to use the cleanup mode with formatting. First, is latency if multiple token prediction is switched on, how does it work? Second, does it stick to the bullet formatting or not? Third, overall, can it combine both these behaviors into one?"
+        let transcriber = Gemma4LiteRTTranscriber()
+        var rows: [[String: Any]] = []
+        for input in [original, "Put this in bullet points. " + original] {
+            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
+                appContext: "App: Codex", model: .muesliCleanupV2)
+            rows.append(["input": input, "prompt": MuesliCleanupV2Prompt.request(input, appContext: "App: Codex"),
+                         "rawOutput": result.rawOutput, "output": result.text,
+                         "fallback": result.didFallback, "generationSeconds": result.processingTime])
+            #expect(!result.didFallback)
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+            .write(to: URL(fileURLWithPath: report))
+        await transcriber.shutdown()
+    }
+
     /// Run in separate processes with MUESLI_GEMMA4_LITERT_MTP=1 and =0.
     @Test func gemmaLongDictationTiming() async throws {
         guard #available(macOS 15, *),

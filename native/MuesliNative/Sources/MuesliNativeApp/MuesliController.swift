@@ -530,6 +530,8 @@ public final class MuesliController: NSObject {
         session: any HostedDictationSession
     )?
     private var dictationTranscriptionTask: (id: UUID, task: Task<Void, Never>)?
+    private var cleanupWarmupTask: Task<Void, Never>?
+    private var cleanupWarmupTraceID: UUID?
     private var dictationLatencyTraceID: UUID?
     private var dictationLatencyTraceStartedAt: Date?
     private var currentDictationOutputMode: DictationOutputMode = .paste
@@ -9118,6 +9120,10 @@ public final class MuesliController: NSObject {
     }
 
     private func setState(_ state: DictationState) {
+        if state != .recording && state != .preparing {
+            cleanupWarmupTask?.cancel()
+            cleanupWarmupTask = nil
+        }
         pendingPreparingIndicatorWorkItem?.cancel()
         pendingPreparingIndicatorWorkItem = nil
         dictationState = state
@@ -11139,6 +11145,7 @@ public final class MuesliController: NSObject {
         markDictationLatency("sound_start_requested:stream-active")
         SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
         markDictationLatency("ui_stream_active")
+        prepareCleanupForDictation()
         logDictationPowerSample(label: "ui_power_sample_350ms", delay: 0.35)
         logDictationPowerSample(label: "ui_power_sample_1000ms", delay: 1.0)
         if isDictationTestMode {
@@ -11146,6 +11153,24 @@ public final class MuesliController: NSObject {
         }
         if shouldCaptureDictationContext {
             captureDictationContextAsync()
+        }
+    }
+
+    private func prepareCleanupForDictation() {
+        guard #available(macOS 15, *), !isDictationTestMode, !isMeetingRecording(),
+              config.enablePostProcessor,
+              config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend,
+              config.postProcessorGemmaModel == Gemma4LiteRTModel.muesliCleanupV2.repoID,
+              canRunTranscriptCleanup(option: runtimePostProcessorOption()),
+              let traceID = dictationLatencyTraceID, cleanupWarmupTraceID != traceID else { return }
+        cleanupWarmupTraceID = traceID
+        cleanupWarmupTask?.cancel()
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        // Microphone capture has already started; preparation never delays recording.
+        cleanupWarmupTask = Task {
+            await TranscriptCleanupDebugLogger.$requestID.withValue(traceID.uuidString) {
+                _ = await Gemma4LiteRTTranscriber.shared.warmUpCleanupIfIdle(requestedAt: requestedAt)
+            }
         }
     }
 
@@ -11932,7 +11957,8 @@ public final class MuesliController: NSObject {
                             appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                             enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                             customWords: self.serializedCustomWords(),
-                            appContext: promptContext
+                            appContext: promptContext,
+                            timingRequestID: completionLatencyTrace?.id.uuidString
                         )
                         rawText = result.text
                         completionModel = DictationModelIdentity(backend: fallbackBackend.backend,
@@ -11955,7 +11981,8 @@ public final class MuesliController: NSObject {
                         appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                         enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                         customWords: self.serializedCustomWords(),
-                        appContext: promptContext
+                        appContext: promptContext,
+                        timingRequestID: completionLatencyTrace?.id.uuidString
                     )
                     rawText = result.text
                     completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,

@@ -358,6 +358,7 @@ actor Gemma4LiteRTTranscriber {
 
     private var loadGeneration = 0
     private var loadWaiters: [CheckedContinuation<Void, Error>] = []
+    private var lastCleanupActivity: TimeInterval?
     private var operationInProgress = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -416,6 +417,34 @@ actor Gemma4LiteRTTranscriber {
         )
     }
 
+    /// Best-effort work only on an idle, already-loaded engine. Never downloads,
+    /// queues behind real inference, or keeps the GPU alive periodically.
+    @discardableResult
+    func warmUpCleanupIfIdle(requestedAt: TimeInterval) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard !Task.isCancelled, now - requestedAt < 2,
+              engine != nil, loadedModel == .muesliCleanupV2,
+              !isLoading, !operationInProgress, operationWaiters.isEmpty,
+              lastCleanupActivity.map({ now - $0 >= 30 }) ?? true else { return false }
+        operationInProgress = true
+        defer {
+            lastCleanupActivity = ProcessInfo.processInfo.systemUptime
+            releaseOperation()
+            TranscriptCleanupDebugLogger.timing("gemma_bounded_warmup", since: now)
+        }
+        do {
+            // A disposable conversation: no synthetic text enters the real request.
+            // Native synchronous generation cannot be preempted; cap its work at eight tokens.
+            _ = try cleanTranscriptPrepared("The meeting starts tomorrow morning.", systemPrompt: "",
+                appContext: "App: Notes", model: .muesliCleanupV2, maxOutputTokens: 8)
+            Gemma4LiteRTLogging.profile("warmup_completed max_output_tokens=8")
+            return true
+        } catch {
+            Gemma4LiteRTLogging.profile("warmup_failed")
+            return false
+        }
+    }
+
     private func prepareEngine(
         model: Gemma4LiteRTModel,
         contextTokens: Int32 = 4096,
@@ -458,6 +487,8 @@ actor Gemma4LiteRTTranscriber {
         progressSnapshot: ModelDownloadProgressHandler?,
         generation: Int
     ) async throws {
+        let loadStart = ProcessInfo.processInfo.systemUptime
+        defer { TranscriptCleanupDebugLogger.timing("gemma_model_load_total", since: loadStart) }
         let fileManager = FileManager.default
         let modelURL: URL
         if localOnly {
@@ -475,7 +506,9 @@ actor Gemma4LiteRTTranscriber {
             throw TranscriberError.modelMissing(path: modelURL.path)
         }
 
+        let validationStart = ProcessInfo.processInfo.systemUptime
         if model.isCleanupOnly { try ManagedCleanupModel.gemma.validate(modelURL: modelURL) }
+        TranscriptCleanupDebugLogger.timing("gemma_artifact_validation", since: validationStart)
         let cacheDirectory = Gemma4LiteRTModelStore.resolvedCacheDirectory(for: model)
         try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         try checkLoadGeneration(generation)
@@ -503,9 +536,11 @@ actor Gemma4LiteRTTranscriber {
             litert_lm_engine_settings_set_enable_speculative_decoding(settings, true)
         }
 
+        let engineStart = ProcessInfo.processInfo.systemUptime
         guard let loadedEngine = litert_lm_engine_create(settings) else {
             throw TranscriberError.failedToCreateEngine
         }
+        TranscriptCleanupDebugLogger.timing("gemma_engine_initialization", since: engineStart, detail: "mtp=\(enableMTP) backend=\(backend)")
         engine = loadedEngine
         loadedModel = model
         loadedContextTokens = contextTokens
@@ -594,11 +629,21 @@ actor Gemma4LiteRTTranscriber {
         systemPrompt: String,
         appContext: String?,
         model: Gemma4LiteRTModel,
-        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens
+        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens,
+        contextTokens: Int32 = 4096
     ) async throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
+        let queueStart = ProcessInfo.processInfo.systemUptime
         await acquireOperation()
-        defer { releaseOperation() }
-        try await prepareEngine(model: model)
+        TranscriptCleanupDebugLogger.timing("gemma_queue_wait", since: queueStart)
+        defer {
+            lastCleanupActivity = ProcessInfo.processInfo.systemUptime
+            releaseOperation()
+        }
+        let prepareStart = ProcessInfo.processInfo.systemUptime
+        let wasWarm = engine != nil && loadedModel == model && loadedContextTokens >= contextTokens
+        defer { TranscriptCleanupDebugLogger.timing("gemma_cleanup_total_after_queue", since: prepareStart) }
+        try await prepareEngine(model: model, contextTokens: contextTokens)
+        TranscriptCleanupDebugLogger.timing("gemma_model_prepare", since: prepareStart, detail: "warm=\(wasWarm)")
         return try cleanTranscriptPrepared(text, systemPrompt: systemPrompt, appContext: appContext, model: model, maxOutputTokens: maxOutputTokens)
     }
 
@@ -627,6 +672,7 @@ actor Gemma4LiteRTTranscriber {
 
         Return exactly one cleaned transcript and nothing else. Do not explain, introduce, analyze, answer, or offer alternatives.
         """
+        TranscriptCleanupDebugLogger.prompt(cleanupRequest)
         Gemma4LiteRTLogging.profile("cleanup_started input_chars=\(text.count)")
         let start = CFAbsoluteTimeGetCurrent()
 
@@ -671,6 +717,8 @@ actor Gemma4LiteRTTranscriber {
             role: "user",
             contents: [["type": "text", "text": cleanupRequest]]
         )
+        let generationStart = ProcessInfo.processInfo.systemUptime
+
         guard let jsonResponse = litert_lm_conversation_send_message(
             conversation,
             userMessageJSON,
@@ -679,6 +727,7 @@ actor Gemma4LiteRTTranscriber {
         ) else {
             throw TranscriberError.invalidResponse
         }
+        TranscriptCleanupDebugLogger.timing("gemma_generation", since: generationStart)
         defer { litert_lm_json_response_delete(jsonResponse) }
         guard let responseCString = litert_lm_json_response_get_string(jsonResponse) else {
             throw TranscriberError.invalidResponse
@@ -693,6 +742,13 @@ actor Gemma4LiteRTTranscriber {
             var decodeCount: Int32?
             if let info = litert_lm_conversation_get_benchmark_info(conversation) {
                 defer { litert_lm_benchmark_info_delete(info) }
+                let prefills = litert_lm_benchmark_info_get_num_prefill_turns(info)
+                let decodes = litert_lm_benchmark_info_get_num_decode_turns(info)
+                let prefillTokens = prefills > 0 ? litert_lm_benchmark_info_get_prefill_token_count_at(info, prefills - 1) : 0
+                let prefillRate = prefills > 0 ? litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info, prefills - 1) : 0
+                let decodeRate = decodes > 0 ? litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info, decodes - 1) : 0
+                let ttft = litert_lm_benchmark_info_get_time_to_first_token(info)
+                Gemma4LiteRTLogging.profile("cleanup_metrics prefill_tokens=\(prefillTokens) prefill_tokens_per_second=\(prefillRate) decode_tokens_per_second=\(decodeRate) time_to_first_token_seconds=\(ttft)")
                 let turns = litert_lm_benchmark_info_get_num_decode_turns(info)
                 if turns > 0 {
                     decodeCount = litert_lm_benchmark_info_get_decode_token_count_at(info, turns - 1)
@@ -701,6 +757,7 @@ actor Gemma4LiteRTTranscriber {
             let completed = decodeCount.map { $0 >= 0 && $0 < maxOutputTokens } ?? false
             Gemma4LiteRTLogging.log("cleanup decode_tokens=\(decodeCount.map(String.init) ?? "unknown") limit=\(maxOutputTokens) completed=\(completed)")
             let guarded = MuesliCleanupV2Prompt.guardResult(rawOutput, input: text, generationCompleted: completed)
+            Gemma4LiteRTLogging.profile("cleanup_completed input_chars=\(text.count) output_chars=\(guarded.text.count) processing_seconds=\(CFAbsoluteTimeGetCurrent() - start) decode_tokens=\(decodeCount.map(String.init) ?? "unknown") fallback=\(guarded.didFallback)")
             return (guarded.text, rawOutput, CFAbsoluteTimeGetCurrent() - start, guarded.didFallback)
         }
         let cleaned = TranscriptCleanupClient.cleanOutput(rawOutput)
@@ -867,6 +924,7 @@ actor Gemma4LiteRTTranscriber {
             litert_lm_engine_delete(engine)
         }
         engine = nil
+        lastCleanupActivity = nil
         loadedModel = nil
         isLoading = false
         completeLoadWaiters(throwing: TranscriberError.notLoaded)
