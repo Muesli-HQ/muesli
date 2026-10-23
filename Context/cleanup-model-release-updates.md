@@ -20,6 +20,12 @@ The earlier Gemma v10 beta selection migrates to the v12 cleanup selection. User
 
 Gemma uses LiteRT-LM; LFM/Qwen GGUF use the pinned llama.cpp through the local LLM.swift wrapper. A runtime or tokenizer upgrade is separate from an artifact revision. MLX integration and a newer llama.xcframework are not implemented here.
 
+## Outstanding latency work for the merge handover
+
+User feedback on 2026-10-23: cleanup latency during actual dictation is **not good enough and still needs improvement**. Carry this limitation into the eventual PR #660 merge handover. A successful integration, passing CI, or backend-only benchmark is not latency acceptance.
+
+Measure dictation-completion-to-paste latency on identical inputs, separating OCR/context collection, model verification/loading, prompt processing, generation, and paste. Record cold and warm results per model, device, and build configuration. Runtime optimization and deferred Phase 2 work remain follow-ups; preserve output quality and formatting while improving speed, and obtain user validation before considering latency acceptable.
+
 ## Diagnosing formatting after a model update
 
 Compare the exact prompt, raw generation, guarded output and pasted text for the same dictation. For GGUF, `Qwen3PostProcessor.processResult` returns raw and guarded output together; `TranscriptionRuntime` records `rawOutput` as `rawCleanupOutputText`. Do not substitute the guarded text for the raw response when adding a model adapter. A missing list in the raw response is a different failure from a list that disappears during cleanup or paste. Keep private dictation and screen-context logs out of the repository.
