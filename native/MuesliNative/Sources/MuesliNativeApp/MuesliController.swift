@@ -530,6 +530,8 @@ public final class MuesliController: NSObject {
         session: any HostedDictationSession
     )?
     private var dictationTranscriptionTask: (id: UUID, task: Task<Void, Never>)?
+    private var cleanupWarmupTask: Task<Void, Never>?
+    private var cleanupWarmupTraceID: UUID?
     private var dictationLatencyTraceID: UUID?
     private var dictationLatencyTraceStartedAt: Date?
     private var currentDictationOutputMode: DictationOutputMode = .paste
@@ -2973,6 +2975,28 @@ public final class MuesliController: NSObject {
         requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
     }
 
+    @objc func selectCleanupModelFromMenu(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? CleanupMenuSelection else { return }
+        Task { @MainActor in
+            do {
+                if let backend = selection.backend {
+                    let model = selection.setting == "cleanup_source"
+                        ? TranscriptCleanupClient.configuredModel(for: backend, config: config) : selection.value
+                    guard TranscriptCleanupClient.hasRequiredSettings(for: backend, config: config,
+                        isChatGPTAuthenticated: appState.isChatGPTAuthenticated, modelOverride: model) else {
+                        throw MuesliSettings.Failure.rejected("Configure \(backend.label) in Settings first.")
+                    }
+                }
+                try await applySetting(selection.setting, value: selection.value)
+                if let backend = selection.backend, selection.setting != "cleanup_source" {
+                    try await applySetting("cleanup_source", value: backend.backend)
+                }
+            } catch {
+                presentErrorAlert(title: "Cleanup model could not be changed", message: error.localizedDescription)
+            }
+        }
+    }
+
     func setSettingFromUI(_ id: String, value: String) {
         Task { @MainActor in
             do { try await applySetting(id, value: value) }
@@ -3391,9 +3415,8 @@ public final class MuesliController: NSObject {
             available = model.supportsQuil
                 && (model.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil)
         case .gemma4LiteRT:
-            available = Gemma4LiteRTModelStore.isAvailableLocally(
-                model: Gemma4LiteRTModel.resolved(config.quilModel)
-            )
+            let model = Gemma4LiteRTModel.resolved(config.quilModel)
+            available = !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
         default:
             available = !config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && TranscriptCleanupClient.hasRequiredSettings(
@@ -9097,6 +9120,10 @@ public final class MuesliController: NSObject {
     }
 
     private func setState(_ state: DictationState) {
+        if state != .recording && state != .preparing {
+            cleanupWarmupTask?.cancel()
+            cleanupWarmupTask = nil
+        }
         pendingPreparingIndicatorWorkItem?.cancel()
         pendingPreparingIndicatorWorkItem = nil
         dictationState = state
@@ -11143,6 +11170,7 @@ public final class MuesliController: NSObject {
         markDictationLatency("sound_start_requested:stream-active")
         SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
         markDictationLatency("ui_stream_active")
+        prepareCleanupForDictation()
         logDictationPowerSample(label: "ui_power_sample_350ms", delay: 0.35)
         logDictationPowerSample(label: "ui_power_sample_1000ms", delay: 1.0)
         if isDictationTestMode {
@@ -11150,6 +11178,24 @@ public final class MuesliController: NSObject {
         }
         if shouldCaptureDictationContext {
             captureDictationContextAsync()
+        }
+    }
+
+    private func prepareCleanupForDictation() {
+        guard #available(macOS 15, *), !isDictationTestMode, !isMeetingRecording(),
+              config.enablePostProcessor,
+              config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend,
+              config.postProcessorGemmaModel == Gemma4LiteRTModel.muesliCleanupV2.repoID,
+              canRunTranscriptCleanup(option: runtimePostProcessorOption()),
+              let traceID = dictationLatencyTraceID, cleanupWarmupTraceID != traceID else { return }
+        cleanupWarmupTraceID = traceID
+        cleanupWarmupTask?.cancel()
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        // Microphone capture has already started; preparation never delays recording.
+        cleanupWarmupTask = Task {
+            await TranscriptCleanupDebugLogger.$requestID.withValue(traceID.uuidString) {
+                _ = await Gemma4LiteRTTranscriber.shared.warmUpCleanupIfIdle(requestedAt: requestedAt)
+            }
         }
     }
 
@@ -11936,7 +11982,8 @@ public final class MuesliController: NSObject {
                             appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                             enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                             customWords: self.serializedCustomWords(),
-                            appContext: promptContext
+                            appContext: promptContext,
+                            timingRequestID: completionLatencyTrace?.id.uuidString
                         )
                         rawText = result.text
                         completionModel = DictationModelIdentity(backend: fallbackBackend.backend,
@@ -11959,7 +12006,8 @@ public final class MuesliController: NSObject {
                         appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                         enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                         customWords: self.serializedCustomWords(),
-                        appContext: promptContext
+                        appContext: promptContext,
+                        timingRequestID: completionLatencyTrace?.id.uuidString
                     )
                     rawText = result.text
                     completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,

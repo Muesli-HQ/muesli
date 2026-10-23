@@ -958,61 +958,84 @@ actor TranscriptionCoordinator {
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
-        appContext: String? = nil
+        appContext: String? = nil,
+        timingRequestID: String? = nil
     ) async throws -> SpeechTranscriptionResult {
-        // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
-        // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
-        if backend.backend == "cohere", let vadManager {
-            do {
-                let vadResults = try await vadManager.process(url)
-                let hasSpeech = vadResults.contains { $0.probability > 0.5 }
-                if !hasSpeech {
-                    fputs("[muesli-native] VAD: dictation is silent, skipping Cohere transcription\n", stderr)
-                    return SpeechTranscriptionResult(text: "", segments: [])
+        try await TranscriptCleanupDebugLogger.$requestID.withValue(timingRequestID ?? UUID().uuidString) {
+            let totalStart = ProcessInfo.processInfo.systemUptime
+            defer { TranscriptCleanupDebugLogger.timing("dictation_processing_total", since: totalStart) }
+            // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
+            // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
+            if backend.backend == "cohere", let vadManager {
+                do {
+                    let vadResults = try await vadManager.process(url)
+                    let hasSpeech = vadResults.contains { $0.probability > 0.5 }
+                    if !hasSpeech {
+                        fputs("[muesli-native] VAD: dictation is silent, skipping Cohere transcription\n", stderr)
+                        return SpeechTranscriptionResult(text: "", segments: [])
+                    }
+                } catch {
+                    fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
                 }
-            } catch {
-                fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
             }
+            let asrStart = ProcessInfo.processInfo.systemUptime
+            var asrSucceeded = false
+            defer {
+                if !asrSucceeded {
+                    TranscriptCleanupDebugLogger.timing("asr_failed", since: asrStart, detail: backend.backend)
+                }
+            }
+            var result = try await route(
+                url: url,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage,
+                bodhanOutputMode: bodhanOutputMode,
+                whisperLanguage: whisperLanguage,
+                qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage,
+                appleSpeechLanguage: appleSpeechLanguage
+            )
+            asrSucceeded = true
+            TranscriptCleanupDebugLogger.timing("asr_completed", since: asrStart, detail: backend.backend)
+            // WBCS describes the original Bodhan transcription of spoken words.
+            // Cleanup and custom-word replacement can change displayed text, so
+            // preserve the ASR measurement separately from that final text.
+            let rawASRText = result.text
+            let bodhanMeasurement = result.bodhanMeasurement
+            result = removeArtifacts(result)
+            if !result.text.isEmpty {
+                Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
+            }
+            // Capture this after ASR awaits. The snapshot is then passed through the
+            // complete cleanup path, so a model switch cannot change the model or
+            // empty-output policy for this dictation.
+            let postProcessorSnapshot = currentPostProcessorSnapshot()
+            let cleanupStart = ProcessInfo.processInfo.systemUptime
+            result = await postProcessDictationIfNeeded(
+                result,
+                backend: backend,
+                enabled: enablePostProcessor,
+                postProcessorSnapshot: postProcessorSnapshot,
+                appContext: appContext
+            ) ?? removeFillersWithLogging(result)
+            TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
+                                                detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
+            let final = applyCustomWords(result, customWords: customWords)
+            TranscriptCleanupDebugLogger.append(
+                status: "dictation_final", cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId, asrBackend: backend.backend,
+                appContextText: appContext, rawASRText: rawASRText,
+                cleanupOutputText: final.text)
+            if !final.text.isEmpty {
+                Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
+            }
+            return SpeechTranscriptionResult(
+                text: final.text,
+                segments: final.segments,
+                bodhanMeasurement: bodhanMeasurement
+            )
         }
-        var result = try await route(
-            url: url,
-            backend: backend,
-            cohereLanguage: cohereLanguage,
-            bodhanLanguage: bodhanLanguage,
-            bodhanOutputMode: bodhanOutputMode,
-            whisperLanguage: whisperLanguage,
-            qwen3AsrLanguage: qwen3AsrLanguage,
-            parakeetLanguage: parakeetLanguage,
-            appleSpeechLanguage: appleSpeechLanguage
-        )
-        // WBCS describes the original Bodhan transcription of spoken words.
-        // Cleanup and custom-word replacement can change displayed text, so
-        // preserve the ASR measurement separately from that final text.
-        let bodhanMeasurement = result.bodhanMeasurement
-        result = removeArtifacts(result)
-        if !result.text.isEmpty {
-            Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
-        }
-        // Capture this after ASR awaits. The snapshot is then passed through the
-        // complete cleanup path, so a model switch cannot change the model or
-        // empty-output policy for this dictation.
-        let postProcessorSnapshot = currentPostProcessorSnapshot()
-        result = await postProcessDictationIfNeeded(
-            result,
-            backend: backend,
-            enabled: enablePostProcessor,
-            postProcessorSnapshot: postProcessorSnapshot,
-            appContext: appContext
-        ) ?? removeFillersWithLogging(result)
-        let final = applyCustomWords(result, customWords: customWords)
-        if !final.text.isEmpty {
-            Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
-        }
-        return SpeechTranscriptionResult(
-            text: final.text,
-            segments: final.segments,
-            bodhanMeasurement: bodhanMeasurement
-        )
     }
 
     func transcribeMeeting(
@@ -1239,7 +1262,7 @@ actor TranscriptionCoordinator {
             // Trigger heuristics were removed; the only remaining heuristic here preserves deletion-cue empty output.
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor forced by toggle")
             let start = CFAbsoluteTimeGetCurrent()
-            let processed = try await qwen3PostProcessor.process(
+            let cleanup = try await qwen3PostProcessor.processResult(
                 result.text,
                 appContext: appContext,
                 configuration: Qwen3PostProcessor.Configuration(
@@ -1249,6 +1272,7 @@ actor TranscriptionCoordinator {
                 )
             )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            let processed = cleanup.text
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty,
                postProcessorSnapshot.inputFormat != .s1Mini,
@@ -1261,7 +1285,7 @@ actor TranscriptionCoordinator {
                     asrBackend: backend.backend,
                     appContextText: appContext,
                     rawASRText: result.text,
-                    rawCleanupOutputText: processed,
+                    rawCleanupOutputText: cleanup.rawOutput,
                     cleanupOutputText: trimmed,
                     elapsedMs: elapsedMs
                 )
@@ -1271,13 +1295,13 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor final output: \(trimmed)")
             logPostProcPair(raw: result.text, processed: trimmed, model: postProcessorSnapshot.modelId, asr: backend.backend)
             TranscriptCleanupDebugLogger.append(
-                status: "applied",
+                status: cleanup.didFallback ? "fallback_original_transcript" : "applied",
                 cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
                 appContextText: appContext,
                 rawASRText: result.text,
-                rawCleanupOutputText: processed,
+                rawCleanupOutputText: cleanup.rawOutput,
                 cleanupOutputText: trimmed,
                 elapsedMs: elapsedMs
             )
@@ -1331,7 +1355,7 @@ actor TranscriptionCoordinator {
                 asr: backend.backend
             )
             TranscriptCleanupDebugLogger.append(
-                status: "applied",
+                status: cleanup.didFallback ? "fallback_original_transcript" : "applied",
                 cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
