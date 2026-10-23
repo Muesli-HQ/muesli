@@ -689,6 +689,8 @@ struct SettingsView: View {
             generalSettingsPane
         case .dictation:
             dictationSettingsPane
+        case .timeTurner:
+            TimeTurnerSettingsView(controller: controller, appState: appState)
         case .meetings:
             meetingsSettingsPane
         case .appearance:

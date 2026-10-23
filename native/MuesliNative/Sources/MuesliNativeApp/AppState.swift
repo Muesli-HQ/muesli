@@ -29,6 +29,7 @@ enum InsightsSection: String, CaseIterable, Sendable {
 enum SettingsPane: String, CaseIterable, Identifiable {
     case general
     case dictation
+    case timeTurner
     case meetings
     case appearance
     case experimental
@@ -39,6 +40,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .dictation: return "Dictations"
+        case .timeTurner: return "Time Turner"
         case .meetings: return "Meetings"
         case .appearance: return "Appearance"
         case .experimental: return "Experimental"
@@ -319,6 +321,7 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsTimeTurnerSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
     var pendingFeatureTourInvitation: FeatureTour?
     var activeFeatureTour: FeatureTour?

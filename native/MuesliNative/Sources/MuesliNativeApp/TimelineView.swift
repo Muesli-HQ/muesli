@@ -6,6 +6,9 @@ struct TimelineView: View {
     let appState: AppState
     let controller: MuesliController
 
+    @State private var contentFilter = "All activity"
+    @State private var search = ""
+    @AppStorage("timeline.timeTurnerExpanded") private var timeTurnerExpanded = false
     private struct DayGroup: Identifiable {
         let id: Date
         let header: String
@@ -19,9 +22,15 @@ struct TimelineView: View {
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
         var entriesByDay: [Date: [TimelineEntry]] = [:]
         for entry in appState.timelineRows {
-            let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? now
-            let day = calendar.startOfDay(for: date)
-            entriesByDay[day, default: []].append(entry)
+            let include: Bool
+            let text: String
+            switch entry {
+            case .meeting(let record): include = contentFilter == "All activity" || contentFilter == "Meetings"; text = record.title + " " + record.rawTranscript
+            case .dictation(let record): include = contentFilter == "All activity" || contentFilter == "Dictations"; text = record.rawText
+            }
+            guard include, search.isEmpty || text.localizedCaseInsensitiveContains(search) else { continue }
+            let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
+            entriesByDay[calendar.startOfDay(for: date), default: []].append(entry)
         }
         return entriesByDay.keys.sorted(by: >).map { day in
             let header: String
@@ -32,12 +41,15 @@ struct TimelineView: View {
             } else {
                 header = day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)).uppercased()
             }
-            return DayGroup(id: day, header: header, entries: entriesByDay[day] ?? [])
+            return DayGroup(id: day, header: header, entries: (entriesByDay[day] ?? []).sorted {
+                (MeetingBrowserLogic.parseDate($0.timestamp) ?? .distantPast) > (MeetingBrowserLogic.parseDate($1.timestamp) ?? .distantPast)
+            })
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollView {
+        LazyVStack(spacing: 0) {
             DashboardPageHeader(
                 title: "Timeline",
                 appState: appState,
@@ -56,6 +68,25 @@ struct TimelineView: View {
 
             DictationFormattingSetupCard(appState: appState, controller: controller)
 
+            TimeTurnerControls(controller: controller, appState: appState, isExpanded: $timeTurnerExpanded)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.vertical, 8)
+
+            MemoryExplorerView(initialMoment: controller.visualMemory.browsableMoments.first, memory: controller.visualMemory, inline: true)
+                .frame(height: timeTurnerExpanded ? nil : 0)
+                .clipped()
+                .allowsHitTesting(timeTurnerExpanded)
+                .accessibilityHidden(!timeTurnerExpanded)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.bottom, timeTurnerExpanded ? 12 : 0)
+
+            HStack {
+                TextField("Search meetings and dictations…", text: $search).textFieldStyle(.roundedBorder)
+                Picker("Activity", selection: $contentFilter) {
+                    ForEach(["All activity", "Meetings", "Dictations"], id: \.self) { Text($0) }
+                }.frame(width: 180)
+            }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
+
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
                     .padding(.horizontal, MuesliTheme.pageInset)
@@ -66,12 +97,17 @@ struct TimelineView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            if appState.timelineRows.isEmpty {
+            if groupedEntries.isEmpty {
                 emptyState
             } else {
-                timelineScrollView
+                timelineEntries
             }
         }
+        }
+        .scrollPosition(id: Binding(
+            get: { appState.timelineScrollAnchor },
+            set: { appState.timelineScrollAnchor = $0 }
+        ), anchor: .top)
     }
 
     private var filterBar: some View {
@@ -143,12 +179,12 @@ struct TimelineView: View {
             Text(emptyStateTitle)
                 .font(MuesliTheme.title3())
                 .foregroundStyle(MuesliTheme.textSecondary)
-            Text("Try another source, app, or time range")
+            Text("Try another search, source, app, or time range")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textTertiary)
             Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 200)
     }
 
     private var emptyStateTitle: String {
@@ -162,8 +198,7 @@ struct TimelineView: View {
         }
     }
 
-    private var timelineScrollView: some View {
-        ScrollView {
+    private var timelineEntries: some View {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
                 ForEach(groupedEntries) { group in
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
@@ -174,8 +209,7 @@ struct TimelineView: View {
 
                         VStack(spacing: 0) {
                             ForEach(group.entries) { entry in
-                                timelineRow(entry)
-                                    .id(entry.id)
+                                timelineRow(entry).id(entry.id)
                             }
                         }
                         .scrollTargetLayout()
@@ -191,11 +225,6 @@ struct TimelineView: View {
             }
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.bottom, MuesliTheme.spacing24)
-        }
-        .scrollPosition(id: Binding(
-            get: { appState.timelineScrollAnchor },
-            set: { appState.timelineScrollAnchor = $0 }
-        ), anchor: .top)
     }
 
     @ViewBuilder

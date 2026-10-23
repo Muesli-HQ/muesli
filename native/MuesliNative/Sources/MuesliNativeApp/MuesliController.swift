@@ -1694,6 +1694,7 @@ public final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         publishConfig()
+        visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
         appState.isMeetingStarting = isStartingMeetingRecording
