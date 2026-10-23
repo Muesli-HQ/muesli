@@ -19,6 +19,7 @@ final class VisualMemoryController {
     var freeBytes: Int64 = 0
     let audioRouter = ScreenAudioRouter()
     @ObservationIgnored private(set) var store: VisualMemoryStore?
+    @ObservationIgnored private var meetingStore: MeetingVideoStore?
     @ObservationIgnored private var recorder: ScreenVideoRecorder?
     @ObservationIgnored private var announcementSound: NSSound?
     @ObservationIgnored private var confirmationWindow: NSWindow?
@@ -30,8 +31,17 @@ final class VisualMemoryController {
     @ObservationIgnored private var token = UUID()
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
-    init() {
-        do { store = try VisualMemoryStore(root: AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory")); reload() }
+    init(databaseURL: URL) {
+        do {
+            store = try VisualMemoryStore(root: AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory"))
+            meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
+                root: AppIdentity.supportDirectoryURL.appendingPathComponent("meeting-recordings/videos"))
+            if let store {
+                do { try meetingStore?.migrateLegacyVideos(from: store) }
+                catch { message = "Some older videos could not be moved: \(error.localizedDescription)" }
+            }
+            reload()
+        }
         catch { message = error.localizedDescription }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.suspendForPrivacy() }
@@ -43,13 +53,18 @@ final class VisualMemoryController {
 
     func reload() {
         do {
-            items = try store?.items() ?? []
+            let videos = try meetingStore?.items() ?? []
+            let migratedIDs = Set(videos.map(\.id))
+            items = try (store?.items() ?? []).filter { !migratedIDs.contains($0.id) } + videos
             catalogRevision += 1
             updateSpace()
         }
         catch { message = error.localizedDescription }
     }
-    func mediaURL(_ item: VisualMemoryItem) -> URL? { try? store?.url(for: item.path) }
+    func mediaURL(_ item: VisualMemoryItem) -> URL? {
+        if item.kind == .meetingVideo, let url = try? meetingStore?.url(for: item.path), FileManager.default.fileExists(atPath: url.path) { return url }
+        return try? store?.url(for: item.path)
+    }
     func updateSpace() {
         guard let root = store?.root else { return }
         freeBytes = ((try? FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
@@ -59,13 +74,24 @@ final class VisualMemoryController {
         return items.reduce(0) { sum, item in sum + (paths.insert(item.path).inserted ? item.bytes : 0) }
     }
     func delete(_ item: VisualMemoryItem) {
-        do { try store?.delete(ids: Set(items.filter { $0.path == item.path }.map(\.id))); reload() } catch { message = error.localizedDescription }
+        do {
+            let ids = Set(items.filter { $0.kind == item.kind && $0.path == item.path }.map(\.id))
+            if item.kind == .meetingVideo { try meetingStore?.delete(ids: ids) }
+            try store?.delete(ids: ids)
+            reload()
+        } catch { message = error.localizedDescription }
     }
     func deleteMeeting(_ id: Int64) throws {
-        try store?.delete(ids: Set(items.filter { $0.meetingID == id }.map(\.id))); reload()
+        let ids = Set(items.filter { $0.meetingID == id }.map(\.id))
+        try meetingStore?.delete(ids: ids)
+        try store?.delete(ids: ids)
+        reload()
     }
     func deleteAllMeetings() throws {
-        try store?.delete(ids: Set(items.filter { $0.kind == .meetingVideo }.map(\.id))); reload()
+        let ids = Set(items.filter { $0.kind == .meetingVideo }.map(\.id))
+        try meetingStore?.delete(ids: ids)
+        try store?.delete(ids: ids)
+        reload()
     }
 
     func requestRecording(meetingID: Int64, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
@@ -143,7 +169,7 @@ final class VisualMemoryController {
     }
 
     private func beginClip(attempt: UUID) async throws {
-        guard token == attempt, recorder == nil, let filter, let store, recordingMeetingID != nil, !pauseState.isPaused else { return }
+        guard token == attempt, recorder == nil, let filter, let store = meetingStore, recordingMeetingID != nil, !pauseState.isPaused else { return }
         updateSpace()
         guard freeBytes > 2_000_000_000 else { throw ScreenVideoRecorder.error("Screen recording needs at least 2 GB of free disk space.") }
         let url = try store.url(for: UUID().uuidString + ".mp4")
@@ -174,7 +200,7 @@ final class VisualMemoryController {
             let duration = try await recording.stop()
             if discard { try? FileManager.default.removeItem(at: recording.url); return }
             let bytes = (try FileManager.default.attributesOfItem(atPath: recording.url.path)[.size] as? NSNumber)?.int64Value ?? 0
-            try store?.save([VisualMemoryItem(kind: .meetingVideo, meetingID: owner, capturedAt: start, source: source,
+            try meetingStore?.save([VisualMemoryItem(kind: .meetingVideo, meetingID: owner, capturedAt: start, source: source,
                 path: recording.url.lastPathComponent, duration: duration, meetingOffset: offset, bytes: bytes)])
             reload()
         } catch {

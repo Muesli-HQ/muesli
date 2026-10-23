@@ -495,7 +495,7 @@ public final class MuesliController: NSObject {
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
     private(set) var selectedPostProcessorBackend: TranscriptCleanupBackendOption
     // One retained capture owns phase and identity through native retirement.
-    lazy var visualMemory = VisualMemoryController()
+    lazy var visualMemory = VisualMemoryController(databaseURL: dictationStore.resolvedDatabaseURL)
     private var meetingCapture: (id: Int64, session: MeetingSession)?
     private var activeMeetingSession: MeetingSession? {
         guard let capture = meetingCapture, capture.session.capturePhase.isRecording else { return nil }
