@@ -2215,6 +2215,11 @@ struct SettingsView: View {
                 }
                 .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, 12)
+                settingsRow("Hide completely") {
+                    settingsControl("hide_recording_indicator")
+                }
+                settingsDescription("Never shows the indicator, even while recording or processing — useful when sharing your screen. Stop meetings from the menu bar.")
+                Divider().background(MuesliTheme.surfaceBorder)
                 if appState.config.recordingIndicatorStyle == .notch {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
                         .multilineTextAlignment(.center)

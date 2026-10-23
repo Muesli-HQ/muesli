@@ -124,6 +124,10 @@ extension MuesliController {
             self.updateConfig { $0.showFloatingIndicator = enabled }
             self.refreshIndicatorVisibility()
         }
+        toggle("hide_recording_indicator", "Hide recording indicator", \.hideRecordingIndicator) { enabled in
+            self.updateConfig { $0.hideRecordingIndicator = enabled }
+            self.refreshIndicatorVisibility()
+        }
         toggle("show_hotkey_hover", "Show shortcut on floating indicator hover", \.showHotkeyOnFloatingIndicator)
         add("indicator_style", "Recording indicator style", RecordingIndicatorStyle.allCases.map {
             Choice(id: $0.rawValue, label: $0 == .classic ? "Classic floating pill" : $0.title)
