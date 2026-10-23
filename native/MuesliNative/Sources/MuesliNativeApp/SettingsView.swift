@@ -276,7 +276,7 @@ struct SettingsView: View {
         var models = downloadedPostProcOptions
             .filter(\.supportsQuil)
             .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             models.append(.gemma4(model))
         }
         return models
@@ -325,8 +325,10 @@ struct SettingsView: View {
     }
 
     private var cleanupModelUsesFixedPrompt: Bool {
-        appState.selectedPostProcessorBackend == .local
-            && appState.activePostProcessor.inputFormat == .s1Mini
+        (appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat != .configurable)
+            || (appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).isCleanupOnly)
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
@@ -1591,7 +1593,9 @@ struct SettingsView: View {
     private var fixedCleanupPromptNotice: some View {
         settingsRow(
             "Cleanup prompt",
-            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            description: appState.selectedPostProcessorBackend == .gemma4LiteRT
+                ? "Muesli Pro Cleanup uses its trained cleanup instructions. Custom presets do not apply."
+                : (appState.activePostProcessor.inputFormat.isTrainedV12 ? "This model uses its trained cleanup instructions. Custom presets do not apply." : "S1-mini uses Superwhisper’s built-in normalization instructions."),
             controlWidth: meetingControlWidth
         ) {
             Text("Built in")

@@ -72,6 +72,11 @@ case "${shard}" in
       FluidAudioTranscriberTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
+      CleanupFormattingTests
+      CleanupFormattingReplayTests
+      MuesliCleanupV2Tests
+      ManagedCleanupV12Tests
+      LLMGenerationLimitTests
       FillerWordFilterTests
       JaroWinklerTests
       CustomWordMatcherApplyTests

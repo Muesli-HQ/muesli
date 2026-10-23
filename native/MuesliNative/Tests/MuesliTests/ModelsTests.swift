@@ -187,9 +187,11 @@ struct BackendOptionTests {
     @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
     func incompatibleDownloadsRemainDeletable(_ major: Int) {
         let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
-        let cached: Set<String> = [BackendOption.parakeetRedux.model, BackendOption.parakeetEnglish.model]
+        let gemmaCleanup = BackendOption.gemma4LiteRT(.muesliCleanupV2)
+        let cached: Set<String> = [BackendOption.parakeetRedux.model, BackendOption.parakeetEnglish.model, gemmaCleanup.model]
         let cleanup = BackendOption.incompatibleDownloadedOptions(cached, currentOSVersion: version)
-        #expect(cleanup == (major == 14 ? [.parakeetRedux] : []))
+        #expect(cleanup == (major == 14 ? [.parakeetRedux, gemmaCleanup] : []))
+        #expect(!BackendOption.all.contains(gemmaCleanup))
         #expect(BackendOption.incompatibleDownloadedOptions([], currentOSVersion: version).isEmpty)
         let selectable = BackendOption.compatibleOptions(currentOSVersion: version)
         #expect(!cleanup.contains(where: { selectable.contains($0) }))
