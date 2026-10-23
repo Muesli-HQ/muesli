@@ -1140,6 +1140,22 @@ struct MeetingsNavigationTests {
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
     }
 
+    @Test("explicit screen recording retains audio without another save prompt")
+    func screenRecordingSkipsRetentionPrompt() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: {
+                Issue.record("Screen recording already opted into retaining media")
+                return false
+            }
+        ))
+        // The separate audio preference must not override an explicit never policy.
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: { true }
+        )))
+    }
+
     @Test("WAV recovery reports success and double failure reports the fallback error")
     func recordingFallbackOutcome() async {
         let request = MeetingRecordingSaveRequest(tempURL: URL(fileURLWithPath: "/unused.wav"), meetingTitle: "Test", startedAt: Date(), supportDirectory: URL(fileURLWithPath: "/unused"), fileFormat: .m4a)

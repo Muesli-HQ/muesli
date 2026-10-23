@@ -197,6 +197,11 @@ final class MeetingSession {
     private var micDiarizationRecorder: PCMChunkRecorder?
     /// Why the opt-in mic track was never recorded, for diagnostics.
     private var micDiarizationSetupError: Error?
+    private var screenAudioSink: (@Sendable ([Int16], Bool) -> Void)?
+    func setScreenAudioSink(_ sink: @escaping @Sendable ([Int16], Bool) -> Void) {
+        chunkRotationQueue.sync { screenAudioSink = sink }
+    }
+
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
     /// VAD controller for speech-boundary chunk rotation
@@ -1351,6 +1356,7 @@ final class MeetingSession {
             let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
             self.onMicHealthChanged?(healthSnapshot)
             self.micRecoveryCoordinator.process(healthSnapshot)
+            self.screenAudioSink?(samples, false)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
@@ -1382,6 +1388,7 @@ final class MeetingSession {
         // Retain the same mic stream as transcription, including delayed AEC
         // output and pause/stop flushes. Mixing raw mic here would duplicate
         // speaker playback already present in the system track.
+        screenAudioSink?(cleanedInt16, true)
         retainedRecordingWriter?.appendMic(cleanedInt16)
         rawMicChunkRecorder?.append(cleanedInt16)
         micDiarizationRecorder?.append(cleanedInt16)
