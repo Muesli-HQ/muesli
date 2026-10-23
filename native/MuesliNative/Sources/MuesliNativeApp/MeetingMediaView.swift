@@ -46,34 +46,27 @@ struct MeetingMediaView: View {
             if let message = memory.message {
                 HStack { Text(message).font(.caption).foregroundStyle(.orange); Spacer(); Button("Dismiss") { memory.message = nil } }
             }
-            if !clips.isEmpty {
-                HStack {
-                    Label("Video recording", systemImage: "play.rectangle")
-                    if hasSeparateAudio {
-                        Picker("Media", selection: $mode) { Text("Video").tag("Screen"); Text("Audio").tag("Audio") }
-                            .pickerStyle(.segmented).frame(width: 180)
-                    }
-                    Spacer()
-                    Text("\(clips.count) screen clips · Local only").font(.caption).foregroundStyle(.secondary)
+            if !clips.isEmpty && hasSeparateAudio {
+                Picker("Media", selection: $mode) {
+                    Text("Video").tag("Screen")
+                    Text("Audio").tag("Audio")
                 }
+                .pickerStyle(.segmented).frame(width: 180)
             }
             if mode == "Screen" || !hasSeparateAudio, let selected {
-                Picker("Screen clip", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
-                    ForEach(clips) { clip in
-                        Text("\(clip.capturedAt.formatted(date: .omitted, time: .standard)) · \(clip.source)").tag(clip.id)
+                if clips.count > 1 {
+                    Picker("Recording", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
+                        ForEach(Array(clips.enumerated()), id: \.element.id) { index, clip in
+                            Text("Part \(index + 1) · \(clip.capturedAt.formatted(date: .omitted, time: .shortened))").tag(clip.id)
+                        }
                     }
+                    .labelsHidden()
+                    .accessibilityLabel("Recording")
                 }
                 if let player { MeetingVideoPlayerView(player: player).frame(minHeight: 220, idealHeight: 330, maxHeight: 400) }
                 if let loadError { Text(loadError).foregroundStyle(.secondary) }
-                HStack {
-                    Text("Recorded interval · \(Int(selected.duration)) seconds").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Reveal video") { if let url = memory.mediaURL(selected) { NSWorkspace.shared.activateFileViewerSelecting([url]) } }
-                }
             } else if let path = meeting.savedRecordingPath, FileManager.default.fileExists(atPath: path) {
                 MeetingRecordingPlayerView(recordingPath: path)
-            } else if !clips.isEmpty {
-                Text("Audio is included in each screen clip. Select Screen to play it.").foregroundStyle(.secondary)
             }
         }
         .task(id: "\(mode)-\(hasSeparateAudio)-\(selected?.id ?? "none")") {
