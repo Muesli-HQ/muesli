@@ -259,12 +259,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func cleanupModelMenuItem() -> NSMenuItem {
-        let root = NSMenuItem(title: "Cleanup Model", action: nil, keyEquivalent: "")
+        let root = NSMenuItem(title: controller.config.enablePostProcessor ? "Cleanup Model" : "Cleanup: Off", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let config = controller.config
-        let definitions = controller.cleanupModelDefinitions()
-        let selectedBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
 
         func item(_ title: String, selection: CleanupMenuSelection, selected: Bool = false, reason: String? = nil) -> NSMenuItem {
             let result = NSMenuItem(title: title, action: #selector(MuesliController.selectCleanupModelFromMenu(_:)), keyEquivalent: "")
@@ -275,8 +273,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             result.toolTip = reason
             return result
         }
-        submenu.addItem(item("Enable Cleanup", selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on"), selected: config.enablePostProcessor))
+        submenu.addItem(item(config.enablePostProcessor ? "Turn Off Cleanup" : "Turn On Cleanup",
+            selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on")))
         submenu.addItem(.separator())
+        guard config.enablePostProcessor else {
+            submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
+            root.submenu = submenu
+            return root
+        }
+        let definitions = controller.cleanupModelDefinitions()
+        let selectedBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
         let downloadedLocalIDs = PostProcessorOption.downloadedIDs.union(
             Gemma4LiteRTModel.allCases.filter { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }.map(\.repoID)
         )
