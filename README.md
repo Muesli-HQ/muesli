@@ -211,6 +211,8 @@ For help, use the [support guide](https://muesli.works/help) or [open an issue](
 
 ## Acknowledgements
 
+[Screenpipe](https://github.com/screenpipe/screenpipe) informed Time Turner’s local visual-memory architecture. Muesli implements capture, OCR, and media storage independently in Swift using Apple frameworks.
+
 Muesli has been possible because of the generosity of companies such as:
 
 <p>

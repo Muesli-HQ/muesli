@@ -3,11 +3,14 @@ import SwiftUI
 import AVFoundation
 import ScreenCaptureKit
 import Observation
+import ImageIO
 import MuesliCore
 
 @MainActor @Observable
 final class VisualMemoryController {
     var items: [VisualMemoryItem] = []
+    var browsableMoments: [VisualMemoryItem] = []
+    var incompleteMomentCount = 0
     var catalogRevision = 0
     var message: String?
     var messageMeetingID: Int64?
@@ -21,6 +24,21 @@ final class VisualMemoryController {
     var isFinalizing = false
     var pauseState = ScreenRecordingPauseState()
     var sourceName = ""
+    @ObservationIgnored var onAmbientCaptureActivity: ((Bool) -> Void)?
+    var ambientIndicatorActive: Bool {
+        ambientConfig?.timeTurnerEnabled == true && !ambientPaused && !locked && !isInactive
+            && recordingMeetingID == nil && !audioFallbackActive && ambientStatus.hasPrefix("On")
+    }
+    var ambientPaused = false
+    var ambientStatus = "Off" {
+        didSet {
+            if !ambientStatus.hasPrefix("On") { onAmbientCaptureActivity?(false) }
+            guard let store, let data = try? JSONSerialization.data(withJSONObject: [
+                "status": ambientStatus, "updated_at_unix": Date().timeIntervalSince1970
+            ]) else { return }
+            try? data.write(to: store.root.appendingPathComponent("capture-health.json"), options: .atomic)
+        }
+    }
     var freeBytes: Int64 = 0
     let audioRouter = ScreenAudioRouter()
     @ObservationIgnored private(set) var store: VisualMemoryStore?
@@ -32,11 +50,21 @@ final class VisualMemoryController {
     @ObservationIgnored private var confirmationWindow: NSWindow?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var finalizationTask: Task<Void, Never>?
+    @ObservationIgnored private var audioFallbackActive = false
     @ObservationIgnored private var filter: SCContentFilter?
     @ObservationIgnored private var meetingStart = Date()
     @ObservationIgnored private var clipStart = Date()
     @ObservationIgnored private var token = UUID()
+    @ObservationIgnored private var ambientTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var locked = false
+    @ObservationIgnored private var ambientConfig: AppConfig?
+    @ObservationIgnored private var ambientGeneration = UUID()
+    @ObservationIgnored private var lastFingerprint: Data?
+    @ObservationIgnored private var lastText = ""
+    @ObservationIgnored private var lastSource = ""
+    @ObservationIgnored private var lastCompaction = Date.distantPast
+    @ObservationIgnored private var compactionRunning = false
 
     init(databaseURL: URL, supportDirectory: URL = AppIdentity.supportDirectoryURL) {
         do {
@@ -45,10 +73,8 @@ final class VisualMemoryController {
         } catch { message = error.localizedDescription }
         // Legacy migration is optional; its failure must not disable new captures.
         let legacyRoot = supportDirectory.appendingPathComponent("visual-memory")
-        if FileManager.default.fileExists(atPath: legacyRoot.appendingPathComponent("catalog.sqlite").path) {
-            do { store = try VisualMemoryStore(root: legacyRoot) }
-            catch { NSLog("Legacy video catalog unavailable: %@", error.localizedDescription) }
-        }
+        do { store = try VisualMemoryStore(root: legacyRoot) }
+        catch { NSLog("Screen history catalog unavailable: %@", error.localizedDescription) }
         reload()
         let videos = meetingStore, legacy = store
         maintenanceTask = Task { [weak self] in
@@ -94,6 +120,16 @@ final class VisualMemoryController {
             let videos = try meetingStore?.items() ?? []
             let migratedIDs = Set(videos.map(\.id))
             items = ((try? store?.items()) ?? []).filter { !migratedIDs.contains($0.id) } + videos
+            browsableMoments = items.filter { item in
+                guard item.kind == .moment, let url = mediaURL(item), FileManager.default.fileExists(atPath: url.path) else { return false }
+                if item.frameIndex != nil { return true }
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                      let width = props[kCGImagePropertyPixelWidth] as? Int,
+                      let height = props[kCGImagePropertyPixelHeight] as? Int else { return false }
+                return width >= 100 && height >= 100
+            }
+            incompleteMomentCount = items.filter { $0.kind == .moment }.count - browsableMoments.count
             catalogRevision += 1
             updateSpace()
         }
@@ -320,10 +356,172 @@ final class VisualMemoryController {
             }
         }
     }
+    func configureAmbient(_ config: AppConfig, audioFallbackActive: Bool) {
+        self.audioFallbackActive = audioFallbackActive
+        let changed = ambientConfig?.timeTurnerEnabled != config.timeTurnerEnabled
+            || ambientConfig?.timeTurnerPauseOnInactivity != config.timeTurnerPauseOnInactivity
+            || ambientConfig?.timeTurnerInterval != config.timeTurnerInterval
+            || ambientConfig?.timeTurnerBudget != config.timeTurnerBudget
+            || ambientConfig?.timeTurnerExcludedApps != config.timeTurnerExcludedApps
+        ambientConfig = config
+        if !config.timeTurnerEnabled || audioFallbackActive {
+            ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
+            ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
+            return
+        }
+        if changed { ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID() }
+        guard ambientTask == nil else { return }
+        ambientStatus = "Starting"
+        let generation = ambientGeneration
+        ambientTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.captureMoment(generation: generation)
+                let seconds = Double(self.ambientConfig?.timeTurnerInterval ?? "10") ?? 10
+                do { try await Task.sleep(for: .seconds(self.ambientStatus == "Paused — inactive" ? 2 : max(2, seconds))) } catch { return }
+            }
+        }
+    }
+
+    func toggleAmbientPause() {
+        ambientPaused.toggle(); locked = false; ambientGeneration = UUID()
+        ambientTask?.cancel(); ambientTask = nil
+        lastFingerprint = nil
+        if let config = ambientConfig { configureAmbient(config, audioFallbackActive: audioFallbackActive) }
+    }
+
+    private var isInactive: Bool {
+        guard ambientConfig?.timeTurnerPauseOnInactivity != false else { return false }
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) >= 60
+    }
+
+    private func captureMoment(generation: UUID) async {
+        guard generation == ambientGeneration, !Task.isCancelled else { return }
+        guard !ambientPaused, !locked else { ambientStatus = "Paused"; return }
+        guard !isInactive else { ambientStatus = "Paused — inactive"; return }
+        guard recordingMeetingID == nil else { ambientStatus = "Paused during screen recording"; return }
+        guard ProcessInfo.processInfo.thermalState != .serious, ProcessInfo.processInfo.thermalState != .critical else {
+            ambientStatus = "Paused to reduce heat"; return
+        }
+        guard CGPreflightScreenCaptureAccess() else { ambientStatus = "Screen Recording permission needed"; return }
+        guard let store, let app = NSWorkspace.shared.frontmostApplication,
+              let bundle = app.bundleIdentifier else { return }
+        let excluded = [Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"]
+        let customExcluded = (ambientConfig?.timeTurnerExcludedApps ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !customExcluded.contains(bundle), !excluded.contains(bundle) else { ambientStatus = "Skipping this app"; lastFingerprint = nil; return }
+        if let element = DictationContextCapture.focusedUIElement(for: app),
+           DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField" {
+            ambientStatus = "Skipping private content"; lastFingerprint = nil; return
+        }
+        do {
+            try enforceAmbientRetention()
+            updateSpace()
+            guard freeBytes > 2_000_000_000 else { ambientStatus = "Paused — disk space low"; return }
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            guard let focused = DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false),
+                  let frame = focused.frame,
+                  let window = content.windows.first(where: { $0.owningApplication?.processID == app.processIdentifier && VisualMemoryWindowMatch.matches(candidate: $0.frame, focused: frame, layer: Int($0.windowLayer)) }) else {
+                ambientStatus = "Waiting for a visible window"; return
+            }
+            guard window.frame.width >= 100, window.frame.height >= 100 else {
+                ambientStatus = "Waiting for a full window"; return
+            }
+            let title = window.title ?? ""
+            guard !["incognito", "private browsing", "inprivate"].contains(where: { title.localizedCaseInsensitiveContains($0) }) else {
+                ambientStatus = "Skipping private window"; return
+            }
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            configuration.width = max(2, Int(window.frame.width * CGFloat(filter.pointPixelScale)))
+            configuration.height = max(2, Int(window.frame.height * CGFloat(filter.pointPixelScale)))
+            configuration.showsCursor = false
+            configuration.ignoreShadowsSingleWindow = true
+            configuration.scalesToFit = true
+            let captured = Date()
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            let captureCompleted = Date()
+            guard image.width == configuration.width, image.height == configuration.height,
+                  image.width >= 100, image.height >= 100 else {
+                throw ScreenVideoRecorder.error("Screen capture returned unexpected dimensions; no image was saved.")
+            }
+            let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
+            guard generation == ambientGeneration, !Task.isCancelled, !ambientPaused, !locked, !isInactive,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                  DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false)?.frame == frame,
+                  DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false)?.title == focused.title else { return }
+            ambientStatus = "On · this Mac"
+            onAmbientCaptureActivity?(true)
+            let source = [app.localizedName ?? bundle, title].filter { !$0.isEmpty }.joined(separator: " · ")
+            if result.fingerprint == lastFingerprint && result.text == lastText && source == lastSource {
+                ambientStatus = "On · screen unchanged"; return
+            }
+            let path = UUID().uuidString + ".heic"
+            let url = try store.url(for: path)
+            try result.data.write(to: url, options: .atomic)
+            do { try store.save([VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, bundleID: bundle,
+                text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted, pixelWidth: image.width, pixelHeight: image.height)]) }
+            catch { try? FileManager.default.removeItem(at: url); throw error }
+            lastFingerprint = result.fingerprint; lastText = result.text; lastSource = source
+            reload(); ambientStatus = "On · this Mac"
+            await compactAmbientIfNeeded()
+        } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
+    }
+
+    private func enforceAmbientRetention() throws {
+        guard let store else { return }
+        let moments = items.filter { $0.kind == .moment }
+        var paths = Set(moments.filter { $0.capturedAt < Date().addingTimeInterval(-7 * 86400) }.map(\.path))
+        let groups = Dictionary(grouping: moments, by: \.path)
+        let budget = Int64(ambientConfig?.timeTurnerBudget ?? "10") ?? 10
+        var total = groups.values.reduce(Int64(0)) { $0 + ($1.first?.bytes ?? 0) }
+        for group in groups.values.sorted(by: { ($0.first?.capturedAt ?? .distantPast) < ($1.first?.capturedAt ?? .distantPast) }) {
+            guard let first = group.first else { continue }
+            if paths.contains(first.path) || total > budget * 1_000_000_000 {
+                paths.insert(first.path); total -= first.bytes
+            }
+        }
+        if !paths.isEmpty {
+            try store.delete(ids: Set(moments.filter { paths.contains($0.path) }.map(\.id))); reload()
+        }
+    }
+
+    private func compactAmbientIfNeeded() async {
+        guard !compactionRunning, Date().timeIntervalSince(lastCompaction) > 300,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled, let store else { return }
+        lastCompaction = Date()
+        let candidates = items.filter { $0.kind == .moment && $0.frameIndex == nil && $0.capturedAt < Date().addingTimeInterval(-600) }.sorted { $0.capturedAt < $1.capturedAt }
+        guard let first = candidates.first else { return }
+        let batch = Array(candidates.filter { $0.source == first.source }.prefix(100))
+        guard batch.count >= 25 else { return }
+        compactionRunning = true
+        defer { compactionRunning = false }
+        let path = UUID().uuidString + ".mp4"
+        do {
+            let urls = try batch.map { try store.url(for: $0.path) }
+            let output = try store.url(for: path)
+            try await Task.detached(priority: .utility) { try await VisualMemoryEncoding.compact(images: urls, destination: output) }.value
+            let latest = try store.items()
+            guard batch.allSatisfy({ original in latest.contains(where: { $0.id == original.id && $0.path == original.path }) }) else {
+                try? FileManager.default.removeItem(at: output); return
+            }
+            let bytes = (try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let originals = batch.reduce(Int64(0)) { $0 + $1.bytes }
+            guard bytes < originals else { try FileManager.default.removeItem(at: output); return }
+            let packed = batch.enumerated().map { index, original in
+                var item = original; item.path = path; item.frameIndex = index; item.bytes = bytes; return item
+            }
+            try store.save(packed)
+            for url in urls { try? FileManager.default.removeItem(at: url) }
+            reload()
+        } catch { message = "History compaction deferred: \(error.localizedDescription)" }
+    }
+
     func suspendForPrivacy() {
+        locked = true; ambientPaused = true
         if let id = recordingMeetingID {
             messageMeetingID = id; message = "Screen recording paused while the Mac was locked or asleep."
             pauseState.userPaused = true; reconcilePause()
         }
+        ambientStatus = "Paused — resume manually"
     }
 }
