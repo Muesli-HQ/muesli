@@ -40,15 +40,16 @@ final class VisualMemoryController {
 
     init(databaseURL: URL, supportDirectory: URL = AppIdentity.supportDirectoryURL) {
         do {
-            let legacyRoot = supportDirectory.appendingPathComponent("visual-memory")
-            if FileManager.default.fileExists(atPath: legacyRoot.appendingPathComponent("catalog.sqlite").path) {
-                store = try VisualMemoryStore(root: legacyRoot)
-            }
             meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
                 root: supportDirectory.appendingPathComponent("meeting-recordings/videos"))
-            reload()
+        } catch { message = error.localizedDescription }
+        // Legacy migration is optional; its failure must not disable new captures.
+        let legacyRoot = supportDirectory.appendingPathComponent("visual-memory")
+        if FileManager.default.fileExists(atPath: legacyRoot.appendingPathComponent("catalog.sqlite").path) {
+            do { store = try VisualMemoryStore(root: legacyRoot) }
+            catch { NSLog("Legacy video catalog unavailable: %@", error.localizedDescription) }
         }
-        catch { message = error.localizedDescription }
+        reload()
         let videos = meetingStore, legacy = store
         maintenanceTask = Task { [weak self] in
             await Task.detached(priority: .utility) {
@@ -92,7 +93,7 @@ final class VisualMemoryController {
         do {
             let videos = try meetingStore?.items() ?? []
             let migratedIDs = Set(videos.map(\.id))
-            items = try (store?.items() ?? []).filter { !migratedIDs.contains($0.id) } + videos
+            items = ((try? store?.items()) ?? []).filter { !migratedIDs.contains($0.id) } + videos
             catalogRevision += 1
             updateSpace()
         }
@@ -207,7 +208,8 @@ final class VisualMemoryController {
     }
 
     private func beginClip(attempt: UUID) async throws {
-        guard token == attempt, recorder == nil, let filter, let store = meetingStore, recordingMeetingID != nil, !pauseState.isPaused else { return }
+        guard let store = meetingStore else { throw ScreenVideoRecorder.error("Meeting video storage is unavailable. Please restart Muesli and try again.") }
+        guard token == attempt, recorder == nil, let filter, recordingMeetingID != nil, !pauseState.isPaused else { return }
         updateSpace()
         guard freeBytes > 2_000_000_000 else { throw ScreenVideoRecorder.error("Screen recording needs at least 2 GB of free disk space.") }
         let url = try store.url(for: UUID().uuidString + ".mp4")
@@ -242,8 +244,10 @@ final class VisualMemoryController {
         guard let recording = recorder, var item = recordingItem else { return }
         flushRecordingAudio?()
         recorder = nil; recordingItem = nil; audioRouter.set(nil); isFinalizing = true
+        let videos = meetingStore, pendingItem = item
+        recording.onFinalized = { videos?.endRecording(pendingItem) }
         let task = Task {
-            defer { isFinalizing = false; meetingStore?.endRecording(item) }
+            defer { isFinalizing = false }
             do {
                 item.duration = try await recording.stop()
                 if !discard {

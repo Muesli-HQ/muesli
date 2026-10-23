@@ -912,6 +912,26 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
+    @Test("a corrupt legacy catalog cannot disable meeting video storage")
+    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let legacy = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        #expect(controller.store == nil)
+        #expect(!controller.hasMedia(meetingID: id))
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try videos.save([clip])
+        controller.reload()
+        #expect(controller.items == [clip])
+    }
+
     @Test("a failed initial meeting keeps video without retained audio or notes")
     func failedMeetingKeepsVideo() throws {
         let store = try makeStore()

@@ -20,6 +20,8 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     private var audioTimer: DispatchSourceTimer?
     private var failure: Error?
     private var finished = false
+    private var isStopping = false
+    var onFinalized: (@Sendable () -> Void)?
     private var lastSpaceCheck = Date.distantPast
     var onFailure: (@Sendable (String) -> Void)?
 
@@ -70,7 +72,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         queue.async { self.fail(error) }
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, !finished, failure == nil, CMSampleBufferIsValid(sampleBuffer),
+        guard type == .screen, !isStopping, !finished, failure == nil, CMSampleBufferIsValid(sampleBuffer),
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let status = attachments.first?[.status] as? Int, status == SCFrameStatus.complete.rawValue,
               let writer, let input = videoInput else { return }
@@ -137,7 +139,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         return result
     }
 
-    func stop() async throws -> Double {
+    func stop(timeout: TimeInterval = 8) async throws -> Double {
         let capture = stream
         return try await withCheckedThrowingContinuation { continuation in
             let completion = OSAllocatedUnfairLock<CheckedContinuation<Double, Error>?>(initialState: continuation)
@@ -146,32 +148,28 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                     let pending = value; value = nil; return pending
                 }?.resume(with: result)
             }
-            // Do not use a structured task group: cancellation cannot force Apple's
-            // capture/writer callbacks to return, and would still block meeting stop.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 8) {
-                complete(.failure(Self.error("Screen finalization timed out. The file was preserved for recovery.")))
-                self.queue.async {
-                    self.audioTimer?.cancel(); self.audioTimer = nil
-                    self.audio.withLock { $0 = nil }
-                    self.finished = true
-                    if self.writer?.status == .writing { self.writer?.cancelWriting() }
-                }
+            // The timeout releases only the UI waiter. Keep the writer and its
+            // ownership journal alive until Apple's completion callback arrives.
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                complete(.failure(Self.error("Screen finalization is continuing in the background.")))
             }
-            Task {
-                if let capture { try? await capture.stopCapture() }
-                self.queue.async {
-                    self.stream = nil
-                    guard completion.withLock({ $0 != nil }) else { return }
-                    self.audioTimer?.cancel(); self.audioTimer = nil
-                    guard !self.finished else { complete(.failure(Self.error("Recording already finalized."))); return }
-                    guard let start = self.firstTime else {
-                        self.writer?.cancelWriting()
-                        complete(.failure(self.failure ?? Self.error("No screen frames were captured."))); return
-                    }
-                    let target = Int64(max(0, CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()) - start)) * 16_000)
-                    self.drainAndFinish(target: target, start: start, complete: complete)
-
+            let finalized: @Sendable (Result<Double, Error>) -> Void = { [self] result in
+                onFinalized?()
+                complete(result)
+            }
+            // Retiring capture must not gate finalizing the frames already received.
+            Task { if let capture { try? await capture.stopCapture() } }
+            queue.async {
+                self.isStopping = true
+                self.stream = nil
+                self.audioTimer?.cancel(); self.audioTimer = nil
+                guard !self.finished else { finalized(.failure(Self.error("Recording already finalized."))); return }
+                guard let start = self.firstTime else {
+                    self.writer?.cancelWriting()
+                    finalized(.failure(self.failure ?? Self.error("No screen frames were captured."))); return
                 }
+                let target = Int64(max(0, CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()) - start)) * 16_000)
+                self.drainAndFinish(target: target, start: start, complete: finalized)
             }
         }
     }

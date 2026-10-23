@@ -30,8 +30,39 @@ extension ScreenVideoRecorder {
   precondition(tracks.count == 1 && CMTimeGetSeconds(duration) >= 1.9)
   print("PASS: production meeting AAC settings encode a two-second audio track")
  }
+ static func probeDelayedFinalization() async throws {
+  let url = URL(fileURLWithPath: CommandLine.arguments[1] + ".delayed.mp4")
+  let recorder = ScreenVideoRecorder(url: url)
+  let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+  let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioOutputSettings)
+  writer.add(input)
+  precondition(writer.startWriting())
+  let start = CMClockGetTime(CMClockGetHostTimeClock())
+  writer.startSession(atSourceTime: start)
+  while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+  let sample = try audioBuffer([Int16](repeating: 100, count: 1600), time: start)
+  precondition(input.append(sample))
+  recorder.writer = writer; recorder.audioInput = input
+  recorder.firstTime = start; recorder.audioSamples = 1600
+  let finalized = OSAllocatedUnfairLock(initialState: false)
+  recorder.onFinalized = { finalized.withLock { $0 = true } }
+  recorder.queue.suspend()
+  DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { recorder.queue.resume() }
+  do { _ = try await recorder.stop(timeout: 0.01); preconditionFailure("Expected waiter timeout") }
+  catch { precondition(!finalized.withLock { $0 }) }
+  for _ in 0..<200 {
+   if finalized.withLock({ $0 }) { break }
+   try await Task.sleep(for: .milliseconds(10))
+  }
+  precondition(finalized.withLock { $0 })
+  precondition(writer.status == .completed)
+  let tracks = try await AVURLAsset(url: url).loadTracks(withMediaType: .audio)
+  precondition(tracks.count == 1)
+  print("PASS: timed-out waiter allows delayed writer completion and playable media")
+ }
+
 }
-@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe() } }
+@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe(); try await ScreenVideoRecorder.probeDelayedFinalization() } }
 """
 
 with tempfile.TemporaryDirectory(prefix="muesli-meeting-encoding-") as directory:
