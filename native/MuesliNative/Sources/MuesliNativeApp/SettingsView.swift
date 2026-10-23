@@ -705,7 +705,7 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 760)
+            .frame(maxWidth: 900)
             Spacer()
         }
     }
@@ -721,6 +721,8 @@ struct SettingsView: View {
             dictationSettingsPane
         case .computerUse:
             computerUseSettingsPane
+        case .timeTurner:
+            TimeTurnerSettingsView(controller: controller, appState: appState)
         case .meetings:
             meetingsSettingsPane
         case .appearance:

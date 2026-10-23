@@ -27,6 +27,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case sync
     case dictation
     case computerUse
+    case timeTurner
     case meetings
     case appearance
 
@@ -38,6 +39,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .sync: return "Sync"
         case .dictation: return "Dictation"
         case .computerUse: return "Computer Use"
+        case .timeTurner: return "Time Turner"
         case .meetings: return "Meetings"
         case .appearance: return "Appearance"
         }
@@ -287,6 +289,7 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsTimeTurnerSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
     var pendingFeatureTourInvitation: FeatureTour?
     var activeFeatureTour: FeatureTour?

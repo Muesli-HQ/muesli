@@ -176,6 +176,24 @@ extension MuesliController {
             }
         }
 
+        add("time_turner_enabled", "Time Turner", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { $0.timeTurnerEnabled ? "on" : "off" },
+            voiceRestriction: "Enable continuous screen history manually in Timeline.") { value in
+                if value == "on" {
+                    guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
+                        throw MuesliSettings.Failure.rejected("Complete Time Turner setup: Screen Recording and Accessibility are required.")
+                    }
+                }
+                self.updateConfig { $0.timeTurnerEnabled = value == "on" }
+            }
+        toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
+        textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
+            Choice(id: $0, label: "\($0) seconds")
+        }, \.timeTurnerInterval)
+        textMenu("time_turner_budget", "Screen history storage", ["2", "5", "10", "20"].map {
+            Choice(id: $0, label: "\($0) GB")
+        }, \.timeTurnerBudget)
+
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
         toggle("dark_mode", "Dark mode", \.darkMode)
