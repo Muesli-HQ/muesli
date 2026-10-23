@@ -53,6 +53,7 @@ case "${shard}" in
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      LocalStorageUsageTests
       MeetingVideoStoreTests
       VisualMemoryStoreTests
       MeetingVideoAudioTests
