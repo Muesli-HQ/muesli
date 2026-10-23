@@ -10,6 +10,11 @@ final class VisualMemoryController {
     var items: [VisualMemoryItem] = []
     var catalogRevision = 0
     var message: String?
+    var messageMeetingID: Int64?
+    private var recordedSessions: Set<UUID> = []
+    private var sessionClipIDs: [UUID: Set<String>] = [:]
+    private var recordingSessionID: UUID?
+    @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
     var recordingMeetingID: Int64?
     var isAwaitingConfirmation = false
     var isPreparing = false
@@ -33,16 +38,33 @@ final class VisualMemoryController {
 
     init(databaseURL: URL) {
         do {
-            store = try VisualMemoryStore(root: AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory"))
+            let legacyRoot = AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory")
+            if FileManager.default.fileExists(atPath: legacyRoot.appendingPathComponent("catalog.sqlite").path) {
+                store = try VisualMemoryStore(root: legacyRoot)
+            }
             meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
                 root: AppIdentity.supportDirectoryURL.appendingPathComponent("meeting-recordings/videos"))
-            if let store {
-                do { try meetingStore?.migrateLegacyVideos(from: store) }
-                catch { message = "Some older videos could not be moved: \(error.localizedDescription)" }
-            }
             reload()
         }
         catch { message = error.localizedDescription }
+        let videos = meetingStore, legacy = store
+        maintenanceTask = Task { [weak self] in
+            await Task.detached(priority: .utility) {
+                do {
+                    try videos?.maintain()
+                    if let legacy { try videos?.migrateLegacyVideos(from: legacy) }
+                } catch { NSLog("Meeting video recovery: %@", error.localizedDescription) }
+            }.value
+            self?.reload()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                guard self != nil else { return }
+                await Task.detached(priority: .utility) {
+                    do { try videos?.maintain() } catch { NSLog("Meeting video cleanup: %@", error.localizedDescription) }
+                }.value
+                self?.reload()
+            }
+        }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.suspendForPrivacy() }
         })
@@ -66,7 +88,7 @@ final class VisualMemoryController {
         return try? store?.url(for: item.path)
     }
     func updateSpace() {
-        guard let root = store?.root else { return }
+        guard let root = meetingStore?.root else { return }
         freeBytes = ((try? FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
     }
     var usedBytes: Int64 {
@@ -94,9 +116,9 @@ final class VisualMemoryController {
         reload()
     }
 
-    func requestRecording(meetingID: Int64, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
+    func requestRecording(meetingID: Int64, sessionID: UUID, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
         guard recordingMeetingID == nil, !isPreparing, !isFinalizing else { return }
-        isPreparing = true; message = nil; token = UUID()
+        isPreparing = true; message = nil; messageMeetingID = meetingID; token = UUID()
         let attempt = token
         startTask = Task {
             defer { if token == attempt { isPreparing = false } }
@@ -151,8 +173,9 @@ final class VisualMemoryController {
                 guard response == .OK, let selection, token == attempt, isStillActive() else { return }
                 filter = selection.filter
                 sourceName = "\(selection.title) — \(selection.subtitle)"
-                meetingStart = startedAt; recordingMeetingID = meetingID; pauseState = .init()
+                meetingStart = startedAt; recordingMeetingID = meetingID; recordingSessionID = sessionID; pauseState = .init()
                 try await beginClip(attempt: attempt)
+                recordedSessions.insert(sessionID)
                 // The optional announcement must never gate capture or its retention.
                 if announce, token == attempt, isStillActive() {
                     announcementSound?.stop()
@@ -192,7 +215,7 @@ final class VisualMemoryController {
         if let pending = finalizationTask { await pending.value; return }
         guard let recording = recorder else { return }
         recorder = nil; audioRouter.set(nil); isFinalizing = true
-        let owner = recordingMeetingID, start = clipStart, source = sourceName
+        let owner = recordingMeetingID, start = clipStart, source = sourceName, sessionID = recordingSessionID
         let offset = max(0, start.timeIntervalSince(meetingStart))
         let task = Task {
         defer { isFinalizing = false }
@@ -200,12 +223,15 @@ final class VisualMemoryController {
             let duration = try await recording.stop()
             if discard { try? FileManager.default.removeItem(at: recording.url); return }
             let bytes = (try FileManager.default.attributesOfItem(atPath: recording.url.path)[.size] as? NSNumber)?.int64Value ?? 0
-            try meetingStore?.save([VisualMemoryItem(kind: .meetingVideo, meetingID: owner, capturedAt: start, source: source,
-                path: recording.url.lastPathComponent, duration: duration, meetingOffset: offset, bytes: bytes)])
+            let item = VisualMemoryItem(kind: .meetingVideo, meetingID: owner, capturedAt: start, source: source,
+                path: recording.url.lastPathComponent, duration: duration, meetingOffset: offset, bytes: bytes)
+            if let sessionID { sessionClipIDs[sessionID, default: []].insert(item.id) }
+            guard let meetingStore else { throw ScreenVideoRecorder.error("Video storage is unavailable; the recording file was preserved.") }
+            try await Task.detached(priority: .utility) { try meetingStore.persistCompleted(item) }.value
             reload()
         } catch {
-            try? FileManager.default.removeItem(at: recording.url)
-            message = "Screen recording: \(error.localizedDescription)"
+            messageMeetingID = owner
+            message = "Screen recording needs recovery; its file was preserved: \(error.localizedDescription)"
         }
         }
         finalizationTask = task
@@ -223,8 +249,21 @@ final class VisualMemoryController {
         await pendingStart?.value
         startTask = nil; isPreparing = false
         await finishClip(discard: discard)
-        recordingMeetingID = nil; filter = nil; pauseState = .init()
+        recordingMeetingID = nil; recordingSessionID = nil; filter = nil; pauseState = .init()
     }
+    func hasRecording(in sessionID: UUID) -> Bool { recordedSessions.contains(sessionID) }
+
+    func discardSession(_ sessionID: UUID) async {
+        if recordingSessionID == sessionID { await stopRecording(discard: true) }
+        let ids = sessionClipIDs.removeValue(forKey: sessionID) ?? []
+        let videos = meetingStore
+        do {
+            try await Task.detached(priority: .utility) { try videos?.delete(ids: ids) }.value
+        } catch { message = "Could not remove discarded video: \(error.localizedDescription)" }
+        recordedSessions.remove(sessionID)
+        reload()
+    }
+
     func toggleScreenPause() {
         guard recordingMeetingID != nil, !isFinalizing, !isPreparing else { return }
         pauseState.userPaused.toggle(); reconcilePause()
@@ -247,6 +286,9 @@ final class VisualMemoryController {
         }
     }
     func suspendForPrivacy() {
-        if recordingMeetingID != nil { pauseState.userPaused = true; reconcilePause() }
+        if let id = recordingMeetingID {
+            messageMeetingID = id; message = "Screen recording paused while the Mac was locked or asleep."
+            pauseState.userPaused = true; reconcilePause()
+        }
     }
 }

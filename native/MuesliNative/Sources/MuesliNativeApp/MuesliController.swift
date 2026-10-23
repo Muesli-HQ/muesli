@@ -751,6 +751,11 @@ public final class MuesliController: NSObject {
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
+        // Start recovery/cleanup even when no meeting detail is opened this run.
+        if FileManager.default.fileExists(atPath: AppIdentity.supportDirectoryURL.appendingPathComponent("meeting-recordings/videos").path)
+            || FileManager.default.fileExists(atPath: AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory/catalog.sqlite").path) {
+            _ = visualMemory
+        }
         recoverRetainedMeetingRecordings()
         recoverStaleLiveMeetings()
         normalizeMeetingTranscriptionSelectionForAvailability()
@@ -6717,7 +6722,6 @@ public final class MuesliController: NSObject {
                try shouldDeleteSavedMeetingRecording(at: savedRecordingPath, excluding: id) {
                 try deleteSavedMeetingRecording(at: savedRecordingPath)
             }
-            try visualMemory.deleteMeeting(id)
             try dictationStore.deleteMeeting(id: id)
             cleanupOrphanedMeetingWaveformCacheFiles()
             scheduleICloudSyncAfterLocalChange()
@@ -6789,7 +6793,6 @@ public final class MuesliController: NSObject {
 
         do {
             try? clearSavedMeetingWaveformCache()
-            try visualMemory.deleteAllMeetings()
             try clearSavedMeetingRecordingsDirectory()
         } catch {
             presentErrorAlert(
@@ -6921,18 +6924,22 @@ public final class MuesliController: NSObject {
     @objc func startMeetingScreenRecording() {
         guard let session = activeMeetingSession, let id = activeMeetingID, !session.isPaused else { return }
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
+            visualMemory.messageMeetingID = id
             visualMemory.message = "Open the meeting window, then try Record Screen again."
             return
         }
         let router = visualMemory.audioRouter
-        session.setScreenAudioSink { samples, microphone in router.append(samples, microphone: microphone) }
-        visualMemory.requestRecording(meetingID: id, startedAt: session.startTime ?? Date(), presentationWindow: window) { [weak self] in
+        session.setScreenAudioSink { samples, microphone, startFrame in router.append(samples, microphone: microphone, startFrame: startFrame) }
+        visualMemory.requestRecording(meetingID: id, sessionID: session.screenRecordingSessionID, startedAt: session.startTime ?? Date(), presentationWindow: window) { [weak self] in
             self?.activeMeetingID == id && self?.activeMeetingSession?.isPaused == false
         }
     }
 
     @objc func toggleMeetingScreenPause() { visualMemory.toggleScreenPause() }
-    @objc func stopMeetingScreenRecording() { Task { await visualMemory.stopRecording() } }
+    @objc func stopMeetingScreenRecording() {
+        activeMeetingSession?.flushScreenRecordingAudio()
+        Task { await visualMemory.stopRecording() }
+    }
 
     @objc func toggleMeetingRecordingPause() {
         if isMeetingRecordingPaused() {
@@ -8046,7 +8053,7 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.cancelToggleMode()
         clearLiveMeetingTranscript()
         beginMeetingCaptureShutdown(session: capture.session)
-        Task { await visualMemory.stopRecording(discard: true); try? visualMemory.deleteMeeting(meetingID) }
+        Task { await visualMemory.discardSession(capture.session.screenRecordingSessionID) }
         capture.session.discard()
         disarmMeetingAutoStop()
         indicator.setMeetingRecording(false, config: config)
@@ -8289,13 +8296,8 @@ public final class MuesliController: NSObject {
         meetingEndTimer = nil
         meetingNotification.close()
         let liveMeetingID = meetingCapture?.id
-        // Explicit screen recording already represents a decision to retain media.
-        // Include earlier clips when the user stopped screen capture before the meeting.
-        let hasScreenRecording = liveMeetingID.map { id in
-            visualMemory.recordingMeetingID == id || visualMemory.items.contains {
-                $0.meetingID == id && $0.kind == .meetingVideo
-            }
-        } ?? false
+        // Only this capture session's explicit screen recording grants retention.
+        let hasScreenRecording = visualMemory.hasRecording(in: sessionToStop.screenRecordingSessionID)
         if let liveMeetingID {
             flushCachedMeetingManualNotes(id: liveMeetingID, sync: false)
             flushCachedMeetingTitle(id: liveMeetingID)
@@ -8338,6 +8340,7 @@ public final class MuesliController: NSObject {
             var earlyRecordingSave: PreparedMeetingRecordingSave?
             let recoveryMeeting = liveMeetingID.flatMap { self.meeting(id: $0) }
             do {
+                sessionToStop.flushScreenRecordingAudio()
                 await self.visualMemory.stopRecording()
                 let stopped = try await sessionToStop.stop { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
@@ -8965,7 +8968,11 @@ public final class MuesliController: NSObject {
         let recordingsDirectory = configStore.supportDirectory()
             .appendingPathComponent("meeting-recordings", isDirectory: true)
         guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }
-        try FileManager.default.removeItem(at: recordingsDirectory)
+        // Video deletion is journaled transactionally with the meeting tombstone.
+        for file in try FileManager.default.contentsOfDirectory(at: recordingsDirectory, includingPropertiesForKeys: nil)
+            where file.lastPathComponent != "videos" {
+            try FileManager.default.removeItem(at: file)
+        }
     }
 
     private func clearSavedMeetingWaveformCache() throws {

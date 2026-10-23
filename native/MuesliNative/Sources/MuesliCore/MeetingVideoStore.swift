@@ -16,10 +16,28 @@ public final class MeetingVideoStore: @unchecked Sendable {
         }
         sqlite3_busy_timeout(db, 5_000)
         try execute("PRAGMA foreign_keys=ON")
-        try execute("CREATE TABLE IF NOT EXISTS meeting_video_clips(id TEXT PRIMARY KEY, kind TEXT NOT NULL, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, captured REAL NOT NULL, body TEXT NOT NULL)")
-        try execute("CREATE INDEX IF NOT EXISTS meeting_video_clips_time ON meeting_video_clips(kind,captured)")
-        try execute("CREATE INDEX IF NOT EXISTS meeting_video_clips_meeting ON meeting_video_clips(meeting_id)")
 
+    }
+    /// Called by DictationStore's schema migration, before tombstone purging.
+    static func migrate(db: OpaquePointer?) throws {
+        let sql = """
+        CREATE TABLE IF NOT EXISTS meeting_video_clips(id TEXT PRIMARY KEY, kind TEXT NOT NULL, meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, captured REAL NOT NULL, body TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS meeting_video_clips_time ON meeting_video_clips(kind,captured);
+        CREATE INDEX IF NOT EXISTS meeting_video_clips_meeting ON meeting_video_clips(meeting_id);
+        CREATE TABLE IF NOT EXISTS meeting_video_cleanup(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+        CREATE TRIGGER IF NOT EXISTS meeting_video_soft_delete AFTER UPDATE OF deleted_at ON meetings WHEN NEW.deleted_at IS NOT NULL BEGIN
+            INSERT OR REPLACE INTO meeting_video_cleanup SELECT id, body FROM meeting_video_clips WHERE meeting_id=NEW.id;
+            DELETE FROM meeting_video_clips WHERE meeting_id=NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_video_hard_delete BEFORE DELETE ON meetings BEGIN
+            INSERT OR REPLACE INTO meeting_video_cleanup SELECT id, body FROM meeting_video_clips WHERE meeting_id=OLD.id;
+        END;
+        INSERT OR REPLACE INTO meeting_video_cleanup SELECT v.id, v.body FROM meeting_video_clips v LEFT JOIN meetings m ON m.id=v.meeting_id WHERE m.id IS NULL OR m.deleted_at IS NOT NULL;
+        DELETE FROM meeting_video_clips WHERE id IN (SELECT id FROM meeting_video_cleanup);
+        """
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "MeetingVideoStore", code: Int(sqlite3_errcode(db)), userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
     }
     deinit { sqlite3_close(db) }
     private func failure() -> NSError {
@@ -47,14 +65,15 @@ public final class MeetingVideoStore: @unchecked Sendable {
                 _ = try url(for: item.path)
                 let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
                 var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meeting_video_clips VALUES(?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+                guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meeting_video_clips SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM meetings WHERE id=? AND deleted_at IS NULL)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
                 defer { sqlite3_finalize(stmt) }
                 sqlite3_bind_text(stmt, 1, item.id, -1, transient)
                 sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
                 if let id = item.meetingID { sqlite3_bind_int64(stmt, 3, id) } else { sqlite3_bind_null(stmt, 3) }
                 sqlite3_bind_double(stmt, 4, item.capturedAt.timeIntervalSince1970)
                 sqlite3_bind_text(stmt, 5, body, -1, transient)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+                sqlite3_bind_int64(stmt, 6, item.meetingID!)
+                guard sqlite3_step(stmt) == SQLITE_DONE, sqlite3_changes(db) == 1 else { throw failure() }
 
             }
             try execute("COMMIT")
@@ -75,45 +94,124 @@ public final class MeetingVideoStore: @unchecked Sendable {
         guard status == SQLITE_DONE else { throw failure() }
         return result
     }
-    /// Remove metadata first, then only unreferenced files. A crash can leave an orphan,
-    /// never a surviving reference to deliberately forgotten meeting_video_clips.
+    /// Journal completed recordings before attempting the database write. A busy DB
+    /// leaves both the MP4 and its owner metadata available for recovery on next launch.
+    public func persistCompleted(_ item: VisualMemoryItem) throws {
+        lock.lock(); defer { lock.unlock() }
+        let pending = try url(for: item.path + ".pending.json")
+        try JSONEncoder().encode(item).write(to: pending, options: .atomic)
+        try save([item])
+        try FileManager.default.removeItem(at: pending)
+    }
+
+    public func maintain() throws {
+        lock.lock(); defer { lock.unlock() }
+        var firstError: Error?
+        for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            where file.lastPathComponent.hasSuffix(".pending.json") {
+            do {
+                let item = try JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: file))
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT 1 FROM meetings WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM meeting_video_cleanup WHERE id=?)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+                defer { sqlite3_finalize(stmt) }
+                sqlite3_bind_int64(stmt, 1, item.meetingID ?? -1)
+                sqlite3_bind_text(stmt, 2, item.id, -1, transient)
+                let status = sqlite3_step(stmt)
+                if status == SQLITE_ROW {
+                    guard FileManager.default.fileExists(atPath: try url(for: item.path).path) else { continue }
+                    try save([item])
+                } else if status == SQLITE_DONE {
+                    let video = try url(for: item.path)
+                    if FileManager.default.fileExists(atPath: video.path) { try FileManager.default.removeItem(at: video) }
+                } else { throw failure() }
+                try FileManager.default.removeItem(at: file)
+            } catch { if firstError == nil { firstError = error } }
+        }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT body FROM meeting_video_cleanup", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(stmt) }
+        var pending: [VisualMemoryItem] = []
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            pending.append(try JSONDecoder().decode(VisualMemoryItem.self, from: Data(String(cString: sqlite3_column_text(stmt, 0)).utf8)))
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        let retained = Set(try items().map(\.path))
+        for item in pending {
+            do {
+                if !retained.contains(item.path) {
+                    for path in [item.path, item.path + ".pending.json"] {
+                        let file = try url(for: path)
+                        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+                    }
+                }
+                var deletion: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "DELETE FROM meeting_video_cleanup WHERE id=?", -1, &deletion, nil) == SQLITE_OK else { throw failure() }
+                defer { sqlite3_finalize(deletion) }
+                sqlite3_bind_text(deletion, 1, item.id, -1, transient)
+                guard sqlite3_step(deletion) == SQLITE_DONE else { throw failure() }
+            } catch { if firstError == nil { firstError = error } }
+        }
+        if let firstError { throw firstError }
+    }
+
     public func delete(ids: Set<String>) throws {
         lock.lock(); defer { lock.unlock() }
-        let before = try items()
+        // Include recovery journals whose database save has not succeeded yet.
+        let journals = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix(".pending.json") }
+        let pending = try journals.map { try JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: $0)) }
+        for item in pending where ids.contains(item.id) {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meeting_video_cleanup VALUES(?,?)", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, item.id, -1, transient)
+            sqlite3_bind_text(statement, 2, String(decoding: try JSONEncoder().encode(item), as: UTF8.self), -1, transient)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw failure() }
+        }
         try execute("BEGIN IMMEDIATE")
         do {
             for id in ids {
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "DELETE FROM meeting_video_clips WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, id, -1, transient)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+                for sql in ["INSERT OR REPLACE INTO meeting_video_cleanup SELECT id,body FROM meeting_video_clips WHERE id=?", "DELETE FROM meeting_video_clips WHERE id=?"] {
+                    var stmt: OpaquePointer?
+                    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+                    defer { sqlite3_finalize(stmt) }
+                    sqlite3_bind_text(stmt, 1, id, -1, transient)
+                    guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+                }
             }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
-        let retainedPaths = Set(before.filter { !ids.contains($0.id) }.map(\.path))
-        for path in Set(before.filter { ids.contains($0.id) }.map(\.path)).subtracting(retainedPaths) {
-            let file = try url(for: path)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        }
+        try maintain()
     }
 }
 
 public extension MeetingVideoStore {
-    /// Copy first, commit the new owner, then retire legacy metadata/files. Retry safe.
+    /// Copy, commit, retire. One invalid legacy owner must not block later clips.
     func migrateLegacyVideos(from legacy: VisualMemoryStore) throws {
+        var firstError: Error?
         for item in try legacy.items() where item.kind == .meetingVideo {
-            let source = try legacy.url(for: item.path)
-            let destination = try url(for: item.path)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                guard FileManager.default.contentsEqual(atPath: source.path, andPath: destination.path) else {
-                    throw NSError(domain: "MeetingVideoStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "Existing video differs; original retained."])
+            var copied: URL?
+            var committed = false
+            do {
+                let source = try legacy.url(for: item.path)
+                let destination = try url(for: item.path)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    guard FileManager.default.contentsEqual(atPath: source.path, andPath: destination.path) else {
+                        throw NSError(domain: "MeetingVideoStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "Existing video differs; original retained."])
+                    }
+                } else {
+                    try FileManager.default.copyItem(at: source, to: destination)
+                    copied = destination
                 }
-            } else {
-                try FileManager.default.copyItem(at: source, to: destination)
+                try save([item]); committed = true
+                try legacy.delete(ids: [item.id])
+            } catch {
+                if !committed, let copied { try? FileManager.default.removeItem(at: copied) }
+                if firstError == nil { firstError = error }
             }
-            try save([item])
-            try legacy.delete(ids: [item.id])
         }
+        if let firstError { throw firstError }
     }
 }

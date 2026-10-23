@@ -53,6 +53,9 @@ case "${shard}" in
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      MeetingVideoStoreTests
+      VisualMemoryStoreTests
+      MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
       CGPointCodableTests
@@ -213,3 +216,7 @@ done
 
 echo "Running ${shard} shard with ${#filters[@]} filters"
 swift test "${args[@]}"
+
+if [[ "${shard}" == meetings ]]; then
+  python3 scripts/test_meeting_video_encoding.py
+fi

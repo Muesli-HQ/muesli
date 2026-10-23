@@ -43,7 +43,7 @@ struct MeetingMediaView: View {
             if memory.isPreparing || memory.isFinalizing {
                 HStack { ProgressView().controlSize(.small); Text(memory.isFinalizing ? "Saving screen recording…" : memory.isAwaitingConfirmation ? "Choose a screen to record…" : "Preparing screen recording…") }
             }
-            if let message = memory.message {
+            if memory.messageMeetingID == meeting.id, let message = memory.message {
                 HStack { Text(message).font(.caption).foregroundStyle(.orange); Spacer(); Button("Dismiss") { memory.message = nil } }
             }
             if !clips.isEmpty && hasSeparateAudio {

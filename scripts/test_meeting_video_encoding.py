@@ -37,7 +37,7 @@ extension ScreenVideoRecorder {
 with tempfile.TemporaryDirectory(prefix="muesli-meeting-encoding-") as directory:
     folder = Path(directory)
     source = folder / "Probe.swift"
-    source.write_text(SOURCE.read_text() + HARNESS)
+    source.write_text(SOURCE.read_text().replace("import MuesliCore", "") + (ROOT / "native/MuesliNative/Sources/MuesliCore/MeetingVideoAudio.swift").read_text() + HARNESS)
     executable = folder / "probe"
     subprocess.run(["swiftc", "-parse-as-library", str(source), "-o", str(executable)], check=True)
     subprocess.run([str(executable), str(folder / "audio.mp4")], check=True, timeout=30)
