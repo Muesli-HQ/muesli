@@ -169,21 +169,27 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                     finalized(.failure(self.failure ?? Self.error("No screen frames were captured."))); return
                 }
                 let target = Int64(max(0, CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()) - start)) * 16_000)
-                self.drainAndFinish(target: target, start: start, complete: finalized)
+                self.drainAndFinish(target: target, start: start, deadline: .now() + .seconds(2), complete: finalized)
             }
         }
     }
-    private func drainAndFinish(target: Int64, start: CMTime, complete: @escaping @Sendable (Result<Double, Error>) -> Void) {
+    private func drainAndFinish(target: Int64, start: CMTime, deadline: DispatchTime, complete: @escaping @Sendable (Result<Double, Error>) -> Void) {
         guard !finished else { return }
         guard let writer, writer.status == .writing else {
             complete(.failure(writer?.error ?? Self.error("Video writer stopped."))); return
         }
         writeAudio(flush: true, targetOverride: target)
-        if failure == nil, target - audioSamples >= 1600 {
+        if failure == nil, target - audioSamples >= 1600, DispatchTime.now() < deadline {
             queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
-                self.drainAndFinish(target: target, start: start, complete: complete)
+                self.drainAndFinish(target: target, start: start, deadline: deadline, complete: complete)
             }
             return
+        }
+        // Backpressure must not prevent finalization forever. After the bounded
+        // drain window, preserve encoded media even if the audio tail is incomplete.
+        if failure == nil, target - audioSamples >= 1600 {
+            Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.muesli", category: "MeetingVideo")
+                .warning("Audio drain timed out; finalizing encoded media without the remaining audio tail.")
         }
         finished = true
         audio.withLock { $0 = nil }

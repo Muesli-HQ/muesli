@@ -9,6 +9,12 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "native/MuesliNative/Sources/MuesliNativeApp/ScreenVideoRecorder.swift"
 HARNESS = r"""
+final class StalledAudioInput: AVAssetWriterInput, @unchecked Sendable {
+ let blocked = OSAllocatedUnfairLock(initialState: false)
+ override var isReadyForMoreMediaData: Bool {
+  !blocked.withLock { $0 } && super.isReadyForMoreMediaData
+ }
+}
 extension ScreenVideoRecorder {
  static func probe() async throws {
   let url = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -61,8 +67,38 @@ extension ScreenVideoRecorder {
   print("PASS: timed-out waiter allows delayed writer completion and playable media")
  }
 
+ static func probeStalledAudioDrain() async throws {
+  let url = URL(fileURLWithPath: CommandLine.arguments[1] + ".stalled.mp4")
+  let recorder = ScreenVideoRecorder(url: url)
+  let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+  let input = StalledAudioInput(mediaType: .audio, outputSettings: audioOutputSettings)
+  writer.add(input)
+  precondition(writer.startWriting())
+  let start = CMClockGetTime(CMClockGetHostTimeClock()) - CMTime(seconds: 1, preferredTimescale: 16000)
+  writer.startSession(atSourceTime: start)
+  while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+  let sample = try audioBuffer([Int16](repeating: 100, count: 1600), time: start)
+  precondition(input.append(sample))
+  recorder.writer = writer; recorder.audioInput = input
+  recorder.firstTime = start; recorder.audioSamples = 1600
+  input.blocked.withLock { $0 = true }
+  let finalized = OSAllocatedUnfairLock(initialState: 0)
+  recorder.onFinalized = { finalized.withLock { $0 += 1 } }
+  let began = ContinuousClock.now
+  _ = try await recorder.stop(timeout: 5)
+  precondition(ContinuousClock.now - began < .seconds(5))
+  precondition(finalized.withLock { $0 } == 1)
+  precondition(recorder.audioSamples == 1600)
+  precondition(writer.status == .completed)
+  let asset = AVURLAsset(url: url)
+  let tracks = try await asset.loadTracks(withMediaType: .audio)
+  let duration = try await asset.load(.duration)
+  precondition(tracks.count == 1 && CMTimeGetSeconds(duration) > 0)
+  print("PASS: permanently stalled audio input finalizes existing media within the drain deadline")
+ }
+
 }
-@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe(); try await ScreenVideoRecorder.probeDelayedFinalization() } }
+@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe(); try await ScreenVideoRecorder.probeDelayedFinalization(); try await ScreenVideoRecorder.probeStalledAudioDrain() } }
 """
 
 with tempfile.TemporaryDirectory(prefix="muesli-meeting-encoding-") as directory:
