@@ -184,6 +184,7 @@ case "${shard}" in
       CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
+      MeetingTitleLayoutTests
     )
     ;;
   *)
