@@ -747,6 +747,10 @@ struct SettingsView: View {
 
             permissionsSection
 
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
+
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
                     compactActionButton("Clear dictation history", role: .destructive) {

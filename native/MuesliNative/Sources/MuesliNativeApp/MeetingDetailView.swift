@@ -278,6 +278,8 @@ struct MeetingDetailView: View {
     private func header(_ meeting: MeetingRecord) -> some View {
         if usesCompactQuickNotes {
             compactQuickNotesHeader(meeting)
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState)
+                .padding(.horizontal, 20)
         } else {
             standardHeader(meeting)
         }
@@ -312,10 +314,7 @@ struct MeetingDetailView: View {
 
             threadBreadcrumb
 
-            if let savedRecordingPath = meeting.savedRecordingPath,
-               FileManager.default.fileExists(atPath: savedRecordingPath) {
-                MeetingRecordingPlayerView(recordingPath: savedRecordingPath)
-            }
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState)
 
             activeMeetingAudioWarningBanner(for: meeting)
 
