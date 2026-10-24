@@ -51,11 +51,12 @@ struct DictationAudioRouteControllerTests {
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 82)
     }
 
-    @Test("meeting reuses route-aware preferred input policy")
-    func meetingReusesRouteAwarePreferredInputPolicy() {
+    @Test("meeting with no chosen microphone follows the system default, even when it is not the built-in mic")
+    func meetingFollowsTheActiveSystemInput() {
         let inspector = FakeCoreAudioDeviceInspector(
             defaultOutputDeviceID: 10,
             outputRouteKind: .headphoneLike,
+            defaultInputDeviceID: 90,
             builtInInputDeviceID: 82
         )
         let routeQueue = DispatchQueue(label: "test.dictation-audio-route.meeting-headphone-like")
@@ -66,9 +67,13 @@ struct DictationAudioRouteControllerTests {
         )
         routeQueue.sync {}
 
-        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
-        #expect(controller.meetingInputRouteSnapshot().preferredInputDeviceID == 82)
+        // nil means "use the system-default recorder", i.e. whichever mic is active.
+        #expect(controller.preferredInputDeviceIDForMeeting() == nil)
+        #expect(controller.meetingInputRouteSnapshot().preferredInputDeviceID == nil)
+        #expect(controller.meetingInputRouteSnapshot().defaultInputDeviceID == 90)
         #expect(controller.meetingInputRouteSnapshot().outputRouteKind == "headphone-like")
+        // Dictation keeps its own route-aware policy.
+        #expect(controller.preferredInputDeviceIDForDictation() == 82)
     }
 
     @Test("meeting uses system default recorder when built-in mic is already default")
@@ -242,7 +247,9 @@ struct DictationAudioRouteControllerTests {
 
         #expect(controller.preferredInputDeviceIDForDictation() == 91)
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 91)
-        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
+        // The dictation microphone does not choose the meeting microphone; with none chosen for
+        // meetings, the system default recorder is used.
+        #expect(controller.preferredInputDeviceIDForMeeting() == nil)
     }
 
     @Test("user selected default microphone uses system default recorder")
@@ -320,8 +327,8 @@ struct DictationAudioRouteControllerTests {
         #expect(inspector.inspectionCallCount == inspectionCountBeforeSelection)
     }
 
-    @Test("meeting keeps explicit built-in routing when another microphone is default")
-    func meetingKeepsExplicitBuiltInRoutingForDifferentDefault() {
+    @Test("meeting follows the system default when another microphone is default")
+    func meetingFollowsTheSystemDefaultWhenAnotherMicrophoneIsDefault() {
         let inspector = FakeCoreAudioDeviceInspector(
             defaultOutputDeviceID: 10,
             outputRouteKind: .speakerLike,
@@ -341,10 +348,9 @@ struct DictationAudioRouteControllerTests {
         routeQueue.sync {}
         routeQueue.sync {}
 
-        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
+        #expect(controller.preferredInputDeviceIDForMeeting() == nil)
         let snapshot = controller.meetingInputRouteSnapshot()
-        #expect(snapshot.preferredInputDeviceID == 82)
-        #expect(snapshot.preferredInputDeviceName == "MacBook Microphone")
+        #expect(snapshot.preferredInputDeviceID == nil)
         #expect(snapshot.defaultInputDeviceName == "External Mic")
     }
 
@@ -615,6 +621,162 @@ struct DictationAudioRouteControllerTests {
         routeQueue.sync {}
 
         #expect(inspector.availableInputDevicesCallCount == inventoryReadsBeforeChange)
+    }
+
+    // MARK: Controller to recorder handoff
+    //
+    // MuesliController.installMeetingCapture seeds the recorder from preferredInputDeviceIDForMeeting(),
+    // and its onMeetingPreferredInputDeviceChanged handler forwards the value through MeetingSession
+    // to the recorder's preferredInputDeviceID. These tests drive the real controller and the real
+    // RouteAwareMeetingMicRecorder through that same wiring, with only CoreAudio and the capture
+    // graphs faked.
+
+    @Test("a meeting with no chosen microphone starts the system default recorder, not the built-in one")
+    func meetingWithNoChosenMicrophoneStartsSystemDefaultRecorder() throws {
+        let rig = MeetingRouteRig(defaultInputDeviceID: 90)
+
+        try rig.recorder.prepare()
+        try rig.recorder.start()
+
+        #expect(rig.recorder.preferredInputDeviceID == nil)
+        #expect(rig.recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(rig.initial.startCalls == 1)
+        rig.recorder.cancel()
+        rig.recorder.waitForQuiescence()
+    }
+
+    @Test("a default input change with no chosen microphone reaches the recorder as a handoff")
+    func defaultInputChangeWithNoChosenMicrophoneHandsOff() async throws {
+        let rig = MeetingRouteRig(defaultInputDeviceID: 90)
+        try rig.recorder.start()
+
+        rig.setDefaultInput(91)
+        rig.controller.scheduleRouteChangeRefresh(.defaultInput)
+
+        try await rig.waitUntil { rig.replacement.startCalls == 1 }
+        rig.replacement.emit([1])
+        try await rig.waitUntil { rig.initial.stopCalls == 1 }
+        #expect(rig.recorder.preferredInputDeviceID == nil)
+        #expect(rig.recorder.activeRecorderKindForDebug() == .systemDefault)
+        rig.recorder.cancel()
+        rig.recorder.waitForQuiescence()
+    }
+
+    @Test("a device inventory change that leaves the default input alone does not restart the meeting microphone")
+    func inventoryChangeWithSameDefaultInputDoesNotHandOff() async throws {
+        let rig = MeetingRouteRig(defaultInputDeviceID: 90)
+        try rig.recorder.start()
+
+        rig.controller.scheduleRouteChangeRefresh(.deviceInventory)
+        rig.controller.scheduleRouteChangeRefresh(.defaultOutput)
+        try await Task.sleep(for: .milliseconds(100))
+        rig.routeQueue.sync {}
+        rig.recorder.waitForQuiescence()
+
+        #expect(rig.replacement.startCalls == 0)
+        #expect(rig.initial.stopCalls == 0)
+        rig.recorder.cancel()
+        rig.recorder.waitForQuiescence()
+    }
+
+    @Test("a default input change leaves an explicitly chosen meeting microphone alone")
+    func defaultInputChangeKeepsChosenMeetingMicrophone() async throws {
+        let rig = MeetingRouteRig(
+            defaultInputDeviceID: 82,
+            selectedMeetingMicrophone: AudioInputDeviceInfo(
+                uid: "external-mic", name: "External Mic", deviceID: 91, isBuiltIn: false
+            )
+        )
+        #expect(rig.recorder.preferredInputDeviceID == 91)
+        try rig.recorder.start()
+
+        rig.setDefaultInput(90)
+        rig.controller.scheduleRouteChangeRefresh(.defaultInput)
+        try await Task.sleep(for: .milliseconds(100))
+        rig.routeQueue.sync {}
+        rig.recorder.waitForQuiescence()
+
+        #expect(rig.recorder.preferredInputDeviceID == 91)
+        #expect(rig.recorder.activeRecorderKindForDebug() == .appScoped)
+        #expect(rig.replacement.startCalls == 0)
+        #expect(rig.initial.stopCalls == 0)
+        rig.recorder.cancel()
+        rig.recorder.waitForQuiescence()
+    }
+}
+
+/// The production meeting wiring minus CoreAudio and the capture graphs.
+private final class MeetingRouteRig {
+    let routeQueue = DispatchQueue(label: "test.dictation-audio-route.meeting-rig")
+    let inspector: FakeCoreAudioDeviceInspector
+    let controller: DictationAudioRouteController
+    let recorder: RouteAwareMeetingMicRecorder
+    /// The graph the meeting starts on, and the one a handoff builds next.
+    let initial: FakeMeetingMicRecorder
+    let replacement: FakeMeetingMicRecorder
+
+    init(defaultInputDeviceID: AudioObjectID, selectedMeetingMicrophone: AudioInputDeviceInfo? = nil) {
+        let builtIn = AudioInputDeviceInfo(uid: "built-in-mic", name: "MacBook Microphone", deviceID: 82, isBuiltIn: true)
+        inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .headphoneLike,
+            defaultInputDeviceID: defaultInputDeviceID,
+            builtInInputDeviceID: 82,
+            inputDevices: [builtIn] + (selectedMeetingMicrophone.map { [$0] } ?? [])
+        )
+        controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: routeQueue,
+            observesDefaultOutputChanges: false,
+            routeChangeSettleDelay: 0.01,
+            routeChangeMaximumDelay: 0.02
+        )
+        routeQueue.sync {}
+        routeQueue.sync {}
+        if let selectedMeetingMicrophone {
+            controller.selectedMeetingInputDeviceUID = selectedMeetingMicrophone.uid
+            routeQueue.sync {}
+        }
+
+        let preferred = controller.preferredInputDeviceIDForMeeting()
+        let initialKind: MeetingMicRecorderKind = preferred == nil ? .systemDefaultStreaming : .appScopedAudioQueue
+        let initial = FakeMeetingMicRecorder(kind: initialKind)
+        let replacement = FakeMeetingMicRecorder(kind: initialKind)
+        self.initial = initial
+        self.replacement = replacement
+        let controller = self.controller
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: preferred == nil ? initial : nil,
+            appScopedRecorder: preferred == nil ? nil : initial,
+            systemDefaultRecorderFactory: { replacement },
+            appScopedRecorderFactory: { replacement },
+            routeSnapshotProvider: { controller.meetingInputRouteSnapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: { _, _ in }
+        )
+        // MuesliController.installMeetingCapture
+        recorder.preferredInputDeviceID = preferred
+        // MuesliController.onMeetingPreferredInputDeviceChanged, via MeetingSession
+        controller.onMeetingPreferredInputDeviceChanged = { [weak recorder] deviceID in
+            recorder?.preferredInputDeviceID = deviceID
+        }
+        self.recorder = recorder
+    }
+
+    func setDefaultInput(_ deviceID: AudioObjectID) {
+        routeQueue.sync { inspector.defaultInputDeviceIDValue = deviceID }
+    }
+
+    func waitUntil(timeout: Duration = .seconds(5), condition: @escaping () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for the meeting microphone handoff")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
     }
 }
 
