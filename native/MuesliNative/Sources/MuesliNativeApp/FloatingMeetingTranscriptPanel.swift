@@ -110,6 +110,7 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 @MainActor
 final class FloatingMeetingTranscriptPanelController {
     private let model = FloatingMeetingTranscriptModel()
+    private let usesNotchBackground: Bool
     private let onHoverChanged: (Bool) -> Void
     private let onOpenNotes: () -> Void
     private let onDismiss: () -> Void
@@ -117,11 +118,13 @@ final class FloatingMeetingTranscriptPanelController {
     private var hostingView: FirstMouseHostingView<FloatingMeetingTranscriptPanelView>?
 
     init(
+        usesNotchBackground: Bool = false,
         onHoverChanged: @escaping (Bool) -> Void,
         onOpenNotes: @escaping () -> Void,
         onDismiss: @escaping () -> Void,
         onTogglePause: @escaping () -> Void
     ) {
+        self.usesNotchBackground = usesNotchBackground
         self.onHoverChanged = onHoverChanged
         self.onOpenNotes = onOpenNotes
         self.onDismiss = onDismiss
@@ -219,12 +222,14 @@ final class FloatingMeetingTranscriptPanelController {
         let hostingView = FirstMouseHostingView(
             rootView: FloatingMeetingTranscriptPanelView(
                 model: model,
+                usesNotchBackground: usesNotchBackground,
                 onHoverChanged: onHoverChanged,
                 onOpenNotes: onOpenNotes,
                 onDismiss: onDismiss,
                 onTogglePause: onTogglePause
             )
         )
+        if usesNotchBackground { hostingView.appearance = NSAppearance(named: .darkAqua) }
         hostingView.wantsLayer = true
         return hostingView
     }
@@ -232,6 +237,7 @@ final class FloatingMeetingTranscriptPanelController {
 
 private struct FloatingMeetingTranscriptPanelView: View {
     let model: FloatingMeetingTranscriptModel
+    let usesNotchBackground: Bool
     let onHoverChanged: (Bool) -> Void
     let onOpenNotes: () -> Void
     let onDismiss: () -> Void
@@ -268,8 +274,15 @@ private struct FloatingMeetingTranscriptPanelView: View {
                 width: FloatingMeetingTranscriptPlacement.panelSize.width,
                 height: FloatingMeetingTranscriptPlacement.panelSize.height
             )
-            .background(.ultraThinMaterial)
-            .background(MuesliTheme.backgroundRaised.opacity(0.94))
+            .background {
+                if usesNotchBackground {
+                    Color.black
+                } else {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .background(MuesliTheme.backgroundRaised.opacity(0.94))
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -281,9 +294,13 @@ private struct FloatingMeetingTranscriptPanelView: View {
 
     private var header: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Text("Live transcript")
-                .font(MuesliTheme.callout().weight(.semibold))
-                .foregroundStyle(MuesliTheme.textPrimary)
+            Button(action: onOpenNotes) {
+                Text("Live transcript")
+                    .font(MuesliTheme.callout().weight(.semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+            }
+            .buttonStyle(.plain)
+            .help("Open meeting notes")
             Spacer()
             Circle()
                 .fill(model.isPaused ? MuesliTheme.textTertiary : MuesliTheme.success)

@@ -187,13 +187,80 @@ final class NotchIndicatorController {
     private var toolResults: [NotchToolResult] = []
     private var appName = ""
     private var appIcon: NSImage?
+    private var transcriptHovered = false
+    private var transcriptDismissed = false
+    private var transcriptExit: DispatchWorkItem?
+    var meetingTranscriptEnabled = false {
+        didSet {
+            guard oldValue != meetingTranscriptEnabled else { return }
+            transcriptDismissed = false
+            if !meetingTranscriptEnabled { closeMeetingTranscript() }
+        }
+    }
+    private lazy var meetingTranscript = FloatingMeetingTranscriptPanelController(
+        usesNotchBackground: true,
+        onHoverChanged: { [weak self] in self?.setMeetingTranscriptHovered($0) },
+        onOpenNotes: { [weak self] in self?.closeMeetingTranscript(); self?.onOpenMeetingNotes?() },
+        onDismiss: { [weak self] in self?.dismissMeetingTranscript() },
+        onTogglePause: { [weak self] in self?.onToggleMeetingPause?() }
+    )
+    var onOpenMeetingNotes: (() -> Void)?
+    var meetingTranscriptFrame: CGRect? {
+        meetingTranscript.isVisible ? instructionPanel?.frame : nil
+    }
+
+    func updateMeetingTranscript(transcript: String, partialYou: String, partialOthers: String) {
+        meetingTranscript.update(transcript: transcript, partialYou: partialYou, partialOthers: partialOthers)
+    }
+
+    func setMeetingTranscriptHovered(_ hovered: Bool) {
+        transcriptExit?.cancel()
+        guard meeting, recording, meetingTranscriptEnabled else { return }
+        if hovered {
+            guard !transcriptDismissed else { return }
+            transcriptHovered = true
+            renderInstruction()
+        } else {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let point = self.pointerLocation()
+                guard self.panel?.frame.contains(point) != true,
+                      self.meetingTranscriptFrame?.contains(point) != true else { return }
+                self.transcriptDismissed = false
+                self.closeMeetingTranscript()
+            }
+            transcriptExit = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
+    }
+
+    func dismissMeetingTranscript() {
+        transcriptDismissed = true
+        closeMeetingTranscript()
+    }
+
+    var expandedPanelFrame: CGRect? {
+        instructionPanel?.isVisible == true ? instructionPanel?.frame : nil
+    }
+
+    private func closeMeetingTranscript() {
+        transcriptExit?.cancel()
+        transcriptHovered = false
+        meetingTranscript.hide()
+        renderInstruction()
+    }
+
     private var expanded = true
     private var screenBounds = CGRect.zero
     private var requiresReview = false
     private(set) var outcome: NotchOutcome?
     private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
 
-    init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry) {
+    private let pointerLocation: () -> NSPoint
+
+    init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
+         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+        self.pointerLocation = pointerLocation
         self.resolveGeometry = resolveGeometry
     }
     var onReview: (() -> Void)?
@@ -244,6 +311,9 @@ final class NotchIndicatorController {
         self.toolResults = toolResults
         self.appName = appName
         self.appIcon = appIcon
+        if self.screenBounds != screen.visibleFrame {
+            transcriptDismissed = false
+        }
         self.screenBounds = screen.visibleFrame
         self.accent = accent
         self.geometry = geometry
@@ -251,6 +321,12 @@ final class NotchIndicatorController {
         self.detail = detail
         self.recording = recording
         self.paused = paused
+        if !meeting || !recording {
+            closeMeetingTranscript()
+            meetingTranscript.reset()
+            transcriptDismissed = false
+        }
+        meetingTranscript.setPaused(paused)
         self.meeting = meeting
         self.handsFree = handsFree
         if panel == nil {
@@ -287,6 +363,8 @@ final class NotchIndicatorController {
     }
 
     func hide(reason: String = #function) {
+        closeMeetingTranscript()
+        transcriptDismissed = false
         logPresentation("hide from \(reason)")
         outcome = nil
         requiresReview = false
@@ -364,7 +442,8 @@ final class NotchIndicatorController {
                 self.expanded.toggle()
                 self.render()
             },
-            power: { [weak self] in self?.powerProvider?() ?? -160 })
+            power: { [weak self] in self?.powerProvider?() ?? -160 },
+            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
             hosting.rootView = view
         } else {
@@ -374,8 +453,10 @@ final class NotchIndicatorController {
     }
 
     private func renderInstruction() {
-        guard let geometry, expanded, visibility.active,
-              question != nil || instruction?.isEmpty == false else {
+        let showsTranscript = meeting && recording && meetingTranscriptEnabled && transcriptHovered
+        guard let geometry, visibility.active,
+              showsTranscript || (expanded && (question != nil || instruction?.isEmpty == false)) else {
+            meetingTranscript.hide()
             instructionPanel?.orderOut(nil)
             instructionPanel?.contentView = nil
             return
@@ -392,6 +473,23 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             instructionPanel = panel
         }
+        if showsTranscript, let instructionPanel {
+            let size = FloatingMeetingTranscriptPlacement.panelSize
+            let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - size.height),
+                width: size.width, height: size.height)
+            (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = false
+            if !meetingTranscript.isVisible {
+                instructionPanel.contentView = NSView(frame: CGRect(origin: .zero, size: size))
+            }
+            instructionPanel.setFrame(frame, display: true)
+            if let container = instructionPanel.contentView {
+                meetingTranscript.show(in: container, frame: container.bounds)
+            }
+            instructionPanel.orderFrontRegardless()
+            return
+        }
+        meetingTranscript.hide()
         (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
         if let question {
             let size = ComputerUseQuestionLayout.size(in: screenBounds)
@@ -520,6 +618,7 @@ private struct NotchIndicatorView: View {
     let outcome: NotchOutcome?
     let onToggleInstruction: () -> Void
     let power: () -> Float
+    var onHover: (Bool) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var edgeIntensity = 0.18
@@ -631,6 +730,7 @@ private struct NotchIndicatorView: View {
             .padding(.horizontal, 6)
             .frame(width: geometry.rightWingWidth)
         }
+        .onHover(perform: onHover)
         .buttonStyle(.plain)
         .foregroundStyle(outcome == .needsInput || outcome == .success ? .black : .white)
         .frame(width: geometry.frame().width, height: geometry.frame().height)

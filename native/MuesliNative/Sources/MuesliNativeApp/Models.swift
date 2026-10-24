@@ -35,6 +35,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let parakeetRedux = BackendOption(
+        backend: "fluidaudio",
+        model: "FluidInference/parakeet-redux-coreml",
+        label: "Parakeet Redux",
+        sizeLabel: "~220 MB",
+        description: "A smaller download for dictation in 25 languages.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -170,6 +179,10 @@ struct BackendOption: Equatable {
         switch model {
         case .e2b: .gemma4E2BLiteRT
         case .e4b: .gemma4E4BLiteRT
+        case .muesliCleanupV2:
+            BackendOption(backend: "gemma4-litert", model: model.repoID,
+                          label: model.label, sizeLabel: model.sizeLabel,
+                          description: "Fine-tuned from Gemma 4 E2B. More capable cleanup with app and screen context. Opt-in beta.", recommended: false)
         }
     }
 
@@ -186,7 +199,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetUnified, .parakeetMultilingual, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -273,9 +286,28 @@ struct BackendOption: Equatable {
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
 
-    /// Only models that have been downloaded and are ready for inference.
+    /// Choices offered by model pickers; retain the full catalog for saved-ID resolution.
+    static func compatibleOptions(
+        _ options: [BackendOption] = all,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        options.filter { $0.isCompatible(currentOSVersion: currentOSVersion) }
+    }
+
+    /// Cached unsupported models remain deletable, separately from inference choices.
+    static func incompatibleDownloadedOptions(
+        _ downloadedModelIDs: Set<String>,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        let deletableOptions = all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(Self.gemma4LiteRT)
+        return deletableOptions.filter {
+            downloadedModelIDs.contains($0.model) && !$0.isCompatible(currentOSVersion: currentOSVersion)
+        }
+    }
+
+    /// Only installed models supported by this Mac are ready for inference.
     static var downloaded: [BackendOption] {
-        all.filter { $0.isDownloaded }
+        compatibleOptions().filter { $0.isDownloaded }
     }
 
     /// Models that can keep up with post-meeting and imported recording transcription.
@@ -320,6 +352,9 @@ struct BackendOption: Equatable {
     /// Shared OS requirements for model selection in onboarding and the library.
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
+        if self == .parakeetRedux {
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        }
         switch backend {
         case "nemotron35", "qwen", "cohere", "bodhan", "gemma4-litert":
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
@@ -379,8 +414,10 @@ struct BackendOption: Equatable {
         backend: String,
         model: String,
         fallback: BackendOption?,
-        downloadedOptions: [BackendOption]
+        downloadedOptions: [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
     ) -> BackendOption? {
+        let downloadedOptions = compatibleOptions(downloadedOptions, currentOSVersion: currentOSVersion)
         if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
             return selected
         }
@@ -391,6 +428,42 @@ struct BackendOption: Equatable {
         return downloadedOptions.first
     }
 
+    /// Repair selections restored from a newer OS, preferring compatible installed models.
+    /// File availability alone cannot make an unsupported model usable.
+    @discardableResult
+    static func normalizeRestoredSelections(
+        in config: inout AppConfig,
+        downloadedOptions: @autoclosure () -> [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> Bool {
+        let dictation = resolve(backend: config.sttBackend, model: config.sttModel)
+        let meeting = resolve(backend: config.meetingTranscriptionBackend, model: config.meetingTranscriptionModel)
+        let unsupportedDictation = dictation?.isCompatible(currentOSVersion: currentOSVersion) == false
+        let unsupportedMeeting = meeting?.isCompatible(currentOSVersion: currentOSVersion) == false
+        guard unsupportedDictation || unsupportedMeeting else { return false }
+        let available = compatibleOptions(downloadedOptions(), currentOSVersion: currentOSVersion)
+        var changed = false
+        if unsupportedDictation {
+            let replacement = available.first ?? .whisper
+            config.sttBackend = replacement.backend
+            config.sttModel = replacement.model
+            changed = true
+        }
+        if unsupportedMeeting {
+            let replacement = resolveDownloaded(
+                backend: config.meetingTranscriptionBackend,
+                model: config.meetingTranscriptionModel,
+                fallback: resolve(backend: config.sttBackend, model: config.sttModel),
+                downloadedOptions: available.filter(\.supportsMeetingTranscription),
+                currentOSVersion: currentOSVersion
+            ) ?? .whisper
+            config.meetingTranscriptionBackend = replacement.backend
+            config.meetingTranscriptionModel = replacement.model
+            changed = true
+        }
+        return changed
+    }
+
     /// Check if this model's files exist on disk.
     var isDownloaded: Bool {
         let fm = FileManager.default
@@ -398,9 +471,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: model))
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
@@ -1420,6 +1491,10 @@ struct PostProcessorOption: Identifiable, Equatable {
         case configurable
         /// S1-mini is trained on a fixed prompt and control-line contract.
         case s1Mini
+        case muesliTrainedV12LFM
+        case muesliTrainedV12Qwen
+
+        var isTrainedV12: Bool { self == .muesliTrainedV12LFM || self == .muesliTrainedV12Qwen }
     }
 
     let id: String
@@ -1461,11 +1536,20 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     var isDownloaded: Bool {
-        FileManager.default.fileExists(atPath: modelURL.path)
+        managedModel?.isPresent(at: cacheDirectory) ?? FileManager.default.fileExists(atPath: modelURL.path)
+    }
+
+    var managedModel: ManagedCleanupModel? {
+        switch inputFormat {
+        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12Qwen: .qwen
+        default: nil
+        }
     }
 
     var logoResourceName: String {
-        inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
+        if self == .qwen35_0_8b { return "qwen-logo" }
+        return inputFormat == .s1Mini ? "superwhisper-logo" : "muesli_app_icon"
     }
 
     /// Quill needs a general instruction-following model. Models fine-tuned for
@@ -1490,9 +1574,9 @@ struct PostProcessorOption: Identifiable, Equatable {
     /// downloaded again.
     static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Muesli Cleanup (Legacy)",
+        label: "Muesli Cleanup Light (Legacy)",
         sizeLabel: "~390 MB",
-        description: "An earlier cleanup model for Muesli dictation. It handles filler words, corrections, and spoken lists, but is less consistent than the current model.",
+        description: "Fine-tuned from Qwen3. An earlier lightweight model for filler words, corrections, and spoken lists.",
         downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
         filename: "qwen3-postproc-v2-q4_k_m.gguf",
         isDownloadable: false
@@ -1511,9 +1595,9 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Muesli Cleanup",
+        label: "Muesli Cleanup Light",
         sizeLabel: "~505 MB",
-        description: "The best overall choice for everyday dictation. It removes filler words, follows “scratch that,” and turns spoken list cues into clean formatting.",
+        description: "Fine-tuned from Qwen3.5-0.8B. Small and fast for everyday cleanup, with lighter correction and context capabilities than Pro.",
         downloadURL: URL(string: "https://huggingface.co/phequals/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
         filename: "qwen35-postproc-v3-Q4_K_M.gguf"
     )
@@ -1528,7 +1612,18 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat: .s1Mini
     )
 
-    static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .qwen35_0_8b]
+    static let lfmV12 = PostProcessorOption(
+        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5 (Beta)", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
+        description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
+        downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
+        filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
+    static let qwenV12 = PostProcessorOption(
+        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5 (Beta)", sizeLabel: ManagedCleanupModel.qwen.sizeLabel,
+        description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
+        downloadURL: ManagedCleanupModel.qwen.files[0].remoteURL,
+        filename: ManagedCleanupModel.qwen.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+    static let all: [PostProcessorOption] = [.finetunedV3, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
+
     static let defaultOption: PostProcessorOption = .finetunedV3
     static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
 
@@ -1602,6 +1697,8 @@ struct PostProcessorOption: Identifiable, Equatable {
             configuredSystemPrompt
         case .s1Mini:
             Self.s1MiniSystemPrompt
+        case .muesliTrainedV12LFM, .muesliTrainedV12Qwen:
+            MuesliCleanupV2Prompt.systemPrompt
         }
     }
 }
@@ -2064,6 +2161,8 @@ struct AppConfig: Codable {
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
+    /// Splits microphone audio into "Local speaker N" labels for in-person meetings.
+    var diarizeMicrophoneAudio: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
@@ -2231,6 +2330,7 @@ struct AppConfig: Codable {
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
+        case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
@@ -2423,6 +2523,7 @@ struct AppConfig: Codable {
             ?? defaults.meetingRecordingFileFormat
         meetingRecordingFileFormat = MeetingRecordingFileFormat(rawValue: decodedMeetingRecordingFileFormat)?.rawValue
             ?? defaults.meetingRecordingFileFormat
+        diarizeMicrophoneAudio = (try? c.decode(Bool.self, forKey: .diarizeMicrophoneAudio)) ?? defaults.diarizeMicrophoneAudio
         waveformCacheOrphanCleanupMigrationApplied =
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied

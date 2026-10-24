@@ -55,6 +55,10 @@ case "${shard}" in
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      LocalStorageUsageTests
+      MeetingVideoStoreTests
+      VisualMemoryStoreTests
+      MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
       CGPointCodableTests
@@ -74,6 +78,11 @@ case "${shard}" in
       FluidAudioTranscriberTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
+      CleanupFormattingTests
+      CleanupFormattingReplayTests
+      MuesliCleanupV2Tests
+      ManagedCleanupV12Tests
+      LLMGenerationLimitTests
       FillerWordFilterTests
       JaroWinklerTests
       CustomWordMatcherApplyTests
@@ -137,6 +146,7 @@ case "${shard}" in
       MeetingSystemAudioWatchdogTests
       CoreAudioSystemRecorderTests
       AudioGraphExceptionBridgeTests
+      DictationAudioGraphExceptionTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
@@ -169,9 +179,12 @@ case "${shard}" in
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
+      MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
+      TranscriptReconcilerTests
+      SpeakerAttributionTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
@@ -182,6 +195,7 @@ case "${shard}" in
       CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
+      MeetingTitleLayoutTests
     )
     ;;
   *)
@@ -211,3 +225,7 @@ done
 
 echo "Running ${shard} shard with ${#filters[@]} filters"
 swift test "${args[@]}"
+
+if [[ "${shard}" == meetings ]]; then
+  python3 scripts/test_meeting_video_encoding.py
+fi

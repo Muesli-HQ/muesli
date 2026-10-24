@@ -277,7 +277,7 @@ struct SettingsView: View {
         var models = downloadedPostProcOptions
             .filter(\.supportsQuil)
             .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             models.append(.gemma4(model))
         }
         return models
@@ -326,8 +326,10 @@ struct SettingsView: View {
     }
 
     private var cleanupModelUsesFixedPrompt: Bool {
-        appState.selectedPostProcessorBackend == .local
-            && appState.activePostProcessor.inputFormat == .s1Mini
+        (appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat != .configurable)
+            || (appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).isCleanupOnly)
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
@@ -579,9 +581,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
@@ -738,6 +747,10 @@ struct SettingsView: View {
             }
 
             permissionsSection
+
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
@@ -1146,7 +1159,7 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
                 "Show transcript on hover",
-                description: "Show recent transcript beside the waveform.",
+                description: "Show live transcript when hovering over the pill or notch.",
                 controlWidth: meetingControlWidth
             ) {
                 settingsControl("meeting_hover_transcript")
@@ -1169,6 +1182,14 @@ struct SettingsView: View {
             }
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Identify in-room speakers",
+                description: "Speaker playback may cause duplicate labels; headphones help.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("diarize_microphone")
+            }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
@@ -1577,7 +1598,9 @@ struct SettingsView: View {
     private var fixedCleanupPromptNotice: some View {
         settingsRow(
             "Cleanup prompt",
-            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            description: appState.selectedPostProcessorBackend == .gemma4LiteRT
+                ? "Muesli Pro Cleanup uses its trained cleanup instructions. Custom presets do not apply."
+                : (appState.activePostProcessor.inputFormat.isTrainedV12 ? "This model uses its trained cleanup instructions. Custom presets do not apply." : "S1-mini uses Superwhisper’s built-in normalization instructions."),
             controlWidth: meetingControlWidth
         ) {
             Text("Built in")

@@ -63,7 +63,7 @@ struct QuilTransformationTests {
                 model: Gemma4LiteRTModelStore.repoID
             )
         }
-        for model in Gemma4LiteRTModel.allCases {
+        for model in Gemma4LiteRTModel.generalPurpose {
             #expect(throws: Never.self) {
                 try QuilModelPolicy.validate(
                     selectedText: "Rewrite me",
@@ -295,7 +295,7 @@ struct QuilAvailabilityGateTests {
 struct QuilDirectAudioTests {
     @Test("direct audio requires the exact same Gemma model for both features")
     func exactModelMatch() {
-        for model in Gemma4LiteRTModel.allCases {
+        for model in Gemma4LiteRTModel.generalPurpose {
             #expect(QuilModelPolicy.usesDirectAudio(dictation: .gemma4LiteRT(model), backend: .gemma4LiteRT, model: model.repoID))
         }
         #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .gemma4LiteRT, model: Gemma4LiteRTModel.e4b.repoID))
