@@ -140,7 +140,7 @@ actor TranscriptionCoordinator {
     ) throws -> BufferedTranscriptionSession {
         guard backend.supportsBufferedLiveTranscription else {
             throw NSError(domain: "MuesliBufferedTranscription", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Live previews require Parakeet v3 or WhisperKit."])
+                userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet or WhisperKit model."])
         }
         if backend.backend == "whisper" {
             let transcriber = whisperTranscriber
@@ -151,11 +151,18 @@ actor TranscriptionCoordinator {
                 )
             }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
+        if backend == .parakeetUnified {
+            let transcriber = parakeetUnifiedTranscriber
+            return BufferedTranscriptionSession(decode: { samples in
+                try await transcriber.transcribePreview(samples: samples)
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
         let transcriber = fluidTranscriber
+        let version = FluidAudioModel.version(for: backend.model)
         return BufferedTranscriptionSession(decode: { samples in
             try await transcriber.transcribePreview(
                 samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
-                expectedVersion: .v3
+                expectedVersion: version
             )
         }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
     }

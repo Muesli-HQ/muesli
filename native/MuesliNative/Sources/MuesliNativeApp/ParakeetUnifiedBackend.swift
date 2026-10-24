@@ -10,6 +10,10 @@ actor ParakeetUnifiedTranscriber {
     private var asrManager: UnifiedAsrManager?
     private var loadedPlan: ManagedASRModelPlan?
     private var loadGeneration: UInt64 = 0
+    // Actors can reenter at model awaits. Keep previews, final transcription,
+    // loading and unloading on one permit, as in FluidAudioTranscriber.
+    private var decodeBusy = false
+    private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -27,6 +31,9 @@ actor ParakeetUnifiedTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
         if asrManager != nil { return }
         let generation = loadGeneration
 
@@ -65,6 +72,9 @@ actor ParakeetUnifiedTranscriber {
 
     /// Transcribe a WAV file URL (16 kHz mono).
     func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
         guard let asrManager else { throw TranscriberError.notLoaded }
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(wavURL)
@@ -74,9 +84,35 @@ actor ParakeetUnifiedTranscriber {
         return (text, processingTime)
     }
 
-    func shutdown() {
+    func transcribePreview(samples: [Float]) async throws -> BufferedTranscriptionWindow {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
+        guard let asrManager else { throw TranscriberError.notLoaded }
+        let result = try await asrManager.transcribeWithTimings(samples)
+        try Task.checkCancellation()
+        let words = buildWordTimings(from: result.tokenTimings).map {
+            BufferedTranscriptionWord(text: $0.word, start: $0.startTime, end: $0.endTime)
+        }
+        return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
+    }
+
+    func shutdown() async {
+        // Invalidate any in-flight load before waiting for its permit.
+        loadGeneration &+= 1
+        await acquireDecode()
+        defer { releaseDecode() }
         asrManager = nil
         loadedPlan = nil
-        loadGeneration &+= 1
+    }
+
+    private func acquireDecode() async {
+        if !decodeBusy { decodeBusy = true; return }
+        await withCheckedContinuation { decodeWaiters.append($0) }
+    }
+
+    private func releaseDecode() {
+        if decodeWaiters.isEmpty { decodeBusy = false }
+        else { decodeWaiters.removeFirst().resume() }
     }
 }

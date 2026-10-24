@@ -248,9 +248,9 @@ struct SettingsView: View {
         }
         if selected == .selectedModelBuffered {
             guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
-                return "Choose Parakeet v3 or Whisper as the final model to enable this preview."
+                return "Choose Parakeet or Whisper as the final model to enable this preview."
             }
-            return "Previews Parakeet v3 or Whisper while recording. Completed segments remain authoritative."
+            return "Previews the selected Parakeet or Whisper model while recording. Completed segments remain authoritative."
         }
         return "Adds a low-latency preview."
     }

@@ -4,6 +4,7 @@ import Testing
 @Suite("Buffered dictation preview delivery")
 @MainActor
 struct BufferedDictationPreviewDeliveryTests {
+    @MainActor
     private final class Editor {
         var revisions: [UInt64] = []
         var blocked: [UInt64: CheckedContinuation<Bool, Never>] = [:]

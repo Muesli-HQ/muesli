@@ -6,7 +6,7 @@ Tracking request: https://github.com/Muesli-HQ/muesli/issues/564.
 
 ## Product contract
 
-Opt-in hands-free local dictation for Parakeet v3 and the catalog's WhisperKit
+Opt-in hands-free local dictation for Parakeet v2, v3, Redux, Unified and the catalog's WhisperKit
 models displays revisable text in a supported focused field while recording.
 Push-to-talk, hosted transcription, voice-note recording, and native Nemotron
 streaming retain their existing routes. The new mode is off for existing and new
@@ -19,7 +19,7 @@ authoritative final transcription and optional cleanup for the stop hotkey.
 Silence, VAD, and model EOU signals must not substitute for that explicit stop.
 
 Meetings expose “Selected final model (experimental preview)” in the existing
-live-transcript selector. It uses the selected Parakeet v3/Whisper model and
+live-transcript selector. It uses the selected supported Parakeet/Whisper model and
 language, with independent mic/system sessions. Existing VAD chunks remain the
 durable transcript authority, including when batch transcription is empty.
 Provisional text never enters checkpoints, saved segments, summaries or speaker
@@ -35,12 +35,18 @@ decodes after one second of new audio. These are scheduling parameters, not
 measured latency guarantees. A slow model suspends previews on overrun; capture
 and final transcription continue from the recorded WAV.
 
-Both adapters return text and word times. Normally re-decode at most 15 seconds per
+All adapters return text and word times. Normally re-decode at most 15 seconds per
 window, retain approximately three seconds of revisable right context and one
 second of left context at rollover, and assign ownership by audio time at a
 whole-word boundary. Never deduplicate by matching strings: deliberate repeated
 words must survive. Preserve decoder punctuation, Unicode and whitespace.
 Unusable timings suspend preview rather than silently losing audio or words.
+Parakeet v2, v3 and Redux share the FluidAudio TDT adapter with an exact loaded
+version check. Unified uses `UnifiedAsrManager.transcribeWithTimings` and the
+same token-to-word conversion. Its RNNT emission times can share frame boundaries;
+the shared engine validates them without inventing forced word boundaries.
+Unified model loading, previews, final decoding and unloading share one inference
+permit. All models retain the same cursor delivery and final cleanup paths.
 An uncertain ownership alignment preserves all pending audio and the last visible
 preview, then retries after more audio arrives. Recovery may expand the actual
 decode window up to 30 seconds. State changes are
@@ -312,3 +318,10 @@ deadlines, clipboard ownership changes, focus/edit/cancellation races, and
 unacknowledged dispatch without retries. Classifier and CI shard checks passed.
 Injected event sinks validate transport behavior without posting input to apps;
 the actual Codex composer experience still requires a manual dictation trial.
+
+Parakeet-family expansion validation passed 189 focused native tests across 13
+suites. An opt-in public 21.4-second speech fixture passed progressive timing,
+stable-prefix and rollover checks on installed v2, v3, Redux and Unified models;
+the three newly enabled models also passed full-file transcription. No models
+were downloaded. A race in the preview-delivery test editor was fixed by making
+its main-actor isolation explicit; production cursor delivery is unchanged.
