@@ -7,6 +7,13 @@ import Combine
 @MainActor
 final class ComputerUseReferenceDriver: ObservableObject {
     static let shared = ComputerUseReferenceDriver()
+    private let chromeProcessIsRunning: (Int32) -> Bool
+
+    init(chromeProcessIsRunning: @escaping (Int32) -> Bool = {
+        NSRunningApplication(processIdentifier: $0)?.isTerminated == false
+    }) {
+        self.chromeProcessIsRunning = chromeProcessIsRunning
+    }
     enum ChromeAccessState: String {
         case notConnected = "Not connected"
         case connecting = "Awaiting Chrome approval"
@@ -85,7 +92,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
     func refreshChromeAccess() {
         guard chromeAccess == .connected else { return }
         if daemon?.isRunning != true || proxy?.isRunning != true ||
-            chromePID.flatMap({ NSRunningApplication(processIdentifier: $0) })?.isTerminated != false ||
+            chromePID.map(chromeProcessIsRunning) != true ||
             Date().timeIntervalSince(connectedAt ?? .distantPast) >= 8 * 3600 ||
             Date().timeIntervalSince(lastBrowserUse ?? .distantPast) >= 30 * 60 {
             invalidateChromeAccess()
@@ -245,6 +252,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
     /// All planner browser dispatch goes through this gate, including forged
     /// calls. Inspection can detect a stale connection but cannot initiate setup.
     func callInBackground(name: String, arguments: [String: Any], timeout: TimeInterval = 30) async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
         if Self.isBrowserTool(name) { refreshChromeAccess() }
         if name == "browser_prepare" || (Self.isBrowserTool(name) && chromeAccess != .connected) {
             return ["result": ["isError": true, "content": [["type": "text", "text":
@@ -258,6 +266,24 @@ final class ComputerUseReferenceDriver: ObservableObject {
         if Self.isBrowserTool(name) {
             if Self.requiresChromeReconnect(response) {
                 invalidateChromeAccess()
+            } else if Self.browserRouteUnavailable(response) {
+                // A frame can disappear during navigation while CDP remains
+                // connected. Probe that existing socket, never prepare/reconnect
+                // or replay input. Only an observation may use this recovery.
+                guard name == "get_browser_state", let chromeSession, let chromePID else {
+                    invalidateChromeAccess()
+                    return response
+                }
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else { throw RequestDeadline.exceeded }
+                let connection = try await call(name: "browser_connection_status",
+                    arguments: ["session": chromeSession, "pid": chromePID], timeout: min(5, remaining))
+                if !Self.chromeConnectionIsLive(connection) { invalidateChromeAccess() }
+                // Do not undo revocation received while awaiting the probe.
+                if chromeAccess == .connected {
+                    lastBrowserUse = Date()
+                    scheduleChromeExpiry()
+                }
             } else {
                 lastBrowserUse = Date()
                 scheduleChromeExpiry()
@@ -289,7 +315,13 @@ final class ComputerUseReferenceDriver: ObservableObject {
         let refusal = structured["refusal"] as? [String: Any] ?? [:]
         guard let code = refusal["code"] as? String else { return false }
         return ["browser_requires_setup", "browser_consent_required", "browser_consent_revoked",
-                "browser_reconnect_exhausted", "browser_route_unavailable"].contains(code)
+                "browser_reconnect_exhausted"].contains(code)
+    }
+
+    static func browserRouteUnavailable(_ response: [String: Any]) -> Bool {
+        let result = response["result"] as? [String: Any] ?? [:]
+        let state = result["structuredContent"] as? [String: Any] ?? [:]
+        return (state["refusal"] as? [String: Any])?["code"] as? String == "browser_route_unavailable"
     }
 
     private var commandOwner: UUID?
@@ -543,6 +575,10 @@ final class ComputerUseReferenceDriver: ObservableObject {
         daemon = process; proxy = process; self.input = input; self.output = output
         let fd = output.fileDescriptor
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+    }
+    func installTestChromeAccess(session: String, pid: Int32) {
+        chromeSession = session; chromePID = pid
+        connectedAt = Date(); lastBrowserUse = Date(); chromeAccess = .connected
     }
     func waitForReadRecovery() async { await readRecovery?.value }
     #endif

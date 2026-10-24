@@ -220,6 +220,40 @@ final class ComputerUseReferenceRuntime {
         return nil
     }
 
+    /// The planner may inspect native windows even when browser tools are
+    /// available. Track the attached image separately from browser permission
+    /// to act: a native image must never satisfy a tab's verification gate.
+    @MainActor
+    struct PlannerImageState {
+        private(set) var data: String?
+        private(set) var caption = "No screenshot is attached."
+
+        mutating func clear() { self = Self() }
+
+        mutating func selectBrowser(_ browser: BrowserVisualState) {
+            data = browser.frame?.data
+            caption = browser.caption
+        }
+
+        mutating func observeNative(tool: String, arguments: [String: Any], response: [String: Any]) {
+            guard !ComputerUseReferenceDriver.isBrowserTool(tool) else { return }
+            let result = response["result"] as? [String: Any] ?? response
+            let state = result["structuredContent"] as? [String: Any]
+            let success = result["isError"] as? Bool != true && state?["status"] as? String != "refused"
+            if success, let image = ComputerUseReferenceRuntime.observation(from: response).image {
+                data = image
+                let target = arguments.filter { ["target", "pid", "window_id"].contains($0.key) }
+                let scope = (try? JSONSerialization.data(withJSONObject: target, options: [.sortedKeys]))
+                    .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                caption = "Attached native screenshot from \(tool), target arguments: \(scope). This is not browser-tab verification."
+            } else if ["get_window_state", "get_accessibility_tree", "verify_state"].contains(tool) {
+                // A failed/new native observation cannot inherit another
+                // window's or browser tab's old pixels.
+                clear()
+            }
+        }
+    }
+
     struct BrowserVisualState {
         struct Frame {
             let key: String
@@ -503,7 +537,7 @@ final class ComputerUseReferenceRuntime {
         let historyPrefix = "User command: \(command)\nDriver initialized. Start by finding the requested app and exact window."
         var historyEntries: [HistoryEntry] = []
         var observationProgress = ObservationProgress()
-        var image: String?
+        var plannerImage = PlannerImageState()
         var visuals = BrowserVisualState()
         var browserFingerprints: [String: String] = [:]
         var deadline = Date().addingTimeInterval(timeout)
@@ -523,7 +557,7 @@ final class ComputerUseReferenceRuntime {
             }
             if Date() >= deadline { return finish(.timedOut, "trycua CUA timed out", kind: "timed_out") }
             let allowance = budget.historyAllowance(instructions: instructions, tools: tools,
-                hasImage: image != nil && !ComputerUseLocalPlanner.isLocal(model))
+                hasImage: plannerImage.data != nil && !ComputerUseLocalPlanner.isLocal(model))
             guard let history = Self.budgetedHistory(prefix: historyPrefix, entries: historyEntries, tokens: allowance) else {
                 return finish(.failed, "The model's context budget cannot retain the remaining task evidence safely.", kind: "context_exhausted")
             }
@@ -533,8 +567,8 @@ final class ComputerUseReferenceRuntime {
             do {
                 let thinkingStarted = Date()
                 defer { deadline.addTimeInterval(max(0, Date().timeIntervalSince(thinkingStarted))) }
-                call = try await ComputerUsePlannerClient.callTool(systemPrompt: instructions, userPrompt: history + (browserToolsEnabled ? "\n" + visuals.caption : ""),
-                    imageDataURL: image, model: ComputerUsePlannerClient.plannerModel(for: config),
+                call = try await ComputerUsePlannerClient.callTool(systemPrompt: instructions, userPrompt: history + "\n" + plannerImage.caption,
+                    imageDataURL: plannerImage.data, model: ComputerUsePlannerClient.plannerModel(for: config),
                     reasoningEffort: config.computerUseReasoningEffort, tools: tools)
             }
             try Task.checkCancellation()
@@ -566,8 +600,8 @@ final class ComputerUseReferenceRuntime {
             }
             onStatus("trycua: \(call.name)")
             if Self.mutationTools.contains(call.name) { attemptedMutation = true }
-            if browserMutation { visuals.willMutate(arguments); image = nil }
-            else if Self.mutationTools.contains(call.name) { visuals = BrowserVisualState(); image = nil }
+            if browserMutation { visuals.willMutate(arguments); plannerImage.clear() }
+            else if Self.mutationTools.contains(call.name) { visuals = BrowserVisualState(); plannerImage.clear() }
             let response = try await driver.callInBackground(name: call.name,
                 arguments: ComputerUseReferenceDriver.scopedArguments(arguments, session: session),
                 timeout: max(0.001, deadline.timeIntervalSinceNow))
@@ -576,13 +610,16 @@ final class ComputerUseReferenceRuntime {
                 status: (response["result"] as? [String: Any])?["isError"] as? Bool == true ? "failed" : nil)
             if call.name == "get_browser_state" {
                 visuals.inspected(arguments, image: observed.image, success: (response["result"] as? [String: Any])?["isError"] as? Bool != true)
-                image = visuals.frame?.data
+                plannerImage.selectBrowser(visuals)
                 if let key = BrowserVisualState.key(arguments),
                    arguments["query"] == nil, arguments["scope_ref"] == nil, arguments["continuation"] == nil {
                     browserFingerprints[key] = Self.browserFingerprint(response, key: key)
                 }
                 append("visual_evidence", visuals.caption, step: step)
-            } else if !browserToolsEnabled { image = observed.image }
+            } else if !ComputerUseReferenceDriver.isBrowserTool(call.name) {
+                plannerImage.observeNative(tool: call.name, arguments: arguments, response: response)
+                append("visual_evidence", plannerImage.caption, step: step)
+            }
             let guidance = observationProgress.guidance(tool: call.name, arguments: arguments, response: response)
             if let guidance { append("backend", "Observation guidance at step \(step): \(guidance)") }
             let plannerObservation = observed.text + (guidance.map { "\nRuntime observation guidance: " + $0 } ?? "")
@@ -612,11 +649,11 @@ final class ComputerUseReferenceRuntime {
                 let evidence = Self.observation(from: checked)
                 browserFingerprints[key] = Self.browserFingerprint(checked, key: key)
                 visuals.inspected(verification, image: evidence.image, success: browserFingerprints[key] != nil)
-                image = visuals.frame?.data
+                plannerImage.selectBrowser(visuals)
                 append("backend", "Post-action verification: \(settled.reads) read(s). \(settled.evidence)", step: step)
                 append("visual_evidence", visuals.caption, step: step)
                 historyEntries.append(HistoryEntry(call: "Automatic visual verification of \(call.name)",
-                    observation: evidence.text + "\n" + settled.evidence + "\n" + visuals.caption + (image == nil ? " Screenshot unavailable: do not continue mutations or claim verified success." : " Compare the expected effect with both pixels and page structure before choosing another action. Capture alone does not prove success."),
+                    observation: evidence.text + "\n" + settled.evidence + "\n" + visuals.caption + (plannerImage.data == nil ? " Screenshot unavailable: do not continue mutations or claim verified success." : " Compare the expected effect with both pixels and page structure before choosing another action. Capture alone does not prove success."),
                     staleSnapshot: Self.snapshotHistorySummary(from: checked)))
             }
 

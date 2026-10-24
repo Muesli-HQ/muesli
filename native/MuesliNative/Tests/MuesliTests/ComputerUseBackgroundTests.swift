@@ -5,6 +5,120 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Native and browser planner images retain accurate provenance and independent verification")
+    func mixedPlannerImages() {
+        typealias Runtime = ComputerUseReferenceRuntime
+        var image = Runtime.PlannerImageState()
+        var browser = Runtime.BrowserVisualState()
+        let tab: [String: Any] = ["target_id": "chrome", "tab_id": "tab", "include_screenshot": true]
+        let native: [String: Any] = ["result": ["content": [["type": "image", "data": "bmF0aXZl", "mimeType": "image/png"]]]]
+        // Browser tools are available in this mode, but native windows still
+        // supply the image handed to callTool(imageDataURL:).
+        let catalog = Runtime.definitions(from: ["get_window_state", "get_browser_state"].map {
+            ["name": $0, "inputSchema": ["type": "object"]]
+        })
+        #expect(catalog.contains { $0["name"] as? String == "get_window_state" })
+        #expect(catalog.contains { $0["name"] as? String == "get_browser_state" })
+        browser.inspected(tab, image: "browser-old", success: true)
+        image.selectBrowser(browser)
+        image.observeNative(tool: "get_window_state", arguments: ["pid": 42, "window_id": 7], response: native)
+        #expect(image.data == "data:image/png;base64,bmF0aXZl")
+        #expect(image.caption.contains("native screenshot") && image.caption.contains("42"))
+        #expect(!image.caption.contains("Attached browser screenshot"))
+        #expect(browser.frame?.data == "browser-old")
+        browser.willMutate(tab)
+        image.observeNative(tool: "get_window_state", arguments: [:], response: native)
+        #expect(browser.pending != nil && !browser.mayMutate(tab))
+        browser.inspected(tab, image: "browser-new", success: true)
+        image.selectBrowser(browser)
+        #expect(image.data == "browser-new" && image.caption.contains("chrome/tab"))
+        #expect(browser.mayMutate(tab))
+        image.observeNative(tool: "list_windows", arguments: [:], response: ["result": [:]])
+        #expect(image.data == "browser-new") // Unrelated metadata does not replace the image.
+        for failure: [String: Any] in [
+            ["result": [:]],
+            ["result": ["isError": true, "content": [["type": "image", "data": "stale"]]]],
+            ["result": ["structuredContent": ["status": "refused"], "content": [["type": "image", "data": "stale"]]]]
+        ] {
+            image.selectBrowser(browser)
+            image.observeNative(tool: "get_window_state", arguments: ["window_id": 8], response: failure)
+            #expect(image.data == nil && image.caption == "No screenshot is attached.")
+        }
+        image.observeNative(tool: "get_window_state", arguments: [:], response: native)
+        image.clear()
+        #expect(image.data == nil)
+    }
+
+    @Test("Navigation settling traverses the real background gate and MCP transport without replaying input")
+    func navigationRecoveryThroughDriver() async throws {
+        typealias Runtime = ComputerUseReferenceRuntime
+        for scenario in ["recover", "persistent", "disconnected", "revoked", "mutation_failure"] {
+            let driver = ComputerUseReferenceDriver(chromeProcessIsRunning: { $0 == 42 })
+            let process = Process(), input = Pipe(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = ["-u", "-c", """
+            import json,sys
+            scenario=sys.argv[1]
+            calls=[]
+            reads=0
+            def refusal(code):
+                return {'isError': True, 'structuredContent': {'status':'refused','refusal':{'code':code}}}
+            for line in sys.stdin:
+                req=json.loads(line)
+                name=req['params']['name']
+                calls.append(name)
+                if name=='get_browser_state':
+                    reads+=1
+                    if scenario=='revoked': result=refusal('browser_consent_revoked')
+                    elif reads==1 or scenario=='persistent': result=refusal('browser_route_unavailable')
+                    else: result={'content':[{'type':'image','data':'YnJvd3Nlcg==','mimeType':'image/png'}], 'structuredContent':{'status':'ok','mode':'snapshot','target_id':'window','tab_id':'tab','refs':[{'role':'button','name':'new page'}]}}
+                elif name=='browser_connection_status': result={'structuredContent':{'connected':scenario!='disconnected'}}
+                elif name=='browser_click' and scenario=='mutation_failure': result=refusal('browser_route_unavailable')
+                elif name=='get_window_state': result={'content':[{'type':'image','data':'bmF0aXZl','mimeType':'image/png'}]}
+                elif name=='fixture_log': result={'calls':calls}
+                else: result={}
+                print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
+            """, scenario]
+            process.standardInput = input; process.standardOutput = output
+            try process.run()
+            driver.installTestTransport(process: process, input: input.fileHandleForWriting, output: output.fileHandleForReading)
+            driver.installTestChromeAccess(session: "fixture", pid: 42)
+            let owner = try driver.claimCommand()
+            do {
+                _ = try await driver.callInBackground(name: "browser_click", arguments: ["target_id": "window", "tab_id": "tab"])
+                if scenario != "mutation_failure" {
+                    let settled = try await Runtime.settleBrowserObservation(key: "window/tab", before: nil, read: {
+                        try await driver.callInBackground(name: "get_browser_state", arguments: ["target_id": "window", "tab_id": "tab", "include_screenshot": true])
+                    }, pause: {})
+                    #expect(settled.reads == ["recover": 3, "persistent": 4, "disconnected": 2, "revoked": 1][scenario])
+                    if scenario == "recover" {
+                        #expect(settled.evidence.contains("matched across two reads"))
+                        var browser = Runtime.BrowserVisualState()
+                        browser.inspected(["target_id": "window", "tab_id": "tab"], image: Runtime.observation(from: settled.response).image, success: true)
+                        var image = Runtime.PlannerImageState()
+                        image.selectBrowser(browser)
+                        let native = try await driver.callInBackground(name: "get_window_state", arguments: ["pid": 42, "window_id": 7])
+                        image.observeNative(tool: "get_window_state", arguments: ["pid": 42, "window_id": 7], response: native)
+                        #expect(image.data == "data:image/png;base64,bmF0aXZl")
+                    }
+                }
+                let log = try await driver.call(name: "fixture_log", arguments: [:])
+                let calls = try #require((log["result"] as? [String: Any])?["calls"] as? [String])
+                #expect(calls.filter { $0 == "browser_click" }.count == 1)
+                #expect(!calls.contains("browser_prepare"))
+                #expect(calls.filter { $0 == "get_browser_state" }.count == ["recover": 3, "persistent": 4, "disconnected": 1, "revoked": 1, "mutation_failure": 0][scenario])
+                #expect(calls.filter { $0 == "browser_connection_status" }.count == ["recover": 1, "persistent": 4, "disconnected": 1, "revoked": 0, "mutation_failure": 0][scenario])
+                #expect(driver.chromeAccess == (["recover", "persistent"].contains(scenario) ? .connected : .reconnectRequired))
+                driver.releaseCommand(owner)
+                await driver.stop()
+            } catch {
+                driver.releaseCommand(owner)
+                await driver.stop()
+                throw error
+            }
+        }
+    }
+
     @Test("Chromium compositor groups resolve to their actual owning window")
     func chromiumOwnership() {
         // The AXGroup has an ID, but it is not a top-level window identity.
