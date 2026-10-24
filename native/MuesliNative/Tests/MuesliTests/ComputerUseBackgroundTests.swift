@@ -5,6 +5,86 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Chromium compositor groups resolve to their actual owning window")
+    func chromiumOwnership() {
+        // The AXGroup has an ID, but it is not a top-level window identity.
+        let roles = ["AXButton", "AXGroup", "AXWindow", "AXSheet", "AXWindow"]
+        let ids: [CGWindowID?] = [nil, 999, 42, 77, 84]
+        func resolve(_ start: Int, parents: [Int: Int], depth: Int = 32, foreign: Int? = nil) -> CGWindowID? {
+            ComputerUseWindowIdentity.owningWindowID(start: start, maxDepth: depth,
+                role: { roles[$0] }, parent: { parents[$0] }, windowID: { ids[$0] },
+                belongsToProcess: { $0 != foreign })
+        }
+        #expect(resolve(0, parents: [0: 1, 1: 2]) == 42)
+        #expect(resolve(1, parents: [1: 2]) == 42)
+        #expect(resolve(1, parents: [:]) == nil)
+        #expect(resolve(0, parents: [0: 1, 1: 0]) == nil)
+        #expect(resolve(0, parents: [0: 1, 1: 2], depth: 2) == nil)
+        #expect(resolve(0, parents: [0: 1, 1: 2], foreign: 1) == nil)
+        #expect(resolve(0, parents: [0: 4]) == 84) // A sibling must not become window 42.
+        #expect(resolve(3, parents: [3: 2]) == 42)
+        #expect(resolve(3, parents: [:]) == 77)
+    }
+
+    @Test("Restoring focus cannot erase a target activation or excuse another action")
+    func stickyFocusViolation() {
+        let guardState = ComputerUseBackgroundFocusGuard()
+        guardState.recordTargetActivation(userActed: true)
+        guardState.recordRestoration(priorAppIsFrontmost: true)
+        #expect(!guardState.focusChanged)
+        guardState.recordTargetActivation(userActed: false)
+        guardState.recordRestoration(priorAppIsFrontmost: false)
+        guardState.recordRestoration(priorAppIsFrontmost: true)
+        guardState.recordTargetActivation(userActed: true)
+        #expect(guardState.focusChanged)
+        #expect(guardState.diagnostics.contains { $0.contains("appFocusRestored=true") })
+        guardState.begin(bundleID: "test.nonexistent.background-target")
+        #expect(!guardState.focusChanged)
+        guardState.end()
+    }
+
+    @Test("Probe-only launch preserves native command routing and dev-only boundaries")
+    func probeBackendSelection() {
+        let args = ["app", "--trycua-probe-only", "--trycua-driver", "/tmp/driver"]
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli.dev.a", arguments: args, forCommands: false) == "/tmp/driver")
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli.dev.a", arguments: args, forCommands: true) == nil)
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli.dev.a", arguments: args.filter { $0 != "--trycua-probe-only" }, forCommands: true) == "/tmp/driver")
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli", arguments: args, forCommands: false) == nil)
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli.dev.a", arguments: ["app", "--trycua-driver"], forCommands: true) == nil)
+        #expect(ComputerUseReferenceDriver.executable(bundleID: "com.muesli.dev.a", arguments: ["app", "--trycua-driver", "--trycua-probe-only"], forCommands: false) == nil)
+    }
+
+    @Test("Blocked finish is failure before writes and incomplete after uncertain writes")
+    func blockedReferenceFinish() {
+        for message in ["Could not complete the task; permission required.", "Task is blocked", "Unable to find the target", "Did not post the reply"] {
+            #expect(ComputerUseReferenceRuntime.terminalOutcome(.done, message: message, attemptedMutation: false).0 == .failed)
+            let after = ComputerUseReferenceRuntime.terminalOutcome(.done, message: message, attemptedMutation: true)
+            #expect(after.0 == .incomplete)
+            #expect(after.1.contains("Do not repeat"))
+        }
+        #expect(ComputerUseReferenceRuntime.terminalOutcome(.done, message: "Verified the posted reply", attemptedMutation: true).0 == .done)
+    }
+
+    @Test("Element-free scrolling uses the acquired viewport and page-sized pixel deltas")
+    func viewportScrolling() throws {
+        let call = try JSONDecoder().decode(ComputerUseToolCall.self, from: Data(#"{"tool":"scroll","direction":"down"}"#.utf8))
+        let schema = try #require(ComputerUseToolRegistry.definitions.first { $0.name == .scroll }).schema
+        #expect(Set(schema.required) == ["tool", "direction"])
+        #expect(call.validationFailure() == nil)
+        #expect(call.elementIndex == nil && call.elementID == nil && call.screenshotID == nil)
+        let frame = CGRect(x: -1200, y: 80, width: 1000, height: 800)
+        #expect(ComputerUseBackgroundSession.defaultScrollPoint(frame: frame) == CGPoint(x: -700, y: 480))
+        #expect(ComputerUseBackgroundSession.defaultScrollPoint(frame: .zero) == nil)
+        let down = try #require(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .down, pages: 1, frame: frame))
+        #expect(down.vertical == -640 && down.horizontal == 0)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .up, pages: 0.5, frame: frame)?.vertical == 320)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .right, pages: 1, frame: frame)?.horizontal == -800)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .left, pages: 100, frame: frame)?.horizontal == 2400)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .down, pages: .nan, frame: frame) == nil)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .down, pages: -1, frame: frame) == nil)
+        #expect(ComputerUseBackgroundInput.scrollPixelDeltas(direction: .down, pages: 1, frame: .zero) == nil)
+    }
+
     @Test("Post-action verification waits through stale evidence without replaying input")
     func browserSettling() async throws {
         func snapshot(_ label: String, id: Int = 1, tab: String = "a", image: Bool = true) -> [String: Any] {

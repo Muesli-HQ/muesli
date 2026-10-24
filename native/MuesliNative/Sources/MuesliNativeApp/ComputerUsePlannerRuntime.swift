@@ -67,7 +67,7 @@ final class ComputerUsePlannerRuntime {
             try await ComputerUseTextEditing.prepare(call, registry: registry, config: config, coordinator: writer)
         }
         self.now = now
-        self.referenceExecutable = observe == nil && plan == nil && execute == nil ? ComputerUseReferenceDriver.selectedExecutable : nil
+        self.referenceExecutable = observe == nil && plan == nil && execute == nil ? ComputerUseReferenceDriver.commandExecutable : nil
         self.isScreenLocked = isScreenLocked
         self.config = config
         self.maxSteps = maxSteps
@@ -236,7 +236,7 @@ final class ComputerUsePlannerRuntime {
             case .finish:
                 onStatus("Done")
                 let message = toolCall.reason?.isEmpty == false ? toolCall.reason! : "Done"
-                if finishIndicatesFailure(message) {
+                if Self.finishIndicatesFailure(message) {
                     let blockedMessage = "Planner attempted to finish with an incomplete or blocked result: \(message)"
                     traceLog.append(traceEvent(kind: "failed", title: "Final output blocked", body: blockedMessage, status: "failed", step: step))
                     return .init(status: .failed, message: blockedMessage, traceEvents: traceLog.events)
@@ -611,7 +611,7 @@ final class ComputerUsePlannerRuntime {
         return parts.joined(separator: "|")
     }
 
-    private func finishIndicatesFailure(_ reason: String) -> Bool {
+    static func finishIndicatesFailure(_ reason: String) -> Bool {
         let lowered = reason.lowercased()
         let failurePatterns = [
             #"^\s*(blocked|failed|unsupported|incomplete|not completed?)\s*[.!]?\s*$"#,

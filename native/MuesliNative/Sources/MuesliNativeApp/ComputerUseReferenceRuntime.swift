@@ -338,6 +338,7 @@ final class ComputerUseReferenceRuntime {
 
     static func terminalOutcome(_ status: ComputerUsePlannerRuntimeResult.Status, message: String,
                                 attemptedMutation: Bool) -> (ComputerUsePlannerRuntimeResult.Status, String) {
+        let status = status == .done && ComputerUsePlannerRuntime.finishIndicatesFailure(message) ? .failed : status
         guard attemptedMutation, status != .done else { return (status, message) }
         let detail = "Actions may already have taken effect; task completion could not be verified. Do not repeat a submission without checking its result. " + message
         return (status == .cancelled ? .cancelled : .incomplete, detail)
@@ -631,7 +632,9 @@ final class ComputerUseReferenceRuntime {
                         kind: String) -> ComputerUsePlannerRuntimeResult {
         let (resolvedStatus, resolvedMessage) = Self.terminalOutcome(status, message: message,
             attemptedMutation: attemptedMutation)
-        append(resolvedStatus == .incomplete ? "incomplete" : kind, resolvedMessage)
+        let resolvedKind = resolvedStatus == .incomplete ? "incomplete" :
+            (status == .done && resolvedStatus == .failed ? "failed" : kind)
+        append(resolvedKind, resolvedMessage)
         return .init(status: resolvedStatus, message: resolvedMessage, traceEvents: events)
     }
 }
