@@ -366,10 +366,12 @@ struct MeetingDetailView: View {
                     HStack(spacing: 6) {
                         metadataItem(
                             systemImage: "calendar",
-                            text: MeetingBrowserLogic.formatStartTime(meeting.startTime)
+                            text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime)
                         )
-                        metadataDivider
-                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        if meeting.source != .granolaImport {
+                            metadataDivider
+                            metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        }
                     }
                     .lineLimit(1)
                 }
@@ -467,13 +469,15 @@ struct MeetingDetailView: View {
             )
 
             HStack(spacing: MuesliTheme.spacing8) {
-                metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
-                metadataDivider
-                metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                metadataItem(systemImage: "calendar", text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                if meeting.source != .granolaImport {
+                    metadataDivider
+                    metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                }
                 metadataDivider
                 metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
                 if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
-                    SyncOriginBadge(label: label)
+                    SyncOriginBadge(label: label, help: SyncOriginDisplay.help(forMeetingSource: meeting.source))
                 }
             }
         }
@@ -712,6 +716,21 @@ struct MeetingDetailView: View {
             let sourceTarget = citationTarget(for: meeting)
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
+
+                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
+                    DisclosureGroup("Original manual notes from Granola") {
+                        MeetingNotesView(markdown: meeting.manualNotes)
+                            .frame(height: 200)
+                    }
+                }
+                if meeting.source == .granolaImport, documentMode == .notes, meeting.formattedNotes.isEmpty {
+                    Text("No summary was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if meeting.source == .granolaImport, documentMode == .transcript, meeting.rawTranscript.isEmpty {
+                    Text("No transcript was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
@@ -1759,7 +1778,7 @@ struct MeetingDetailView: View {
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
-        meeting.notesState != .structuredNotes
+        meeting.source != .granolaImport && meeting.notesState != .structuredNotes
     }
 
     private func hasPendingTemplateChange(for meeting: MeetingRecord) -> Bool {
@@ -1796,6 +1815,7 @@ struct MeetingDetailView: View {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
@@ -1822,13 +1842,15 @@ struct MeetingDetailView: View {
     /// The notes action exports the same source the detail view displays. Other
     /// export modes retain their normal transcript/full-meeting composition.
     static func notesExportOverride(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String? {
-        usesManualNotes(for: meeting, citation: citation) ? meeting.manualNotes : nil
+        if usesManualNotes(for: meeting, citation: citation) { return meeting.manualNotes }
+        return meeting.source == .granolaImport ? meeting.formattedNotes : nil
     }
 
     static func notesCopyContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }

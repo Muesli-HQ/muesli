@@ -242,6 +242,7 @@ enum MeetingBrowserLogic {
 struct MeetingsView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var isGranolaImportPresented = false
     @State private var selectedFilter: MeetingBrowserFilter = .all
     @State private var selectedSort: MeetingBrowserSort = .newestFirst
     // Bumped when the system locale changes so cached start-time labels redraw.
@@ -296,6 +297,9 @@ struct MeetingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(MuesliTheme.backgroundBase)
+        .sheet(isPresented: $isGranolaImportPresented) {
+            GranolaImportView(controller: controller)
+        }
         .sheet(
             isPresented: Binding(
                 get: { appState.isMeetingTemplatesManagerPresented },
@@ -349,6 +353,7 @@ struct MeetingsView: View {
                                 hasFollowUps: presentation.meetingIDsWithFollowUps.contains(meeting.id),
                                 localeVersion: localeChangeVersion,
                                 folders: appState.folders,
+                                browsedFolderID: appState.selectedFolderID,
                                 onSelect: { controller.showMeetingDocument(id: meeting.id) },
                                 onMove: { folderID in
                                     controller.moveMeeting(id: meeting.id, toFolder: folderID)
@@ -748,13 +753,14 @@ struct MeetingsView: View {
             .help("Start a quick meeting note")
             .fixedSize()
 
-            Button {
-                controller.importAudioFile()
+            Menu {
+                Button("Audio file…") { controller.importAudioFile() }
+                Button("Granola…") { isGranolaImportPresented = true }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("Import Audio")
+                    Text("Import")
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -770,7 +776,7 @@ struct MeetingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
-            .help("Import an audio file for offline transcription")
+            .help("Import audio or meeting notes from Granola")
             .fixedSize()
 
             sortButton

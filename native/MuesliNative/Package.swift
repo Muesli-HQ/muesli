@@ -14,6 +14,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../AIElementsSwift"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
@@ -38,8 +39,9 @@ let package = Package(
 
         .target(
             name: "MuesliCore",
-            dependencies: [],
+            dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Sources/MuesliCore",
+            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]
@@ -63,7 +65,7 @@ let package = Package(
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
-            resources: [.copy("Resources/muesli-export-logo.png"), .copy("Resources/recording-announcement.aiff")],
+            resources: [.copy("Resources/muesli-export-logo.png"), .copy("Resources/granola-export-guide.png"), .copy("Resources/recording-announcement.aiff")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("Contacts"),
@@ -121,7 +123,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge", .product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
