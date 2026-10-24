@@ -137,10 +137,8 @@ enum QuilTransformationOutput {
 }
 
 enum QuilModelPolicy {
-    static func usesDirectAudio(dictation: BackendOption, backend: TranscriptCleanupBackendOption, model: String) -> Bool {
+    static func usesDirectAudio(backend: TranscriptCleanupBackendOption, model: String) -> Bool {
         backend == .gemma4LiteRT
-            && dictation.backend == BackendOption.gemma4E2BLiteRT.backend
-            && dictation.model == model
             && Gemma4LiteRTModel.generalPurpose.contains { $0.repoID == model }
     }
 
