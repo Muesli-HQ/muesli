@@ -2195,6 +2195,10 @@ struct SettingsView: View {
                 }
                 .help("How far ahead to show scheduled meetings and check meeting reminders.")
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Only show events with a meeting link", controlWidth: meetingControlWidth) {
+                    settingsControl("calendar_meeting_links_only")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
 

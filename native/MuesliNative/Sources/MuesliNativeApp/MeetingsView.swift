@@ -321,7 +321,7 @@ struct MeetingsView: View {
                     controller: controller
                 )
 
-                if !appState.upcomingCalendarEvents.isEmpty {
+                if !appState.visibleUpcomingCalendarEvents.isEmpty {
                     comingUpSection
                 }
 
@@ -415,7 +415,7 @@ struct MeetingsView: View {
     private var groupedUpcomingEvents: [UpcomingEventGroup] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let timedEvents = appState.upcomingCalendarEvents.filter { !$0.isAllDay && !appState.hiddenCalendarEventIDs.contains($0.id) }
+        let timedEvents = appState.visibleUpcomingCalendarEvents
         let grouped = Dictionary(grouping: timedEvents) { event in
             calendar.startOfDay(for: event.startDate)
         }
