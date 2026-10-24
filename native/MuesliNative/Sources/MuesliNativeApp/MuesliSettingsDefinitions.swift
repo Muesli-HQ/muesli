@@ -254,7 +254,7 @@ extension MuesliController {
             }
         }
         toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
-        toggle("buffered_live_dictation", "Live hands-free dictation", \.enableBufferedLiveDictation,
+        toggle("buffered_live_dictation", "Watch text appear during hands-free mode", \.enableBufferedLiveDictation,
             unavailable: { enabled in
                 guard enabled else { return nil }
                 guard self.selectedDictationProvider == .local,

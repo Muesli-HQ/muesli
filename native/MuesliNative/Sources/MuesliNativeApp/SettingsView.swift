@@ -1025,7 +1025,7 @@ struct SettingsView: View {
             if appState.dictationProvider == .local,
                displayedDictationBackend?.supportsBufferedLiveTranscription == true {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Live hands-free dictation") {
+                settingsRow("Watch text appear during hands-free mode") {
                     settingsControl("buffered_live_dictation")
                 }
                 settingsDescription("Experimental. Text appears as you speak in supported fields and is cleaned up when you stop. Editing or moving the cursor stops updates; the final result remains in history. Push-to-talk is unchanged.")
