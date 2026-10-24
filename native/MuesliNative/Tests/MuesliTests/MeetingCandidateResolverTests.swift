@@ -763,6 +763,8 @@ struct MeetingCandidateResolverTests {
         "com.tinyspeck.slackmacgaphelper",
         "com.tinyspeck.slackmacgap-fake.helper",
         "evil.com.tinyspeck.slackmacgap.helper",
+        "com.tinyspeck.slackmacgap.other",
+        "com.tinyspeck.slackmacgap.helperish",
         "net.whatsapp.WhatsApp.helper",
         "com.microsoft.teams2.helper",
     ])

@@ -530,8 +530,11 @@ final class MeetingCandidateResolver {
     /// The existing full-duplex checks and parent-keyed suppression then apply unchanged.
     private func canonicalSlackAudioProcess(_ process: AudioProcessActivity) -> AudioProcessActivity {
         let slackBundleID = "com.tinyspeck.slackmacgap"
+        let helperBundleID = "\(slackBundleID).helper"
+        let isSlackHelper = process.bundleID.caseInsensitiveCompare(helperBundleID) == .orderedSame
+            || isHelperBundleID(process.bundleID, for: helperBundleID)
         guard process.bundleID != selfBundleID, slackBundleID != selfBundleID,
-              isHelperBundleID(process.bundleID, for: slackBundleID) else { return process }
+              isSlackHelper else { return process }
         return AudioProcessActivity(
             audioObjectID: process.audioObjectID,
             pid: process.pid,
