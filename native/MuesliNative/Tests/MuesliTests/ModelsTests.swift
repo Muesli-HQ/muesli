@@ -1091,6 +1091,20 @@ struct MeetingSummaryBackendTests {
 @Suite("AppConfig")
 struct AppConfigTests {
 
+    @Test("Calendar meeting-link filter defaults on and preserves a saved opt-out")
+    func calendarMeetingLinkFilterPersistence() throws {
+        #expect(AppConfig().calendarMeetingLinksOnly)
+        for json in ["{}", #"{"calendar_meeting_links_only":"invalid"}"#] {
+            #expect(try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8)).calendarMeetingLinksOnly)
+        }
+        var config = AppConfig()
+        config.calendarMeetingLinksOnly = false
+        let data = try JSONEncoder().encode(config)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["calendar_meeting_links_only"] as? Bool == false)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).calendarMeetingLinksOnly == false)
+    }
+
     @Test("default values")
     func defaults() {
         let config = AppConfig()

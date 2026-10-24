@@ -395,6 +395,8 @@ extension MuesliController {
         toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
         toggle("auto_export_meetings", "Auto-export meetings", \.autoExportMarkdownEnabled)
         toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
+        toggle("calendar_meeting_links_only", "Only show events with a meeting link", \.calendarMeetingLinksOnly,
+               apply: updateCalendarMeetingLinkFilter)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
         toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)

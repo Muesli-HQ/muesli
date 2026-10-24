@@ -2923,6 +2923,14 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func updateCalendarMeetingLinkFilter(_ enabled: Bool) {
+        guard config.calendarMeetingLinksOnly != enabled else { return }
+        updateConfig { $0.calendarMeetingLinksOnly = enabled }
+        // Refresh after updateConfig has published the new config to AppState.
+        statusBarController?.refresh()
+        meetingMonitor.refreshState(trigger: .calendarChanged)
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         let result = launchAtLoginCoordinator.setEnabled(enabled, config: config)
         if let error = result.error {
@@ -4078,7 +4086,7 @@ public final class MuesliController: NSObject {
     }
 
     private func currentOrNearbyCachedCalendarEvent() -> CalendarEventContext? {
-        selectCurrentOrNearbyCachedCalendarEvent(from: appState.upcomingCalendarEvents)
+        selectCurrentOrNearbyCachedCalendarEvent(from: appState.visibleUpcomingCalendarEvents)
     }
 
     private func startMeetingFeatureMonitors(includeMaraudersMap: Bool) {
