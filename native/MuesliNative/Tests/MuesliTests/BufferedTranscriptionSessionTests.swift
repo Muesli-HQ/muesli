@@ -512,6 +512,116 @@ struct BufferedTranscriptionSessionTests {
         }
     }
 
+    @Test("recoverable preview errors preserve text and queued PCM until fresh evidence arrives",
+          arguments: [BufferedTranscriptionPreviewDeferral.missingWordTimings, .textAlignmentMismatch, .invalidWordTimings])
+    func previewDeferralRecoversWithPendingAudio(reason: BufferedTranscriptionPreviewDeferral) async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedDeferralOracle(reason: reason, rejectFrom: 7, recoverAt: 9, holdAt: 7 * 16_000)
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        var starts = decoder.started.stream.makeAsyncIterator()
+        session.enqueue((0..<(5 * 16_000)).map(Float.init))
+        _ = await starts.next()
+        _ = await updates.next()
+        session.enqueue(((5 * 16_000)..<(6 * 16_000)).map(Float.init))
+        _ = await starts.next()
+        let stable = await updates.next()
+        #expect(stable?.committedText == "hello world")
+        #expect(stable?.tail == " draft")
+        session.enqueue(((6 * 16_000)..<(7 * 16_000)).map(Float.init))
+        #expect(await starts.next() == 7 * 16_000)
+        session.enqueue(((7 * 16_000)..<(9 * 16_000)).map(Float.init))
+        await decoder.release()
+        let deferred = await updates.next()
+        #expect(deferred?.committedText == stable?.committedText)
+        #expect(deferred?.tail == stable?.tail)
+        #expect(await starts.next() == 9 * 16_000)
+        let recovered = await updates.next()
+        #expect(recovered?.committedText == stable?.committedText)
+        #expect(recovered?.tail == stable?.tail)
+        #expect(!session.diagnostics.closed)
+        #expect(output.failures == 0)
+        #expect(await decoder.sampleCounts == [5, 6, 7, 9].map { $0 * 16_000 })
+        #expect(await decoder.firstSamples.allSatisfy { $0 == 0 })
+        #expect(await decoder.lastSamples.last == Float(9 * 16_000 - 1))
+        #expect(output.diagnostics.contains("preview_deferred:\(reason.rawValue)"))
+        session.enqueue(((9 * 16_000)..<(10 * 16_000)).map(Float.init))
+        _ = await starts.next()
+        #expect(await updates.next()?.committedText == "hello world draft")
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(session.diagnostics.receivedSamples == 10 * 16_000)
+        #expect(output.values.last?.text == "hello world draft")
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("permanent preview deferral is bounded at thirty seconds and fails only once")
+    func previewDeferralRecoveryLimit() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedDeferralOracle(reason: .invalidWordTimings, rejectFrom: 0, recoverAt: .infinity)
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        var previousEnd = 0
+        for seconds in [2, 15, 30] {
+            session.enqueue((previousEnd..<(seconds * 16_000)).map(Float.init))
+            previousEnd = seconds * 16_000
+            let update = await updates.next()
+            if seconds < 30 { #expect(update?.text == "") }
+            else { #expect(update == nil) }
+        }
+        await session.finish()
+        #expect(session.diagnostics.closed)
+        #expect(output.failures == 1)
+        #expect(await decoder.sampleCounts == [2, 15, 30].map { $0 * 16_000 })
+        #expect(output.diagnostics.last == "ownership_recovery_exhausted:window_limit")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        await session.finish()
+        #expect(output.failures == 1)
+        #expect(session.diagnostics.receivedSamples == 30 * 16_000)
+        #expect(output.values.allSatisfy { $0.text.isEmpty })
+    }
+
+    @Test("unusable final short window fails once without publishing a hypothesis")
+    func previewDeferralAtFinalization() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        await session.finish()
+        #expect(output.failures == 1)
+        #expect(output.values.isEmpty)
+        #expect(output.diagnostics.last == "ownership_recovery_exhausted:final")
+        await session.finish()
+        #expect(output.failures == 1)
+        #expect(session.diagnostics.decodeCount == 1)
+    }
+
+    @Test("cancellation discards an in-flight deferral without callbacks or retry")
+    func cancelInFlightPreviewDeferral() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedDeferralOracle(reason: .missingWordTimings, rejectFrom: 0,
+            recoverAt: .infinity, holdAt: 2 * 16_000)
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var starts = decoder.started.stream.makeAsyncIterator()
+        var completed = decoder.completed.stream.makeAsyncIterator()
+        session.enqueue((0..<(2 * 16_000)).map(Float.init))
+        _ = await starts.next()
+        session.cancel()
+        await session.finish()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        await decoder.release()
+        _ = await completed.next()
+        #expect(output.values.isEmpty)
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.isEmpty)
+        #expect(await decoder.sampleCounts == [2 * 16_000])
+        #expect(session.diagnostics.receivedSamples == 2 * 16_000)
+    }
+
     @Test("decoder failure closes the session once before finish returns")
     func decoderFailure() async {
         let output = BufferedPreviewOutput()
@@ -642,6 +752,47 @@ private actor BufferedWindowSequence {
         defer { index += 1 }
         return windows[min(index, windows.count - 1)]
     }
+}
+
+private actor BufferedDeferralOracle {
+    nonisolated let started = AsyncStream<Int>.makeStream()
+    nonisolated let completed = AsyncStream<Void>.makeStream()
+    private let reason: BufferedTranscriptionPreviewDeferral
+    private let rejectFrom: Double
+    private let recoverAt: Double
+    private let holdAt: Int?
+    private var permit: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var sampleCounts: [Int] = []
+    private(set) var firstSamples: [Float] = []
+    private(set) var lastSamples: [Float] = []
+
+    init(reason: BufferedTranscriptionPreviewDeferral, rejectFrom: Double, recoverAt: Double, holdAt: Int? = nil) {
+        self.reason = reason
+        self.rejectFrom = rejectFrom
+        self.recoverAt = recoverAt
+        self.holdAt = holdAt
+    }
+
+    func decode(_ samples: [Float]) async throws -> BufferedTranscriptionWindow {
+        sampleCounts.append(samples.count)
+        firstSamples.append(samples.first ?? -1)
+        lastSamples.append(samples.last ?? -1)
+        started.continuation.yield(samples.count)
+        if samples.count == holdAt && !released { await withCheckedContinuation { permit = $0 } }
+        defer { completed.continuation.yield(()) }
+        let base = Double(samples[0]) / 16_000
+        let end = base + Double(samples.count) / 16_000
+        if end >= rejectFrom && end < recoverAt { throw reason }
+        let words: [BufferedTranscriptionWord] = [
+            .init(text: "hello", start: 0.1 - base, end: 0.5 - base),
+            .init(text: "world", start: 1 - base, end: 1.5 - base),
+            .init(text: "draft", start: 4 - base, end: 4.5 - base)
+        ].filter { $0.start >= 0 && $0.end <= Double(samples.count) / 16_000 }
+        return .init(text: words.map(\.text).joined(separator: " "), words: words)
+    }
+
+    func release() { released = true; permit?.resume(); permit = nil }
 }
 
 private actor BufferedRecoveryOracle {

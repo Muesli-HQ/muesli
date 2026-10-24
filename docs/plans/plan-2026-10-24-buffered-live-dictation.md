@@ -47,6 +47,15 @@ same token-to-word conversion. Its RNNT emission times can share frame boundarie
 the shared engine validates them without inventing forced word boundaries.
 Unified model loading, previews, final decoding and unloading share one inference
 permit. All models retain the same cursor delivery and final cleanup paths.
+Whisper preview word alignment excludes padded encoder frames before DTW and
+preserves all lexical and punctuation tokens. Its normal final transcription
+keeps the original seeker. Missing, mismatched or out-of-audio word timings
+defer a preview without changing visible text or discarding PCM; retry requires
+new audio and remains bounded by the existing recovery window. Language selection
+still uses the configured auto-detection or pinned language for every decode.
+Preview decoding uses one temperature attempt, then waits for new audio instead
+of retrying the same uncertain window up to six times. Full-file final decoding
+retains the original fallback policy.
 An uncertain ownership alignment preserves all pending audio and the last visible
 preview, then retries after more audio arrives. Recovery may expand the actual
 decode window up to 30 seconds. State changes are
@@ -325,3 +334,33 @@ stable-prefix and rollover checks on installed v2, v3, Redux and Unified models;
 the three newly enabled models also passed full-file transcription. No models
 were downloaded. A race in the preview-delivery test editor was fixed by making
 its main-actor isolation explicit; production cursor delivery is unchanged.
+
+Whisper Tiny follow-up reproduced premature preview termination on public English
+speech: 16 seconds of real audio produced word ends near 30 seconds because the
+pinned WhisperKit seeker included padded encoder attention in DTW. Cropping the
+attention grid to real audio before alignment fixes that failure; it does not
+clamp or fabricate word timestamps. A preview-only punctuation grouping also
+avoids the pinned seeker's loss of lexical tokens beside consecutive punctuation.
+Transient unusable alignments now preserve the visible preview and pending PCM,
+with bounded retry on new audio. Cursor ownership and final cleanup are unchanged.
+
+Tamil remains a known limitation of Tiny in this integration. A locally synthesized
+23.9-second Tamil fixture produces Tamil previews with both auto-detection and
+explicit Tamil, but revised words and onsets prevent reliable continuous ownership
+across windows. The opt-in test records only that specific ownership exhaustion
+as a known issue and independently requires nonempty full-file transcription;
+other errors still fail. Full-file decoding usually returned text but one pinned
+Tamil run returned empty, so this synthetic-fixture diagnostic remains failing
+and Tiny Tamil is not accepted as reliable. Final decode options are unchanged.
+This is not a passing continuous-Tamil acceptance test.
+Retaining more anchor context did not resolve it and regressed an existing rollover
+test, so that experiment is excluded. Do not relax ownership matching or interpret
+silence as a sentence boundary to conceal this limitation.
+
+The focused native regression run passed 207 tests across 14 suites with real-model
+diagnostics disabled. The separate English Tiny regression passed every 2–21-second
+prefix, progressive rollover and full-file transcription. CI classification and
+shard checks passed. A delayed meeting-caption test now explicitly retains its
+session through callback readback; production meeting delivery is unchanged.
+These checks do not substitute for a manual Dev B composer trial, and the Tamil
+diagnostic failures above remain outstanding.

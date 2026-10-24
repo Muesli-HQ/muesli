@@ -2,6 +2,7 @@ import Foundation
 import FluidAudio
 import MuesliCore
 import Testing
+import WhisperKit
 @testable import MuesliNativeApp
 
 @Suite("Buffered transcription model integration", .serialized)
@@ -161,12 +162,128 @@ struct BufferedTranscriptionBackendIntegrationTests {
         }
     }
 
+    /// Tiny multilingual is intentionally exercised through the production
+    /// adapter. Opt in only with an installed model and a public speech fixture;
+    /// optional raw word diagnostics are restricted to this explicit smoke run.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_SMOKE"] == "1"
+                   && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SPEECH_FIXTURE"] != nil))
+    func whisperTinyRealAudioProducesTimedProgressivePreviews() async throws {
+        let model = "tiny"
+        let plan = ManagedASRModelPlans.whisperKit(modelName: model)
+        try #require(plan.isComplete(), "A validated local Whisper Tiny installation is required; this test must not download or repair models")
+        let fixture = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SPEECH_FIXTURE"])
+        let fixtureURL = URL(fileURLWithPath: fixture)
+        let samples = try AudioConverter().resampleAudioFile(fixtureURL)
+        try #require(samples.count >= 21 * 16_000, "Use the public 21.4-second regression fixture to cover every 2...21-second prefix")
+        let verbose = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1"
+        let transcriber = WhisperKitTranscriber()
+        var diagnosticWhisper: WhisperKit?
+        do {
+            try await transcriber.loadModel(modelName: model)
+            var nonemptyPreviews = 0
+            var deferredPreviews = 0
+            var lastValidPrefix = 0
+            var lastDeferredPrefix = 0
+            for seconds in 2...21 {
+                let chunk = Array(samples.prefix(seconds * 16_000))
+                do {
+                    let start = Date()
+                    let window = try await transcriber.transcribePreview(samples: chunk, expectedModel: model)
+                    lastValidPrefix = seconds
+                    if !window.text.isEmpty {
+                        nonemptyPreviews += 1
+                        #expect(!window.words.isEmpty)
+                    }
+                    #expect(window.words.allSatisfy { $0.start >= 0 && $0.end <= Double(seconds) + 0.25 })
+                    print("[buffered-smoke] model=whisper-tiny seconds=\(seconds) chars=\(window.text.count) words=\(window.words.count) max_end=\(window.words.map(\.end).max() ?? 0) decode_ms=\(Int(Date().timeIntervalSince(start) * 1000))")
+                } catch let deferral as BufferedTranscriptionPreviewDeferral {
+                    deferredPreviews += 1
+                    lastDeferredPrefix = seconds
+                    print("[buffered-smoke] model=whisper-tiny seconds=\(seconds) deferred=\(deferral.rawValue)")
+                } catch {
+                    Issue.record("Whisper Tiny production preview failed at \(seconds) seconds: \(error)")
+                    if verbose {
+                        // Diagnose text/word alignment without replacing the
+                        // production adapter under test or permitting downloads.
+                        do {
+                            if diagnosticWhisper == nil {
+                                diagnosticWhisper = try await WhisperKit(WhisperKitConfig(
+                                    modelFolder: plan.cacheDirectory.path,
+                                    computeOptions: ModelComputeOptions(audioEncoderCompute: .cpuAndNeuralEngine,
+                                                                        textDecoderCompute: .cpuAndNeuralEngine),
+                                    download: false))
+                            }
+                            var options = WhisperKitTranscriber.makeDecodeOptions(language: .defaultLanguage, modelName: model)
+                            options.wordTimestamps = true
+                            let results: [TranscriptionResult] = try await diagnosticWhisper!.transcribe(audioArray: chunk, decodeOptions: options)
+                            for result in results {
+                                let words = result.segments.flatMap { $0.words ?? [] }
+                                print("[buffered-smoke] whisper_raw seconds=\(seconds) text=\(String(reflecting: result.text)) words=\(words) max_end=\(words.map(\.end).max() ?? 0)")
+                            }
+                        } catch {
+                            print("[buffered-smoke] whisper_raw_failed seconds=\(seconds) error=\(error)")
+                        }
+                    }
+                }
+            }
+            #expect(nonemptyPreviews > 0)
+            #expect(lastValidPrefix > lastDeferredPrefix, "A later prefix must recover after a temporary alignment deferral")
+            print("[buffered-smoke] model=whisper-tiny deferred_prefixes=\(deferredPreviews)")
+            diagnosticWhisper = nil
+            try await assertProgressivePreview(samples: samples, label: "whisper-tiny", requireEarlyCommit: false) {
+                try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+            }
+            let final = try await transcriber.transcribe(wavURL: fixtureURL, expectedModel: model)
+            #expect(!final.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            print("[buffered-smoke] model=whisper-tiny final_chars=\(final.text.count)")
+            await transcriber.shutdown()
+        } catch {
+            await transcriber.shutdown()
+            throw error
+        }
+    }
+
+    /// Separate opt-in for neutral Tamil text synthesized locally with macOS
+    /// Vani. This is not a private recording or an exact-translation benchmark.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_TAMIL_FIXTURE"] != nil),
+          arguments: [WhisperKitLanguage.auto, .tamil])
+    func whisperTinySyntheticTamilProgressivePreview(language: WhisperKitLanguage) async throws {
+        let model = "tiny"
+        try #require(ManagedASRModelPlans.whisperKit(modelName: model).isComplete(),
+            "Whisper Tiny must already be validated locally; no model download or repair is permitted")
+        let fixture = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_TAMIL_FIXTURE"])
+        let fixtureURL = URL(fileURLWithPath: fixture)
+        let samples = try AudioConverter().resampleAudioFile(fixtureURL)
+        try #require(samples.count > 15 * 16_000, "Use the completed synthetic Tamil fixture longer than one rolling window")
+        let transcriber = WhisperKitTranscriber()
+        do {
+            try await transcriber.loadModel(modelName: model)
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-tiny-\(language.rawValue)",
+                requireEarlyCommit: false, knownTinyTamilOwnershipInstability: true) {
+                try await transcriber.transcribePreview(samples: $0, language: language, expectedModel: model)
+            }
+            let final = try await transcriber.transcribe(wavURL: fixtureURL, language: language, expectedModel: model)
+            #expect(!final.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if language == .tamil {
+                #expect(preview.unicodeScalars.contains { (0x0B80...0x0BFF).contains($0.value) })
+                #expect(final.text.unicodeScalars.contains { (0x0B80...0x0BFF).contains($0.value) })
+            }
+            print("[buffered-smoke] model=whisper-tiny language=\(language.rawValue) synthetic_tamil_final_chars=\(final.text.count)")
+            await transcriber.shutdown()
+        } catch {
+            await transcriber.shutdown()
+            throw error
+        }
+    }
+
     // Exercise successive hypotheses and actual window movement, not just one
     // final decode of a long buffer. Shared by v3 and the additional family models.
+    @discardableResult
     private func assertProgressivePreview(
-        samples: [Float], label: String,
+        samples: [Float], label: String, requireEarlyCommit: Bool = true,
+        knownTinyTamilOwnershipInstability: Bool = false,
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
-    ) async throws {
+    ) async throws -> String {
         try #require(samples.count > 15 * 16_000, "The speech fixture must exceed one rolling window")
         let progressive = BufferedSmokeOutput()
         let live = BufferedTranscriptionSession(decode: { chunk in
@@ -178,7 +295,8 @@ struct BufferedTranscriptionBackendIntegrationTests {
                 print("[buffered-smoke] model=\(label) progressive_words samples=\(chunk.count) words=\(window.words)")
             }
             return window
-        }, onUpdate: { progressive.receive($0) }, onFailure: { progressive.fail($0) })
+        }, onUpdate: { progressive.receive($0) }, onFailure: { progressive.fail($0) },
+        onDiagnostic: { print("[buffered-smoke] model=\(label) diagnostic=\($0)") })
         defer { live.cancel() }
         var events = progressive.stream.makeAsyncIterator()
         var previousEnd = 0
@@ -195,14 +313,24 @@ struct BufferedTranscriptionBackendIntegrationTests {
         }
         if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
         await live.finish()
-        #expect(progressive.failure == nil)
-        #expect(committedBeforeRollover)
+        if knownTinyTamilOwnershipInstability, progressive.failure == "ownershipUnresolved" {
+            // Track the actual model limitation explicitly. Do not classify
+            // timestamp validation, overrun, cursor or arbitrary errors as known.
+            // The caller separately verifies authoritative full-file decoding.
+            withKnownIssue("Whisper Tiny revises Tamil word identity/onsets across windows; continuous Tamil previews remain unresolved") {
+                #expect(progressive.failure == nil)
+            }
+        } else {
+            #expect(progressive.failure == nil)
+        }
+        if requireEarlyCommit { #expect(committedBeforeRollover) }
         #expect(progressive.lastTextCount > 0)
         #expect(progressive.lastText.utf16.starts(with: committed.utf16))
         #expect(live.diagnostics.receivedSamples == samples.count)
         let windows = progressive.decodeSampleCounts
         #expect(zip(windows, windows.dropFirst()).contains { $0.1 < $0.0 }, "The decoder should advance to a shorter rolling window")
         print("[buffered-smoke] model=\(label) received_samples=\(live.diagnostics.receivedSamples) decodes=\(live.diagnostics.decodeCount) final_chars=\(progressive.lastTextCount)")
+        return progressive.lastText
     }
 }
 

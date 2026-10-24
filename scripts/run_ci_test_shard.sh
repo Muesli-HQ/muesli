@@ -80,6 +80,7 @@ case "${shard}" in
       LiveDictationTextTargetTests
       LiveDictationKeyboardInputTests
       LiveDictationFinalPasteTests
+      WhisperPreviewSegmentSeekerTests
       BufferedLiveTranscriptionPolicyTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests

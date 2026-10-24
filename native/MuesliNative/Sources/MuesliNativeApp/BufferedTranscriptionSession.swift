@@ -1,5 +1,13 @@
 import Foundation
 
+/// A decoder produced a hypothesis that cannot yet be tied to the supplied
+/// audio. Preserve the last valid preview and retry only after more audio.
+enum BufferedTranscriptionPreviewDeferral: String, Error, Sendable {
+    case missingWordTimings = "missing_word_timings"
+    case textAlignmentMismatch = "text_alignment_mismatch"
+    case invalidWordTimings = "invalid_word_timings"
+}
+
 /// Word times are relative to the start of the PCM supplied to the decoder.
 struct BufferedTranscriptionWord: Sendable, Equatable {
     let text: String
@@ -93,6 +101,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         case emptyHypothesis = "empty_hypothesis"
         case noRollProgress = "no_roll_progress"
         case inseparableTimings = "inseparable_timings"
+        case unusablePreview = "unusable_preview"
     }
     private struct AlignmentRecovery: Error {
         let reason: RecoveryReason
@@ -263,6 +272,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                         state = checkpoint
                         deferAlignment(recovery, snapshot: snapshot)
                     }
+                }
+            } catch let deferral as BufferedTranscriptionPreviewDeferral {
+                synchronized {
+                    guard !state.closed else { return }
+                    onDiagnostic("preview_deferred:\(deferral.rawValue)")
+                    guard !state.closed else { return }
+                    deferAlignment(AlignmentRecovery(reason: .unusablePreview), snapshot: snapshot)
                 }
             } catch {
                 synchronized { if !state.closed { fail(error) } }

@@ -93,15 +93,51 @@ actor WhisperKitTranscriber {
         defer { releaseDecode() }
         try Task.checkCancellation()
         guard let whisperKit, loadedModel == expectedModel else { throw TranscriberError.notLoaded }
-        var options = Self.makeDecodeOptions(language: language, modelName: expectedModel)
-        options.wordTimestamps = true
+        let options = Self.makePreviewDecodeOptions(language: language, modelName: expectedModel)
+        let originalSeeker = whisperKit.segmentSeeker
+        whisperKit.segmentSeeker = WhisperPreviewSegmentSeeker()
+        defer { whisperKit.segmentSeeker = originalSeeker }
         let results: [TranscriptionResult] = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         try Task.checkCancellation()
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         let words = results.flatMap(\.segments).flatMap { $0.words ?? [] }.map {
             BufferedTranscriptionWord(text: $0.word, start: Double($0.start), end: Double($0.end))
         }
-        return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+        return try Self.previewWindow(text: text, words: words, sampleCount: samples.count)
+    }
+
+    static func makePreviewDecodeOptions(language: WhisperKitLanguage, modelName: String) -> DecodingOptions {
+        var options = makeDecodeOptions(language: language, modelName: modelName)
+        options.wordTimestamps = true
+        // A preview gets another hypothesis as new audio arrives. Re-sampling
+        // the same uncertain window up to six times stalls that feedback loop.
+        // Final transcription retains its normal quality-oriented fallbacks.
+        options.temperatureFallbackCount = 0
+        return options
+    }
+
+    /// Never publish words aligned to Whisper's padded encoder input. A short
+    /// undecodable window is temporary; the session can retry with more context.
+    static func previewWindow(text: String, words: [BufferedTranscriptionWord],
+                              sampleCount: Int) throws -> BufferedTranscriptionWindow {
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, words.isEmpty {
+            throw BufferedTranscriptionPreviewDeferral.missingWordTimings
+        }
+        let duration = Double(sampleCount) / 16_000
+        var previousStart = -Double.infinity
+        for word in words {
+            guard word.start.isFinite, word.end.isFinite, word.start >= 0,
+                  word.start >= previousStart, word.end >= word.start,
+                  word.end <= duration + 0.25 else {
+                throw BufferedTranscriptionPreviewDeferral.invalidWordTimings
+            }
+            previousStart = word.start
+        }
+        do {
+            return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+        } catch {
+            throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
+        }
     }
 
     /// Build WhisperKit decode options for the loaded model.
