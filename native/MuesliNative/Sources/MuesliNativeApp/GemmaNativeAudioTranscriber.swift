@@ -82,19 +82,37 @@ actor GemmaNativeAudioTranscriber {
     private var drafter: (model: Gemma4LiteRTModel, value: any MTPDrafterModel)?
     // An environment override keeps paired developer benchmarks independent of saved settings.
     private let mtpBlock: Int
-    init(mtpBlock: Int? = nil) {
+    private let drafterDirectory: @Sendable (Gemma4LiteRTModel) -> URL
+    init(mtpBlock: Int? = nil, drafterDirectory: @escaping @Sendable (Gemma4LiteRTModel) -> URL = {
+        GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.drafter(for: $0))
+    }) {
         self.mtpBlock = mtpBlock ?? GemmaMTPPolicy.blockSize()
+        self.drafterDirectory = drafterDirectory
     }
     private func loadDrafter(model: Gemma4LiteRTModel) async throws {
         if drafter?.model == model { return }
         drafter = nil
         let artifact = GemmaNativeAudioModels.drafter(for: model)
-        let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/mlx-evaluation/" + artifact.revision)
+        let directory = drafterDirectory(model)
         try artifact.validate(modelURL: directory.appendingPathComponent(artifact.modelFilename))
         let config = try JSONDecoder().decode(Gemma4AssistantConfiguration.self, from: Data(contentsOf: directory.appendingPathComponent("config.json")))
         let draft = Gemma4AssistantDraftModel(config)
         try await loadWeights(modelDirectory: directory, model: draft)
+        try Task.checkCancellation()
         drafter = (model, draft)
+    }
+    private func effectiveBlock(model: Gemma4LiteRTModel, requested: Int) async throws -> Int {
+        let block = try await GemmaMTPPolicy.optionalDrafterBlock(requested: requested) {
+            do { try await self.loadDrafter(model: model) }
+            catch {
+                log("drafter_load_failed model=\(model.label) error=\(error.localizedDescription)")
+                throw error
+            }
+        }
+        if requested > 1 && block == 1 {
+            log("mtp_unavailable model=\(model.label) block=1 fallback=drafter_unavailable")
+        }
+        return block
     }
     // Serialize across suspension points: model switches, shutdown and generation
     // must not share mutable MLX state while generation is consuming its cache.
@@ -193,8 +211,8 @@ actor GemmaNativeAudioTranscriber {
         modelConfig.extraEOSTokens.formUnion(["<turn|>", "<eos>"])
         let context = ModelContext(configuration: modelConfig, model: backbone, processor: StandInUserInputProcessor(), tokenizer: tokenizer)
         loaded = Loaded(model: model, context: context, encoder: encoder, frontend: try GemmaAudioFeatures(), audioTokenID: config.audioTokenId)
-        if mtpBlock > 1 { try await loadDrafter(model: model) }
-        log("engine_ready model=\(model.label) runtime=mlx-swift-lm mtp=\(mtpBlock > 1) block=\(mtpBlock) load_seconds=\(Date().timeIntervalSince(start))")
+        let block = try await effectiveBlock(model: model, requested: mtpBlock)
+        log("engine_ready model=\(model.label) runtime=mlx-swift-lm mtp=\(block > 1) block=\(block) load_seconds=\(Date().timeIntervalSince(start))")
     }
     func transcribe(wavURL: URL, model: Gemma4LiteRTModel, mtpBlockOverride: Int? = nil, systemPrompt: String? = nil, userPrompt: String? = nil, maxOutputTokens: Int = Int(Gemma4LiteRTTranscriber.maxOutputTokens)) async throws -> Result {
         await acquire(); defer { release() }
@@ -242,7 +260,7 @@ actor GemmaNativeAudioTranscriber {
         let ids = state.context.tokenizer.encode(text: prompt, addSpecialTokens: false)
         guard ids.filter({ $0 == audioTokenID }).count == count else { throw GemmaNativeAudioError.invalidResponse }
         let input = LMInput(text: .init(tokens: MLXArray(ids).reshaped(1, -1)), audio: .init(features: encoded, mask: mask.reshaped(1, -1)))
-        let block = mtpBlockOverride ?? mtpBlock
+        let block = try await effectiveBlock(model: model, requested: mtpBlockOverride ?? mtpBlock)
         let (raw, info, tokenCount) = try await generateRaw(input: input, model: model, context: state.context, block: block, maxTokens: maxOutputTokens)
         let text: String
         do {
@@ -279,8 +297,8 @@ actor GemmaNativeAudioTranscriber {
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0, topK: 1, prefill: .init(stepSize: 2048, chunking: .remainder))
         let stream: AsyncStream<TokenGeneration>
         let generationTask: Task<Void, Never>?
+        let block = try await effectiveBlock(model: model, requested: block)
         if block > 1 {
-            try await loadDrafter(model: model)
             stream = try generateTokens(input: input, cache: cache, parameters: parameters, context: context, mtpDrafter: drafter!.value, blockSize: block)
             generationTask = nil
         } else {
@@ -337,7 +355,7 @@ actor GemmaNativeAudioTranscriber {
             eval(cache); pos = end
         }
         let prefillSeconds = Date().timeIntervalSince(start)
-        let block = mtpBlockOverride ?? mtpBlock
+        let block = try await effectiveBlock(model: model, requested: mtpBlockOverride ?? mtpBlock)
         let (raw, info, count) = try await generateRaw(input: LMInput(tokens: MLXArray(Array(ids[pos...]))), cache: cache,
             model: model, context: context, block: block, maxTokens: maxTokens)
         let seconds = Date().timeIntervalSince(start)
@@ -365,20 +383,20 @@ actor GemmaNativeAudioTranscriber {
         let grammar = try GemmaToolGrammar.make(toolsJSON: toolsJSON)
         // Hybrid mode replays forced spans through target verification; never splice
         // tokens into matcher state without the corresponding target-cache inputs.
-        let toolMTP = mtpBlock > 1
+        let block = try await effectiveBlock(model: model, requested: mtpBlock)
+        let toolMTP = block > 1
         let constraint = try GrammarConstraint(tokenizer: tokenizer, grammar: grammar,
             fastForward: true, hostTokenizer: context.tokenizer)
         var raw = ""
         let start = Date()
         if toolMTP {
-            try await loadDrafter(model: model)
             let processor = GemmaToolGrammarProcessor(constraint: constraint,
                 vocabSize: size, eos: context.tokenizer.eosTokenId ?? 1)
             let hybridDrafter = GemmaGrammarDrafter(base: drafter!.value, processor: processor)
             var iterator = try MTPSpeculativeTokenIterator(
                 input: LMInput(tokens: MLXArray(ids)), mainModel: context.model,
                 drafter: hybridDrafter, parameters: GenerateParameters(maxTokens: 768, temperature: 0, topK: 1),
-                blockSize: mtpBlock, components: GenerationComponents(logitProcessorFactory: { processor }))
+                blockSize: block, components: GenerationComponents(logitProcessorFactory: { processor }))
             var output = [Int]()
             var ended = false
             while let token = iterator.next() {

@@ -20,6 +20,76 @@ struct GemmaNativeAudioTests {
         // Retired runtime-specific switches must not override the shared default.
         #expect(GemmaMTPPolicy.blockSize(environment: ["MUESLI_GEMMA_TOOL_MTP": "0", "MUESLI_GEMMA4_LITERT_MTP": "0"]) == 3)
     }
+    @Test func optionalDrafterFailuresFallBackButCancellationPropagates() async throws {
+        enum Failure: Error { case missing, invalidChecksum, incompatibleWeights }
+        for error in [Failure.missing, .invalidChecksum, .incompatibleWeights] {
+            let block = try await GemmaMTPPolicy.optionalDrafterBlock(requested: 3) { throw error }
+            #expect(block == 1)
+        }
+        #expect(try await GemmaMTPPolicy.optionalDrafterBlock(requested: 3, load: {}) == 3)
+        #expect(try await GemmaMTPPolicy.optionalDrafterBlock(requested: 1, load: {
+            Issue.record("Diagnostic opt-out attempted to load the drafter")
+        }) == 1)
+        do {
+            _ = try await GemmaMTPPolicy.optionalDrafterBlock(requested: 3) { throw CancellationError() }
+            Issue.record("Cancellation was swallowed")
+        } catch is CancellationError {}
+        do {
+            _ = try await GemmaMTPPolicy.optionalDrafterBlock(requested: 3) { throw URLError(.cancelled) }
+            Issue.record("Download cancellation was swallowed")
+        } catch let error as URLError { #expect(error.code == .cancelled) }
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await GemmaMTPPolicy.optionalDrafterBlock(requested: 3) {
+                Issue.record("Cancelled task attempted drafter load")
+            }
+        }
+        do { _ = try await cancelled.value; Issue.record("Task cancellation was swallowed") }
+        catch is CancellationError {}
+    }
+
+    @Test func missingDrafterThroughRealGemmaPaths() async throws {
+        guard #available(macOS 15, *), ProcessInfo.processInfo.environment["MUESLI_GEMMA_DRAFTER_FALLBACK_TEST"] == "1" else { return }
+        Memory.cacheLimit = 256 * 1024 * 1024
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: missing) }
+        let engine = GemmaNativeAudioTranscriber(mtpBlock: 3, drafterDirectory: { _ in missing })
+        let schema = #"[{"type":"function","function":{"name":"list_apps","description":"List running apps","parameters":{"type":"object","properties":{},"additionalProperties":false}}}]"#
+        let tools = try GemmaToolCalling.tools(schema).map { $0["function"] as! [String: Any] }
+        for model in [Gemma4LiteRTModel.muesliCleanupV2, .e2b, .e4b] {
+            try await engine.prepare(model: model)
+            let prompt = model.isCleanupOnly
+                ? CleanupMLXEvaluation.Model.gemma.prompt("hello world", context: nil)
+                : GemmaNativeAudioTranscriber.framed(system: nil, user: "Reply with exactly: The quick brown fox jumps over the lazy dog.")
+            let result = try await engine.generatePrompt(prompt, model: model, maxTokens: 64)
+            #expect(result.completed && !result.raw.isEmpty)
+            #expect((result.proposed ?? 0) == 0)
+            print("DRAFTER_FALLBACK model=\(model.label) text=\(result.raw) proposed=\(result.proposed ?? 0)")
+            if !model.isCleanupOnly {
+                let raw = try await engine.generateToolResponse(systemPrompt: "Use the supplied tool.", userPrompt: "List running apps.", model: model, toolsJSON: schema)
+                #expect(try ComputerUseLocalPlanner.decodeNativeResponse(raw, tools: tools).name == "list_apps")
+                if let path = ProcessInfo.processInfo.environment["MUESLI_NATIVE_AUDIO_TEST_CASES"] {
+                    let clips = try JSONDecoder().decode([Clip].self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+                    let clip = try #require(clips.first)
+                    let audio = try await engine.transcribe(wavURL: URL(fileURLWithPath: clip.wav), model: model)
+                    #expect(!audio.text.isEmpty && !audio.skippedSilence)
+                    #expect(audio.mtpBlock == 1 && (audio.proposedDraftTokens ?? 0) == 0)
+                    print("DRAFTER_FALLBACK model=\(model.label) audio=\(audio.text)")
+                }
+            }
+            // A newly installed drafter enables MTP on the resident target without
+            // requiring an app restart or changing the diagnostic policy.
+            try FileManager.default.copyItem(
+                at: GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.drafter(for: model)), to: missing)
+            let recovered = try await engine.generatePrompt(prompt, model: model, maxTokens: 64)
+            #expect(recovered.completed && !recovered.raw.isEmpty)
+            #expect((recovered.proposed ?? 0) > 0)
+            print("DRAFTER_RECOVERED model=\(model.label) proposed=\(recovered.proposed ?? 0)")
+            try FileManager.default.removeItem(at: missing)
+        }
+        await engine.shutdown()
+    }
+
     @Test func emptyNativeOverrideUsesManagedArtifacts() {
         let empty = ["MUESLI_GEMMA_MLX_MODEL_DIR": ""]
         #expect(GemmaNativeAudioModels.overrideDirectory(environment: empty) == nil)

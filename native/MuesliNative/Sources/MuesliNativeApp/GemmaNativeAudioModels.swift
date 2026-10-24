@@ -11,6 +11,22 @@ enum GemmaMTPPolicy {
     static func blockSize(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int {
         isEnabled(environment: environment) ? 3 : 1
     }
+    /// Drafter download/validation/load failures must not disable the target.
+    /// Cancellation still aborts the user's operation, rather than starting inference.
+    static func optionalDrafterBlock(requested: Int, load: () async throws -> Void) async throws -> Int {
+        try Task.checkCancellation()
+        guard requested > 1 else { return 1 }
+        do {
+            try await load()
+            try Task.checkCancellation()
+            return requested
+        } catch {
+            try Task.checkCancellation()
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            return 1
+        }
+    }
+
 }
 
 /// Pinned, previously evaluated full E-series checkpoints; shared download verification contract.
@@ -55,7 +71,6 @@ enum GemmaNativeAudioModels {
     }
     static func isAvailable(_ model: Gemma4LiteRTModel, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         descriptor(for: model).isPresent(at: directory(for: model, environment: environment))
-            && (!GemmaMTPPolicy.isEnabled(environment: environment) || drafter(for: model).isPresent(at: artifactDirectory(drafter(for: model))))
     }
     static func ensureDownloaded(_ model: Gemma4LiteRTModel, progress: ((Double, String?) -> Void)? = nil,
                                  progressSnapshot: ModelDownloadProgressHandler? = nil) async throws -> URL {
@@ -69,12 +84,15 @@ enum GemmaNativeAudioModels {
                 progressSnapshot?(snapshot)
             }
         }
-        if GemmaMTPPolicy.isEnabled() {
+        let block = try await GemmaMTPPolicy.optionalDrafterBlock(requested: GemmaMTPPolicy.blockSize()) {
             let assistant = drafter(for: model)
             try await ModelDownloadCoordinator.shared.download(assistant.manifest(id: model.repoID + "-drafter"), to: artifactDirectory(assistant)) { snapshot in
                 progress?(snapshot.fractionCompleted ?? 0, "Downloading \(model.label) MTP weights")
                 progressSnapshot?(snapshot)
             }
+        }
+        if block == 1 && GemmaMTPPolicy.isEnabled() {
+            Gemma4LiteRTLogging.profile("native_audio drafter_download_unavailable model=\(model.label) fallback=target_only")
         }
         return destination.appendingPathComponent(target.modelFilename)
     }
