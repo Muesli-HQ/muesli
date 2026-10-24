@@ -27,6 +27,8 @@ final class ComputerUseReferenceRuntime {
     private var events: [ComputerUseTraceEvent] = []
     private var attemptedMutation = false
     private let session = "muesli-" + UUID().uuidString
+    private let browserOnly = CommandLine.arguments.contains("--trycua-browser-only")
+    static let browserOnlyTools: Set<String> = ["list_apps", "list_windows", "get_browser_state", "browser_navigate", "browser_click", "browser_type", "browser_pointer", "finish", "fail"]
     private let browserToolsEnabled = !CommandLine.arguments.contains("--trycua-accessibility-only")
 
     init(config: AppConfig, executable: String, maxSteps: Int?, timeout: TimeInterval,
@@ -218,6 +220,116 @@ final class ComputerUseReferenceRuntime {
         return nil
     }
 
+    struct BrowserVisualState {
+        struct Frame {
+            let key: String
+            let capturedAt: Date
+            let data: String
+        }
+        private(set) var frame: Frame?
+        private(set) var pending: String?
+        static func key(_ args: [String: Any]) -> String? {
+            guard let target = args["target_id"] as? String, let tab = args["tab_id"] as? String else { return nil }
+            return target + "/" + tab
+        }
+        func inspectionArguments(_ args: [String: Any]) -> [String: Any] {
+            var result = args
+            if let key = Self.key(args), frame?.key != key || pending == key {
+                result["include_screenshot"] = true
+            }
+            return result
+        }
+        func mayMutate(_ args: [String: Any]) -> Bool {
+            guard let key = Self.key(args) else { return false }
+            return pending == nil && frame?.key == key
+        }
+        mutating func willMutate(_ args: [String: Any]) {
+            pending = Self.key(args)
+            frame = nil
+        }
+        mutating func inspected(_ args: [String: Any], image: String?, success: Bool, now: Date = Date()) {
+            guard let key = Self.key(args) else { frame = nil; return }
+            if let image, success {
+                frame = Frame(key: key, capturedAt: now, data: image)
+                if pending == key { pending = nil }
+            } else if args["include_screenshot"] as? Bool == true || frame?.key != key {
+                frame = nil
+            }
+        }
+        var caption: String {
+            guard let frame else { return "No current browser screenshot is available." }
+            return "Attached browser screenshot: \(frame.key), captured \(frame.capturedAt.ISO8601Format()). Retained across read-only queries; it may not reflect later asynchronous page changes."
+        }
+    }
+
+    /// CDP input acknowledgement precedes framework updates in background tabs.
+    /// Compare semantic evidence, not rotating refs or image bytes (animations).
+    static func browserFingerprint(_ response: [String: Any], key: String) -> String? {
+        guard let result = response["result"] as? [String: Any], result["isError"] as? Bool != true,
+              let state = result["structuredContent"] as? [String: Any],
+              state["status"] as? String == "ok", state["mode"] as? String == "snapshot",
+              BrowserVisualState.key(state) == key,
+              let refs = state["refs"] as? [[String: Any]] else { return nil }
+        let nodes = (refs + (state["content_refs"] as? [[String: Any]] ?? [])).map { node in
+            var semantic = node.filter { ["role", "name", "value", "destination", "visibility"].contains($0.key) }
+            if var states = node["states"] as? [String: Any] {
+                states.removeValue(forKey: "focused")
+                semantic["states"] = states
+            }
+            return semantic
+        }
+        let evidence: [String: Any] = ["page": state["page"] ?? [:], "nodes": nodes]
+        guard let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    struct SettledBrowserObservation {
+        let response: [String: Any]
+        let reads: Int
+        let evidence: String
+    }
+
+    /// Bounded, read-only recovery. Never replays the action. Stable evidence is
+    /// not proof of task success; the planner still checks the expected effect.
+    static func settleBrowserObservation(key: String, before: String?,
+        read: () async throws -> [String: Any],
+        pause: () async throws -> Void = { try await Task.sleep(for: .milliseconds(350)) }
+    ) async throws -> SettledBrowserObservation {
+        var previous: String?
+        for attempt in 1...4 {
+            try Task.checkCancellation()
+            let response = try await read()
+            try Task.checkCancellation()
+            // Navigation can replace a frame between CDP's frame-tree and AX
+            // reads. Re-observe that same bound tab; never replay the mutation
+            // or reconnect. Consent, identity and transport failures stay final.
+            let result = response["result"] as? [String: Any]
+            let state = result?["structuredContent"] as? [String: Any]
+            let refusal = state?["refusal"] as? [String: Any]
+            if state?["status"] as? String == "refused",
+               refusal?["code"] as? String == "browser_route_unavailable", attempt < 4 {
+                previous = nil
+                try await pause()
+                continue
+            }
+            guard let fingerprint = browserFingerprint(response, key: key),
+                  observation(from: response).image != nil else {
+                return .init(response: response, reads: attempt, evidence: "Post-action observation unavailable; effect remains unverified. Do not repeat an uncertain action.")
+            }
+            if fingerprint == previous, fingerprint != before {
+                return .init(response: response, reads: attempt, evidence: "Page evidence matched across two reads\(before == nil ? " (no comparable baseline)" : " after changing from the pre-action state"). Verify the intended effect; stability alone is not success.")
+            }
+            if attempt == 4 {
+                return .init(response: response, reads: attempt, evidence: fingerprint == before
+                    ? "No semantic change observed within four post-action reads. Effect remains unconfirmed, not proven absent. Do not repeat an uncertain submission."
+                    : "Page evidence was still changing at the four-read bound. The latest image and state are observations, not verified completion. Do not repeat an uncertain submission.")
+            }
+            previous = fingerprint
+            try await pause()
+        }
+        preconditionFailure("Bounded observation loop must return")
+    }
+
     static let mutationTools: Set<String> = [
         "launch_app", "click", "double_click", "right_click", "drag", "type_text",
         "set_value", "scroll", "zoom", "browser_navigate", "browser_click",
@@ -309,6 +421,19 @@ final class ComputerUseReferenceRuntime {
         with delivery_mode=background, fresh Accessibility element tokens or screenshot capture
         coordinates. Read get_window_state with screenshots and Accessibility to understand the UI.
         Navigate using observed controls, including browser tabs and the address field where supported.
+        A different foreground app or Space is not itself a failure. An off-Space warning describes
+        possible stale evidence, not a requirement to show the window. Inspect the exact target's
+        available navigation controls before declaring navigation blocked. If a filtered query is
+        empty, read the unfiltered window or relevant surrounding controls once; a query miss does
+        not establish that the destination or a navigation route is absent.
+        When the destination is not open, use observed semantic navigation controls. Prefer an
+        observed new-tab control to preserve an unrelated page. Use editable address fields and
+        observed suggestions/open controls only where supported; do not invent element tokens,
+        send Return through type_text, or emulate unavailable keyboard shortcuts. After navigation,
+        verify a changed URL/title or destination content from a new exact-window observation.
+        Identity and parent verification are required before publishing, not before navigating to
+        the requested site. Stop on a concrete route refusal or an unverified action after bounded
+        read-only recovery, rather than on Space membership or an unrelated initial page alone.
         Do not request Chrome debugging/connection setup. Do not use keyboard shortcuts or menu commands.
         Verify effects using fresh window state after each mutation. If unchanged, change observation
         scope rather than repeating the same action. A tool dispatch is not proof of success.
@@ -352,8 +477,8 @@ final class ComputerUseReferenceRuntime {
         catch { result = finish(.failed, "trycua: \(error.localizedDescription)", kind: "failed") }
         // End task-owned snapshots/cursors, but retain the healthy transport
         // and upstream pooled Chrome connection. Cleanup must run even if the
-        // planner was cancelled. In-flight RPC cancellation invalidates the
-        // daemon in request(), so uncertain actions are never reused.
+        // planner was cancelled. Read recovery drains before cleanup; uncertain
+        // in-flight mutations invalidate the daemon and are never replayed.
         await Task { @MainActor in await driver.endCommand(session: session) }.value
         return result
     }
@@ -368,16 +493,24 @@ final class ComputerUseReferenceRuntime {
         }
         append("backend", "persistent daemon pid=\(driver.processID ?? -1); task session=\(session)")
         append("backend", "trycua \(driver.serverVersion); agent cursor overlay enabled; native fallback disabled; model=\(ComputerUsePlannerClient.plannerModel(for: config))")
-        let tools = Self.definitions(from: driver.tools, browserToolsEnabled: browserToolsEnabled)
+        let tools = Self.definitions(from: driver.tools, browserToolsEnabled: browserToolsEnabled).filter {
+            !browserOnly || Self.browserOnlyTools.contains($0["name"] as? String ?? "")
+        }
         let names = Set(tools.compactMap { $0["name"] as? String })
-        guard names.contains("get_window_state") else { return finish(.failed, "Incomplete upstream catalog", kind: "failed") }
+        guard names.contains(browserOnly ? "get_browser_state" : "get_window_state") else { return finish(.failed, "Incomplete upstream catalog", kind: "failed") }
         append("backend", "Exposed \(tools.count - 2) task tools with upstream schemas; omitted raw keyboard/menu dispatch (self-activation risk), configuration, installation, clipboard, recording, desktop and process-termination tools.")
         let historyPrefix = "User command: \(command)\nDriver initialized. Start by finding the requested app and exact window."
         var historyEntries: [HistoryEntry] = []
         var observationProgress = ObservationProgress()
         var image: String?
+        var visuals = BrowserVisualState()
+        var browserFingerprints: [String: String] = [:]
         var deadline = Date().addingTimeInterval(timeout)
-        let instructions = browserToolsEnabled ? Self.instructions : Self.accessibilityOnlyInstructions
+        let instructions = (browserToolsEnabled ? Self.instructions : Self.accessibilityOnlyInstructions) + (browserOnly ? """
+
+        Strict browser-only benchmark: native actions and observations are unavailable. Use only the approved CDP connection. Never fall back to Accessibility, native tabs, launch_app, setup, dialogs, shortcuts or foreground delivery. If the approved connection is unavailable, stop and report it. The user may switch apps and Spaces; this is not a reason to stop or activate Chrome. Before replying, check for an existing identical reply by the requested account under the exact parent; if already present, verify it and finish without duplicating it.
+        """ : "")
+        if browserOnly { append("backend", "CDP-only: native fallbacks excluded from catalog and dispatch.") }
         append("backend", browserToolsEnabled ? "Browser tools enabled" : "Accessibility/vision only: browser integration tools excluded; no Chrome connection required.")
         let model = ComputerUsePlannerClient.plannerModel(for: config)
         let budget = ContextBudget(model: model)
@@ -399,7 +532,7 @@ final class ComputerUseReferenceRuntime {
             do {
                 let thinkingStarted = Date()
                 defer { deadline.addTimeInterval(max(0, Date().timeIntervalSince(thinkingStarted))) }
-                call = try await ComputerUsePlannerClient.callTool(systemPrompt: instructions, userPrompt: history,
+                call = try await ComputerUsePlannerClient.callTool(systemPrompt: instructions, userPrompt: history + (browserToolsEnabled ? "\n" + visuals.caption : ""),
                     imageDataURL: image, model: ComputerUsePlannerClient.plannerModel(for: config),
                     reasoningEffort: config.computerUseReasoningEffort, tools: tools)
             }
@@ -409,10 +542,19 @@ final class ComputerUseReferenceRuntime {
             }
             guard Date() < deadline else { return finish(.timedOut, "trycua CUA timed out", kind: "timed_out") }
             guard names.contains(call.name), let data = call.arguments.data(using: .utf8),
-                  let arguments = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                  var arguments = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return finish(.failed, "Invalid reference tool call", kind: "failed")
             }
-            append("tool_call", "[trycua] \(call.name)\n\(call.arguments)", step: step)
+            let browserMutation = Self.mutationTools.contains(call.name) && ComputerUseReferenceDriver.isBrowserTool(call.name)
+            if browserMutation && !visuals.mayMutate(arguments) || (call.name == "finish" && visuals.pending != nil) {
+                let message = "Visual verification required before another action or completion. Inspect the affected target_id/tab_id with get_browser_state and include_screenshot=true. If capture is unavailable, report the limitation; never activate Chrome or repeat an uncertain submission."
+                historyEntries.append(HistoryEntry(call: "Blocked \(call.name)", observation: message, staleSnapshot: nil))
+                append("backend", message, step: step)
+                continue
+            }
+            if call.name == "get_browser_state" { arguments = visuals.inspectionArguments(arguments) }
+            let effectiveArguments = String(data: try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]), encoding: .utf8)!
+            append("tool_call", "[trycua] \(call.name)\n\(effectiveArguments)", step: step)
             if call.name == "finish" || call.name == "fail" {
                 return finish(call.name == "finish" ? .done : .failed,
                               arguments["message"] as? String ?? call.name,
@@ -423,19 +565,59 @@ final class ComputerUseReferenceRuntime {
             }
             onStatus("trycua: \(call.name)")
             if Self.mutationTools.contains(call.name) { attemptedMutation = true }
+            if browserMutation { visuals.willMutate(arguments); image = nil }
+            else if Self.mutationTools.contains(call.name) { visuals = BrowserVisualState(); image = nil }
             let response = try await driver.callInBackground(name: call.name,
                 arguments: ComputerUseReferenceDriver.scopedArguments(arguments, session: session),
                 timeout: max(0.001, deadline.timeIntervalSinceNow))
             let observed = Self.observation(from: response)
             append("tool_result", "[trycua] \(observed.text)", step: step,
                 status: (response["result"] as? [String: Any])?["isError"] as? Bool == true ? "failed" : nil)
-            image = observed.image // Never reuse an image after a different tool result.
+            if call.name == "get_browser_state" {
+                visuals.inspected(arguments, image: observed.image, success: (response["result"] as? [String: Any])?["isError"] as? Bool != true)
+                image = visuals.frame?.data
+                if let key = BrowserVisualState.key(arguments),
+                   arguments["query"] == nil, arguments["scope_ref"] == nil, arguments["continuation"] == nil {
+                    browserFingerprints[key] = Self.browserFingerprint(response, key: key)
+                }
+                append("visual_evidence", visuals.caption, step: step)
+            } else if !browserToolsEnabled { image = observed.image }
             let guidance = observationProgress.guidance(tool: call.name, arguments: arguments, response: response)
             if let guidance { append("backend", "Observation guidance at step \(step): \(guidance)") }
             let plannerObservation = observed.text + (guidance.map { "\nRuntime observation guidance: " + $0 } ?? "")
-            historyEntries.append(HistoryEntry(call: "Step \(step): \(call.name) \(call.arguments)",
+            historyEntries.append(HistoryEntry(call: "Step \(step): \(call.name) \(effectiveArguments)",
                                                observation: plannerObservation,
                                                staleSnapshot: Self.snapshotHistorySummary(from: response)))
+            if browserMutation, let target = arguments["target_id"], let tab = arguments["tab_id"] {
+                // Observe the exact acted-on tab before planning again. A new-tab
+                // navigation leaves its anchor unchanged; the new tab will also
+                // require its own first screenshot when discovered via binding.
+                let verification: [String: Any] = ["target_id": target, "tab_id": tab,
+                    "include_screenshot": true, "snapshot_format": "semantic_v2"]
+                let key = BrowserVisualState.key(verification)!
+                let settled = try await Self.settleBrowserObservation(key: key, before: browserFingerprints[key]) {
+                    try Task.checkCancellation()
+                    guard !ComputerUseWindowIdentity.isScreenLocked, Date() < deadline else {
+                        throw NSError(domain: "ComputerUse", code: 1, userInfo: [NSLocalizedDescriptionKey: "Post-action verification stopped because the Mac locked or the execution allowance expired; the action must not be replayed."])
+                    }
+                    append("tool_call", "[trycua] get_browser_state\n" + String(data: try JSONSerialization.data(withJSONObject: verification, options: [.sortedKeys]), encoding: .utf8)!, step: step)
+                    let response = try await driver.callInBackground(name: "get_browser_state",
+                        arguments: ComputerUseReferenceDriver.scopedArguments(verification, session: session),
+                        timeout: max(0.001, deadline.timeIntervalSinceNow))
+                    append("tool_result", "[trycua] " + Self.observation(from: response).text, step: step)
+                    return response
+                }
+                let checked = settled.response
+                let evidence = Self.observation(from: checked)
+                browserFingerprints[key] = Self.browserFingerprint(checked, key: key)
+                visuals.inspected(verification, image: evidence.image, success: browserFingerprints[key] != nil)
+                image = visuals.frame?.data
+                append("backend", "Post-action verification: \(settled.reads) read(s). \(settled.evidence)", step: step)
+                append("visual_evidence", visuals.caption, step: step)
+                historyEntries.append(HistoryEntry(call: "Automatic visual verification of \(call.name)",
+                    observation: evidence.text + "\n" + settled.evidence + "\n" + visuals.caption + (image == nil ? " Screenshot unavailable: do not continue mutations or claim verified success." : " Compare the expected effect with both pixels and page structure before choosing another action. Capture alone does not prove success."),
+                    staleSnapshot: Self.snapshotHistorySummary(from: checked)))
+            }
 
         }
         return finish(.failed, "trycua reached its step limit", kind: "failed")

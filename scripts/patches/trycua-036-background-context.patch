@@ -1400,6 +1400,18 @@ index a036c3a..e69133a 100644
 +    assert!(recorded_calls(&f, "Page.bringToFront").is_empty());
 +    assert!(recorded_calls(&f, "Target.activateTarget").is_empty());
 +}
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
+index 91ba5de..68abe66 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
+@@ -51,6 +51,7 @@ pub const kAXValueIllegalType: AXValueType = 1_000;
+ #[link(name = "ApplicationServices", kind = "framework")]
+ extern "C" {
+     pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
++    pub fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
+     pub fn AXUIElementCopyAttributeValue(
+         element: AXUIElementRef,
+         attribute: CFStringRef,
 diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
 index 7448538..ed91296 100644
 --- a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
@@ -1496,3 +1508,525 @@ index 5c11742..682db37 100644
      use cua_driver_core::browser::{existing_profile_setup_descriptor, BrowserProduct};
  
      fn chrome() -> &'static BrowserSetupDescriptor {
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/capture.rs b/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
+index 0db5c6f..c872c31 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
+@@ -3,7 +3,7 @@
+ //! ## Window capture (primary: ScreenCaptureKit)
+ //!
+ //! Single-frame window capture prefers native ScreenCaptureKit via
+-//! `SCScreenshotManager::capture_image` with a desktop-independent window
++//! `SCScreenshotManager::capture_sample_buffer` with a desktop-independent window
+ //! filter, then encodes PNG in memory. No subprocess, temp file, or base64
+ //! on the native success path.
+ //!
+@@ -22,13 +22,12 @@
+ //!
+ //! ## Windows on another Space (CUA-1351)
+ //!
+-//! ScreenCaptureKit and `screencapture -l` return no content for a window
+-//! that sits on a Space the user is not looking at (another desktop or a
+-//! full-screen Space). For those windows the private SkyLight call
++//! Image capture can fail with -3811 on inactive fullscreen Spaces. Use
++//! ScreenCaptureKit sample-buffer capture off Space under the same bounded
++//! worker/identity checks. As a compatibility fallback, the private SkyLight call
+ //! `SLSHWCaptureWindowList` reads the window's backing store directly, without
+-//! switching Spaces, ordering windows or activating anything. It is used first
+-//! only when WindowServer says the window is off the current Space, and last
+-//! when every public path failed. A missing symbol or a fully transparent
++//! switching Spaces, ordering windows or activating anything. It is used
++//! after the public capture chain fails. A missing symbol or a fully transparent
+ //! image counts as a failure.
+ //!
+ //! ## Display capture
+@@ -521,7 +520,9 @@ fn build_window_capture_plan(
+ 
+     let config = SCStreamConfiguration::new()
+         .with_width(out_w)
+-        .with_height(out_h);
++        .with_height(out_h)
++        .with_shows_cursor(false)
++        .with_pixel_format(screencapturekit::stream::configuration::PixelFormat::BGRA);
+ 
+     Ok(std::sync::Arc::new(WindowCapturePlan {
+         filter,
+@@ -536,11 +537,56 @@ fn build_window_capture_plan(
+ fn capture_window_from_plan(window_id: u32, plan: &WindowCapturePlan) -> anyhow::Result<Vec<u8>> {
+     use screencapturekit::screenshot_manager::SCScreenshotManager;
+ 
+-    let image = SCScreenshotManager::capture_image(&plan.filter, &plan.config).map_err(|e| {
+-        anyhow::anyhow!("SCScreenshotManager::capture_image failed for window {window_id}: {e}")
+-    })?;
++    // Use the desktop-independent sample-buffer path on every Space. Choosing
++    // capture_image from a current-Space check races with the user switching
++    // desktops before ScreenCaptureKit completes the asynchronous capture.
++    // This obtains a frame; it does not prove the application has repainted.
++    use screencapturekit::cm::CMSampleBufferExt;
++    let sample = SCScreenshotManager::capture_sample_buffer(&plan.filter, &plan.config)
++        .map_err(|e| {
++            anyhow::anyhow!("sample-buffer capture failed for window {window_id}: {e}")
++        })?;
++    let pixel = sample
++        .image_buffer()
++        .ok_or_else(|| anyhow::anyhow!("sample-buffer capture returned no image buffer"))?;
++    if pixel.pixel_format() != u32::from_be_bytes(*b"BGRA") {
++        anyhow::bail!("sample-buffer capture returned unexpected pixel format");
++    }
++    let w = checked_image_dim(pixel.width(), "sample width")?;
++    let h = checked_image_dim(pixel.height(), "sample height")?;
++    let lock = pixel
++        .lock_read_only()
++        .map_err(|e| anyhow::anyhow!("sample-buffer lock failed: {e}"))?;
++    let rgba = packed_bgra_to_rgba(lock.as_slice(), w, h, lock.bytes_per_row())?;
++    cua_driver_core::image_utils::encode_rgba_to_png(&rgba, w, h)
++}
+ 
+-    cgimage_to_png(&image, &format!("window {window_id}"))
++/// Respect row padding; never include padding bytes or accept empty/transparent frames.
++fn packed_bgra_to_rgba(
++    bytes: &[u8],
++    width: u32,
++    height: u32,
++    stride: usize,
++) -> anyhow::Result<Vec<u8>> {
++    checked_image_dim(width as usize, "sample width")?;
++    checked_image_dim(height as usize, "sample height")?;
++    let row = width as usize * 4;
++    let required = stride
++        .checked_mul(height as usize)
++        .ok_or_else(|| anyhow::anyhow!("sample-buffer size overflow"))?;
++    if stride < row || bytes.len() < required {
++        anyhow::bail!("sample-buffer has invalid stride or truncated data");
++    }
++    let mut rgba = Vec::with_capacity(row * height as usize);
++    for y in 0..height as usize {
++        for pixel in bytes[y * stride..y * stride + row].chunks_exact(4) {
++            rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
++        }
++    }
++    if !unpremultiply_rgba(&mut rgba) {
++        anyhow::bail!("sample-buffer frame is fully transparent");
++    }
++    Ok(rgba)
+ }
+ 
+ /// Encode a ScreenCaptureKit `CGImage` as PNG after checking its geometry.
+@@ -766,9 +812,8 @@ pub fn screenshot_window_bytes(window_id: u32) -> anyhow::Result<Vec<u8>> {
+ 
+ /// Route a window capture by Space.
+ ///
+-/// Off the current Space, the public backends return nothing useful, so the
+-/// SkyLight capture goes first and the public chain is the fallback. On the
+-/// current Space the public chain goes first and SkyLight is the last resort.
++/// Prefer public capture on every Space: the native path selects sample buffers
++/// off Space. SkyLight is a compatibility fallback and may expose a backing store.
+ /// When everything fails the error keeps every backend's context.
+ fn capture_window_with_space_route<P, S>(
+     window_id: u32,
+@@ -780,20 +825,14 @@ where
+     P: FnOnce(u32) -> anyhow::Result<Vec<u8>>,
+     S: FnOnce(u32) -> anyhow::Result<Vec<u8>>,
+ {
+-    if off_space {
+-        let skylight_err = match skylight(window_id) {
+-            Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+-            Ok(_) => anyhow::anyhow!("SkyLight capture produced empty bytes"),
+-            Err(error) => error,
+-        };
+-        return public(window_id).map_err(|public_err| {
+-            anyhow::anyhow!(
+-                "window {window_id} is on another Space; SkyLight capture: {skylight_err:#}; \
+-                 {public_err:#}"
+-            )
+-        });
+-    }
+-    match public(window_id) {
++    let public_result = public(window_id).map_err(|error| {
++        if off_space {
++            anyhow::anyhow!("window {window_id} is on another Space; {error:#}")
++        } else {
++            error
++        }
++    });
++    match public_result {
+         Ok(bytes) => Ok(bytes),
+         Err(public_err) => match skylight(window_id) {
+             Ok(bytes) if !bytes.is_empty() => Ok(bytes),
+@@ -1105,41 +1144,41 @@ mod tests {
+     use std::sync::Arc;
+ 
+     #[test]
+-    fn off_space_window_uses_skylight_before_public_backends() {
+-        let public_calls = Cell::new(0u32);
+-        let got = capture_window_with_space_route(
+-            7,
+-            true,
+-            |_| {
+-                public_calls.set(public_calls.get() + 1);
+-                anyhow::bail!("public backends must not run when SkyLight succeeds off-Space")
+-            },
+-            |window_id| Ok(format!("sky-{window_id}").into_bytes()),
+-        )
+-        .expect("off-Space SkyLight capture should succeed");
+-        assert_eq!(got, b"sky-7");
+-        assert_eq!(public_calls.get(), 0);
++    fn off_space_prefers_fresh_native_frame_and_keeps_backing_store_fallback() {
++        assert_eq!(
++            capture_window_with_space_route(
++                7,
++                true,
++                |_| Ok(b"fresh".to_vec()),
++                |_| panic!("must not use backing store")
++            )
++            .unwrap(),
++            b"fresh"
++        );
++        assert_eq!(
++            capture_window_with_space_route(
++                7,
++                true,
++                |_| anyhow::bail!("native unavailable"),
++                |_| Ok(b"backing".to_vec())
++            )
++            .unwrap(),
++            b"backing"
++        );
+     }
+ 
+     #[test]
+-    fn off_space_skylight_failure_falls_back_to_public_backends() {
+-        let got = capture_window_with_space_route(
+-            7,
+-            true,
+-            |_| Ok(b"public".to_vec()),
+-            |_| anyhow::bail!("SPI missing"),
+-        )
+-        .expect("public fallback should run");
+-        assert_eq!(got, b"public");
+-
+-        let got = capture_window_with_space_route(
+-            7,
+-            true,
+-            |_| Ok(b"public".to_vec()),
+-            |_| Ok(Vec::new()),
+-        )
+-        .expect("empty SkyLight bytes fall back");
+-        assert_eq!(got, b"public");
++    fn sample_pixels_respect_padding_and_reject_invalid_frames() {
++        let bytes = [1, 2, 3, 255, 99, 99, 99, 99, 4, 5, 6, 128, 88, 88, 88, 88];
++        assert_eq!(
++            packed_bgra_to_rgba(&bytes, 1, 2, 8).unwrap(),
++            [3, 2, 1, 255, 12, 10, 8, 128]
++        );
++        assert!(packed_bgra_to_rgba(&bytes, 2, 2, 4).is_err());
++        assert!(packed_bgra_to_rgba(&bytes[..10], 1, 2, 8).is_err());
++        assert!(packed_bgra_to_rgba(&[1, 2, 3, 0], 1, 1, 4).is_err());
++        assert!(packed_bgra_to_rgba(&bytes, 0, 1, 4).is_err());
++        assert!(packed_bgra_to_rgba(&bytes, 1, 2, usize::MAX).is_err());
+     }
+ 
+     #[test]
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/focus_guard.rs b/libs/cua-driver/rust/crates/platform-macos/src/focus_guard.rs
+index 7c859bc..194cc22 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/focus_guard.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/focus_guard.rs
+@@ -26,12 +26,10 @@
+ //!    entry. If the target self-activates anyway, re-activates the
+ //!    prior frontmost.
+ //!
+-//! This Rust port only ships **layer 3** (the reactive suppressor).
+-//! Layers 1+2 require AX assertion + AX attribute write/restore machinery
+-//! that isn't yet ported — and empirically the layer-3 reactive guard
+-//! catches the majority of side-effects when combined with
+-//! `WindowChangeDetector`'s wildcard lease at the snapshot→detect
+-//! boundary. This gap is a known, intentional limitation.
++//! AX click/type/set-value workers also hold `synthetic_focus`: the Swift
++//! attribute save/restore layer, with exact-window validation and minimized
++//! window protection. Existing Chromium enablement is reused. This is still
++//! best-effort; reactive restoration is not a no-activation guarantee.
+ //!
+ //! ## Why this is a separate module
+ //!
+@@ -153,3 +151,210 @@ where
+     let prior = apps::frontmost_pid();
+     with_focus_suppressed(target_pid, prior, origin, f).await
+ }
++
++// Ported from Swift SyntheticAppFocusEnforcer at upstream 53e6736f0bc5.
++// Unlike the historical implementation, never overwrite an unreadable prior
++// value: a best-effort write without a restorable value can leave focus changed.
++trait FocusAttributes {
++    fn read(&self, target: usize, attribute: &str) -> Option<bool>;
++    fn write(&self, target: usize, attribute: &str, value: bool) -> bool;
++}
++
++struct SyntheticFocus<B: FocusAttributes> {
++    backend: B,
++    changed: Vec<(usize, &'static str, bool)>,
++}
++
++impl<B: FocusAttributes> SyntheticFocus<B> {
++    fn begin(backend: B, minimized: Option<bool>) -> Self {
++        let mut lease = Self {
++            backend,
++            changed: Vec::new(),
++        };
++        // Unknown minimized state is not permission to deminiaturize a window.
++        if minimized != Some(false) {
++            return lease;
++        }
++        for (target, attribute) in [(0, "AXFocused"), (0, "AXMain"), (1, "AXFocused")] {
++            if let Some(false) = lease.backend.read(target, attribute) {
++                if lease.backend.write(target, attribute, true) {
++                    lease.changed.push((target, attribute, false));
++                }
++            }
++        }
++        lease
++    }
++}
++
++impl<B: FocusAttributes> Drop for SyntheticFocus<B> {
++    fn drop(&mut self) {
++        for &(target, attribute, prior) in self.changed.iter().rev() {
++            // Do not overwrite a newer externally changed value on cleanup.
++            if self.backend.read(target, attribute) == Some(true) {
++                self.backend.write(target, attribute, prior);
++            }
++        }
++    }
++}
++
++struct NativeFocusAttributes {
++    targets: [crate::ax::snapshot::RetainedElement; 2],
++}
++
++impl FocusAttributes for NativeFocusAttributes {
++    fn read(&self, target: usize, attribute: &str) -> Option<bool> {
++        unsafe {
++            crate::ax::bindings::copy_bool_attr(self.targets[target].as_ptr() as _, attribute)
++        }
++    }
++    fn write(&self, target: usize, attribute: &str, value: bool) -> bool {
++        use core_foundation::{base::TCFType, boolean::CFBoolean, string::CFString};
++        let name = CFString::new(attribute);
++        let value = if value {
++            CFBoolean::true_value()
++        } else {
++            CFBoolean::false_value()
++        };
++        unsafe {
++            crate::ax::bindings::AXUIElementSetAttributeValue(
++                self.targets[target].as_ptr() as _,
++                name.as_concrete_TypeRef(),
++                value.as_CFTypeRef(),
++            ) == crate::ax::bindings::kAXErrorSuccess
++        }
++    }
++}
++
++/// Hold on the blocking AX worker, inside the existing reactive suppression
++/// lease. Restores focus attributes on success, error and panic; cancellation
++/// cannot drop it before the underlying blocking AX action has actually ended.
++/// No activation, AXRaise, global key input or desktop changes are dispatched.
++///
++/// # Safety
++/// `element` must be a live, already validated AX action target.
++pub unsafe fn synthetic_focus(
++    pid: i32,
++    element: usize,
++    expected_window: Option<u32>,
++) -> Option<impl Drop> {
++    use crate::ax::{bindings::*, snapshot::RetainedElement};
++    use core_foundation::base::{CFRelease, CFTypeRef};
++    let expected_window = expected_window?;
++    if element == 0 || apps::frontmost_pid() == Some(pid) {
++        return None;
++    }
++    let element_ref = element as AXUIElementRef;
++    let window = if copy_string_attr(element_ref, "AXRole").as_deref() == Some("AXWindow") {
++        RetainedElement::retain(element)
++    } else {
++        let copied = copy_element_attr(element_ref, "AXWindow")?;
++        let retained = RetainedElement::retain(copied as usize);
++        CFRelease(copied as CFTypeRef);
++        retained
++    };
++    let window_ref = window.as_ptr() as AXUIElementRef;
++    let mut owner = 0;
++    if AXUIElementGetPid(window_ref, &mut owner) != kAXErrorSuccess
++        || owner != pid
++        || ax_get_window_id(window_ref) != Some(expected_window)
++    {
++        return None;
++    }
++    let minimized = copy_bool_attr(window_ref, "AXMinimized");
++    let root = AXUIElementCreateApplication(pid);
++    if !root.is_null() {
++        crate::ax::enablement::ensure_chromium_ax_enabled(pid, root);
++        CFRelease(root as CFTypeRef);
++    }
++    Some(SyntheticFocus::begin(
++        NativeFocusAttributes {
++            targets: [window, RetainedElement::retain(element)],
++        },
++        minimized,
++    ))
++}
++
++#[cfg(test)]
++mod synthetic_tests {
++    use super::*;
++    use std::{cell::RefCell, collections::HashMap, rc::Rc};
++    #[derive(Clone, Default)]
++    struct Mock(
++        Rc<
++            RefCell<(
++                HashMap<(usize, String), bool>,
++                Vec<(usize, String, bool)>,
++                bool,
++            )>,
++        >,
++    );
++    impl FocusAttributes for Mock {
++        fn read(&self, t: usize, a: &str) -> Option<bool> {
++            self.0.borrow().0.get(&(t, a.into())).copied()
++        }
++        fn write(&self, t: usize, a: &str, v: bool) -> bool {
++            let mut s = self.0.borrow_mut();
++            if s.2 {
++                return false;
++            }
++            s.0.insert((t, a.into()), v);
++            s.1.push((t, a.into(), v));
++            true
++        }
++    }
++    fn mock() -> Mock {
++        let m = Mock::default();
++        for (t, a) in [(0, "AXFocused"), (0, "AXMain"), (1, "AXFocused")] {
++            m.0.borrow_mut().0.insert((t, a.into()), false);
++        }
++        m
++    }
++    #[test]
++    fn restores_after_success_and_unwind() {
++        for panic in [false, true] {
++            let m = mock();
++            let state = m.clone();
++            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                let _lease = SyntheticFocus::begin(m, Some(false));
++                assert!(state.0.borrow().0.values().all(|v| *v));
++                if panic {
++                    panic!("action failed");
++                }
++            }));
++            assert!(state.0.borrow().0.values().all(|v| !*v));
++            assert_eq!(state.0.borrow().1.len(), 6);
++        }
++    }
++    #[test]
++    fn skips_minimized_unknown_and_unreadable_state() {
++        for minimized in [Some(true), None] {
++            let m = mock();
++            drop(SyntheticFocus::begin(m.clone(), minimized));
++            assert!(m.0.borrow().1.is_empty());
++        }
++        let m = Mock::default();
++        drop(SyntheticFocus::begin(m.clone(), Some(false)));
++        assert!(m.0.borrow().1.is_empty());
++    }
++    #[test]
++    fn failed_writes_and_existing_focus_are_not_restored() {
++        let m = mock();
++        m.0.borrow_mut().2 = true;
++        drop(SyntheticFocus::begin(m.clone(), Some(false)));
++        assert!(m.0.borrow().1.is_empty());
++        let m = mock();
++        for v in m.0.borrow_mut().0.values_mut() {
++            *v = true;
++        }
++        drop(SyntheticFocus::begin(m.clone(), Some(false)));
++        assert!(m.0.borrow().1.is_empty());
++    }
++    #[test]
++    fn cleanup_does_not_overwrite_external_changes() {
++        let m = mock();
++        let lease = SyntheticFocus::begin(m.clone(), Some(false));
++        m.0.borrow_mut().0.insert((0, "AXMain".into()), false);
++        drop(lease);
++        assert_eq!(m.0.borrow().1.len(), 5);
++    }
++}
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
+index 67bfae2..b89fd2b 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
+@@ -854,6 +854,7 @@ impl Tool for ClickTool {
+                             })?;
+                             Ok((outcome, fronted))
+                         } else {
++                            let _synthetic_focus = unsafe { focus_guard::synthetic_focus(pid, element_ptr, Some(wid)) };
+                             perform_ax_click(
+                                 (element_ptr, idx),
+                                 (pid, wid),
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+index 8c4d118..80dffe5 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+@@ -88,19 +88,20 @@ fn def() -> &'static ToolDef {
+     })
+ }
+ 
+-/// Chromium stops painting and stops updating its accessibility tree while its
+-/// window is not visible, which includes sitting on another Space (CUA-1351,
+-/// cdb-v2-40: a click delivered off-Space only showed once the Space was shown).
+-/// AppKit windows keep drawing, so they get no note.
++/// Off-Space Chromium observations can be stale. Space membership alone does
++/// not establish staleness or whether an action was delivered successfully.
+ fn off_space_staleness_note(
+     on_current_space: Option<bool>,
+     chromium: bool,
+ ) -> Option<&'static str> {
+     (on_current_space == Some(false) && chromium).then_some(
+-        "This browser window is on another Space. Chromium pauses painting and \
+-         accessibility updates while its window is not visible, so this screenshot \
+-         and tree can show an older state. Actions are still delivered: confirm \
+-         their effect after the window is shown, not from this read.",
++        "This browser window is on another Space. Chromium may defer painting or \
++         accessibility updates. Space membership alone does not prove this \
++         observation is stale or require foreground activation. Use exact-window \
++         controls when available and verify an action with a new observation of \
++         the expected change. Unchanged evidence does not prove success; do not \
++         repeat an uncertain mutation. Respect explicit route refusals and do not \
++         switch Spaces or show the window just to verify it.",
+     )
+ }
+ 
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/set_value.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/set_value.rs
+index df1b6b1..7f28357 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/set_value.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/set_value.rs
+@@ -222,6 +222,7 @@ impl Tool for SetValueTool {
+             "set_value.AXValue",
+             || async move {
+                 tokio::task::spawn_blocking(move || {
++                    let _synthetic_focus = unsafe { focus_guard::synthetic_focus(pid, element_guard.as_ptr(), Some(window_id)) };
+                     set_value_blocking(
+                         element_guard.as_ptr(),
+                         element_index,
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
+index f8fe150..ae0ae0a 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
+@@ -367,6 +367,9 @@ impl Tool for TypeTextTool {
+             || async move {
+                 tokio::task::spawn_blocking(move || {
+                     let _native_guard = native_guard;
++                    let _synthetic_focus = if delivery_mode.is_foreground() { None } else {
++                        element_ptr.and_then(|(ptr, _)| unsafe { focus_guard::synthetic_focus(pid, ptr, window_id) })
++                    };
+                     type_text_blocking(
+                         pid,
+                         &text_clone,
