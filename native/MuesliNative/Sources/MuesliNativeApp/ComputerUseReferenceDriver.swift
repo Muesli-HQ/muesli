@@ -317,11 +317,22 @@ final class ComputerUseReferenceDriver: ObservableObject {
         return scoped
     }
 
+    /// Startup probing can use the executable without selecting it for commands.
     static var selectedExecutable: String? {
-        guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
-              let index = CommandLine.arguments.firstIndex(of: "--trycua-driver"),
-              CommandLine.arguments.indices.contains(index + 1) else { return nil }
-        return CommandLine.arguments[index + 1]
+        executable(bundleID: Bundle.main.bundleIdentifier, arguments: CommandLine.arguments, forCommands: false)
+    }
+
+    static var commandExecutable: String? {
+        executable(bundleID: Bundle.main.bundleIdentifier, arguments: CommandLine.arguments, forCommands: true)
+    }
+
+    static func executable(bundleID: String?, arguments: [String], forCommands: Bool) -> String? {
+        guard bundleID?.hasPrefix("com.muesli.dev") == true,
+              !(forCommands && arguments.contains("--trycua-probe-only")),
+              let index = arguments.firstIndex(of: "--trycua-driver"),
+              arguments.indices.contains(index + 1), !arguments[index + 1].hasPrefix("--"),
+              !arguments[index + 1].isEmpty else { return nil }
+        return arguments[index + 1]
     }
     private(set) var serverVersion = "unknown"
     private(set) var tools: [[String: Any]] = []

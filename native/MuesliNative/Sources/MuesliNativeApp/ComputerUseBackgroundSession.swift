@@ -213,6 +213,12 @@ final class ComputerUseBackgroundSession {
         """
     }
 
+    static func defaultScrollPoint(frame: CGRect) -> CGPoint? {
+        guard frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
+              frame.width > 0, frame.height > 0 else { return nil }
+        return CGPoint(x: frame.midX, y: frame.midY)
+    }
+
     private func elementOrPointerAction(_ call: ComputerUseToolCall, registry: ComputerUseElementRegistry, target: ComputerUseBackgroundTarget) -> ComputerUseExecutionResult {
         var element: AXUIElement?
         if let index = call.elementIndex { element = registry.element(for: index) }
@@ -253,6 +259,13 @@ final class ComputerUseBackgroundSession {
                                                          direction: call.direction ?? .down, pages: call.pages ?? 1)
             default: break
             }
+        }
+        // The public scroll schema deliberately permits no element. Use the
+        // acquired window's live centre, never the cursor or foreground window.
+        if call.tool == .scroll, call.screenshotID == nil, call.x == nil, call.y == nil,
+           let frame = ComputerUseWindowIdentity.frame(target), let point = Self.defaultScrollPoint(frame: frame) {
+            return ComputerUseBackgroundInput.scroll(point: point, target: target,
+                direction: call.direction ?? .down, pages: call.pages ?? 1)
         }
         guard call.tool == .click || call.tool == .clickPoint || call.tool == .scroll,
               let screenshot = registry.currentScreenshot(), call.screenshotID == screenshot.screenshotID,
