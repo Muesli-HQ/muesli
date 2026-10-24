@@ -93,8 +93,7 @@ struct GemmaPreparationPlan: Equatable, Sendable {
     }
     let entries: [Entry]
     var key: String { entries.map { "\($0.model.rawValue):\($0.audio):\($0.text)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?,
-         optionalModelAvailable: (Gemma4LiteRTModel) -> Bool = { _ in true }) {
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?) {
         var result: [Entry] = []
         func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool) {
             guard let model else { return }
@@ -104,11 +103,26 @@ struct GemmaPreparationPlan: Equatable, Sendable {
             } else { result.append(Entry(model: model, audio: audio, text: text)) }
         }
         add(dictation, audio: true, text: false)
-        // Missing optional features must not prevent an otherwise-ready dictation.
-        // The selected dictation model remains mandatory, even if not downloaded.
-        if let cleanup, optionalModelAvailable(cleanup) { add(cleanup, audio: false, text: true) }
-        if let quill, optionalModelAvailable(quill) { add(quill, audio: quill == dictation, text: true) }
+        add(cleanup, audio: false, text: true)
+        add(quill, audio: quill == dictation, text: true)
         entries = result
+    }
+    /// Optional feature failures do not prevent ordinary dictation. Each feature
+    /// still validates its artifacts again before inference; cancellation always propagates.
+    func prepare(optionalModelAvailable: (Gemma4LiteRTModel) -> Bool = { _ in true },
+                 using operation: (Entry) async throws -> Void,
+                 optionalFailure: (Entry, Error) -> Void) async throws {
+        for entry in entries {
+            try Task.checkCancellation()
+            // Perform filesystem work in preparation, never in the hotkey's plan construction.
+            if !entry.audio && !optionalModelAvailable(entry.model) { continue }
+            do { try await operation(entry) }
+            catch {
+                try Task.checkCancellation()
+                if entry.audio || error is CancellationError { throw error }
+                optionalFailure(entry, error)
+            }
+        }
     }
 }
 

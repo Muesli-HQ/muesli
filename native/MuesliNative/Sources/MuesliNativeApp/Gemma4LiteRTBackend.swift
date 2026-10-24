@@ -228,6 +228,10 @@ enum Gemma4LiteRTModelStore {
         guard environment["MUESLI_GEMMA_MLX_MODEL_DIR"] == nil, environment[modelPathEnvVar] == nil, environment["MUESLI_CLEANUP_V2_MODEL_PATH"] == nil else { return }
         let directory = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.descriptor(for: model))
         if fileManager.fileExists(atPath: directory.path) { try fileManager.removeItem(at: directory) }
+        // Explicit deletion also retires the app-owned legacy model and compiler
+        // cache. Never resolve an external cache override for deletion.
+        let legacyDirectory = cacheDirectory(for: model, fileManager: fileManager)
+        if fileManager.fileExists(atPath: legacyDirectory.path) { try fileManager.removeItem(at: legacyDirectory) }
         // E2B and cleanup share the same drafter, so keep that cache for other models.
     }
 
@@ -290,7 +294,7 @@ actor Gemma4LiteRTTranscriber {
         var errorDescription: String? {
             switch self {
             case .modelMissing(let path):
-                return "Gemma 4 MLX model is missing at \(path). Download it from the Models tab or set \(Gemma4LiteRTModelStore.modelPathEnvVar)."
+                return "Gemma 4 MLX model is missing at \(path). Download it from the Models tab or set MUESLI_GEMMA_MLX_MODEL_DIR."
             case .failedToCreateSettings:
                 return "Gemma 4 MLX failed to create engine settings."
             case .failedToCreateEngine:

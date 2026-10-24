@@ -9829,14 +9829,21 @@ public final class MuesliController: NSObject {
     }
 
     private func handleQuilCancel() {
-        if nativeRecordingGate.pendingKey != nil { return }
+        if nativeRecordingGate.pendingKey != nil,
+           !quilAudioSessionManager.hasActiveSession, quilStartedAt == nil,
+           quilTask == nil, pendingQuilStopSessionID == nil { return }
         guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .quil) else { return }
         clearQuilSession(cancelAudioReason: "quil_cancel")
         resumeAfterQuil()
     }
 
     private func handleQuilStop() {
-        if nativeRecordingGate.pendingKey != nil { quilHotkeyMonitor.cancelToggleMode(); return }
+        if nativeRecordingGate.pendingKey != nil,
+           !quilAudioSessionManager.hasActiveSession, quilStartedAt == nil,
+           quilTask == nil, pendingQuilStopSessionID == nil {
+            quilHotkeyMonitor.cancelToggleMode()
+            return
+        }
         guard pendingQuilStopSessionID == nil,
               let sessionID = activeQuilAudioSessionID,
               quilAudioSessionManager.currentSessionID == sessionID else { return }
@@ -10799,12 +10806,11 @@ public final class MuesliController: NSObject {
         }
         let dictation: Gemma4LiteRTModel? = !selectedDictationProvider.isHosted && selectedBackend.backend == "gemma4-litert"
             ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
-        let cleanup: Gemma4LiteRTModel? = canRunTranscriptCleanup(option: runtimePostProcessorOption()) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        let cleanup: Gemma4LiteRTModel? = config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
-        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill,
-            optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) })
+        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill)
     }
 
     /// No audio session is armed or started when this returns false.
@@ -11611,7 +11617,12 @@ public final class MuesliController: NSObject {
     }
 
     private func handleCancel() {
-        if nativeRecordingGate.pendingKey != nil { hotkeyMonitor.cancelToggleMode(); return }
+        if nativeRecordingGate.pendingKey != nil, dictationState == .idle,
+           !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil,
+           dictationTranscriptionTask == nil {
+            hotkeyMonitor.cancelToggleMode()
+            return
+        }
         if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         let isCancellingTranscription = dictationState == .transcribing
@@ -11766,7 +11777,12 @@ public final class MuesliController: NSObject {
     }
 
     private func handleStop() {
-        if nativeRecordingGate.pendingKey != nil { hotkeyMonitor.cancelToggleMode(); return }
+        if nativeRecordingGate.pendingKey != nil, dictationState == .idle,
+           !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil,
+           dictationTranscriptionTask == nil {
+            hotkeyMonitor.cancelToggleMode()
+            return
+        }
         if isMeetingRecording() {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
             return

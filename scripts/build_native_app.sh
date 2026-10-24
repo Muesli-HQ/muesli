@@ -422,7 +422,7 @@ if [[ "$BUNDLE_ID" == "com.muesli.dev.c" && "${MUESLI_GEMMA_TOOL_MTP:-}" == "hyb
   /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MUESLI_GEMMA_MLX_MTP string 1' "$STAGED_APP_DIR/Contents/Info.plist"
 fi
 
-bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_NAME"
+bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
 
 # Replace existing app (no prompt — that's what this script is for)
 if [[ -d "$APP_DIR" ]]; then

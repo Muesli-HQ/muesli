@@ -302,17 +302,20 @@ struct GemmaNativeAudioTests {
         }
     }
 
-    @Test func missingOptionalModelsDoNotBlockDictation() {
-        let upgraded = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b,
-            optionalModelAvailable: { _ in false })
-        #expect(upgraded.entries.isEmpty)
-        let required = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b,
-            optionalModelAvailable: { _ in false })
-        #expect(required.entries == [.init(model: .e2b, audio: true, text: false)])
-        let downloaded = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b,
-            optionalModelAvailable: { $0 == .muesliCleanupV2 })
-        #expect(downloaded.entries == [.init(model: .muesliCleanupV2, audio: false, text: true)])
-        #expect(upgraded.key != downloaded.key)
+    @Test func missingOptionalModelsDoNotBlockDictation() async throws {
+        var prepared: [Gemma4LiteRTModel] = []
+        let optional = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b)
+        try await optional.prepare(optionalModelAvailable: { _ in false }, using: { prepared.append($0.model) },
+            optionalFailure: { _, _ in Issue.record("Unavailable optional model was loaded") })
+        #expect(prepared.isEmpty)
+        let required = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b)
+        try await required.prepare(optionalModelAvailable: { _ in false }, using: { prepared.append($0.model) },
+            optionalFailure: { _, _ in Issue.record("Required model was treated as optional") })
+        #expect(prepared == [.e2b])
+        prepared.removeAll()
+        try await optional.prepare(optionalModelAvailable: { $0 == .muesliCleanupV2 }, using: { prepared.append($0.model) },
+            optionalFailure: { _, _ in Issue.record("Available model failed") })
+        #expect(prepared == [.muesliCleanupV2])
     }
     @Test func preparationPlanDeduplicatesModels() {
         let same = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e2b)
@@ -368,6 +371,37 @@ struct GemmaNativeAudioTests {
         gate.invalidate()
         #expect(gate.readyKey == nil && gate.pendingKey == nil)
     }
+    @Test func optionalPreparationFailureDoesNotBlockRequiredDictation() async throws {
+        enum Failure: Error { case invalidArtifact }
+        let plan = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b)
+        var attempted: [Gemma4LiteRTModel] = []
+        var failed: [Gemma4LiteRTModel] = []
+        try await plan.prepare(using: { entry in
+            attempted.append(entry.model)
+            if !entry.audio { throw Failure.invalidArtifact }
+        }, optionalFailure: { entry, _ in failed.append(entry.model) })
+        #expect(attempted == [.e2b, .muesliCleanupV2, .e4b])
+        #expect(failed == [.muesliCleanupV2, .e4b])
+        attempted.removeAll()
+        do {
+            try await plan.prepare(using: { entry in
+                attempted.append(entry.model)
+                throw Failure.invalidArtifact
+            }, optionalFailure: { _, _ in Issue.record("Required failure was swallowed") })
+            Issue.record("Required dictation failure must block recording")
+        } catch Failure.invalidArtifact { }
+        #expect(attempted == [.e2b])
+    }
+
+    @Test func optionalPreparationCancellationStillPropagates() async throws {
+        let plan = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b)
+        do {
+            try await plan.prepare(using: { _ in throw CancellationError() },
+                optionalFailure: { _, _ in Issue.record("Cancellation was swallowed") })
+            Issue.record("Cancellation must invalidate preparation")
+        } catch is CancellationError { }
+    }
+
     @Test func residentWarmupSequence() async throws {
         guard #available(macOS 15, *), ProcessInfo.processInfo.environment["MUESLI_GEMMA_WARMUP_TEST"] == "1" else { return }
         Memory.cacheLimit = 256 * 1024 * 1024

@@ -237,13 +237,17 @@ struct GemmaMTPEvaluationTests {
         let block = Int(env["MUESLI_MTP_BLOCK"] ?? "3")!
         let count = Int(env["MUESLI_MTP_COUNT"] ?? "60")!
         let rounds = Int(env["MUESLI_MTP_ROUNDS"] ?? "1")!
-        let root = "/Users/pranavhari/Desktop/hacks/asr-finetune"
+        let root = env["MUESLI_MLX_EVAL_ROOT"]
         let cleanup = mode.hasPrefix("cleanup")
         let litert = mode.hasSuffix("-litert")
         guard !litert else { Issue.record("LiteRT was removed; use the archived reference results."); return }
         let rows: [(id: String, prompt: String, input: String, target: String?, appContext: String?)]
         if cleanup {
-            let all = try String(contentsOfFile: env["MUESLI_MTP_INPUTS"] ?? (root + "/common/data/context_authored_v1/heldout.jsonl")).split(separator: "\n").map { try JSONDecoder().decode(CleanupMLXEvaluationTests.Row.self, from: Data($0.utf8)) }
+            guard let inputs = env["MUESLI_MTP_INPUTS"] ?? root.map({ $0 + "/common/data/context_authored_v1/heldout.jsonl" }) else {
+                print("Skipping MTP cleanup evaluation: set MUESLI_MTP_INPUTS or MUESLI_MLX_EVAL_ROOT")
+                return
+            }
+            let all = try String(contentsOfFile: inputs).split(separator: "\n").map { try JSONDecoder().decode(CleanupMLXEvaluationTests.Row.self, from: Data($0.utf8)) }
             var seen: [String: Int] = [:]
             let selected = count == 60 ? all.filter { row in
                 seen[row.bucket ?? "", default: 0] += 1

@@ -214,12 +214,9 @@ actor TranscriptionCoordinator {
 
     func unloadGemma4LiteRTTranscriber() async {
         if #available(macOS 15, *) {
-            let engines = nativeGemmaEngines.values.compactMap { $0 as? GemmaNativeAudioTranscriber }
             nativeGemmaEngines.removeAll()
-            for engine in engines { await engine.shutdown() }
-        }
-        if #available(macOS 15, *), let transcriber = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
-            await transcriber.shutdown()
+            // The planner can load a shared engine without creating this facade.
+            await Gemma4LiteRTTranscriber.shared.shutdown()
             _gemma4LiteRTTranscriber = nil
         }
     }
@@ -525,11 +522,12 @@ actor TranscriptionCoordinator {
 
     func prepareNativeGemmaModels(_ plan: GemmaPreparationPlan, progress: @escaping @Sendable (String) -> Void) async throws {
         guard #available(macOS 15, *) else { return }
-        for entry in plan.entries {
-            try Task.checkCancellation()
+        try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
             progress("Preparing \(entry.model.label)… Mic off")
             try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
-        }
+        }, optionalFailure: { entry, error in
+            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+        })
     }
 
     @available(macOS 15, *)
@@ -1217,12 +1215,7 @@ actor TranscriptionCoordinator {
             }
             await cohereTranscriber.shutdown()
             await bodhanTranscriber.shutdown()
-            let engines = nativeGemmaEngines.values.compactMap { $0 as? GemmaNativeAudioTranscriber }
-            nativeGemmaEngines.removeAll()
-            for engine in engines { await engine.shutdown() }
-            if let gemma4 = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
-                await gemma4.shutdown()
-            }
+            await unloadGemma4LiteRTTranscriber()
         }
     }
 
