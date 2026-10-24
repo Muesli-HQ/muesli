@@ -5,6 +5,129 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Post-action verification waits through stale evidence without replaying input")
+    func browserSettling() async throws {
+        func snapshot(_ label: String, id: Int = 1, tab: String = "a", image: Bool = true) -> [String: Any] {
+            ["result": ["content": image ? [["type": "image", "data": "pixels", "mimeType": "image/png"]] : [],
+                        "structuredContent": ["status": "ok", "mode": "snapshot", "target_id": "window", "tab_id": tab,
+                            "page": ["url": "https://example.test"],
+                            "refs": [["ref": "p\(id):1", "role": "button", "name": label, "states": ["focused": id % 2 == 0]]]]]]
+        }
+        let before = ComputerUseReferenceRuntime.browserFingerprint(snapshot("closed"), key: "window/a")
+        #expect(before == ComputerUseReferenceRuntime.browserFingerprint(snapshot("closed", id: 9), key: "window/a"))
+        var reads = 0
+        let responses = [snapshot("closed"), snapshot("closed", id: 2), snapshot("open", id: 3), snapshot("open", id: 4)]
+        let settled = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before, read: {
+            defer { reads += 1 }
+            return responses[reads]
+        }, pause: {})
+        #expect(reads == 4)
+        #expect(settled.evidence.contains("after changing"))
+        for unavailable in [snapshot("open", tab: "other"), snapshot("open", image: false), ["result": ["isError": true]]] {
+            let outcome = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+                read: { unavailable }, pause: {})
+            #expect(outcome.reads == 1)
+            #expect(outcome.evidence.contains("unavailable"))
+        }
+        let unchanged = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+            read: { snapshot("closed") }, pause: {})
+        #expect(unchanged.reads == 4)
+        #expect(unchanged.evidence.contains("unconfirmed"))
+        let transient: [String: Any] = ["result": ["structuredContent": ["status": "refused",
+            "refusal": ["code": "browser_route_unavailable"]]]]
+        var navigationReads = 0
+        let reloaded = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+            read: { navigationReads += 1; return navigationReads < 3 ? transient : snapshot("reloaded", id: navigationReads) }, pause: {})
+        #expect(reloaded.reads == 4)
+        #expect(reloaded.evidence.contains("after changing"))
+        let unavailable = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+            read: { transient }, pause: {})
+        #expect(unavailable.reads == 4)
+        for code in ["browser_consent_required", "browser_target_stale", "browser_identity_mismatch"] {
+            let refused = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+                read: { ["result": ["structuredContent": ["status": "refused", "refusal": ["code": code]]]] }, pause: {})
+            #expect(refused.reads == 1)
+        }
+        var cancelledReads = 0
+        do {
+            _ = try await ComputerUseReferenceRuntime.settleBrowserObservation(key: "window/a", before: before,
+                read: { cancelledReads += 1; return snapshot("closed") }, pause: { throw CancellationError() })
+            Issue.record("Cancellation must stop verification")
+        } catch is CancellationError { }
+        #expect(cancelledReads == 1)
+    }
+
+    @Test("Browser screenshots are scoped, retained across reads, and required after mutations")
+    func browserVisualPolicy() {
+        var state = ComputerUseReferenceRuntime.BrowserVisualState()
+        let a: [String: Any] = ["target_id": "window", "tab_id": "a"]
+        let b: [String: Any] = ["target_id": "window", "tab_id": "b"]
+        #expect(state.inspectionArguments(a)["include_screenshot"] as? Bool == true)
+        #expect(!state.mayMutate(a))
+        state.inspected(a, image: "image-a", success: true)
+        state.inspected(a, image: nil, success: true)
+        #expect(state.frame?.data == "image-a")
+        #expect(state.mayMutate(a))
+        #expect(!state.mayMutate(b))
+        state.willMutate(a)
+        #expect(state.frame == nil)
+        state.inspected(b, image: "image-b", success: true)
+        #expect(state.pending != nil)
+        #expect(!state.mayMutate(b))
+        var requested = a; requested["include_screenshot"] = true
+        state.inspected(requested, image: nil, success: false)
+        #expect(state.frame == nil)
+        #expect(!state.mayMutate(a))
+        state.inspected(requested, image: "fresh-a", success: true)
+        #expect(state.pending == nil)
+        #expect(state.mayMutate(a))
+    }
+
+    @Test("Late reads preserve the transport; uncertain writes terminate it")
+    func referenceReadRecovery() async throws {
+        for cancelled in [false, true] {
+            let driver = ComputerUseReferenceDriver()
+            let process = Process(), input = Pipe(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = ["-u", "-c", """
+            import sys,json,time
+            for line in sys.stdin:
+                r=json.loads(line)
+                if r['id']==1: time.sleep(0.3)
+                print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':{'marker':r['id']}}),flush=True)
+            """]
+            process.standardInput = input; process.standardOutput = output
+            try process.run()
+            driver.installTestTransport(process: process, input: input.fileHandleForWriting, output: output.fileHandleForReading)
+            let task = Task { try await driver.call(name: "get_browser_state", arguments: [:], timeout: cancelled ? 5 : 0.05) }
+            if cancelled { try await Task.sleep(for: .milliseconds(100)); task.cancel() }
+            do { _ = try await task.value; Issue.record("Read should have stopped waiting") } catch { }
+            do { _ = try driver.claimCommand(); Issue.record("Recovery must exclude new commands") } catch { }
+            await driver.waitForReadRecovery()
+            #expect(process.isRunning)
+            let next = try await driver.call(name: "list_windows", arguments: [:])
+            #expect((next["result"] as? [String: Any])?["marker"] as? Int == 2)
+            await driver.stop()
+        }
+        let driver = ComputerUseReferenceDriver()
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["10"]; process.standardInput = input; process.standardOutput = output
+        try process.run()
+        driver.installTestTransport(process: process, input: input.fileHandleForWriting, output: output.fileHandleForReading)
+        do { _ = try await driver.call(name: "browser_click", arguments: [:], timeout: 0.05); Issue.record("Write should time out") } catch { }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!process.isRunning)
+        await driver.stop()
+    }
+
+    @Test("Browser-only benchmark excludes native mutations and setup")
+    func browserOnlyBoundary() {
+        let names = ComputerUseReferenceRuntime.browserOnlyTools
+        #expect(names.isSuperset(of: ["get_browser_state", "browser_navigate", "browser_click", "browser_type"]))
+        #expect(names.isDisjoint(with: ["click", "type_text", "set_value", "launch_app", "browser_prepare", "browser_dialog", "hotkey", "press_key"]))
+    }
+
     @Test("Accessibility-only benchmark excludes every browser tool while retaining vision and AX")
     func accessibilityOnlyCatalog() {
         let catalog = ComputerUseReferenceRuntime.allowedTools.map {

@@ -58,7 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 referenceDriver = reference
                 let executable = CommandLine.arguments[index + 1]
                 referenceStartup = Task { @MainActor in
-                    do { try await reference.start(executable: executable) }
+                    do {
+                        try await reference.start(executable: executable)
+                        if CommandLine.arguments.contains("--trycua-connect-approved") {
+                            await reference.connectApprovedChromeInBackground()
+                        }
+                    }
                     catch { fputs("[muesli-reference] \(error.localizedDescription)\n", stderr) }
                 }
             }
