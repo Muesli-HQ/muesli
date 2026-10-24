@@ -147,7 +147,7 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(Gemma4LiteRTTranscriber.maxCleanupOutputTokens == 1024)
     }
 
-    @Test("gemma4 model store uses env override and detects local file")
+    @Test("legacy LiteRT overrides are not accepted as native MLX models")
     func gemma4ModelStoreEnvOverride() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-gemma4-store-test-\(UUID().uuidString)", isDirectory: true)
@@ -159,7 +159,7 @@ struct Gemma4LiteRTTranscriberTests {
 
         let environment = [Gemma4LiteRTModelStore.modelPathEnvVar: modelURL.path]
         #expect(Gemma4LiteRTModelStore.resolvedModelURL(environment: environment) == modelURL)
-        #expect(Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+        #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
     }
 
     @Test("gemma4 override directory is not treated as a model file")
@@ -181,7 +181,7 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(FileManager.default.fileExists(atPath: sentinelURL.path))
     }
 
-    @Test("gemma4 delete removes only explicit model override file")
+    @Test("native model deletion preserves legacy override files")
     func gemma4DeleteRespectsModelOverride() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-gemma4-delete-test-\(UUID().uuidString)", isDirectory: true)
@@ -196,7 +196,7 @@ struct Gemma4LiteRTTranscriberTests {
         let environment = [Gemma4LiteRTModelStore.modelPathEnvVar: modelURL.path]
         try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment)
 
-        #expect(!FileManager.default.fileExists(atPath: modelURL.path))
+        #expect(FileManager.default.fileExists(atPath: modelURL.path))
         #expect(FileManager.default.fileExists(atPath: siblingURL.path))
         #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
     }

@@ -76,6 +76,10 @@ case "${shard}" in
       CleanupFormattingReplayTests
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
+      CleanupMLXEvaluationTests
+      GemmaAudioEndToEndTests
+      GemmaMTPEvaluationTests
+      GemmaNativeAudioTests
       LLMGenerationLimitTests
       FillerWordFilterTests
       JaroWinklerTests

@@ -522,6 +522,7 @@ public final class MuesliController: NSObject {
     private var staleLiveMeetingRecoveryFailures = Set<Int64>()
     private var dictationState: DictationState = .idle
     private var dictationBackendPreparation = DictationBackendPreparationState()
+    private let nativeRecordingGate = GemmaRecordingPreparationGate()
     var dictationBackendReadiness: DictationBackendReadiness { dictationBackendPreparation.readiness }
     private var dictationStartedAt: Date?
     private var hostedDictationSession: (any HostedDictationSession)?
@@ -1131,6 +1132,7 @@ public final class MuesliController: NSObject {
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
         await syncEngineCancellationTask?.value
+        nativeRecordingGate.invalidate()
         await transcriptionCoordinator.shutdown()
         indicator.close()
         CoreAudioSystemRecorder.cleanupStaleDevices()
@@ -3174,6 +3176,7 @@ public final class MuesliController: NSObject {
     private func beginDictationBackendPreparation() -> UUID {
         // Clear the previous selection's spinner synchronously, even when the new
         // provider needs no local warmup. Its suspended task no longer owns the UI.
+        nativeRecordingGate.invalidate()
         let token = dictationBackendPreparation.begin(isHosted: selectedDictationProvider.isHosted)
         indicator.hideLoading()
         return token
@@ -3182,8 +3185,8 @@ public final class MuesliController: NSObject {
     private func prepareDictationBackend(_ backend: BackendOption, preparation: UUID) async -> Bool {
         guard dictationBackendPreparation.owns(preparation),
               !selectedDictationProvider.isHosted else { return false }
-        if BodhanModel(rawValue: backend.model) != nil || backend.backend == "whisper" {
-            indicator.showLoading("Warming up \(backend.label)...")
+        if BodhanModel(rawValue: backend.model) != nil || backend.backend == "whisper" || (backend.backend == "gemma4-litert" && GemmaNativeAudioPolicy.isEnabled(for: .e2b)) {
+            indicator.showLoading("Preparing \(backend.label)… Mic off")
         }
         do {
             try await transcriptionCoordinator.preloadRequired(
@@ -3194,6 +3197,9 @@ public final class MuesliController: NSObject {
             )
             guard dictationBackendPreparation.finish(preparation, succeeded: true) else { return false }
             indicator.hideLoading()
+            _ = ensureNativeModelsReady()
+            // Keep optional startup preloads behind this single sequential warm-up.
+            await nativeRecordingGate.waitForPreparation()
             return true
         } catch {
             fputs("[muesli-native] dictation backend preparation failed for \(backend.backend)/\(backend.model): \(error)\n", stderr)
@@ -9702,6 +9708,7 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
+        guard ensureDictationBackendReady() else { return }
         guard ensureQuilModelIsAvailable() else { return }
         indicator.instructionMode = .quill
         quilSelectionSnapshot = nil
@@ -9715,6 +9722,7 @@ public final class MuesliController: NSObject {
 
     private func handleQuilStart() {
         guard canStartQuil else { return }
+        guard ensureDictationBackendReady() else { quilHotkeyMonitor.cancelToggleMode(); return }
         indicator.instructionMode = .quill
         quilStartedAt = Date()
         indicator.powerProvider = { [weak self] in
@@ -9764,12 +9772,14 @@ public final class MuesliController: NSObject {
     }
 
     private func handleQuilCancel() {
+        if nativeRecordingGate.pendingKey != nil { return }
         guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .quil) else { return }
         clearQuilSession(cancelAudioReason: "quil_cancel")
         resumeAfterQuil()
     }
 
     private func handleQuilStop() {
+        if nativeRecordingGate.pendingKey != nil { quilHotkeyMonitor.cancelToggleMode(); return }
         guard pendingQuilStopSessionID == nil,
               let sessionID = activeQuilAudioSessionID,
               quilAudioSessionManager.currentSessionID == sessionID else { return }
@@ -10726,6 +10736,67 @@ public final class MuesliController: NSObject {
         selectedDictationProvider.usesStreamingBackend(selectedBackend)
     }
 
+    private var nativePreparationPlan: GemmaPreparationPlan {
+        guard GemmaNativeAudioPolicy.isEnabled(for: .e2b) else {
+            return GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
+        }
+        let dictation: Gemma4LiteRTModel? = !selectedDictationProvider.isHosted && selectedBackend.backend == "gemma4-litert"
+            ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
+        let cleanup: Gemma4LiteRTModel? = config.enablePostProcessor && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
+            ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
+        let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
+            ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
+        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill)
+    }
+
+    /// No audio session is armed or started when this returns false.
+    private func ensureNativeModelsReady() -> Bool {
+        guard !isDictationTestMode else { return true }
+        let plan = nativePreparationPlan
+        if plan.entries.isEmpty { indicator.hideLoading() }
+        let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
+                Task { @MainActor in
+                    guard let self, self.nativeRecordingGate.pendingKey == plan.key,
+                          self.nativePreparationPlan.key == plan.key,
+                          self.dictationState == .idle, !self.isMeetingRecording() else { return }
+                    self.indicator.showLoading(message)
+                    self.statusBarController?.setStatus(message)
+                }
+            }
+        }, ready: { [weak self] in
+            guard let self else { return }
+            guard self.nativePreparationPlan.key == plan.key else {
+                self.nativeRecordingGate.invalidate()
+                self.indicator.hideLoading()
+                return
+            }
+            self.indicator.hideLoading()
+            if self.dictationState == .idle && !self.isMeetingRecording() {
+                self.statusBarController?.setStatus("Models ready")
+                self.indicator.showSuccess("Ready — start recording", duration: 3)
+            }
+        }, failed: { [weak self] error in
+            guard let self else { return }
+            self.indicator.hideLoading()
+            if self.dictationState == .idle && !self.isMeetingRecording() {
+                self.statusBarController?.setStatus("Model preparation failed")
+                self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4)
+            }
+            fputs("[gemma-preparation] failed: \(error)\n", stderr)
+        })
+        if !allowed {
+            indicator.isToggleDictation = false
+            quilHotkeyMonitor.cancelToggleMode()
+            hotkeyMonitor.cancelToggleMode()
+            if dictationState == .idle && !isMeetingRecording() {
+                indicator.showLoading("Preparing models… Mic off")
+            }
+        }
+        return allowed
+    }
+
     private func ensureDictationBackendReady() -> Bool {
         guard !isDictationTestMode else { return true }
         if let message = HostedDictationActivationPolicy.blockingMessage(
@@ -10741,7 +10812,7 @@ public final class MuesliController: NSObject {
                     : "OpenAI not configured"
             )
         }
-        guard !dictationBackendReadiness.allowsDictation else { return true }
+        guard !dictationBackendReadiness.allowsDictation else { return ensureNativeModelsReady() }
         guard let message = dictationBackendReadiness.blockingMessage(
             backendLabel: selectedBackend.label
         ) else { return true }
@@ -11482,6 +11553,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleCancel() {
+        if nativeRecordingGate.pendingKey != nil { hotkeyMonitor.cancelToggleMode(); return }
         if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         let isCancellingTranscription = dictationState == .transcribing
@@ -11636,6 +11708,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleStop() {
+        if nativeRecordingGate.pendingKey != nil { hotkeyMonitor.cancelToggleMode(); return }
         if isMeetingRecording() {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
             return

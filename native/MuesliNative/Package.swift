@@ -1,5 +1,9 @@
 // swift-tools-version: 5.9
 import PackageDescription
+import Foundation
+
+// Opt-in optimized benchmark suite; unrelated tests require DEBUG-only hooks.
+let cleanupEvaluationOnly = ProcessInfo.processInfo.environment["MUESLI_CLEANUP_EVALUATION_ONLY"] == "1"
 
 let package = Package(
     name: "MuesliNative",
@@ -14,7 +18,9 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../AIElementsSwift"),
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.32.3"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.3.2"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", branch: "main"), // TODO: pin to tagged release once one ships post-PR #455 (swift-transformers removal)
@@ -48,11 +54,18 @@ let package = Package(
             name: "MuesliNativeApp",
             dependencies: [
                 "MuesliCore",
+                "GemmaAudioEvaluation",
+                .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "AIElementsSwift", package: "AIElementsSwift"),
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXGuidedGeneration", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 "MuesliLLM",
-                .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "TelemetryDeck", package: "SwiftSDK"),
@@ -109,20 +122,22 @@ let package = Package(
             path: "Sources/LocalVQEBridge",
             publicHeadersPath: "include"
         ),
-        .binaryTarget(
-            name: "CLiteRTLM_mac",
-            url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
-            checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
-        ),
         .target(
             name: "AudioGraphTestSupport",
             path: "Tests/AudioGraphTestSupport",
             publicHeadersPath: "include"
         ),
+        // Native E-series audio encoder, with separate opt-in reference-parity tests.
+        .target(name: "GemmaAudioEvaluation",
+                dependencies: [.product(name: "MLX", package: "mlx-swift")],
+                path: "Sources/GemmaAudioEvaluation", exclude: ["README.md"], resources: [.copy("LICENSE")]),
+        .testTarget(name: "GemmaAudioEvaluationTests", dependencies: ["GemmaAudioEvaluation"],
+                    path: "Tests/GemmaAudioEvaluationTests"),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
+            dependencies: ["GemmaAudioEvaluation", .product(name: "MLXNN", package: "mlx-swift"), "MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
+            sources: cleanupEvaluationOnly ? ["BackendTests.swift", "MuesliCleanupV2Tests.swift", "QuilTransformationTests.swift", "ComputerUseLocalPlannerBenchmarkTests.swift", "CleanupMLXEvaluationTests.swift", "GemmaAudioEndToEndTests.swift", "GemmaNativeAudioTests.swift", "BodhanBackendTests.swift", "BodhanArtifactValidationTests.swift", "BodhanLifecycleTests.swift"] : nil,
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

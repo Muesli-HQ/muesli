@@ -46,6 +46,8 @@ BUNDLE_THIN_ARCH="${MUESLI_BUNDLE_THIN_ARCH:-arm64}"
 USE_XCODE_BUILD="${MUESLI_USE_XCODE_BUILD:-0}"
 XCODE_PROJECT_DIR="$ROOT/native/MuesliXcode"
 XCODE_PRODUCT_NAME="Muesli"
+# Gemma inference is native Swift/MLX in every build.
+NATIVE_GEMMA_AUDIO=true
 
 thin_macho_to_bundle_arch() {
   local binary="$1"
@@ -207,6 +209,7 @@ if [[ "$USE_XCODE_BUILD" != "1" ]]; then
   # ship as dylibs instead of frameworks.
   for dylib in "$BIN_DIR"/*.dylib; do
     [[ -f "$dylib" ]] || continue
+    [[ "$(basename "$dylib")" == libCLiteRTLM_mac.dylib ]] && continue
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
     cp -RL "$dylib" "$target"
     thin_macho_to_bundle_arch "$target"
@@ -352,6 +355,8 @@ if [[ -d "$ROOT/assets/audio" ]]; then
   ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
 
+rm -f "$STAGED_APP_DIR/Contents/Frameworks/libCLiteRTLM_mac.dylib" "$STAGED_APP_DIR/Contents/MacOS/libCLiteRTLM_mac.dylib"
+
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -379,6 +384,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$TELEMETRYDECK_APP_ID</string>
   <key>MuesliTelemetryChannel</key>
   <string>$TELEMETRY_CHANNEL</string>
+  <key>MuesliNativeGemmaAudio</key>
+  <$NATIVE_GEMMA_AUDIO/>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
@@ -404,6 +411,20 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+if [[ "$NATIVE_GEMMA_AUDIO" == "true" ]]; then
+  # Match the evaluated native encoder's FP32 accumulation policy before MLX initializes.
+  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$STAGED_APP_DIR/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MLX_ENABLE_TF32 string 0' "$STAGED_APP_DIR/Contents/Info.plist"
+  if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:MUESLI_GEMMA4_LITERT_PROFILE_PATH string $HOME/Library/Application Support/$APP_SUPPORT_DIR_NAME/gemma-native-audio-profile.log" "$STAGED_APP_DIR/Contents/Info.plist"
+  fi
+fi
+# Persist the requested computer-use experiment across Finder/LaunchServices launches.
+# Scope this build opt-in to DevC; other lanes and shipped defaults remain unchanged.
+if [[ "$BUNDLE_ID" == "com.muesli.dev.c" && "${MUESLI_GEMMA_TOOL_MTP:-}" == "hybrid" ]]; then
+  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MUESLI_GEMMA_TOOL_MTP string hybrid' "$STAGED_APP_DIR/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MUESLI_GEMMA_MLX_MTP string 1' "$STAGED_APP_DIR/Contents/Info.plist"
+fi
 
 # Replace existing app (no prompt — that's what this script is for)
 if [[ -d "$APP_DIR" ]]; then
