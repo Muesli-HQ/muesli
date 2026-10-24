@@ -97,7 +97,7 @@ struct BufferedTranscriptionSessionTests {
             Issue.record("Overflow must fail before decoding")
             return .init(text: "", words: [])
         }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
-        session.enqueue(Array(repeating: 0.2, count: 480_001))
+        session.enqueue(Array(repeating: 0.2, count: 720_001))
         await session.finish()
         #expect(output.failures == 1)
         #expect(output.values.isEmpty)
@@ -242,10 +242,14 @@ struct BufferedTranscriptionSessionTests {
         let committed = await updates.next()
         #expect(committed?.committedText.isEmpty == false)
         session.enqueue(Array(repeating: 0.2, count: 16_000))
-        #expect(await updates.next() == nil)
-        await session.finish()
+        let deferred = await updates.next()
+        #expect(deferred?.text == committed?.text)
+        #expect(deferred?.committedText == committed?.committedText)
+        #expect(!session.diagnostics.closed)
+        #expect(output.failures == 0)
+        await session.finish() // No new audio can resolve the ambiguous occurrence.
         #expect(output.failures == 1)
-        #expect(output.values.last == committed)
+        #expect(output.values.last == deferred)
     }
 
     @Test("owned word duration may expand through silence without changing its timed occurrence")
@@ -325,6 +329,183 @@ struct BufferedTranscriptionSessionTests {
         #expect(output.values.last?.text == "Done. Next")
     }
 
+    @Test("a permanently substituted anchor needs two fresh observations and keeps frozen text")
+    func changedAnchorRecoversWithAgreement() async {
+        func window(_ spelling: String) -> BufferedTranscriptionWindow {
+            let words: [BufferedTranscriptionWord] = [
+                .init(text: "hello", start: 0.1, end: 0.5),
+                .init(text: spelling, start: 1, end: 1.5),
+                .init(text: "draft", start: 4, end: 4.5)
+            ]
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window("world"), window("world"), window("earth"), window("earth")])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 5 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        for _ in 0..<2 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next()?.text == stable?.text)
+        }
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.contains { $0.contains("changed_anchor_waiting") })
+        #expect(output.diagnostics.contains { $0.hasPrefix("ownership_recovered:") })
+        await session.finish()
+        #expect(output.values.last?.text == "hello world draft")
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("context grows past normal window and resumes after a missing anchor")
+    func missingAnchorGrowsWindowAndRecovers() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedRecoveryOracle(recoverAt: 9)
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 8 * 16_000
+        config.maximumRecoveryWindowSamples = 10 * 16_000
+        config.maximumBufferedSamples = 16 * 16_000
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(5 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        var stable: BufferedTranscriptionUpdate?
+        for end in 6...9 {
+            session.enqueue((((end - 1) * 16_000)..<(end * 16_000)).map(Float.init))
+            let update = await updates.next()
+            if end == 6 { stable = update }
+            if end == 7 || end == 8 {
+                #expect(update?.text == stable?.text)
+                #expect(update?.committedText == stable?.committedText)
+                #expect(!session.diagnostics.closed)
+            }
+        }
+        #expect(await decoder.sampleCounts == [5, 6, 7, 8, 9].map { $0 * 16_000 })
+        #expect(output.diagnostics.contains { $0 == "ownership_recovered:samples=144000" })
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.text == "hello world draft")
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("an exhausted recovery window closes without discarding the published hypothesis")
+    func boundedRecoveryExhaustion() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedRecoveryOracle(recoverAt: .infinity)
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 8 * 16_000
+        config.maximumRecoveryWindowSamples = 10 * 16_000
+        config.maximumBufferedSamples = 16 * 16_000
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(5 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        for end in 6...10 {
+            session.enqueue((((end - 1) * 16_000)..<(end * 16_000)).map(Float.init))
+            let update = await updates.next()
+            #expect((update == nil) == (end == 10))
+        }
+        await session.finish()
+        #expect(output.failures == 1)
+        #expect(session.diagnostics.closed)
+        #expect(session.diagnostics.receivedSamples == 10 * 16_000)
+        #expect(output.values.last?.text == "hello world draft")
+        #expect(output.diagnostics.last == "ownership_recovery_exhausted:window_limit")
+        #expect(await decoder.sampleCounts == [5, 6, 7, 8, 9, 10].map { $0 * 16_000 })
+    }
+
+    @Test("owned token splits cannot move the seam into already committed speech", arguments: [true, false])
+    func tokenSplitCannotRecoverAcrossWrongBoundary(hasDraft: Bool) async {
+        let first: [BufferedTranscriptionWord] = [
+            .init(text: "I", start: 0.1, end: 0.5), .init(text: "cannot", start: 1, end: 1.8)
+        ] + (hasDraft ? [.init(text: "continue", start: 4, end: 4.5)] : [])
+        let split: [BufferedTranscriptionWord] = [
+            .init(text: "I", start: 0.1, end: 0.5), .init(text: "can", start: 1, end: 1.2),
+            .init(text: "not", start: 1.5, end: 1.8)
+        ] + (hasDraft ? [.init(text: "continue", start: 4, end: 4.5)] : [])
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(first), window(first), window(split), window(split)])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 5 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        for _ in 0..<2 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next()?.text == stable?.text)
+        }
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.contains { $0.contains("changed_boundary") })
+        await session.finish()
+        #expect(output.failures == 1)
+        #expect(output.values.last?.text == stable?.text)
+    }
+
+    @Test("pending PCM has bounded headroom while an extended decode is in flight")
+    func recoveryDecodeRetainsQueuedArrivals() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedRecoveryOracle(recoverAt: 10, holdAt: 10 * 16_000)
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 8 * 16_000
+        config.maximumRecoveryWindowSamples = 10 * 16_000
+        config.maximumBufferedSamples = 16 * 16_000
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        var starts = decoder.started.stream.makeAsyncIterator()
+        session.enqueue((0..<(5 * 16_000)).map(Float.init))
+        _ = await starts.next()
+        _ = await updates.next()
+        for end in 6...9 {
+            session.enqueue((((end - 1) * 16_000)..<(end * 16_000)).map(Float.init))
+            _ = await starts.next()
+            _ = await updates.next()
+        }
+        session.enqueue(((9 * 16_000)..<(10 * 16_000)).map(Float.init))
+        #expect(await starts.next() == 10 * 16_000)
+        session.enqueue(((10 * 16_000)..<(15 * 16_000)).map(Float.init))
+        #expect(output.failures == 0)
+        await decoder.release()
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(session.diagnostics.receivedSamples == 15 * 16_000)
+        #expect(output.values.last?.text == "hello world draft")
+        #expect(await decoder.maximumInFlight == 1)
+        #expect(await decoder.sampleCounts.max() == 10 * 16_000)
+    }
+
+    @Test("failed rollover proposals cannot commit text before recovery")
+    func failedRollProposalIsTransactional() async {
+        let output = BufferedPreviewOutput()
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 8 * 16_000
+        config.leftContextSamples = 4 * 16_000
+        config.maximumRecoveryWindowSamples = 10 * 16_000
+        let session = BufferedTranscriptionSession(configuration: config, decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1, end: 1)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 8 * 16_000))
+        let deferred = await updates.next()
+        #expect(deferred?.committedText == "")
+        #expect(deferred?.tail == "")
+        #expect(output.diagnostics.contains { $0.contains("no_roll_progress") })
+        #expect(output.failures == 0)
+        session.cancel()
+        await session.finish()
+        #expect(output.failures == 0)
+    }
+
     private func assertMonotonicCommittedPrefixes(_ values: [BufferedTranscriptionUpdate]) {
         for (previous, current) in zip(values, values.dropFirst()) {
             #expect(current.committedText.utf16.starts(with: previous.committedText.utf16))
@@ -367,6 +548,9 @@ private final class BufferedPreviewOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [BufferedTranscriptionUpdate] = []
     private var errors = 0
+    private var diagnosticStorage: [String] = []
+    var diagnostics: [String] { lock.withLock { diagnosticStorage } }
+    func diagnostic(_ value: String) { lock.withLock { diagnosticStorage.append(value) } }
     var values: [BufferedTranscriptionUpdate] { lock.withLock { storage } }
     var failures: Int { lock.withLock { errors } }
     func update(_ value: BufferedTranscriptionUpdate) {
@@ -458,4 +642,37 @@ private actor BufferedWindowSequence {
         defer { index += 1 }
         return windows[min(index, windows.count - 1)]
     }
+}
+
+private actor BufferedRecoveryOracle {
+    nonisolated let started = AsyncStream<Int>.makeStream()
+    private let recoverAt: Double
+    private let holdAt: Int?
+    private var permit: CheckedContinuation<Void, Never>?
+    private var released = false
+    private var inFlight = 0
+    private(set) var maximumInFlight = 0
+    private(set) var sampleCounts: [Int] = []
+    init(recoverAt: Double, holdAt: Int? = nil) { self.recoverAt = recoverAt; self.holdAt = holdAt }
+    func decode(_ samples: [Float]) async -> BufferedTranscriptionWindow {
+        sampleCounts.append(samples.count)
+        inFlight += 1
+        maximumInFlight = max(maximumInFlight, inFlight)
+        started.continuation.yield(samples.count)
+        if samples.count == holdAt && !released { await withCheckedContinuation { permit = $0 } }
+        defer { inFlight -= 1 }
+        let base = Double(samples[0]) / 16_000
+        let end = base + Double(samples.count) / 16_000
+        let missing = end >= 7 && end < recoverAt
+        let values: [(String, Double, Double)] = [
+            ("hello", 0.1, 0.5), (missing ? "unmatched" : "world", missing ? 2.5 : 1, missing ? 2.8 : 1.5),
+            ("draft", 4, 4.5)
+        ]
+        let words: [BufferedTranscriptionWord] = values.compactMap { text, start, finish in
+            guard start >= base, finish <= end else { return nil }
+            return .init(text: text, start: start - base, end: finish - base)
+        }
+        return .init(text: words.map(\.text).joined(separator: " "), words: words)
+    }
+    func release() { released = true; permit?.resume(); permit = nil }
 }

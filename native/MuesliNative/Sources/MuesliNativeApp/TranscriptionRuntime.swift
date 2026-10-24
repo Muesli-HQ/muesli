@@ -135,7 +135,8 @@ actor TranscriptionCoordinator {
         whisperLanguage: WhisperKitLanguage,
         parakeetLanguage: ParakeetLanguage,
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
-        onFailure: @escaping @Sendable (Error) -> Void
+        onFailure: @escaping @Sendable (Error) -> Void,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> BufferedTranscriptionSession {
         guard backend.supportsBufferedLiveTranscription else {
             throw NSError(domain: "MuesliBufferedTranscription", code: 1,
@@ -148,7 +149,7 @@ actor TranscriptionCoordinator {
                 try await transcriber.transcribePreview(
                     samples: samples, language: whisperLanguage, expectedModel: expectedModel
                 )
-            }, onUpdate: onUpdate, onFailure: onFailure)
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         let transcriber = fluidTranscriber
         return BufferedTranscriptionSession(decode: { samples in
@@ -156,7 +157,7 @@ actor TranscriptionCoordinator {
                 samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
                 expectedVersion: .v3
             )
-        }, onUpdate: onUpdate, onFailure: onFailure)
+        }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
     }
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?

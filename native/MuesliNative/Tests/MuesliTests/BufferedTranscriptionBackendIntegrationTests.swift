@@ -4,8 +4,55 @@ import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
-@Suite("Buffered transcription model integration")
+@Suite("Buffered transcription model integration", .serialized)
 struct BufferedTranscriptionBackendIntegrationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_PARAKEET_SMOKE"] == "1"
+                   && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"] != nil))
+    func parakeetV3ProgressesAcrossMultipleSpeechWindows() async throws {
+        let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"])
+        #expect(ManagedASRModelPlans.parakeetV3().isAvailableLocally())
+        guard ManagedASRModelPlans.parakeetV3().isAvailableLocally() else { return }
+        let converter = AudioConverter()
+        var samples: [Float] = []
+        for name in ["01-validation-request-21.4s.wav", "02-release-readiness-19.8s.wav", "03-diff-explanation-16.9s.wav"] {
+            samples += try converter.resampleAudioFile(URL(fileURLWithPath: directory).appendingPathComponent(name))
+            samples += Array(repeating: 0, count: 16_000)
+        }
+        let transcriber = FluidAudioTranscriber()
+        try await transcriber.loadModels(version: .v3)
+        let output = BufferedSmokeOutput()
+        let session = BufferedTranscriptionSession(decode: {
+            try await transcriber.transcribePreview(samples: $0, expectedVersion: .v3)
+        }, onUpdate: { output.receive($0) }, onFailure: { output.fail($0) },
+        onDiagnostic: { print("[buffered-soak] \($0)") })
+        var events = output.stream.makeAsyncIterator()
+        var previousEnd = 0
+        var committed = ""
+        var prefixAt30Seconds = ""
+        for end in stride(from: 32_000, through: samples.count, by: 16_000) {
+            session.enqueue(Array(samples[previousEnd..<end]))
+            previousEnd = end
+            let update = try #require(await events.next(), "Soak failed: \(output.failure ?? "unknown")")
+            #expect(update.committedText.utf16.starts(with: committed.utf16))
+            committed = update.committedText
+            if end == 30 * 16_000 { prefixAt30Seconds = committed }
+            print("[buffered-soak] seconds=\(end / 16_000) committed=\(committed.count) draft=\(update.tail.count)")
+        }
+        if previousEnd < samples.count { session.enqueue(Array(samples[previousEnd...])) }
+        await session.finish()
+        #expect(output.failure == nil)
+        #expect(!prefixAt30Seconds.isEmpty)
+        #expect(committed.count > prefixAt30Seconds.count)
+        #expect(session.diagnostics.receivedSamples == samples.count)
+        // Each source ends with one of these phrases. Check every recording's
+        // tail survives the seams, rather than merely observing a growing count.
+        let finalWords = output.lastText.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+        for phrase in ["help them out", "cutting a release", "in that difference"] {
+            #expect(finalWords.contains(phrase))
+        }
+        await transcriber.shutdown()
+    }
+
     /// Opt in with a nonprivate speech fixture and an already installed v3 model.
     /// No downloads are permitted by this test's preconditions.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_PARAKEET_SMOKE"] == "1"
@@ -87,6 +134,7 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var error: String?
     private var textCount = 0
+    private var text = ""
     let stream: AsyncStream<BufferedTranscriptionUpdate>
     private let continuation: AsyncStream<BufferedTranscriptionUpdate>.Continuation
     init() {
@@ -96,8 +144,12 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     }
     var failure: String? { lock.withLock { error } }
     var lastTextCount: Int { lock.withLock { textCount } }
+    var lastText: String { lock.withLock { text } }
     func receive(_ update: BufferedTranscriptionUpdate) {
-        lock.withLock { textCount = update.text.count }
+        lock.withLock {
+            textCount = update.text.count
+            text = update.text
+        }
         continuation.yield(update)
     }
     func fail(_ failure: Error) {

@@ -480,7 +480,10 @@ final class MeetingSession {
                             whisperLanguage: whisperLanguage,
                             parakeetLanguage: parakeetLanguage,
                             onUpdate: onUpdate,
-                            onFailure: onFailure
+                            onFailure: onFailure,
+                            onDiagnostic: { event in
+                                fputs("[meeting-partials] buffered_\(event)\n", stderr)
+                            }
                         )
                     }
                 )

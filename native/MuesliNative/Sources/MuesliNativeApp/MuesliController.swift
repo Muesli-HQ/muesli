@@ -11408,6 +11408,12 @@ public final class MuesliController: NSObject {
                         // inference must never trigger a duplicate normal paste.
                         self.statusBarController?.setStatus("Live preview stopped; finishing transcription when you stop")
                     }
+                },
+                onDiagnostic: { [weak self] event in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.bufferedDictationContext?.id == id else { return }
+                        self.markDictationLatency("buffered_\(event)", trace: previewTrace)
+                    }
                 }
             )
             bufferedDictationContext = BufferedDictationContext(

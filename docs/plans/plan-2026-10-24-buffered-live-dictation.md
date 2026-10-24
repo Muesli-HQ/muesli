@@ -22,18 +22,26 @@ attribution. Existing live-caption presentation and source isolation are reused.
 ## Recognition architecture
 
 `BufferedTranscriptionSession` accepts 16 kHz mono PCM from existing capture. It
-owns one inference loop, coalesces arrivals, and retains at most 30 seconds of
-pending audio. The initial target is a first decode after two seconds and further
+owns one inference loop, coalesces arrivals, and retains at most 45 seconds of
+pending audio, providing arrival headroom during a 30-second recovery decode.
+The initial target is a first decode after two seconds and further
 decodes after one second of new audio. These are scheduling parameters, not
 measured latency guarantees. A slow model suspends previews on overrun; capture
 and final transcription continue from the recorded WAV.
 
-Both adapters return text and word times. Re-decode at most 15 seconds per
+Both adapters return text and word times. Normally re-decode at most 15 seconds per
 window, retain approximately three seconds of revisable right context and one
 second of left context at rollover, and assign ownership by audio time at a
 whole-word boundary. Never deduplicate by matching strings: deliberate repeated
 words must survive. Preserve decoder punctuation, Unicode and whitespace.
 Unusable timings suspend preview rather than silently losing audio or words.
+An uncertain ownership alignment preserves all pending audio and the last visible
+preview, then retries after more audio arrives. Recovery may expand the actual
+decode window up to 30 seconds. State changes are
+transactional: a failed attempt cannot partially commit text or discard audio.
+If an owned word's spelling changes, recovery requires a unique ordered mapping
+of its onset times and agreement across two newer hypotheses; committed wording
+remains frozen. Ambiguous ownership never chooses a nearest repeated word.
 
 Each backend serializes model loading, preview decoding, batch decoding and
 unloading. Per-session callbacks are invalidated at cancel/reset. Model and
@@ -46,6 +54,50 @@ that loop waits for 11 seconds plus two seconds of right context. Historical
 PR #298 was closed unmerged after the same issue in 0.15.1; #297 shipped a
 separate native EOU preview model instead. Their useful lifecycle infrastructure
 is reused, but the failed scheduling policy is not.
+
+## OSS comparison and remaining confirmation work
+
+The October 25 Codex trial stopped previews at 9.6 seconds with `cannotAdvance`
+while cursor updates remained accepted; final insertion succeeded. A 61-second
+sequence of three upstream speech fixtures reproduced that failure at 23 seconds.
+With transactional alignment recovery, it deferred that observation, recovered
+at 24 seconds, and continued through 61 seconds with a monotonically growing
+committed prefix and all three recording-ending phrases retained. All 115
+targeted native tests across 11 suites passed, including recovery ambiguity,
+token splitting, bounded buffering, finalization, and cursor ownership. This is
+model/engine verification, not an automated test in the actual Codex composer.
+
+Primary-source review via Exa on October 25 covered 30 search results across two
+research tracks, then inspected upstream source and model documentation. The
+app should distinguish recognition stability, utterance boundaries, and editor
+range ownership; none of these alone establishes the other two.
+
+| Implementation | Confirmation policy and relevant boundary |
+| --- | --- |
+| [Whisper-Streaming](https://github.com/ufal/whisper_streaming/blob/main/whisper_online.py) | LocalAgreement-2 commits the common prefix of successive hypotheses; timestamps plus small lexical overlaps skip previously committed output. Trimming uses confirmed sentence/segment boundaries. |
+| [WhisperKit eager example](https://github.com/argmaxinc/argmax-oss-swift/blob/main/Examples/WhisperAX/WhisperAX/Views/ContentView.swift) | Word-level common-prefix agreement, a retained trailing word overlap, `clipTimestamps` and `prefixTokens`; separate confirmed text and hypothesis text. Its standard streaming path instead leaves a configurable number of trailing segments unconfirmed. |
+| [WhisperLive](https://github.com/collabora/WhisperLive/blob/main/whisper_live/backend/base.py) | Emits completed segments separately from an incomplete last segment; repeated-output confirmation advances the retained audio offset. |
+| [SimulStreaming](https://github.com/ufal/SimulStreaming) | AlignAtt uses decoder cross-attention near the audio edge to stop emission and resume with more input. Its voice-activity controller provides a separate end-of-voice signal. This requires decoder integration beyond our shared text/word-time adapter. |
+
+[Montreal Forced Aligner](https://montreal-forced-aligner.readthedocs.io/en/latest/user_guide/)
+aligns supplied transcripts to audio; that operation does not determine whether
+an ASR hypothesis is ready to commit. [NVIDIA's EOU training tutorial](https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_eou)
+does recommend forced alignment to prepare start/end timestamps for training,
+then adds special tokens and fine-tunes the model. Runtime EOU prediction is a
+distinct capability: [Parakeet Realtime EOU 120M](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1)
+has it; it cannot be assumed for our batch Parakeet TDT v3/WhisperKit adapters.
+[FluidAudio distinguishes these models and VAD](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Models.md).
+
+The current implementation follows common-prefix confirmation during ordinary
+updates and protects committed editor text. It is not a complete implementation
+of these policies: a full-window fallback can commit mature words without two
+agreeing hypotheses, and hands-free capture has no VAD-driven utterance-final
+event. Meeting durable VAD segmentation is separate. Follow-up should expose
+explicit segment finalization, preserve continuous-speech prefix commitment,
+and prefer confirmed segment/silence boundaries for trimming. WhisperKit can
+also use its supported prefix/seek controls rather than rediscovering all owned
+words. Treat these as architectural follow-ups, not properties of the recovery
+fix or proof of parity with native Nemotron streaming.
 
 ## Cursor ownership and final cleanup
 
