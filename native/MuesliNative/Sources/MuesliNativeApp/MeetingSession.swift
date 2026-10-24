@@ -971,9 +971,6 @@ final class MeetingSession {
         )
 
         let titleManualNotes = await manualNotesProvider?()
-        let nothingToSummarize = MeetingSummaryClient.hasNothingToSummarize(
-            transcript: rawTranscript, manualNotes: titleManualNotes
-        )
         let generatedTitle: String
         onProgress?(.generatingTitle)
         if let liveTitle = await userEditedLiveTitle() {
@@ -983,8 +980,6 @@ final class MeetingSession {
             calendarEventID: calendarEventID
         ) {
             generatedTitle = calendarTitle
-        } else if nothingToSummarize {
-            generatedTitle = title
         } else if let autoTitle = await MeetingSummaryClient.generateTitle(
             transcript: rawTranscript,
             manualNotes: titleManualNotes,
@@ -1001,34 +996,31 @@ final class MeetingSession {
         Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
-        let manualNotes = await manualNotesProvider?()
         let participantNames = await participantNamesProvider?() ?? []
+        // Read notes last: edits made during title generation or screen-context drain
+        // must participate in this request, not the earlier title snapshot.
+        let manualNotes = await manualNotesProvider?()
         let formattedNotes: String
-        if nothingToSummarize {
-            fputs("[meeting] empty recording, skipping title and summary generation\n", stderr)
-            formattedNotes = MeetingSummaryClient.emptyRecordingNotes
-        } else {
-            do {
-                formattedNotes = try await MeetingSummaryClient.summarize(
-                    transcript: rawTranscript,
-                    meetingTitle: generatedTitle,
-                    config: config,
-                    template: templateSnapshot,
-                    existingNotes: nil,
-                    manualNotesToRetain: manualNotes,
-                    participantNames: participantNames,
-                    visualContext: visualContext.isEmpty ? nil : visualContext,
-                    previousMeetingNotes: previousMeetingNotes
-                )
-            } catch {
-                fputs("[meeting] summary generation failed: \(error.localizedDescription)\n", stderr)
-                formattedNotes = MeetingSummaryClient.summaryFailureNotes(
-                    transcript: rawTranscript,
-                    meetingTitle: generatedTitle,
-                    error: error,
-                    manualNotes: manualNotes
-                )
-            }
+        do {
+            formattedNotes = try await MeetingSummaryClient.summarize(
+                transcript: rawTranscript,
+                meetingTitle: generatedTitle,
+                config: config,
+                template: templateSnapshot,
+                existingNotes: nil,
+                manualNotesToRetain: manualNotes,
+                participantNames: participantNames,
+                visualContext: visualContext.isEmpty ? nil : visualContext,
+                previousMeetingNotes: previousMeetingNotes
+            )
+        } catch {
+            fputs("[meeting] summary generation failed: \(error.localizedDescription)\n", stderr)
+            formattedNotes = MeetingSummaryClient.summaryFailureNotes(
+                transcript: rawTranscript,
+                meetingTitle: generatedTitle,
+                error: error,
+                manualNotes: manualNotes
+            )
         }
 
         diagnostics?.writeFinalReport(

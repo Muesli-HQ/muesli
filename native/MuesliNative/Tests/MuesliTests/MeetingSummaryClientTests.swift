@@ -1880,4 +1880,43 @@ struct MeetingSummaryClientTests {
         #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "[00:01] You: hello", manualNotes: nil))
         #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "", manualNotes: "agenda"))
     }
+    @Test("Empty meeting content bypasses every title and summary backend")
+    func emptyContentBypassesBackends() async throws {
+        for backend in MeetingSummaryBackendOption.all {
+            var config = AppConfig()
+            config.meetingSummaryBackend = backend.backend
+            let title = await MeetingSummaryClient.generateTitle(
+                transcript: " \n", manualNotes: nil, config: config)
+            #expect(title == nil)
+            let summary = try await MeetingSummaryClient.summarize(
+                transcript: "", meetingTitle: "Weekly meeting", config: config,
+                manualNotesToRetain: " ", participantNames: ["Alex"], visualContext: "\n",
+                previousMeetingNotes: " ")
+            #expect(summary == "No transcript available")
+        }
+    }
+
+    @Test("Screen context and retained notes are substantive summary inputs")
+    func summaryContentBeyondTranscript() {
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, visualContext: "Slide: launch on Friday"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: "Existing decisions"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, previousMeetingNotes: "Earlier action items"))
+        #expect(MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "\n", manualNotes: " ", visualContext: "\t",
+            existingNotes: " ", previousMeetingNotes: "\n"))
+    }
+
+    @Test("An earlier empty-recording result is not substantive notes")
+    func emptyRecordingResultIsNotContent() {
+        let empty = MeetingSummaryClient.emptyRecordingNotes
+        #expect(MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: empty, previousMeetingNotes: " \(empty)\n"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: empty, previousMeetingNotes: "Earlier action items"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: empty, manualNotes: nil))
+    }
+
 }
