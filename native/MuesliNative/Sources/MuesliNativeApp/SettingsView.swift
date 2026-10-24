@@ -1028,7 +1028,7 @@ struct SettingsView: View {
                 settingsRow("Watch text appear during hands-free mode") {
                     settingsControl("buffered_live_dictation")
                 }
-                settingsDescription("Experimental. Text appears as you speak in supported fields and is cleaned up when you stop. Editing or moving the cursor stops updates; the final result remains in history. Push-to-talk is unchanged.")
+                settingsDescription("Preview as you speak; apply enabled cleanup when you stop.")
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1963,7 +1963,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
-                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                    description: "Suggest words from corrections using Accessibility."
                 ) {
                     settingsControl("dictionary_suggestions")
                     .help("Briefly reads focused app text after dictation to detect corrections.")
