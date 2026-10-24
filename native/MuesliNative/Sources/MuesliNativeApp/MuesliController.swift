@@ -10496,6 +10496,29 @@ public final class MuesliController: NSObject {
         return true
     }
 
+    /// Explicit dev-lane replay bypasses only transcription. It shares the same
+    /// runtime, Stop control, permission checks and persisted trace as voice input.
+    @discardableResult
+    func replayComputerUseCommandForDevelopment(_ command: String) -> Task<Void, Never>? {
+        guard Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+              canPrepareComputerUseCommand, config.computerUseBackgroundMode,
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            fputs("[cua] replay refused: requires an idle dev lane with background mode enabled\n", stderr)
+            return nil
+        }
+        // The shared command handler checks screen access only after settings routing.
+        let taskID = UUID()
+        computerUseCommandTaskID = taskID
+        meetingMonitor.suppressWhileActive()
+        setState(.transcribing)
+        let now = Date()
+        let dictationID = try? dictationStore.insertDictation(text: command, durationSeconds: 0, source: "cua", startedAt: now, endedAt: now)
+        computerUseCommandTask = Task { [weak self] in
+            await self?.handleComputerUseCommand(transcript: command, dictationID: dictationID, taskID: taskID)
+        }
+        return computerUseCommandTask
+    }
+
     @MainActor
     private func handleComputerUseCommand(
         transcript: String,
@@ -10724,6 +10747,8 @@ public final class MuesliController: NSObject {
         switch status {
         case .done:
             return "done"
+        case .incomplete:
+            return "incomplete"
         case .timedOut:
             return "timed_out"
         case .needsConfirmation:
@@ -10753,6 +10778,10 @@ public final class MuesliController: NSObject {
             message = result.message.hasPrefix("Done") ? result.message : "Done: \(result.message)"
             floatingMessage = "Done"
             icon = ""
+        case .incomplete:
+            message = result.message
+            floatingMessage = "Incomplete"
+            icon = "!"
         case .timedOut:
             message = result.message
             floatingMessage = "Timed out"

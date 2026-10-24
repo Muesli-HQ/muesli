@@ -1,0 +1,174 @@
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
+index c4e14caa4..de4cb15f2 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/engine.rs
+@@ -896,6 +896,17 @@ impl BrowserEngine {
+             return Ok((conn, grant));
+         }
+ 
++        // Muesli's host owns interactive reconnect through its Settings UI.
++        // Redial can make Chrome display consent and activate itself, even for
++        // read-only browser tools. A live socket may be reused; a new one must
++        // come from the explicitly invoked browser_prepare flow.
++        if std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1") {
++            return Err(refuse(
++                BrowserRefusalCode::BrowserConsentRequired,
++                "Chrome connection ended. Reconnect from Muesli Settings > Permissions.",
++            ));
++        }
++
+         // One leader owns endpoint reproof and bounded redial. Followers
+         // re-check the generation after acquiring this gate and reuse its
+         // socket rather than opening another browser-level connection.
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+index 1c5972a82..6d0ac83c4 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+@@ -1125,6 +1125,14 @@ impl BrowserEngine {
+             .platform
+             .discover_existing_profile_endpoint(pid)
+             .await?;
++        if endpoint.is_none()
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1")
++        {
++            return Err(refusal(
++                BrowserRefusalCode::BrowserRequiresSetup,
++                "Enable remote debugging in Chrome. Muesli is waiting for its PID-owned endpoint.",
++            ));
++        }
+         if endpoint.is_none() {
+             setup = self
+                 .platform
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+index be1b12182..fd4cd492b 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/tools.rs
+@@ -28,6 +28,7 @@ use super::types::BindingQuality;
+ /// crates call this from their `register_all` after constructing the
+ /// engine with their adapter.
+ pub fn register_browser_tools(engine: &Arc<BrowserEngine>, registry: &mut ToolRegistry) {
++    registry.register(Box::new(BrowserConnectionStatusTool::new(engine.clone())));
+     registry.register(Box::new(GetBrowserStateTool::new(engine.clone())));
+     registry.register(Box::new(BrowserPrepareTool::new(engine.clone())));
+     registry.register(Box::new(BrowserNavigateTool::new(engine.clone())));
+@@ -39,6 +40,43 @@ pub fn register_browser_tools(engine: &Arc<BrowserEngine>, registry: &mut ToolRe
+     registry.register(Box::new(BrowserPointerTool::new(engine.clone())));
+ }
+ 
++/// Host-only liveness probe: never discovers, attaches, reads a page or reconnects.
++pub struct BrowserConnectionStatusTool {
++    def: ToolDef,
++    engine: Arc<BrowserEngine>,
++}
++impl BrowserConnectionStatusTool {
++    pub fn new(engine: Arc<BrowserEngine>) -> Self {
++        Self { engine, def: ToolDef {
++            name: "browser_connection_status".into(),
++            description: "Check the existing approved browser socket without connecting or reading page content.".into(),
++            input_schema: json!({"type":"object", "properties": {
++                "pid":{"type":"integer"}, "session":schema_session()}, "required":["pid","session"]}),
++            read_only: true, destructive: false, idempotent: true, open_world: false,
++        }}
++    }
++}
++#[async_trait]
++impl Tool for BrowserConnectionStatusTool {
++    fn def(&self) -> &ToolDef { &self.def }
++    async fn invoke(&self, args: Value) -> ToolResult {
++        let session = match require_explicit_session(&args) {
++            Ok(session) => session, Err(error) => return error,
++        };
++        let Some(pid) = args.get("pid").and_then(Value::as_i64) else {
++            return ToolResult::error("pid is required");
++        };
++        let transport = args.get("_transport_session_id").and_then(Value::as_str);
++        let connected = match self.engine.existing_profile_grant(&session, transport, pid).await {
++            Ok(Some(grant)) => self.engine.pool.get_existing(&grant.endpoint_ws_url, grant.generation)
++                .await.map(|connection| !connection.is_closed()).unwrap_or(false),
++            _ => false,
++        };
++        ToolResult::text(if connected {"Connected"} else {"Reconnect required"})
++            .with_structured(json!({"status":"ok", "connected":connected}))
++    }
++}
++
+ // ── Shared helpers ───────────────────────────────────────────────────────────
+ 
+ /// The public caller session id, falling back to the daemon's internal mirror.
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+index e21df42d3..327c8eef9 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/v2_tests.rs
+@@ -1026,6 +1026,10 @@ impl crate::consent::ProtectedConsentProvider for FixtureProtectedProvider {
+ }
+ 
+ async fn protected_existing_profile_fixture() -> (Fixture, Arc<FixtureProtectedProvider>) {
++    protected_existing_profile_fixture_with_visibility(Arc::new(AtomicBool::new(true))).await
++}
++
++async fn protected_existing_profile_fixture_with_visibility(visible: Arc<AtomicBool>) -> (Fixture, Arc<FixtureProtectedProvider>) {
+     let state = Arc::new(StdMutex::new(FixtureState::default()));
+     let server = MockCdpServer::start(fixture_handler(state.clone())).await;
+     let setup_invoked = Arc::new(AtomicBool::new(false));
+@@ -1040,7 +1044,7 @@ async fn protected_existing_profile_fixture() -> (Fixture, Arc<FixtureProtectedP
+             managed_endpoint_visible: false,
+             process_role: BrowserProcessRole::StandaloneConsumer,
+             managed_discovery_invoked: Arc::new(AtomicBool::new(false)),
+-            existing_endpoint_visible: Arc::new(AtomicBool::new(true)),
++            existing_endpoint_visible: visible,
+             setup_invoked: setup_invoked.clone(),
+             setup_aborted: Arc::new(AtomicBool::new(false)),
+             stall_consent: false,
+@@ -3138,3 +3142,52 @@ async fn method_unsupported_keeps_the_electron_none_path() {
+     assert_eq!(tabs.len(), 1, "{s}");
+     assert_eq!(tabs[0]["url"], "https://fixture.test/");
+ }
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1; process-scoped policy"]
++async fn muesli_manual_reconnect_never_redials_after_socket_loss() {
++    assert_eq!(std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref(), Ok("1"));
++    let (f, _provider) = protected_existing_profile_fixture().await;
++    let args = json!({"pid": 1, "window_id": 7, "session": "manual-test",
++        "_transport_session_id": "manual-transport", "strategy": {"kind": "existing_profile"}});
++    let prepared = BrowserPrepareTool::new(f.engine.clone()).invoke(args.clone()).await;
++    assert_eq!(structured(&prepared)["status"], "ok");
++    let state = GetBrowserStateTool::new(f.engine.clone()).invoke(args.clone()).await;
++    assert_eq!(structured(&state)["status"], "ok");
++    let status = super::tools::BrowserConnectionStatusTool::new(f.engine.clone());
++    let live = status.invoke(args.clone()).await;
++    assert_eq!(structured(&live)["connected"], true);
++    let count = f._server.accepted_connections();
++    let grant = f.engine.existing_profile_grant("manual-test", Some("manual-transport"), 1)
++        .await.unwrap().unwrap();
++    f.engine.pool.release_existing(&grant.endpoint_ws_url, grant.generation,
++        super::cdp_ws::SharedSocketRelease::Close).await;
++    let disconnected = status.invoke(args.clone()).await;
++    assert_eq!(structured(&disconnected)["connected"], false);
++    assert_eq!(f._server.accepted_connections(), count, "status must never redial");
++    let refused = GetBrowserStateTool::new(f.engine.clone()).invoke(args).await;
++    assert_eq!(structured(&refused)["refusal"]["code"], "browser_consent_required");
++    assert_eq!(f._server.accepted_connections(), count, "must not reconnect or prompt Chrome");
++    crate::session::fire_session_end("manual-transport");
++}
++
++#[tokio::test]
++#[ignore = "Run with MUESLI_CHROME_MANUAL_RECONNECT=1"]
++async fn muesli_manual_connect_waits_for_endpoint_without_setup() {
++    assert_eq!(std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref(), Ok("1"));
++    let visible = Arc::new(AtomicBool::new(false));
++    let (f, _provider) = protected_existing_profile_fixture_with_visibility(visible.clone()).await;
++    let args = json!({"pid": 1, "window_id": 7, "session": "wait-test",
++        "_transport_session_id": "wait-transport", "strategy": {"kind": "existing_profile"}});
++    for _ in 0..3 {
++        let result = BrowserPrepareTool::new(f.engine.clone()).invoke(args.clone()).await;
++        assert_eq!(structured(&result)["refusal"]["code"], "browser_requires_setup");
++        assert!(!f.setup_invoked.load(Ordering::SeqCst));
++        assert_eq!(f._server.accepted_connections(), 0);
++    }
++    visible.store(true, Ordering::SeqCst);
++    let result = BrowserPrepareTool::new(f.engine.clone()).invoke(args).await;
++    assert_eq!(structured(&result)["prepared"], true);
++    assert!(!f.setup_invoked.load(Ordering::SeqCst));
++    crate::session::fire_session_end("wait-transport");
++}

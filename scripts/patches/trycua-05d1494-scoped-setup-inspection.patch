@@ -1,0 +1,161 @@
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+index cedbbe404..af37af6e7 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+@@ -622,7 +622,8 @@ unsafe fn walk_element(
+     // it: its items are reachable through invoke_menu or a query, and walking
+     // them cost most of a read (94% of a Chrome window read in a VM check)
+     // and ate the node budget before the window content.
+-    let collapse_here = role == "AXMenuBarItem"
++    let collapse_here = (BROWSER_CHROME_ONLY.with(std::cell::Cell::get) && is_web_content_role(&role))
++        || role == "AXMenuBarItem"
+         && MENUS_COLLAPSED.with(std::cell::Cell::get)
+         && copy_bool_attr(element, "AXSelected") != Some(true);
+     let line = if role == "AXMenuBar" && MENUS_COLLAPSED.with(std::cell::Cell::get) {
+@@ -739,9 +740,22 @@ fn format_node_line(node: &AXNode) -> String {
+ }
+ 
+ thread_local! {
++    static BROWSER_CHROME_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+     static MENUS_COLLAPSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+ }
+ 
++/// Inspect browser controls without descending into the current document.
++/// Web roots remain visible, but this result must never prove a page control.
++/// Scoped RAII restoration also handles nested calls and unwinding.
++pub fn walk_browser_chrome(pid: i32, window_id: u32) -> TreeWalkResult {
++    struct Restore(bool);
++    impl Drop for Restore {
++        fn drop(&mut self) { BROWSER_CHROME_ONLY.with(|flag| flag.set(self.0)); }
++    }
++    let _restore = Restore(BROWSER_CHROME_ONLY.with(|flag| flag.replace(true)));
++    with_menus_collapsed(true, || walk_tree(pid, Some(window_id), None))
++}
++
+ /// Shown on the menu bar row of a read whose menus were not walked.
+ pub(crate) const COLLAPSED_MENU_NOTE: &str =
+     "(menus collapsed: run an item with invoke_menu path, or pass query to search menu items)";
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+index 25270f7ac..5ea2684d9 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+@@ -16,7 +16,7 @@ use crate::ax::bindings::{
+     copy_binary_attr, copy_string_attr, element_screen_center, focused_element_of_pid,
+     kAXErrorSuccess, perform_action, set_bool_attr_true, set_string_attr, AXUIElementRef,
+ };
+-use crate::ax::tree::{walk_tree, AXNode, TreeWalkResult};
++use crate::ax::tree::{walk_tree, walk_browser_chrome, AXNode, TreeWalkResult};
+ 
+ fn refusal(code: BrowserRefusalCode, message: impl Into<String>) -> BrowserRefusal {
+     BrowserRefusal::new(code, message)
+@@ -942,6 +942,17 @@ fn exact_pixel_setup_checkbox(
+     unique_pixel_checkbox(matches.as_slice(), capture_frame, geometry, descriptor)
+ }
+ 
++// Local Muesli strict-background benchmark: setup authorization does not
++// authorize foreground activation or desktop input. Fail before invoking any
++// fallback body, including cleanup fallbacks.
++fn background_only_foreground_assist(
++    _pid: i32,
++    _window_id: u32,
++    _body: impl FnOnce() -> anyhow::Result<()>,
++) -> anyhow::Result<bool> {
++    anyhow::bail!("browser setup requires foreground assistance, disabled for this strict-background benchmark")
++}
++
+ fn press_pixel_checkbox(
+     pid: i32,
+     window_id: u32,
+@@ -1032,7 +1043,7 @@ fn press_pixel_checkbox(
+     if background {
+         return click(crate::input::mouse::WindowClickDelivery::Background).map(|()| false);
+     }
+-    crate::input::skylight::with_foreground_assist(pid, window_id, || {
++    background_only_foreground_assist(pid, window_id, || {
+         click(crate::input::mouse::WindowClickDelivery::Foreground)
+     })
+ }
+@@ -1154,9 +1165,7 @@ impl SetupUiHandle {
+                                 let Some((x, y)) = center else {
+                                     return false;
+                                 };
+-                                self.foregrounded_window = true;
+-                                self.injected_global_input = true;
+-                                let restored = crate::input::skylight::with_foreground_assist(
++                                let restored = background_only_foreground_assist(
+                                     pid,
+                                     window_id,
+                                     || {
+@@ -1382,7 +1391,22 @@ fn set_remote_debugging(
+     descriptor: &'static BrowserSetupDescriptor,
+     desired_enabled: bool,
+ ) -> Result<SetupUiHandle, BrowserRefusal> {
+-    let initial = walk_tree(pid, Some(window_id), None);
++    // The current page may have thousands of nodes unrelated to setup.
++    // Inspect native browser controls first; never use this scoped tree to
++    // authorize a checkbox mutation. Existing setup pages still get a full
++    // proof, with the original truncation and identity checks intact.
++    let chrome = walk_browser_chrome(pid, window_id);
++    let initial = if chrome.nodes.iter().any(|node| {
++        node.role == "AXTextField"
++            && field_equals(node, "Address and search bar")
++            && node.value.as_deref().is_some_and(|value|
++                value.trim().eq_ignore_ascii_case(descriptor.setup_url))
++    }) {
++        release_actionable_nodes(&chrome.nodes);
++        walk_tree(pid, Some(window_id), None)
++    } else {
++        chrome
++    };
+     let initial_checkbox = exact_setup_checkbox(&initial, descriptor);
+     let mut handle = match initial_checkbox {
+         Ok(Some(_)) => SetupUiHandle {
+@@ -1643,9 +1667,7 @@ fn set_remote_debugging(
+                         }
+                     }
+                     Ok(None) => {
+-                        handle.foregrounded_window = true;
+-                        handle.injected_global_input = true;
+-                        let navigated = crate::input::skylight::with_foreground_assist(
++                        let navigated = background_only_foreground_assist(
+                             pid,
+                             window_id,
+                             || {
+@@ -1825,9 +1847,7 @@ fn set_remote_debugging(
+                                     ),
+                                 ));
+                             };
+-                            handle.foregrounded_window = true;
+-                            handle.injected_global_input = true;
+-                            let clicked = crate::input::skylight::with_foreground_assist(
++                            let clicked = background_only_foreground_assist(
+                                 pid,
+                                 window_id,
+                                 || {
+@@ -2107,6 +2127,26 @@ mod tests {
+         assert_eq!(distinct.len(), 2);
+     }
+ 
++    #[test]
++    fn strict_background_setup_never_runs_foreground_fallback_body() {
++        let result = background_only_foreground_assist(0, 0, || {
++            panic!("foreground fallback must never execute");
++        });
++        assert!(result.unwrap_err().to_string().contains("disabled"));
++    }
++
++    #[test]
++    fn browser_controls_without_page_content_cannot_authorize_setup_checkbox() {
++        let controls = tree(vec![
++            node("AXTextField", Some("Address and search bar"), Some(chrome().setup_url), &["AXPress"]),
++            node("AXWebArea", Some(chrome().page_titles[0]), None, &[]),
++            node("AXCheckBox", Some(chrome().checkbox_label), None, &["AXPress"]),
++        ]);
++        // A scoped browser-chrome walk lacks the setup page heading. Even an
++        // exact-looking checkbox cannot substitute for the full page proof.
++        assert_eq!(exact_setup_checkbox(&controls, chrome()).unwrap(), None);
++    }
++
+     #[test]
+     fn new_tab_button_requires_an_exact_actionable_match() {
+         let nodes = vec![

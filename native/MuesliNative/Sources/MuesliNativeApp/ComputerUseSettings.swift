@@ -213,6 +213,7 @@ enum ComputerUseSettings {
         let traceStatus: String
         switch status {
         case .done: traceStatus = "done"
+        case .incomplete: traceStatus = "incomplete"
         case .needsConfirmation: traceStatus = "confirm"
         case .cancelled: traceStatus = "cancelled"
         case .timedOut: traceStatus = "timed_out"

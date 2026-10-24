@@ -1,0 +1,115 @@
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/prepare.rs
+@@ -933,13 +933,15 @@
+         &self,
+         request: PrepareRequest,
+     ) -> Result<PrepareOutcome, BrowserRefusal> {
++        let reuse_only = !request.foreground
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1");
+         let browser_pid = request.pid;
+         // Where the platform can guard it (macOS: the browser window is on
+         // another Space), attach in the background under the guard instead of
+         // refusing.
+         let background_guard = match (browser_pid, request.window_id) {
+             (Some(pid), Some(window_id))
+-                if !request.foreground
++                if !request.foreground && !reuse_only
+                     && self
+                         .platform
+                         .existing_profile_attach_background_limitation()
+@@ -1111,7 +1113,11 @@
+             ));
+         }
+         self.native_window_checked(pid, window_id).await?;
+-        self.existing_profile_background_check(pid, request.foreground || guarded)?;
++        let reuse_only = !request.foreground
++            && std::env::var("MUESLI_CHROME_MANUAL_RECONNECT").as_deref() == Ok("1");
++        if !reuse_only {
++            self.existing_profile_background_check(pid, request.foreground || guarded)?;
++        }
+         let fingerprint = self.platform.process_fingerprint(pid).await?;
+         let mut setup = ExistingProfileSetupOutcome::default();
+         let setup_request = ExistingProfileSetupRequest {
+@@ -1326,7 +1332,20 @@
+                 self.approval_broker.revoke(protected).await;
+             }
+         }
+-        let (claimed, displayed_consent_prompt) = match claim_with_delayed_consent(
++        let (claimed, displayed_consent_prompt) = if reuse_only {
++            match self.pool.claim_existing_without_dial(&endpoint.ws_url, grant.generation).await {
++                Ok(connection) => (Ok(connection), false),
++                Err(_) => {
++                    self.revoke_existing_profile_grant(
++                        &request.session, request.transport_session.as_deref(), pid,
++                    ).await;
++                    return Err(refusal(
++                        BrowserRefusalCode::BrowserConsentRequired,
++                        "No reusable approved Chrome connection. Interactive connection approval is required.",
++                    ));
++                }
++            }
++        } else { match claim_with_delayed_consent(
+             self.pool.claim_existing(&endpoint.ws_url, grant.generation),
+             |action| {
+                 self.platform
+@@ -1361,6 +1380,7 @@
+                 }
+                 return Err(error);
+             }
++        }
+         };
+         // Chrome on Windows can reject the WebSocket handshake that was
+         // pending while its native remote-debugging consent prompt was open.
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/browser/cdp_ws.rs
+@@ -695,6 +695,19 @@
+         ws_url: &str,
+         generation: u64,
+     ) -> anyhow::Result<Arc<CdpConnection>> {
++        self.claim_existing_with_dial(ws_url, generation, true).await
++    }
++
++    /// Reuse approved sockets atomically without opening a consent-triggering socket.
++    pub async fn claim_existing_without_dial(
++        &self, ws_url: &str, generation: u64,
++    ) -> anyhow::Result<Arc<CdpConnection>> {
++        self.claim_existing_with_dial(ws_url, generation, false).await
++    }
++
++    async fn claim_existing_with_dial(
++        &self, ws_url: &str, generation: u64, allow_dial: bool,
++    ) -> anyhow::Result<Arc<CdpConnection>> {
+         loopback_port(ws_url)
+             .ok_or_else(|| anyhow::anyhow!("existing-profile endpoint has no loopback port"))?;
+         let _dial = self.inner.dial_gate.lock().await;
+@@ -733,6 +746,10 @@
+             }
+         }
+ 
++        if !allow_dial {
++            anyhow::bail!("no reusable approved browser socket; interactive consent is required");
++        }
++
+         // The WebSocket handshake can wait for browser-owned consent UI.
+         // Never hold the entry mutex across that wait: other sessions keep
+         // using their sockets and revocation stays responsive.
+@@ -1080,9 +1097,18 @@
+         );
+         assert!(pool.get(&url).await.is_err());
+ 
+-        let next = pool.claim_existing(&url, 2).await.unwrap();
++        let next = pool.claim_existing_without_dial(&url, 2).await.unwrap();
+         assert!(Arc::ptr_eq(&first, &next));
+         assert_eq!(dials.load(Ordering::SeqCst), 1);
++        server.abort();
++    }
++
++    #[tokio::test]
++    async fn background_claim_never_dials_for_missing_socket() {
++        let (url, dials, server) = counting_browser().await;
++        let pool = CdpPool::new();
++        assert!(pool.claim_existing_without_dial(&url, 1).await.is_err());
++        assert_eq!(dials.load(Ordering::SeqCst), 0);
+         server.abort();
+     }
+ 
