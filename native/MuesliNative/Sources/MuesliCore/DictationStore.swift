@@ -1214,15 +1214,16 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        folderID: Int64? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?))
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1262,6 +1263,12 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 22)
         }
         bindOptionalText(visualContext, at: 23, statement: statement)
+        // The destination may have been deleted while an audio import was running.
+        if let folderID {
+            sqlite3_bind_int64(statement, 24, folderID)
+        } else {
+            sqlite3_bind_null(statement, 24)
+        }
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)

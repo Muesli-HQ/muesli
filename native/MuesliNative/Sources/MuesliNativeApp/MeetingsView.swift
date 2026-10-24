@@ -380,13 +380,14 @@ struct MeetingsView: View {
         }
         .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
+            let folderID = appState.selectedFolderID
             provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
                 guard let data = item as? Data,
                       let urlString = String(data: data, encoding: .utf8),
                       let url = URL(string: urlString) else { return }
                 guard AudioFileImportController.isSupportedFileURL(url) else { return }
                 DispatchQueue.main.async {
-                    controller.importAudioFileFromURL(url)
+                    controller.importAudioFileFromURL(url, folderID: folderID)
                 }
             }
             return true
@@ -733,7 +734,7 @@ struct MeetingsView: View {
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
             Button {
-                controller.startQuickNoteMeeting()
+                controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")
@@ -754,7 +755,7 @@ struct MeetingsView: View {
             .fixedSize()
 
             Menu {
-                Button("Audio file…") { controller.importAudioFile() }
+                Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
                 Button("Granola…") { isGranolaImportPresented = true }
             } label: {
                 HStack(spacing: 6) {

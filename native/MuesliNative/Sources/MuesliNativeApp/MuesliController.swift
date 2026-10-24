@@ -7053,7 +7053,8 @@ public final class MuesliController: NSObject {
         autoStopSource: MeetingAutoStopSource? = nil,
         presentation: MeetingStartPresentation = .foregroundNotes,
         startOrigin: MeetingRecordingStartOrigin = .manual,
-        dashboardWindowPresentation: DashboardWindowPresentation = .restored
+        dashboardWindowPresentation: DashboardWindowPresentation = .restored,
+        folderID: Int64? = nil
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
@@ -7073,7 +7074,8 @@ public final class MuesliController: NSObject {
             openDocument: presentation.opensMeetingDocument,
             endDate: endDate,
             autoStopSource: autoStopSource,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            inheritedFolderID: folderID
         )
         guard didStart else { return false }
         if presentation.presentsHistoryWindow {
@@ -7217,8 +7219,8 @@ public final class MuesliController: NSObject {
         return true
     }
 
-    func startQuickNoteMeeting() {
-        startMeetingRecordingFromEntryPoint(title: "Meeting")
+    func startQuickNoteMeeting(folderID: Int64? = nil) {
+        startMeetingRecordingFromEntryPoint(title: "Meeting", folderID: folderID)
     }
 
     /// Whether a finished meeting can be resumed right now (used to gate the UI control too).
@@ -7377,7 +7379,7 @@ public final class MuesliController: NSObject {
     }
 
     /// Presents a file picker and imports an audio file for offline transcription.
-    func importAudioFile() {
+    func importAudioFile(folderID: Int64? = nil) {
         guard ensureNoMeetingRetranscription() else { return }
         guard !isMeetingRecording(), !isStartingMeetingRecording, appState.modelFileMutationCount == 0 else { return }
         guard normalizeMeetingTranscriptionSelectionForAvailability() != nil else {
@@ -7400,12 +7402,12 @@ public final class MuesliController: NSObject {
                 self.syncAppState()
                 return
             }
-            await self.importAudioFile(from: sourceURL, sessionID: sessionID)
+            await self.importAudioFile(from: sourceURL, sessionID: sessionID, folderID: folderID)
         }
     }
 
     /// Imports an audio file from a URL (drag-and-drop or file picker).
-    func importAudioFileFromURL(_ url: URL) {
+    func importAudioFileFromURL(_ url: URL, folderID: Int64? = nil) {
         guard ensureNoMeetingRetranscription() else { return }
         guard !isMeetingRecording(), !isStartingMeetingRecording, appState.modelFileMutationCount == 0 else { return }
         guard AudioFileImportController.isSupportedFileURL(url) else {
@@ -7428,11 +7430,11 @@ public final class MuesliController: NSObject {
 
         importTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.importAudioFile(from: url, sessionID: sessionID)
+            await self.importAudioFile(from: url, sessionID: sessionID, folderID: folderID)
         }
     }
 
-    private func importAudioFile(from sourceURL: URL, sessionID: UUID) async {
+    private func importAudioFile(from sourceURL: URL, sessionID: UUID, folderID: Int64?) async {
         // Cancellation may clear UI ownership before an in-flight model call
         // returns. Keep its runtime protected until the operation really exits.
         appState.activeAudioImportCount += 1
@@ -7447,6 +7449,7 @@ public final class MuesliController: NSObject {
             let result = try await AudioFileImportController.importAudioFile(
                 sourceURL: sourceURL,
                 title: title,
+                folderID: folderID,
                 controller: self,
                 progress: { [weak self] status in
                     Task { @MainActor in
@@ -7524,7 +7527,8 @@ public final class MuesliController: NSObject {
         selectedTemplateID: String?,
         selectedTemplateName: String?,
         selectedTemplateKind: MeetingTemplateKind?,
-        selectedTemplatePrompt: String?
+        selectedTemplatePrompt: String?,
+        folderID: Int64? = nil
     ) throws -> Int64 {
         let meetingID = try dictationStore.insertMeeting(
             title: title,
@@ -7540,7 +7544,8 @@ public final class MuesliController: NSObject {
             selectedTemplateName: selectedTemplateName,
             selectedTemplateKind: selectedTemplateKind,
             selectedTemplatePrompt: selectedTemplatePrompt,
-            source: .audioImport
+            source: .audioImport,
+            folderID: folderID
         )
         scheduleICloudSyncAfterLocalChange()
         meetingHookDispatcher.dispatchCompletedMeetingHook(
