@@ -63,6 +63,14 @@ An uncertain AX error must never trigger a normal paste retry. AX provides no
 atomic cross-process compare-and-replace, so remaining validation/write races
 must be exercised during manual editor testing.
 
+Browser editors can acknowledge an AX write before their cached value/selection
+reflects it. Serialize preview and final mutations, then allow up to 500 ms for
+the exact pre-write snapshot to become the exact expected snapshot. Never repeat
+the write. Unexpected intermediate content, timeout, cancellation or a real
+focus departure permanently revokes ownership. Redundant notifications for the
+same focused element do not revoke it; a known foreign-app activation does, even
+when its notification is delivered after focus returns.
+
 At stop, cancel provisional decoding and use the retained complete WAV through
 the existing dictation ASR, artifact filtering, optional cleanup and custom-word
 pipeline. Apply final text (and existing sentence-spacing policy) once to the
@@ -122,3 +130,17 @@ Whisper language, FluidAudio and meeting-streaming regressions. File classifier,
 CI shard assignment and update-flow checks (`--skip-dmg`) also passed. No app
 was installed or launched. Real-model latency and actual-editor validation remain
 explicit dev-lane acceptance work, not results inferred from synthetic tests.
+
+October 25 follow-up: the first Codex composer trial reached buffered finalization
+but did not insert live text. Existing logs lacked preview/cursor outcome detail.
+Add content-free diagnostics for received audio, decode/update counts, cursor
+failure stage and final delivery. Fix the fallback notice's literal `doc.text`
+icon string: that notice refers to history persistence, not a generated file.
+An opt-in integration test uses FluidAudio's public speech fixture and an already
+installed Parakeet v3 model to validate short-window decoding and rolling output;
+it does not download models. Codex composer validation remains a manual step.
+Follow-up validation passed 115 native tests across 13 suites, including 25 cursor
+ownership/readback tests and the real-model smoke. The public fixture's two-second
+prefix was empty, while three-, five-, ten- and fifteen-second prefixes produced
+timed previews; its full 21.4 seconds passed rolling decoding. These observations
+validate the model adapter, not the unobserved Codex composer interaction.

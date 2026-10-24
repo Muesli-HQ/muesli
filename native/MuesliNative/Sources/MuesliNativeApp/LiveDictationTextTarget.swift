@@ -23,14 +23,25 @@ final class LiveDictationTextTarget {
         let replaceSelection: (String) -> Bool
     }
 
+    struct ReadbackTiming {
+        var timeout: TimeInterval = 0.5
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var wait: () async -> Void = { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
     private static weak var activeTarget: LiveDictationTextTarget?
     private let access: Access
     private var expected: Snapshot
     private var ownedRange: NSRange
     private var isClosed = false
+    private var isFinishing = false
+    private var operationInProgress = false
+    private var operationWaiters: [CheckedContinuation<Bool, Never>] = []
+    private let readbackTiming: ReadbackTiming
     private var isMutating = false
     private var pendingTextValidation = false
     private var nativeTarget: AccessibilityTarget?
+    private let onDiagnostic: (String) -> Void
     private(set) var isSuspended = false
     private(set) var hasInsertedText = false
     /// Even an unsuccessful AX call may have reached another process. Callers
@@ -39,36 +50,81 @@ final class LiveDictationTextTarget {
     private(set) var applicationName: String?
     private(set) var bundleIdentifier: String?
 
-    init?(access: Access) {
+    init?(access: Access, onDiagnostic: @escaping (String) -> Void = { _ in },
+          readbackTiming: ReadbackTiming = .init()) {
         Self.activeTarget?.cancel()
         guard access.isFocused(), let snapshot = access.snapshot(),
               Self.isValid(snapshot.selection, in: snapshot.text) else { return nil }
         self.access = access
+        self.onDiagnostic = onDiagnostic
+        self.readbackTiming = readbackTiming
         expected = snapshot
         ownedRange = snapshot.selection
         Self.activeTarget = self
     }
 
-    static func capture() -> LiveDictationTextTarget? {
+    static func capture(onDiagnostic: @escaping (String) -> Void = { _ in }) -> LiveDictationTextTarget? {
         activeTarget?.cancel()
         guard let native = AccessibilityTarget.capture(),
-              let target = LiveDictationTextTarget(access: native.access) else { return nil }
+              let target = LiveDictationTextTarget(access: native.access, onDiagnostic: onDiagnostic) else {
+            onDiagnostic("capture_unavailable")
+            return nil
+        }
         target.nativeTarget = native
         target.applicationName = native.application.localizedName
         target.bundleIdentifier = native.application.bundleIdentifier
         guard native.observeChanges(onFocusChange: { [weak target] in
-            target?.suspend()
+            target?.focusTargetDidChange()
         }, onTextChange: { [weak target] in
             target?.textTargetDidChange()
+        }, onKnownFocusDeparture: { [weak target] in
+            target?.focusTargetDidDepart()
         }) else {
+            onDiagnostic("observer_unavailable")
             target.cancel()
             return nil
         }
         return target
     }
 
+    /// One mutation at a time, including the renderer's asynchronous readback.
+    /// Finalization joins the queue and rejects any subsequently offered preview.
     @discardableResult
-    func update(text: String) -> Bool {
+    func update(text: String) async -> Bool {
+        guard !isFinishing, await acquireOperation() else { return false }
+        defer { releaseOperation() }
+        return await performUpdate(text: text)
+    }
+
+    @discardableResult
+    func finish(text: String) async -> Bool {
+        guard !isClosed, !isFinishing else { return false }
+        isFinishing = true
+        guard await acquireOperation() else { return false }
+        defer { releaseOperation() }
+        let delivered = await performUpdate(text: text)
+        cancel()
+        return delivered
+    }
+
+    private func acquireOperation() async -> Bool {
+        guard !isClosed, !isSuspended, !Task.isCancelled else { return false }
+        if !operationInProgress {
+            operationInProgress = true
+            return true
+        }
+        return await withCheckedContinuation { operationWaiters.append($0) }
+    }
+
+    private func releaseOperation() {
+        if !isClosed, !operationWaiters.isEmpty {
+            operationWaiters.removeFirst().resume(returning: true)
+        } else {
+            operationInProgress = false
+        }
+    }
+
+    private func performUpdate(text: String) async -> Bool {
         guard validateCurrent() else { return false }
         // An empty early hypothesis must not delete the user's initial selection.
         if !hasAttemptedWrite && text.isEmpty { return true }
@@ -84,35 +140,50 @@ final class LiveDictationTextTarget {
                 _ = validateCurrent()
             }
         }
-        guard access.select(ownedRange) else { return suspend() }
-        // Selecting our range is itself a mutation. Revalidate focus, content,
-        // and exactly that selection before the separate cross-process text write.
-        guard !isClosed, !isSuspended, Self.activeTarget === self,
-              access.isFocused(), access.snapshot() == Snapshot(text: expected.text, selection: ownedRange) else {
-            return suspend()
+        let selected = Snapshot(text: expected.text, selection: ownedRange)
+        guard access.select(ownedRange) else { return suspend("selection_write_failed") }
+        guard await awaitReadback(selected, stale: expected, stage: "selection") else { return false }
+        // Revalidate immediately before the second write, even after its ACK.
+        guard mutationIsCurrent(), access.snapshot() == selected else {
+            return suspend("selection_readback_changed")
         }
-        guard access.replaceSelection(text) else { return suspend() }
+        guard access.replaceSelection(text) else { return suspend("text_write_failed") }
         hasInsertedText = hasInsertedText || !text.isEmpty
         let next = Snapshot(text: nextText, selection: nextCaret)
-        // Do not force the caret afterwards: unexpected editor behavior is a
-        // reason to stop, not permission for another write.
-        guard !isClosed, !isSuspended, Self.activeTarget === self,
-              access.isFocused(), access.snapshot() == next else { return suspend() }
+        guard await awaitReadback(next, stale: selected, stage: "text") else { return false }
         expected = next
         ownedRange = NSRange(location: ownedRange.location, length: (text as NSString).length)
         return true
     }
 
-    @discardableResult
-    func finish(text: String) -> Bool {
-        let delivered = update(text: text)
-        cancel()
-        return delivered
+    /// An accepted native setter can precede the browser's cached AX tree update.
+    /// Only the exact pre-write state may wait; any other edit revokes ownership.
+    /// Polling never retries a mutation, and no queued operation can run meanwhile.
+    private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String) async -> Bool {
+        let deadline = readbackTiming.now() + readbackTiming.timeout
+        while true {
+            guard mutationIsCurrent() else { return false }
+            guard let observed = access.snapshot() else { return suspend("\(stage)_readback_unavailable") }
+            if observed == desired { return true }
+            guard observed == stale else { return suspend("\(stage)_readback_changed") }
+            guard readbackTiming.now() < deadline else { return suspend("\(stage)_readback_timeout") }
+            await readbackTiming.wait()
+        }
+    }
+
+    private func mutationIsCurrent() -> Bool {
+        guard !isClosed, !isSuspended, Self.activeTarget === self else { return false }
+        guard !Task.isCancelled else { return suspend("cancelled") }
+        guard access.isFocused() else { return suspend("focus_changed") }
+        return true
     }
 
     /// Cancellation leaves already inserted text in place and rejects late work.
     func cancel() {
         isClosed = true
+        let waiters = operationWaiters
+        operationWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: false) }
         nativeTarget?.stopObserving()
         if Self.activeTarget === self { Self.activeTarget = nil }
     }
@@ -128,15 +199,35 @@ final class LiveDictationTextTarget {
         }
     }
 
+    /// Editors may announce focus again for the same field while its selection
+    /// changes. Revalidate the identity instead of treating every notification
+    /// as a focus departure. An actual departure still permanently revokes us.
+    func focusTargetDidChange() {
+        guard !isClosed else { return }
+        guard access.isFocused() else {
+            _ = suspend("focus_changed")
+            return
+        }
+        textTargetDidChange()
+    }
+
+    /// Unlike a redundant AX focus notification, this records a known departure
+    /// even if its notification arrives after the original app becomes active again.
+    func focusTargetDidDepart() {
+        guard !isClosed else { return }
+        _ = suspend("focus_changed")
+    }
+
     @discardableResult
     private func validateCurrent() -> Bool {
-        guard !isClosed, !isSuspended, Self.activeTarget === self else { return false }
-        guard access.isFocused(), access.snapshot() == expected else { return suspend() }
+        guard mutationIsCurrent() else { return false }
+        guard access.snapshot() == expected else { return suspend("text_or_caret_changed") }
         return true
     }
 
     @discardableResult
-    private func suspend() -> Bool {
+    private func suspend(_ reason: String) -> Bool {
+        onDiagnostic(reason)
         isSuspended = true
         cancel()
         return false
@@ -167,6 +258,7 @@ private final class AccessibilityTarget {
     private var activationObserver: NSObjectProtocol?
     private var onFocusChange: (() -> Void)?
     private var onTextChange: (() -> Void)?
+    private var onKnownFocusDeparture: (() -> Void)?
 
     private init(application: NSRunningApplication, element: AXUIElement) {
         self.application = application
@@ -220,9 +312,11 @@ private final class AccessibilityTarget {
         })
     }
 
-    func observeChanges(onFocusChange: @escaping () -> Void, onTextChange: @escaping () -> Void) -> Bool {
+    func observeChanges(onFocusChange: @escaping () -> Void, onTextChange: @escaping () -> Void,
+                        onKnownFocusDeparture: @escaping () -> Void) -> Bool {
         self.onFocusChange = onFocusChange
         self.onTextChange = onTextChange
+        self.onKnownFocusDeparture = onKnownFocusDeparture
         var newObserver: AXObserver?
         let result = AXObserverCreate(application.processIdentifier, { _, _, notification, context in
             guard let context else { return }
@@ -255,7 +349,7 @@ private final class AccessibilityTarget {
                 guard let self,
                       let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                       app.processIdentifier != self.application.processIdentifier else { return }
-                self.onFocusChange?()
+                self.onKnownFocusDeparture?()
             }
         }
         return true
@@ -277,6 +371,7 @@ private final class AccessibilityTarget {
         activationObserver = nil
         onFocusChange = nil
         onTextChange = nil
+        onKnownFocusDeparture = nil
     }
 
     private static func string(_ element: AXUIElement, _ attribute: String) -> String? {

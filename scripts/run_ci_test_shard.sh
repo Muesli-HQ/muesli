@@ -68,6 +68,7 @@ case "${shard}" in
       BodhanArtifactValidationTests
       BodhanLifecycleTests
       DictationBackendPreparationTests
+      BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
     )
     ;;

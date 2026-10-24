@@ -9123,12 +9123,13 @@ public final class MuesliController: NSObject {
     private func presentAlert(
         _ alert: NSAlert,
         fallbackLogContext: String,
+        includeInformativeTextInFallbackLog: Bool = true,
         completion: ((NSApplication.ModalResponse) -> Void)? = nil
     ) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
             fputs(
-                "[muesli-native] unable to present \(fallbackLogContext) alert: \(alert.messageText) - \(alert.informativeText)\n",
+                "[muesli-native] unable to present \(fallbackLogContext) alert: \(alert.messageText) - \(includeInformativeTextInFallbackLog ? alert.informativeText : "[redacted]")\n",
                 stderr
             )
             statusBarController?.setStatus(alert.messageText)
@@ -11363,7 +11364,10 @@ public final class MuesliController: NSObject {
               selectedBackend.supportsBufferedLiveTranscription,
               currentDictationOutputMode == .paste,
               !isDictationTestMode else { return }
-        guard let target = LiveDictationTextTarget.capture() else {
+        let previewTrace = currentDictationLatencyTrace
+        guard let target = LiveDictationTextTarget.capture(onDiagnostic: { [weak self] reason in
+            self?.markDictationLatency("buffered_target:\(reason)", trace: previewTrace)
+        }) else {
             statusBarController?.setStatus("Live updates unavailable here; text will paste when you stop")
             return
         }
@@ -11381,15 +11385,21 @@ public final class MuesliController: NSObject {
                         guard let self, let current = self.bufferedDictationContext,
                               current.id == id, update.revision > current.lastRevision else { return }
                         self.bufferedDictationContext?.lastRevision = update.revision
-                        if !current.target.update(text: update.text) {
+                        let delivered = await current.target.update(text: update.text)
+                        self.markDictationLatency("buffered_preview revision=\(update.revision) chars=\(update.text.utf16.count) delivered=\(delivered)", trace: previewTrace)
+                        guard self.bufferedDictationContext?.id == id else { return }
+                        if !delivered {
                             current.session.cancel()
                             self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
                         }
                     }
                 },
-                onFailure: { [weak self] _ in
+                onFailure: { [weak self] error in
+                    let category = (error as? BufferedTranscriptionSession.Failure).map { String(describing: $0) }
+                        ?? String(describing: type(of: error))
                     Task { @MainActor [weak self] in
                         guard let self, self.bufferedDictationContext?.id == id else { return }
+                        self.markDictationLatency("buffered_preview_failed:\(category)", trace: previewTrace)
                         // Keep the target lease for final cleanup; failure of preview
                         // inference must never trigger a duplicate normal paste.
                         self.statusBarController?.setStatus("Live preview stopped; finishing transcription when you stop")
@@ -11401,7 +11411,9 @@ public final class MuesliController: NSObject {
                 whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage
             )
             dictationAudioSessionManager.onAudioBuffer = { samples in session.enqueue(samples) }
+            markDictationLatency("buffered_preview_started", trace: previewTrace)
         } catch {
+            markDictationLatency("buffered_preview_start_failed", trace: previewTrace)
             target.cancel()
             statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
         }
@@ -11986,6 +11998,9 @@ public final class MuesliController: NSObject {
     ) {
         let liveContext = bufferedDictationContext
         bufferedDictationContext = nil
+        if let diagnostics = liveContext?.session.diagnostics {
+            markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
+        }
         // The retained WAV is authoritative. Cancel provisional inference before
         // entering the existing final ASR + cleanup pipeline; its backend gate
         // drains any in-flight call before final decoding can start.
@@ -12181,16 +12196,25 @@ public final class MuesliController: NSObject {
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                         self.finishDictationLatencyTrace("empty_transcription", trace: completionLatencyTrace)
                         if liveContext?.target.hasAttemptedWrite == true {
-                            self.indicator.showWarning("No final transcript; provisional text remains", icon: "exclamationmark.triangle", duration: 4)
+                            self.indicator.showWarning("No final transcript; provisional text remains", icon: "!", duration: 4)
                         }
                     }
                     return
                 }
+                let liveDelivered: Bool?
+                if let liveContext {
+                    liveDelivered = await liveContext.target.finish(
+                        text: text + DictationPasteSpacing.trailingSeparator(after: text)
+                    )
+                    try Task.checkCancellation()
+                    guard self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }
+                } else {
+                    liveDelivered = nil
+                }
                 await MainActor.run {
                     if let liveContext {
-                        let delivered = liveContext.target.finish(
-                            text: text + DictationPasteSpacing.trailingSeparator(after: text)
-                        )
+                        let delivered = liveDelivered == true
+                        self.markDictationLatency("buffered_final delivered=\(delivered) attempted=\(liveContext.target.hasAttemptedWrite) inserted=\(liveContext.target.hasInsertedText)", trace: completionLatencyTrace)
                         // No normal paste fallback: even an AX error may have
                         // partially mutated the field. Preserve the final in history.
                         self.releaseStandardDictationState()
@@ -12203,7 +12227,7 @@ public final class MuesliController: NSObject {
                         if delivered {
                             self.indicator.showDictationCompletion()
                         } else if saved {
-                            self.indicator.showWarning("Final dictation saved in history", icon: "doc.text", duration: 4)
+                            self.indicator.showWarning("Live insertion stopped; dictation saved in history", icon: "!", duration: 4)
                         } else {
                             // The safe fallback depends on persistence. If it
                             // fails, retain a user-visible copy without changing
@@ -12212,7 +12236,8 @@ public final class MuesliController: NSObject {
                             alert.messageText = "Dictation could not be inserted or saved"
                             alert.informativeText = text
                             alert.addButton(withTitle: "OK")
-                            self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery") { _ in }
+                            self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery",
+                                              includeInformativeTextInFallbackLog: false) { _ in }
                         }
                         self.finishDictationLatencyTrace("buffered_live_completed", trace: completionLatencyTrace)
                     } else if outputMode == .paste {
@@ -12328,7 +12353,7 @@ public final class MuesliController: NSObject {
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                     self.finishDictationLatencyTrace("transcription_failed", trace: completionLatencyTrace)
                     if liveContext?.target.hasAttemptedWrite == true {
-                        self.indicator.showWarning("Final transcription failed; provisional text remains", icon: "exclamationmark.triangle", duration: 4)
+                        self.indicator.showWarning("Final transcription failed; provisional text remains", icon: "!", duration: 4)
                     }
                 }
             }

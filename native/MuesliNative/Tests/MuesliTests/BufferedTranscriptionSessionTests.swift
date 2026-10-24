@@ -17,6 +17,10 @@ struct BufferedTranscriptionSessionTests {
         await session.finish()
         #expect(output.values.last?.text == "Hello, café!")
         #expect(output.failures == 0)
+        #expect(session.diagnostics.receivedSamples == 16_000)
+        #expect(session.diagnostics.decodeCount == 1)
+        #expect(session.diagnostics.revision == 1)
+        #expect(session.diagnostics.closed)
     }
 
     @Test("continuous audio rolls over using times without deleting repeated words", arguments: ["go", "café", "привет", "مرحبا", "你好"])
@@ -114,6 +118,10 @@ struct BufferedTranscriptionSessionTests {
         silent.enqueue(Array(repeating: 0, count: 16_000))
         await silent.finish()
         #expect(output.values.last?.text == "")
+        #expect(silent.diagnostics.receivedSamples == 16_000)
+        #expect(silent.diagnostics.decodeCount == 0)
+        #expect(silent.diagnostics.revision == 1)
+        #expect(silent.diagnostics.closed)
     }
 
     @Test("word alignment rejects missing text instead of silently dropping it")

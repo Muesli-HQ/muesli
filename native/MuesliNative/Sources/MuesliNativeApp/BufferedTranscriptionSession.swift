@@ -52,6 +52,13 @@ struct BufferedTranscriptionUpdate: Sendable, Equatable {
 /// new arrivals coalesce into the next snapshot. Audio-time ownership, rather
 /// than matching strings, preserves deliberately repeated words at rollovers.
 final class BufferedTranscriptionSession: @unchecked Sendable {
+    struct Diagnostics: Sendable {
+        let receivedSamples: Int
+        let decodeCount: Int
+        let revision: UInt64
+        let closed: Bool
+    }
+
     struct Configuration: Sendable {
         var minimumSamples = 32_000
         var updateSamples = 16_000
@@ -81,6 +88,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var ownedUntil: Double = 0
         var committedText = ""
         var revision: UInt64 = 0
+        var receivedSamples = 0
+        var decodeCount = 0
         var running = false
         var finishing = false
         var closed = false
@@ -100,6 +109,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private let decode: @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
     private let onUpdate: @Sendable (BufferedTranscriptionUpdate) -> Void
     private let onFailure: @Sendable (Error) -> Void
+
+    var diagnostics: Diagnostics {
+        synchronized {
+            Diagnostics(receivedSamples: state.receivedSamples, decodeCount: state.decodeCount,
+                        revision: state.revision, closed: state.closed)
+        }
+    }
 
     init(
         configuration: Configuration = .init(),
@@ -127,6 +143,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 return
             }
             state.audio.append(contentsOf: samples)
+            state.receivedSamples += samples.count
             startIfNeeded()
         }
     }
@@ -181,9 +198,18 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         while let snapshot = snapshot() {
             do {
                 let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
-                let result = rms <= Double(configuration.silenceRMS)
-                    ? BufferedTranscriptionWindow(text: "", words: [])
-                    : try await decode(snapshot.audio)
+                let result: BufferedTranscriptionWindow
+                if rms <= Double(configuration.silenceRMS) {
+                    result = BufferedTranscriptionWindow(text: "", words: [])
+                } else {
+                    let canDecode = synchronized {
+                        guard !state.closed else { return false }
+                        state.decodeCount += 1
+                        return true
+                    }
+                    guard canDecode else { return }
+                    result = try await decode(snapshot.audio)
+                }
                 try synchronized {
                     guard !state.closed else { return }
                     try accept(result, snapshot: snapshot)
