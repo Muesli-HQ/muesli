@@ -15,12 +15,41 @@ final class LiveDictationTextTarget {
         }
     }
 
-    /// The native adapter and deterministic tests share the same ownership rules.
+    enum Transport: String {
+        case axSelectedText
+        case targetedKeyboard
+    }
+
+    static func transport(for bundleIdentifier: String?) -> Transport {
+        bundleIdentifier == "com.openai.codex" ? .targetedKeyboard : .axSelectedText
+    }
+
+    struct KeyboardStep {
+        let text: String
+        /// Dispatch must revalidate immediately before posting both events.
+        let send: (_ validate: () -> Bool) -> Bool
+    }
+
+    /// The transport is selected before any write and never changed on failure.
     struct Access {
         let snapshot: () -> Snapshot?
         let isFocused: () -> Bool
         let select: (NSRange) -> Bool
         let replaceSelection: (String) -> Bool
+        let transport: Transport
+        let keyboardPlan: ((String) -> [KeyboardStep]?)?
+
+        init(snapshot: @escaping () -> Snapshot?, isFocused: @escaping () -> Bool,
+             select: @escaping (NSRange) -> Bool, replaceSelection: @escaping (String) -> Bool,
+             transport: Transport = .axSelectedText,
+             keyboardPlan: ((String) -> [KeyboardStep]?)? = nil) {
+            self.snapshot = snapshot
+            self.isFocused = isFocused
+            self.select = select
+            self.replaceSelection = replaceSelection
+            self.transport = transport
+            self.keyboardPlan = keyboardPlan
+        }
     }
 
     struct ReadbackTiming {
@@ -73,6 +102,7 @@ final class LiveDictationTextTarget {
         target.nativeTarget = native
         target.applicationName = native.application.localizedName
         target.bundleIdentifier = native.application.bundleIdentifier
+        onDiagnostic("transport:\(native.transport.rawValue)")
         guard native.observeChanges(onFocusChange: { [weak target] in
             target?.focusTargetDidChange()
         }, onTextChange: { [weak target] in
@@ -126,8 +156,20 @@ final class LiveDictationTextTarget {
 
     private func performUpdate(text: String) async -> Bool {
         guard validateCurrent() else { return false }
-        // An empty early hypothesis must not delete the user's initial selection.
-        if !hasAttemptedWrite && text.isEmpty { return true }
+        // Empty provisional hypotheses never erase existing or previously emitted text.
+        if text.isEmpty { return true }
+        let keyboardPlan: [KeyboardStep]?
+        if access.transport == .targetedKeyboard {
+            // Validate every proposed grapheme before changing even the selection.
+            guard let plan = access.keyboardPlan?(text), !plan.isEmpty,
+                  plan.allSatisfy({ $0.text.count == 1 }),
+                  plan.map(\.text).joined().utf16.elementsEqual(text.utf16) else {
+                return suspend("keyboard_text_unsupported")
+            }
+            keyboardPlan = plan
+        } else {
+            keyboardPlan = nil
+        }
         let nextText = (expected.text as NSString).replacingCharacters(in: ownedRange, with: text)
         if nextText.utf16.elementsEqual(expected.text.utf16) { return true }
         let nextCaret = NSRange(location: ownedRange.location + (text as NSString).length, length: 0)
@@ -140,6 +182,9 @@ final class LiveDictationTextTarget {
                 _ = validateCurrent()
             }
         }
+        if let keyboardPlan {
+            return await performKeyboardUpdate(plan: keyboardPlan)
+        }
         let selected = Snapshot(text: expected.text, selection: ownedRange)
         guard access.select(ownedRange) else { return suspend("selection_write_failed") }
         guard await awaitReadback(selected, stale: expected, stage: "selection") else { return false }
@@ -148,11 +193,49 @@ final class LiveDictationTextTarget {
             return suspend("selection_readback_changed")
         }
         guard access.replaceSelection(text) else { return suspend("text_write_failed") }
-        hasInsertedText = hasInsertedText || !text.isEmpty
         let next = Snapshot(text: nextText, selection: nextCaret)
         guard await awaitReadback(next, stale: selected, stage: "text") else { return false }
+        hasInsertedText = true
         expected = next
         ownedRange = NSRange(location: ownedRange.location, length: (text as NSString).length)
+        return true
+    }
+
+    private func performKeyboardUpdate(plan: [KeyboardStep]) async -> Bool {
+        let originalBase = ownedRange.location
+        let previous = (expected.text as NSString).substring(with: ownedRange).map(String.init)
+        var prefixCount = 0
+        while prefixCount < min(previous.count, plan.count),
+              previous[prefixCount].utf16.elementsEqual(plan[prefixCount].text.utf16) {
+            prefixCount += 1
+        }
+        // Pure shortening needs no delete key: select the last retained grapheme
+        // together with the unwanted suffix, then retype that retained grapheme.
+        if prefixCount == plan.count { prefixCount -= 1 }
+        let prefixLength = plan.prefix(prefixCount).reduce(0) { $0 + $1.text.utf16.count }
+        let editRange = NSRange(location: originalBase + prefixLength,
+                                length: ownedRange.length - prefixLength)
+        var current = Snapshot(text: expected.text, selection: editRange)
+        guard access.select(editRange) else { return suspend("selection_write_failed") }
+        guard await awaitReadback(current, stale: expected, stage: "selection") else { return false }
+        for step in plan.dropFirst(prefixCount) {
+            guard mutationIsCurrent(), access.snapshot() == current else {
+                return suspend("keyboard_target_changed")
+            }
+            let nextText = (current.text as NSString).replacingCharacters(in: current.selection, with: step.text)
+            let next = Snapshot(text: nextText,
+                selection: NSRange(location: current.selection.location + step.text.utf16.count, length: 0))
+            guard step.send({ self.mutationIsCurrent() && self.access.snapshot() == current }) else {
+                return suspend("keyboard_dispatch_failed")
+            }
+            guard await awaitReadback(next, stale: current, stage: "keyboard_text") else { return false }
+            hasInsertedText = true
+            // Track acknowledged prefixes so cancellation leaves exactly the text
+            // already delivered; later events and queued updates cannot resume it.
+            expected = next
+            ownedRange = NSRange(location: originalBase, length: next.selection.location - originalBase)
+            current = next
+        }
         return true
     }
 
@@ -253,6 +336,7 @@ final class LiveDictationTextTarget {
 private final class AccessibilityTarget {
     let application: NSRunningApplication
     private let element: AXUIElement
+    let transport: LiveDictationTextTarget.Transport
     private let appElement: AXUIElement
     private var observer: AXObserver?
     private var activationObserver: NSObjectProtocol?
@@ -263,6 +347,7 @@ private final class AccessibilityTarget {
     private init(application: NSRunningApplication, element: AXUIElement) {
         self.application = application
         self.element = element
+        transport = LiveDictationTextTarget.transport(for: application.bundleIdentifier)
         appElement = AXUIElementCreateApplication(application.processIdentifier)
     }
 
@@ -275,17 +360,19 @@ private final class AccessibilityTarget {
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               let element = DictationContextCapture.focusedUIElement(for: app) else { return nil }
         AXUIElementSetMessagingTimeout(element, 0.25)
-        guard supportsReplacement(element) else { return nil }
+        let transport = LiveDictationTextTarget.transport(for: app.bundleIdentifier)
+        guard supportsReplacement(element, transport: transport) else { return nil }
         return AccessibilityTarget(application: app, element: element)
     }
 
-    private static func supportsReplacement(_ element: AXUIElement) -> Bool {
+    private static func supportsReplacement(_ element: AXUIElement,
+                                            transport: LiveDictationTextTarget.Transport) -> Bool {
         guard let role = string(element, kAXRoleAttribute),
               [kAXTextFieldRole, kAXTextAreaRole].contains(role),
               let subrole = optionalSubrole(element),
               subrole.isEmpty || subrole == kAXSearchFieldSubrole,
               settable(element, kAXSelectedTextRangeAttribute),
-              settable(element, kAXSelectedTextAttribute),
+              (transport == .targetedKeyboard || settable(element, kAXSelectedTextAttribute)),
               string(element, kAXValueAttribute) != nil else { return false }
         // Rich editors which do not expose a string value and a writable selected
         // text range are unsupported. We never reconstruct surrounding formatting.
@@ -300,7 +387,7 @@ private final class AccessibilityTarget {
             return .init(text: text, selection: NSRange(location: range.location, length: range.length))
         }, isFocused: { [self] in
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
-                  !application.isTerminated, Self.supportsReplacement(element),
+                  !application.isTerminated, Self.supportsReplacement(element, transport: transport),
                   let current = DictationContextCapture.focusedUIElement(for: application) else { return false }
             return CFEqual(current, element)
         }, select: { [self] selection in
@@ -309,6 +396,14 @@ private final class AccessibilityTarget {
             return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
         }, replaceSelection: { [self] text in
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+        }, transport: transport, keyboardPlan: { [self] text in
+            guard let plan = LiveDictationKeyboardInput.makePlan(text: text) else { return nil }
+            return plan.map { step in
+                LiveDictationTextTarget.KeyboardStep(text: step.text, send: { validate in
+                    LiveDictationKeyboardInput.post(step, to: self.application.processIdentifier,
+                                                   validateTarget: validate)
+                })
+            }
         })
     }
 

@@ -50,12 +50,13 @@ is reused, but the failed scheduling policy is not.
 ## Cursor ownership and final cleanup
 
 Capture the frontmost application, focused AX text field/area, complete string
-value, and UTF-16 selection. Require readable state, writable selected text and
-selection, and working focus/value/selection observation. Secure fields and
+value, and UTF-16 selection. Require readable state, writable selection,
+writable selected text for the AX transport, and working focus/value/selection
+observation. Secure fields and
 unsupported editors use existing paste-on-stop without starting a cursor lease.
 
-For a captured target, replace only the session-owned selection using
-AXSelectedTextRange and AXSelectedText. Before and after each mutation verify the
+For a captured target, replace only the session-owned selection. Native editors
+use AXSelectedTextRange and AXSelectedText. Before and after each mutation verify the
 same focused element and exact expected text/caret. Do not set the complete
 AXValue, synthesize backspaces, or use the clipboard for live revisions. If the
 user edits, moves the caret or changes focus, permanently suspend that lease.
@@ -70,6 +71,23 @@ the write. Unexpected intermediate content, timeout, cancellation or a real
 focus departure permanently revokes ownership. Redundant notifications for the
 same focused element do not revoke it; a known foreign-app activation does, even
 when its notification is delivered after focus returns.
+
+The second Codex composer trial produced a 29-character Parakeet preview, then
+`text_readback_timeout`: the AX text setter reported success while the exact old
+field value persisted. This is distinct from recognition failure. Nemotron's
+existing path types append-only deltas through keyboard events; it never used
+this AX text setter.
+
+For the observed Codex bundle, choose targeted keyboard delivery at capture time.
+Keep AX ownership/selection verification, retain the exact common grapheme prefix,
+and type the changed suffix through marked keyboard events addressed to the
+captured process. Verify each step's full value and caret before continuing.
+Never switch transports after an uncertain write. Pure shortening selects and
+retypes one retained grapheme instead of synthesizing deletion keys. Empty
+provisional hypotheses preserve visible text. Preflight controls and line breaks
+before any selection: unsupported multiline cleanup remains in history rather
+than risking an Enter/Tab action in a chat composer. Other applications retain
+the AX path until their compatibility is verified separately.
 
 At stop, cancel provisional decoding and use the retained complete WAV through
 the existing dictation ASR, artifact filtering, optional cleanup and custom-word
@@ -144,3 +162,11 @@ ownership/readback tests and the real-model smoke. The public fixture's two-seco
 prefix was empty, while three-, five-, ten- and fifteen-second prefixes produced
 timed previews; its full 21.4 seconds passed rolling decoding. These observations
 validate the model adapter, not the unobserved Codex composer interaction.
+
+The second-trial keyboard-transport fix passed 136 native tests across 14 suites,
+including 36 cursor ownership tests and 10 keyboard construction/dispatch tests.
+Dispatch tests use injected sinks and do not post input to applications. Coverage
+includes exact suffix revisions, shortening, Unicode, control preflight,
+ineffective setters, cancellation, and stopping after failed acknowledgment.
+CI shard assignment also passed. The user authorized deployment to lane B;
+actual Codex composer acceptance still requires a manual dictation trial.

@@ -77,6 +77,7 @@ case "${shard}" in
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       LiveDictationTextTargetTests
+      LiveDictationKeyboardInputTests
       BufferedLiveTranscriptionPolicyTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests

@@ -20,6 +20,12 @@ struct LiveDictationTextTargetTests {
         var pendingReplacement: String?
         var replacements = 0
         var selections = 0
+        var selectedRanges: [NSRange] = []
+        var transport: LiveDictationTextTarget.Transport = .axSelectedText
+        var keyboardSteps: [String] = []
+        var keyboardNoOp = false
+        var keyboardFailureAt: Int?
+        var afterKeyboard: (() -> Void)?
 
         init(_ text: String = "Before  after", selection: NSRange = NSRange(location: 7, length: 0)) {
             self.text = text
@@ -47,6 +53,7 @@ struct LiveDictationTextTargetTests {
                   isFocused: { [self] in focused },
                   select: { [self] range in
                       selections += 1
+                      selectedRanges.append(range)
                       guard selectionSucceeds else { return false }
                       if delaySelection { pendingSelection = range } else { selection = range }
                       afterSelect?()
@@ -61,6 +68,19 @@ struct LiveDictationTextTargetTests {
                       }
                       afterReplacement?()
                       return replacementSucceeds
+                  }, transport: transport, keyboardPlan: { [self] text in
+                      guard LiveDictationKeyboardInput.isSupported(text) else { return nil }
+                      return text.map { character in
+                          let value = String(character)
+                          return .init(text: value, send: { [self] validate in
+                              guard validate() else { return false }
+                              keyboardSteps.append(value)
+                              if keyboardFailureAt == keyboardSteps.count { return false }
+                              if !keyboardNoOp { applyReplacement(value) }
+                              afterKeyboard?()
+                              return true
+                          })
+                      }
                   })
         }
     }
@@ -394,6 +414,149 @@ struct LiveDictationTextTargetTests {
         #expect(await preview.value == false)
         #expect(editor.text == "Before preview after")
         #expect(editor.replacements == 1)
+    }
+
+
+    @Test func transportPolicyOnlyOptsExactCodexBundleIntoKeyboard() {
+        #expect(LiveDictationTextTarget.transport(for: "com.openai.codex") == .targetedKeyboard)
+        for id in [nil, "com.openai.codex.beta", "com.openai.chat", "com.apple.TextEdit"] as [String?] {
+            #expect(LiveDictationTextTarget.transport(for: id) == .axSelectedText)
+        }
+    }
+
+    @Test func chosenKeyboardNeverUsesAcceptedButIneffectiveAXTextSetter() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.delayReplacement = true // AX setter would accept but not update its value.
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello"))
+        #expect(editor.text == "Before hello after")
+        #expect(editor.keyboardSteps == ["h", "e", "l", "l", "o"])
+        #expect(editor.replacements == 0)
+        #expect(target.hasInsertedText)
+    }
+
+    @Test func keyboardAppendPreservesPrefixAndTypesOnlyNewSuffix() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello"))
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.keyboardSteps.joined() == " world")
+        #expect(editor.selectedRanges.last == NSRange(location: 12, length: 0))
+        #expect(editor.text == "Before hello world after")
+    }
+
+    @Test func keyboardRevisionAndShorteningRetypeOneRetainedGraphemeWithoutDeletes() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello wrong"))
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.keyboardSteps.joined() == "orld")
+        editor.keyboardSteps.removeAll()
+        #expect(await target.finish(text: "hello"))
+        #expect(editor.keyboardSteps == ["o"])
+        #expect(editor.selectedRanges.last == NSRange(location: 11, length: 7))
+        #expect(editor.text == "Before hello after")
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func keyboardInitialSelectionAndUnicodeUseWholeExactGraphemes() async throws {
+        let editor = Editor("🦊 old fin", selection: NSRange(location: 3, length: 3))
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "👩🏽‍💻 café"))
+        #expect(editor.keyboardSteps.first == "👩🏽‍💻")
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "👩🏽‍💻 cafe\u{301}"))
+        // Canonical equality must not hide the different UTF-16 representation.
+        #expect(editor.keyboardSteps.count == 1)
+        #expect(editor.keyboardSteps[0].utf16.elementsEqual("e\u{301}".utf16))
+        #expect(editor.text.utf16.elementsEqual("🦊 👩🏽‍💻 cafe\u{301} fin".utf16))
+    }
+
+    @Test func keyboardPreflightsAllControlsBeforeAnyMutation() async throws {
+        for value in ["safe\nsubmit", "safe\tother", "safe\rsubmit", "safe\u{1B}", "safe\u{7F}", "safe\u{F700}"] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: value) == false)
+            #expect(!target.hasAttemptedWrite)
+            #expect(editor.selections == 0)
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func multilineKeyboardFinalPreservesAcknowledgedPreview() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "preview"))
+        let priorSelections = editor.selections
+        let priorSteps = editor.keyboardSteps
+        #expect(await target.finish(text: "Cleaned\nparagraph") == false)
+        #expect(editor.text == "Before preview after")
+        #expect(editor.selections == priorSelections)
+        #expect(editor.keyboardSteps == priorSteps)
+    }
+
+    @Test func keyboardDispatchFailurePreservesAcknowledgedPrefixAndStops() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.keyboardFailureAt = 3
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello") == false)
+        #expect(editor.text == "Before he after")
+        #expect(editor.keyboardSteps == ["h", "e", "l"])
+        #expect(target.hasInsertedText)
+        #expect(target.isSuspended)
+        #expect(await target.finish(text: "final") == false)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func keyboardCancellationAfterDispatchPreventsAnyLaterCharacter() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.afterKeyboard = { target.cancel() }
+        #expect(await target.update(text: "hello") == false)
+        #expect(editor.keyboardSteps == ["h"])
+        #expect(editor.text == "Before h after")
+        #expect(!target.hasInsertedText) // A dispatched event was not acknowledged.
+        #expect(await target.finish(text: "final") == false)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func failedAcknowledgementNeverClaimsInsertionOrSwitchesTransport() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            let clock = PollClock()
+            editor.transport = transport
+            editor.delayReplacement = true
+            editor.keyboardNoOp = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            #expect(await target.update(text: "hello") == false)
+            #expect(!target.hasInsertedText)
+            #expect(target.hasAttemptedWrite)
+            #expect(target.isSuspended)
+            #expect(await target.finish(text: "final") == false)
+            #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+            #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? 1 : 0))
+        }
+    }
+
+    @Test func emptyHypothesisPreservesAlreadyInsertedKeyboardText() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "retain"))
+        #expect(await target.update(text: ""))
+        #expect(editor.text == "Before retain after")
+        #expect(editor.selections == 1)
     }
 
 }
