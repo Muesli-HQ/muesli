@@ -114,4 +114,26 @@ struct LiveDictationKeyboardInputTests {
             #expect(count == 0)
         }
     }
+
+    @Test("dispatch reports a fixed failure category and never posts on rejection")
+    func dispatchFailureReasons() throws {
+        let step = try #require(LiveDictationKeyboardInput.makePlan(text: "x", translate: { code, _ in code == 7 ? "x" : nil })?.first)
+        let cases: [(pid_t, Bool, Bool, Bool, LiveDictationKeyboardInput.DispatchFailure)] = [
+            (0, true, true, true, .invalidProcess),
+            (12345, true, true, false, .eventCreation),
+            (12345, true, false, true, .layoutChanged),
+            (12345, false, true, true, .targetValidationFailed),
+        ]
+        for (pid, targetValid, layoutValid, eventsAvailable, expected) in cases {
+            var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+            var posts = 0
+            let sent = LiveDictationKeyboardInput.dispatch(step, to: pid,
+                validateTarget: { targetValid }, matchesLayout: { layoutValid },
+                postEvent: { _, _ in posts += 1 }, onFailure: { failures.append($0) },
+                createEvents: { eventsAvailable ? LiveDictationKeyboardInput.makeEvents(for: $0) : nil })
+            #expect(!sent)
+            #expect(failures == [expected])
+            #expect(posts == 0)
+        }
+    }
 }

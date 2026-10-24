@@ -189,6 +189,32 @@ ineffective setters, cancellation, and stopping after failed acknowledgment.
 CI shard assignment also passed. The user authorized deployment to lane B;
 actual Codex composer acceptance still requires a manual dictation trial.
 
+The next successful typing trial exposed excessive draft churn: the engine only
+committed words on the 15-second rollover, and cursor writes queued every
+intermediate hypothesis. Eleven previews reached the composer before an
+undifferentiated keyboard dispatch guard failed at about 17 seconds, leaving
+queued stale previews and preventing final cursor delivery. Commit older words
+after consecutive hypotheses agree, retain a revisable recent tail, and enforce
+the committed boundary at the text target. The cursor mailbox holds one active
+write and only the newest pending update. Stop discards queued drafts before
+authoritative final cleanup. Live updates preserve committed text; final cleanup
+may intentionally revise the whole owned range once. Record individual dispatch
+failure reasons; the existing coarse log does not identify which guard failed.
+
+Stability validation passed 108 native tests across 11 suites. The progressive
+Parakeet v3 fixture committed its first prefix at five seconds and completed all
+21.4 seconds, including rollover, with monotonically growing committed text.
+Tests exposed and now cover word end times extending through silence while their
+onsets remain fixed, and rollover with no newly mature word but an existing owned
+prefix. New commitments require two agreeing hypotheses and three seconds of
+right context; the existing full-window fallback keeps audio bounded. Already
+committed occurrences are matched by ordered lexical/onset anchors, with ambiguous
+repetitions rejected. Cursor tests enforce the frozen prefix and a live-only
+80-grapheme rewrite limit; deferred previews do not advance acknowledged ownership.
+Classifier and CI shard checks also passed. These checks do not replace the
+manual Codex composer trial; its prior dispatch failure still needs the new
+per-guard diagnostic if it recurs.
+
 The subsequent trial inserted only `I`: its first 13-character preview stopped
 at `keyboard_text_readback_changed`, before acknowledgment of the first grapheme.
 The log confirms successful keyboard delivery followed by failed verification,

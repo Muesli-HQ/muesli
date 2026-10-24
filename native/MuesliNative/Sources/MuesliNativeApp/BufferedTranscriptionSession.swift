@@ -66,6 +66,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var rightContextSamples = 48_000
         var leftContextSamples = 16_000
         var maximumBufferedSamples = 480_000
+        /// Consecutive window timings may move slightly as context grows.
+        var maximumTimestampDrift: Double = 0.25
         /// Only suppress an entirely silent window. Quiet speech is not trimmed.
         var silenceRMS: Float = 0.0001
     }
@@ -87,6 +89,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var lastDecodedEnd = 0
         var ownedUntil: Double = 0
         var committedText = ""
+        var committedAnchors: [BufferedTranscriptionWord] = []
+        var previousTail: [BufferedTranscriptionWord] = []
+        var lastPublishedTail = ""
         var revision: UInt64 = 0
         var receivedSamples = 0
         var decodeCount = 0
@@ -128,6 +133,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         precondition(configuration.rightContextSamples > 0 && configuration.leftContextSamples >= 0)
         precondition(configuration.rightContextSamples + configuration.leftContextSamples < configuration.windowSamples)
         precondition(configuration.maximumBufferedSamples >= configuration.windowSamples)
+        precondition(configuration.maximumTimestampDrift > 0 && configuration.maximumTimestampDrift.isFinite)
         self.configuration = configuration
         self.decode = decode
         self.onUpdate = onUpdate
@@ -233,54 +239,146 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         guard result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !result.words.isEmpty else {
             throw Failure.invalidTimings
         }
-        let base = Double(snapshot.offset) / 16_000
-        let words = result.words.filter { base + ($0.start + $0.end) / 2 > state.ownedUntil }
         let rolls = snapshot.audio.count == configuration.windowSamples && !snapshot.final
-        var commitCount = snapshot.final ? words.count : 0
-        var boundary = base + duration
-        var retainFrom = boundary
-        if rolls {
-            let desired = duration - Double(configuration.rightContextSamples) / 16_000
-            commitCount = words.prefix { $0.end <= desired }.count
-            if commitCount > 0 {
-                let last = words[commitCount - 1]
-                let nextStart = commitCount < words.count ? words[commitCount].start : desired
-                if nextStart < last.end, commitCount < words.count {
-                    // Timestamp spans can overlap. Assign whole words by their
-                    // centers, and retain the full next word's audio as context.
-                    let next = words[commitCount]
-                    let lastCenter = (last.start + last.end) / 2
-                    let nextCenter = (next.start + next.end) / 2
-                    guard nextCenter > lastCenter else { throw Failure.invalidTimings }
-                    boundary = base + (lastCenter + nextCenter) / 2
-                } else {
-                    boundary = base + (last.end + nextStart) / 2
-                }
-                retainFrom = min(boundary, base + nextStart)
-            } else if words.isEmpty || (words.first?.start ?? 0) >= desired {
-                // A silent leading span can advance without committing text;
-                // speech near the right edge remains in the retained window.
-                boundary = base + desired
-                retainFrom = boundary
+        if result.words.isEmpty && (!state.committedAnchors.isEmpty || !state.lastPublishedTail.isEmpty) {
+            guard !rolls, !snapshot.final else { throw Failure.cannotAdvance }
+            // A transient empty hypothesis is not evidence that previously heard
+            // speech disappeared. Keep the visible draft and require fresh agreement.
+            state.previousTail = []
+            state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
+            state.revision += 1
+            onUpdate(.init(committedText: state.committedText, tail: state.lastPublishedTail, revision: state.revision))
+            return
+        }
+        let base = Double(snapshot.offset) / 16_000
+        let absoluteWords = result.words.map {
+            BufferedTranscriptionWord(text: $0.text, start: base + $0.start, end: base + $0.end)
+        }
+        let unownedStart = try unownedStart(in: absoluteWords, base: base)
+        let words = Array(absoluteWords.dropFirst(unownedStart))
+        let matureUntil = base + duration - Double(configuration.rightContextSamples) / 16_000
+        let matureCount = words.prefix { $0.end <= matureUntil }.count
+        var agreementCount = 0
+        for (previous, current) in zip(state.previousTail, words) {
+            // Position and time must agree as well as spelling. Repeated words
+            // remain separate occurrences; punctuation and case stay revisable
+            // until both consecutive hypotheses agree exactly.
+            guard previous.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.elementsEqual(
+                current.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16),
+                abs(previous.start - current.start) <= configuration.maximumTimestampDrift,
+                abs(previous.end - current.end) <= configuration.maximumTimestampDrift else { break }
+            agreementCount += 1
+        }
+        // A full encoder window must advance even after a coalesced first decode.
+        // Its existing right-context policy remains the bounded fallback; shorter
+        // windows now freeze agreed prefixes instead of rewriting whole sentences.
+        let commitCount = snapshot.final ? words.count : rolls ? matureCount : min(matureCount, agreementCount)
+        var retainFrom = base + duration
+        if commitCount > 0 {
+            let committed = Array(words.prefix(commitCount))
+            let last = committed[committed.count - 1]
+            let next = words.dropFirst(commitCount).first
+            state.ownedUntil = try ownershipBoundary(after: last, before: next)
+            // Keep the last owned word available as a timing anchor at rollover,
+            // including when a long word starts before the usual left context.
+            retainFrom = min(state.ownedUntil, next?.start ?? state.ownedUntil,
+                             last.start)
+            state.committedText += join(committed, after: state.committedText)
+            state.committedAnchors = Array((state.committedAnchors + committed).suffix(4))
+            if rolls, (next?.start ?? matureUntil) >= matureUntil,
+               last.end + Double(configuration.leftContextSamples) / 16_000 + configuration.maximumTimestampDrift < matureUntil {
+                // A long decoded silence after the last word needs no lexical
+                // anchor. Retain its right context and own only the silent lead.
+                state.ownedUntil = matureUntil
+                retainFrom = matureUntil
+            }
+        } else if rolls {
+            if words.isEmpty || (words.first?.start ?? base) >= matureUntil {
+                // There is no unowned speech in this leading span. Its old anchors
+                // may leave the retained PCM; the absolute time boundary then owns it.
+                state.ownedUntil = max(state.ownedUntil, matureUntil)
+                retainFrom = matureUntil
+            } else if let lastOwned = state.committedAnchors.last {
+                // A fractional rolling window can end while the next word
+                // straddles the maturity cutoff. Previously owned audio still
+                // provides safe progress; no additional commitment is required.
+                retainFrom = min(state.ownedUntil, words.first?.start ?? state.ownedUntil, lastOwned.start)
             } else {
                 throw Failure.cannotAdvance
             }
         }
-        if commitCount > 0 {
-            state.committedText += join(words.prefix(commitCount), after: state.committedText)
-        }
-        let tail = join(words.dropFirst(commitCount), after: state.committedText)
+        let tailWords = Array(words.dropFirst(commitCount))
+        let tail = join(tailWords, after: state.committedText)
+        // Preserve agreement across rolls in absolute audio time.
+        state.previousTail = tailWords
+        state.lastPublishedTail = tail
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         if rolls {
             let discard = Int(retainFrom * 16_000) - configuration.leftContextSamples - state.offset
             guard discard > 0, discard <= state.audio.count else { throw Failure.cannotAdvance }
-            state.ownedUntil = boundary
             state.audio.removeFirst(discard)
             state.offset += discard
+            let newBase = Double(state.offset) / 16_000
+            state.committedAnchors.removeAll { $0.end < newBase }
         }
         state.revision += 1
         onUpdate(.init(committedText: state.committedText, tail: tail, revision: state.revision))
         if snapshot.final { close() }
+    }
+
+    /// Locate already-owned words using ordered, timed anchors, not textual
+    /// overlap removal. Refresh their positions on every decode so small timing
+    /// jitter cannot push an owned repeated word back into the draft tail.
+    private func unownedStart(in words: [BufferedTranscriptionWord], base: Double) throws -> Int {
+        guard !state.committedAnchors.isEmpty else {
+            return words.prefix { ($0.start + $0.end) / 2 <= state.ownedUntil }.count
+        }
+        let anchors = state.committedAnchors.filter { $0.start >= base }
+        guard !anchors.isEmpty else { throw Failure.cannotAdvance }
+        var matchedIndex: Int?
+        // Earlier committed words may be revised by the model. Try the longest
+        // retained suffix first, never resolving multiple candidates by proximity.
+        // Match onsets: a decoder can extend an owned word's end across silence
+        // when more context arrives. That duration revision is not a new occurrence.
+        // End times still undergo global validation and new-commit agreement.
+        for length in stride(from: anchors.count, through: 1, by: -1) {
+            let suffix = anchors.suffix(length)
+            var candidates: [Int] = []
+            for index in words.indices where index + 1 >= length {
+                let match = words[(index + 1 - length)...index]
+                let valid = zip(suffix, match).allSatisfy { anchor, candidate in
+                    anchorIdentity(anchor.text) == anchorIdentity(candidate.text)
+                        && abs(anchor.start - candidate.start) <= configuration.maximumTimestampDrift
+                }
+                if valid { candidates.append(index) }
+            }
+            guard candidates.count <= 1 else { throw Failure.cannotAdvance }
+            if let index = candidates.first { matchedIndex = index; break }
+        }
+        guard let matchedIndex else { throw Failure.cannotAdvance }
+        let lastCurrent = words[matchedIndex]
+        state.committedAnchors = Array(words.prefix(matchedIndex + 1).suffix(4))
+        state.ownedUntil = try ownershipBoundary(after: lastCurrent,
+                                               before: words.dropFirst(matchedIndex + 1).first)
+        return matchedIndex + 1
+    }
+
+    private func anchorIdentity(_ text: String) -> String {
+        // Already committed punctuation/case cannot be rewritten. Ignore those
+        // differences only when finding its timed occurrence in a fresh decode.
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lexical = trimmed.trimmingCharacters(in: .punctuationCharacters).lowercased()
+        return lexical.isEmpty ? trimmed : lexical
+    }
+
+    private func ownershipBoundary(after last: BufferedTranscriptionWord,
+                                   before next: BufferedTranscriptionWord?) throws -> Double {
+        guard let next else { return last.end }
+        if next.start >= last.end { return (last.end + next.start) / 2 }
+        let lastCenter = (last.start + last.end) / 2
+        let nextCenter = (next.start + next.end) / 2
+        guard nextCenter > lastCenter else { throw Failure.invalidTimings }
+        return (lastCenter + nextCenter) / 2
     }
 
     private func join(_ words: some Collection<BufferedTranscriptionWord>, after prefix: String) -> String {
@@ -288,10 +386,17 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // A fresh decoder window can omit the leading word space. Preserve
         // punctuation and scripts normally written without word separators.
         if let first = text.unicodeScalars.first, let last = prefix.unicodeScalars.last,
-           Self.usesWordSpaces(first), Self.usesWordSpaces(last) {
+           Self.usesWordSpaces(first), Self.usesWordSpaces(last) || Self.endsSpacedSentence(prefix) {
             text = " " + text
         }
         return text
+    }
+
+    private static func endsSpacedSentence(_ text: String) -> Bool {
+        guard let last = text.unicodeScalars.last,
+              ".,!?;:…)]}\"'»”’،؛؟".unicodeScalars.contains(last),
+              let wordEnd = text.unicodeScalars.reversed().first(where: { !CharacterSet.punctuationCharacters.contains($0) }) else { return false }
+        return usesWordSpaces(wordEnd)
     }
 
     private static func usesWordSpaces(_ scalar: Unicode.Scalar) -> Bool {

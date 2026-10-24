@@ -30,6 +30,7 @@ struct LiveDictationTextTargetTests {
         var keyboardNoOp = false
         var keyboardFailureAt: Int?
         var afterKeyboard: (() -> Void)?
+        var beforeKeyboardValidation: (() -> Void)?
         var allowsEmptyLineSentinelRemoval = false
         var removesInitialNewline = false
 
@@ -91,10 +92,17 @@ struct LiveDictationTextTargetTests {
                       guard LiveDictationKeyboardInput.isSupported(text) else { return nil }
                       return text.map { character in
                           let value = String(character)
-                          return .init(text: value, send: { [self] validate in
-                              guard validate() else { return false }
+                          return .init(text: value, send: { [self] validate, onFailure in
+                              beforeKeyboardValidation?()
+                              guard validate() else {
+                                  onFailure(.targetValidationFailed)
+                                  return false
+                              }
                               keyboardSteps.append(value)
-                              if keyboardFailureAt == keyboardSteps.count { return false }
+                              if keyboardFailureAt == keyboardSteps.count {
+                                  onFailure(.eventCreation)
+                                  return false
+                              }
                               if !keyboardNoOp { applyReplacement(value) }
                               afterKeyboard?()
                               return true
@@ -115,6 +123,139 @@ struct LiveDictationTextTargetTests {
         #expect(target.hasAttemptedWrite)
         #expect(await target.update(text: "late") == false)
         #expect(editor.replacements == 3)
+    }
+
+    @Test func structuredPreviewsFreezeCommittedPrefixForBothTransports() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(committedText: "Hello ", tail: "wrld"))
+            editor.selectedRanges.removeAll()
+            #expect(await target.update(committedText: "Hello ", tail: "world"))
+            #expect(await target.update(committedText: "Hello world", tail: " again"))
+            #expect(editor.text == "Before Hello world again after")
+            #expect(editor.selectedRanges.allSatisfy { $0.location >= 13 })
+            let selections = editor.selections
+            #expect(await target.update(committedText: "HELLO world", tail: " again") == false)
+            #expect(target.isSuspended)
+            #expect(editor.selections == selections)
+        }
+    }
+
+    @Test func finalCleanupCanReviseFrozenCommittedText() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(committedText: "hello ", tail: "world"))
+            #expect(await target.finish(text: "Hello, world. "))
+            #expect(editor.text == "Before Hello, world.  after")
+            #expect(!target.isSuspended)
+        }
+    }
+
+    @Test func structuredCommitmentsUseExactUTF16AndWholeGraphemeBoundaries() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "é ", tail: "tail"))
+        #expect(await target.update(committedText: "e\u{301} ", tail: "tail") == false)
+        #expect(editor.replacements == 1)
+        let splitEditor = Editor()
+        let splitTarget = try #require(LiveDictationTextTarget(access: splitEditor.access))
+        #expect(await splitTarget.update(committedText: "e", tail: "\u{301}") == false)
+        #expect(splitEditor.selections == 0)
+    }
+
+    @Test func clearingTailNeverRewritesFrozenKeyboardGrapheme() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(committedText: "Stable", tail: " tail"))
+            let selections = editor.selections
+            #expect(await target.update(committedText: "Stable", tail: ""))
+            if transport == .targetedKeyboard {
+                #expect(editor.selections == selections)
+                #expect(editor.text == "Before Stable tail after")
+                #expect(diagnostics.last == "preview_deferred_committed_boundary")
+            } else {
+                #expect(editor.text == "Before Stable after")
+                #expect(editor.selectedRanges.last == NSRange(location: 13, length: 5))
+            }
+            #expect(await target.update(committedText: "Stable", tail: " text"))
+            #expect(editor.text == "Before Stable text after")
+            #expect(!target.isSuspended)
+            target.cancel()
+        }
+    }
+
+    @Test func longLiveRewriteIsDeferredWithoutAdvancingCommitment() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            let tail = String(repeating: "a", count: 81)
+            // Initial append remains unrestricted even when it exceeds the cap.
+            #expect(await target.update(committedText: "Stable ", tail: tail))
+            let selections = editor.selections
+            #expect(await target.update(committedText: "Stable changed ", tail: "replacement"))
+            #expect(editor.selections == selections)
+            #expect(editor.text == "Before Stable " + tail + " after")
+            #expect(diagnostics.last == "preview_deferred_rewrite_limit")
+            // The deferred incoming commitment was never frozen.
+            #expect(await target.update(committedText: "Stable ", tail: tail + " append"))
+            #expect(editor.text == "Before Stable " + tail + " append after")
+            #expect(await target.finish(text: "A clean final sentence. "))
+            #expect(editor.text == "Before A clean final sentence.  after")
+        }
+    }
+
+    @Test func liveRewriteLimitAllowsEightyGraphemesAndLegacyRemainsUnrestricted() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "", tail: String(repeating: "🦊", count: 80)))
+        #expect(await target.update(committedText: "", tail: "short"))
+        #expect(editor.text == "Before short after")
+        #expect(await target.update(text: String(repeating: "x", count: 100)))
+        #expect(await target.update(text: "legacy revision"))
+        #expect(editor.text == "Before legacy revision after")
+    }
+
+    @Test func keyboardDispatchFailureReportsExactReasonWithoutRetry() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.keyboardFailureAt = 1
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "hello") == false)
+        #expect(diagnostics == ["keyboard_dispatch_event_creation", "keyboard_dispatch_failed"])
+        #expect(await target.finish(text: "hello") == false)
+        #expect(editor.keyboardSteps == ["h"])
+    }
+
+    @Test func keyboardLastMomentValidationReportsTextAndCaretMismatch() async throws {
+        for changesText in [true, false] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.beforeKeyboardValidation = {
+                if changesText { editor.text += "user" }
+                else { editor.selection.location = 0 }
+            }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(text: "hello") == false)
+            #expect(diagnostics.first == "keyboard_validation_snapshot_changed:textMatches=\(!changesText),caretMatches=\(changesText)")
+            #expect(diagnostics.contains("keyboard_dispatch_target_validation_failed"))
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(editor.replacements == 0)
+        }
     }
 
     @Test func replacesInitialSelectionAndHandlesUTF16() async throws {

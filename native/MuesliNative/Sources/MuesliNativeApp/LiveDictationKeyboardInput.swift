@@ -6,6 +6,15 @@ import Carbon
 /// without changing their document. Dispatch is not proof of insertion: the
 /// owner must verify text and selection after every step before sending more.
 enum LiveDictationKeyboardInput {
+    enum DispatchFailure: String {
+        case invalidProcess = "invalid_process"
+        case eventCreation = "event_creation"
+        case layoutChanged = "layout_changed"
+        case frontmostChanged = "frontmost_changed"
+        case applicationUnavailable = "application_unavailable"
+        case targetValidationFailed = "target_validation_failed"
+    }
+
     struct Step {
         let text: String
         let keyCode: CGKeyCode
@@ -92,15 +101,23 @@ enum LiveDictationKeyboardInput {
     }
 
     @MainActor
-    static func post(_ step: Step, to pid: pid_t, validateTarget: () -> Bool) -> Bool {
-        dispatch(step, to: pid, validateTarget: {
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
-                  let application = NSRunningApplication(processIdentifier: pid),
-                  !application.isTerminated else { return false }
+    static func post(_ step: Step, to pid: pid_t, validateTarget: () -> Bool,
+                     onFailure: (DispatchFailure) -> Void = { _ in }) -> Bool {
+        var nativeFailure: DispatchFailure?
+        return dispatch(step, to: pid, validateTarget: {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                nativeFailure = .frontmostChanged
+                return false
+            }
+            guard let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else {
+                nativeFailure = .applicationUnavailable
+                return false
+            }
             return validateTarget()
         }, matchesLayout: {
             directCharacter(keyCode: step.keyCode, flags: step.flags) == step.text
-        }, postEvent: { event, processID in event.postToPid(processID) })
+        }, postEvent: { event, processID in event.postToPid(processID) },
+        onFailure: { onFailure(nativeFailure ?? $0) })
     }
 
     /// Dependency injection permits dispatch contract tests without posting an
@@ -109,11 +126,26 @@ enum LiveDictationKeyboardInput {
         _ step: Step, to pid: pid_t,
         validateTarget: () -> Bool,
         matchesLayout: () -> Bool,
-        postEvent: (CGEvent, pid_t) -> Void
+        postEvent: (CGEvent, pid_t) -> Void,
+        onFailure: (DispatchFailure) -> Void = { _ in },
+        createEvents: (Step) -> (down: CGEvent, up: CGEvent)? = makeEvents
     ) -> Bool {
-        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier,
-              let events = makeEvents(for: step),
-              (!step.usesPhysicalKey || matchesLayout()), validateTarget() else { return false }
+        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier else {
+            onFailure(.invalidProcess)
+            return false
+        }
+        guard let events = createEvents(step) else {
+            onFailure(.eventCreation)
+            return false
+        }
+        guard !step.usesPhysicalKey || matchesLayout() else {
+            onFailure(.layoutChanged)
+            return false
+        }
+        guard validateTarget() else {
+            onFailure(.targetValidationFailed)
+            return false
+        }
         // Never split a pair with asynchronous work or an early return. If focus
         // changes during posting, key-up still goes only to the captured process.
         postEvent(events.down, pid)

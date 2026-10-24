@@ -535,10 +535,10 @@ public final class MuesliController: NSObject {
         let id: UUID
         let session: BufferedTranscriptionSession
         let target: LiveDictationTextTarget
+        let delivery: BufferedDictationPreviewDelivery
         let backend: BackendOption
         let whisperLanguage: WhisperKitLanguage
         let parakeetLanguage: ParakeetLanguage
-        var lastRevision: UInt64 = 0
     }
     private var bufferedDictationContext: BufferedDictationContext?
     private var finalizingBufferedTarget: (id: UUID, target: LiveDictationTextTarget)?
@@ -11375,6 +11375,17 @@ public final class MuesliController: NSObject {
         let backend = selectedBackend
         let whisperLanguage = config.resolvedWhisperLanguage
         let parakeetLanguage = config.resolvedParakeetLanguage
+        let delivery = BufferedDictationPreviewDelivery(deliver: { update in
+            await target.update(committedText: update.committedText, tail: update.tail)
+        }, onResult: { [weak self] update, accepted in
+            guard let self else { return }
+            self.markDictationLatency("buffered_preview revision=\(update.revision) committed=\(update.committedText.utf16.count) draft=\(update.tail.utf16.count) accepted=\(accepted)", trace: previewTrace)
+            guard let current = self.bufferedDictationContext, current.id == id else { return }
+            if !accepted {
+                current.session.cancel()
+                self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
+            }
+        })
         do {
             let session = try transcriptionCoordinator.makeBufferedTranscriptionSession(
                 backend: backend,
@@ -11383,15 +11394,8 @@ public final class MuesliController: NSObject {
                 onUpdate: { [weak self] update in
                     Task { @MainActor [weak self] in
                         guard let self, let current = self.bufferedDictationContext,
-                              current.id == id, update.revision > current.lastRevision else { return }
-                        self.bufferedDictationContext?.lastRevision = update.revision
-                        let delivered = await current.target.update(text: update.text)
-                        self.markDictationLatency("buffered_preview revision=\(update.revision) chars=\(update.text.utf16.count) delivered=\(delivered)", trace: previewTrace)
-                        guard self.bufferedDictationContext?.id == id else { return }
-                        if !delivered {
-                            current.session.cancel()
-                            self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
-                        }
+                              current.id == id else { return }
+                        current.delivery.offer(update)
                     }
                 },
                 onFailure: { [weak self] error in
@@ -11407,7 +11411,7 @@ public final class MuesliController: NSObject {
                 }
             )
             bufferedDictationContext = BufferedDictationContext(
-                id: id, session: session, target: target, backend: backend,
+                id: id, session: session, target: target, delivery: delivery, backend: backend,
                 whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage
             )
             dictationAudioSessionManager.onAudioBuffer = { samples in session.enqueue(samples) }
@@ -11420,6 +11424,7 @@ public final class MuesliController: NSObject {
     }
 
     private func cancelBufferedDictation() {
+        bufferedDictationContext?.delivery.close()
         bufferedDictationContext?.session.cancel()
         bufferedDictationContext?.target.cancel()
         bufferedDictationContext = nil
@@ -11998,6 +12003,7 @@ public final class MuesliController: NSObject {
     ) {
         let liveContext = bufferedDictationContext
         bufferedDictationContext = nil
+        liveContext?.delivery.close()
         if let diagnostics = liveContext?.session.diagnostics {
             markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
         }

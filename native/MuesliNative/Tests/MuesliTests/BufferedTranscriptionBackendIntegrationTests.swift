@@ -19,13 +19,16 @@ struct BufferedTranscriptionBackendIntegrationTests {
         let transcriber = FluidAudioTranscriber()
         try await transcriber.loadModels(version: .v3)
         var nonemptyPreviews = 0
-        for seconds in [2, 3, 5, 10, 15] {
+        for seconds in [2, 3, 5, 9, 10, 15] {
             let count = min(samples.count, seconds * 16_000)
             do {
                 let started = Date()
                 let window = try await transcriber.transcribePreview(samples: Array(samples.prefix(count)), expectedVersion: .v3)
                 let elapsed = Date().timeIntervalSince(started)
                 print("[buffered-smoke] seconds=\(seconds) chars=\(window.text.count) words=\(window.words.count) end=\(window.words.last?.end ?? 0) decode_ms=\(Int(elapsed * 1000))")
+                if ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1" {
+                    print("[buffered-smoke] timed_words=\(window.words)")
+                }
                 // Early prefixes may contain silence or too little context.
                 // Empty hypotheses must remain valid and allow later decoding.
                 if !window.text.isEmpty {
@@ -48,6 +51,34 @@ struct BufferedTranscriptionBackendIntegrationTests {
         #expect(updates.lastTextCount > 0)
         #expect(session.diagnostics.decodeCount >= 2)
         print("[buffered-smoke] rolling_received_samples=\(session.diagnostics.receivedSamples) decodes=\(session.diagnostics.decodeCount) updates=\(session.diagnostics.revision)")
+
+        // Exercise successive hypotheses rather than only a final, full buffer.
+        let progressive = BufferedSmokeOutput()
+        let live = BufferedTranscriptionSession(decode: {
+            let window = try await transcriber.transcribePreview(samples: $0, expectedVersion: .v3)
+            if ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1" {
+                print("[buffered-smoke] progressive_words samples=\($0.count) words=\(window.words)")
+            }
+            return window
+        }, onUpdate: { progressive.receive($0) }, onFailure: { progressive.fail($0) })
+        var events = progressive.stream.makeAsyncIterator()
+        var previousEnd = 0
+        var committed = ""
+        var committedBeforeRollover = false
+        for end in stride(from: 32_000, through: samples.count, by: 16_000) {
+            live.enqueue(Array(samples[previousEnd..<end]))
+            previousEnd = end
+            let update = try #require(await events.next(), "Preview failed: \(progressive.failure ?? "unknown")")
+            #expect(update.committedText.utf16.starts(with: committed.utf16))
+            committed = update.committedText
+            if end < 240_000, !committed.isEmpty { committedBeforeRollover = true }
+            print("[buffered-smoke] progressive_seconds=\(end / 16_000) committed=\(committed.count) draft=\(update.tail.count)")
+        }
+        if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
+        await live.finish()
+        #expect(progressive.failure == nil)
+        #expect(committedBeforeRollover)
+        #expect(progressive.lastTextCount > 0)
         await transcriber.shutdown()
     }
 }
@@ -56,8 +87,21 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var error: String?
     private var textCount = 0
+    let stream: AsyncStream<BufferedTranscriptionUpdate>
+    private let continuation: AsyncStream<BufferedTranscriptionUpdate>.Continuation
+    init() {
+        let pair = AsyncStream<BufferedTranscriptionUpdate>.makeStream()
+        stream = pair.stream
+        continuation = pair.continuation
+    }
     var failure: String? { lock.withLock { error } }
     var lastTextCount: Int { lock.withLock { textCount } }
-    func receive(_ update: BufferedTranscriptionUpdate) { lock.withLock { textCount = update.text.count } }
-    func fail(_ failure: Error) { lock.withLock { error = String(describing: failure) } }
+    func receive(_ update: BufferedTranscriptionUpdate) {
+        lock.withLock { textCount = update.text.count }
+        continuation.yield(update)
+    }
+    func fail(_ failure: Error) {
+        lock.withLock { error = String(describing: failure) }
+        continuation.finish()
+    }
 }
