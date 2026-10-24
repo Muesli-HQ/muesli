@@ -192,6 +192,7 @@ final class NotchIndicatorController {
         didSet { if !meetingTranscriptEnabled { closeMeetingTranscript() } }
     }
     private lazy var meetingTranscript = FloatingMeetingTranscriptPanelController(
+        usesNotchBackground: true,
         onHoverChanged: { [weak self] in self?.setMeetingTranscriptHovered($0) },
         onOpenNotes: { [weak self] in self?.closeMeetingTranscript(); self?.onOpenMeetingNotes?() },
         onDismiss: { [weak self] in self?.transcriptDismissed = true; self?.closeMeetingTranscript() },
