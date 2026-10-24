@@ -62,7 +62,7 @@ enum ICloudSyncRecoveryAction: Equatable {
 enum ICloudSyncRecoveryPolicy {
     static func action(
         for state: ICloudBridgeState,
-        supportsLegacyReconnect: Bool = MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent == "production"
+        supportsLegacyReconnect: Bool = MuesliCKSyncEngine.productionLegacyScopeMigration != nil
     ) -> ICloudSyncRecoveryAction? {
         switch state {
         case .needsReconnection:
