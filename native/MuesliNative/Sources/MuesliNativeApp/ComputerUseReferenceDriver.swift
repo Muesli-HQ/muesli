@@ -104,7 +104,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
                 guard chromeSession == session, chromeAccess == .connected else { return }
                 if !Self.chromeConnectionIsLive(response) { invalidateChromeAccess() }
             } catch {
-                if chromeSession == session, chromeAccess == .connected { invalidateChromeAccess() }
+                if readRecovery == nil, chromeSession == session, chromeAccess == .connected { invalidateChromeAccess() }
             }
         }
     }
@@ -131,7 +131,12 @@ final class ComputerUseReferenceDriver: ObservableObject {
 
     /// Only this manual UI entry point may prepare/attach Chrome. The command
     /// lease keeps setup and planner RPCs from overlapping on the shared host.
-    func connectChromeFromSettings() async {
+    func connectChromeFromSettings() async { await connectChrome(allowInteractiveSetup: true) }
+
+    /// Reuse approval only. Never open setup, launch Chrome, or activate it.
+    func connectApprovedChromeInBackground() async { await connectChrome(allowInteractiveSetup: false) }
+
+    private func connectChrome(allowInteractiveSetup: Bool) async {
         guard let executable = Self.selectedExecutable else { return }
         let owner: UUID
         do { owner = try claimCommand() }
@@ -162,6 +167,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
             if let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first {
                 chrome = running
             } else {
+                guard allowInteractiveSetup else { throw failure("Chrome is not running; background attachment cannot launch it.") }
                 chrome = try await NSWorkspace.shared.openApplication(at: chromeURL, configuration: configuration)
             }
             let started = try await call(name: "start_session", arguments: ["session": session])
@@ -197,6 +203,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
                 case .connected:
                     break
                 case .waitingForApproval:
+                    guard allowInteractiveSetup else { throw failure("Chrome needs connection approval in Permissions; background attachment did not activate Chrome.") }
                     guard !needsApproval else { throw failure("Chrome connection approval was not granted.") }
                     chromeAccessMessage = "Approve Chrome’s browser connection prompt."
                     needsApproval = true
@@ -204,6 +211,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
                     chrome.activate()
                     continue
                 case .waitingForDebugging:
+                    guard allowInteractiveSetup else { throw failure("Chrome debugging setup is required in Permissions; background attachment did not open setup.") }
                     chromeAccessMessage = "Enable remote debugging in Chrome. Muesli will connect automatically; approve Chrome’s prompt if shown."
                     if !openedSetup {
                         configuration.activates = true
@@ -291,7 +299,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
     var processID: Int32? { daemon?.isRunning == true ? daemon?.processIdentifier : nil }
 
     func claimCommand() throws -> UUID {
-        guard commandOwner == nil, !starting, !shuttingDown else { throw failure("Reference command already active or host shutting down") }
+        guard commandOwner == nil, !busy, readRecovery == nil, !starting, !shuttingDown else { throw failure("Reference command already active or host shutting down") }
         let owner = UUID()
         commandOwner = owner
         commandActive = true
@@ -324,6 +332,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
     private var log: FileHandle?
     private var buffer = Data()
     private var nextID = 0
+    private var readRecovery: Task<Void, Never>?
     private var busy = false
     private var directory: URL?
 
@@ -438,17 +447,61 @@ final class ComputerUseReferenceDriver: ObservableObject {
         return result
     }
 
+    enum RequestDeadline: Error { case exceeded }
+
+    // Only operations with no external action or setup authority may finish
+    // after their caller stops waiting. Never replay them or deliver late data.
+    static func canDrainRead(method: String, params: [String: Any]) -> Bool {
+        guard method == "tools/call", let name = params["name"] as? String else { return false }
+        return ["get_browser_state", "browser_connection_status", "list_apps", "list_windows",
+                "get_window_state", "get_accessibility_tree", "get_cursor_position",
+                "get_screen_size", "get_agent_cursor_state"].contains(name)
+    }
+
     private func request(method: String, params: [String: Any], timeout: TimeInterval = 30) async throws -> [String: Any] {
-        guard !busy else { throw failure("Concurrent reference requests are not supported") }
+        guard !busy else { throw failure("Reference transport is still completing a request") }
+        try Task.checkCancellation()
         busy = true
-        defer { busy = false }
+        defer { if readRecovery == nil { busy = false } }
         nextID += 1
         let id = nextID
-        // Once a request has been sent, cancellation/transport failure leaves
-        // its side effects uncertain. Invalidate the connection before reuse.
+        var sent = false
         var completed = false
-        defer { if !completed { terminateImmediately() } }
-        try send(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        do {
+            try send(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+            sent = true
+            let message = try await receive(id: id, timeout: timeout)
+            completed = true
+            if let error = message["error"] { throw failure("MCP error: \(error)") }
+            return message
+        } catch {
+            if sent && !completed && Self.canDrainRead(method: method, params: params) &&
+                (error is CancellationError || error is RequestDeadline) {
+                // Independent task does not inherit the cancelled caller. Keep
+                // the existing proxy/socket and its session ownership alive.
+                readRecovery = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    defer { self.readRecovery = nil; self.busy = false }
+                    do {
+                        let late = try await self.receive(id: id, timeout: 30)
+                        if Self.requiresChromeReconnect(late) ||
+                            (params["name"] as? String == "browser_connection_status" && !Self.chromeConnectionIsLive(late)) {
+                            self.invalidateChromeAccess()
+                        }
+                        try? self.save(["request_id": id, "outcome": "late_read_discarded"], name: "read-recovery-\(id).json")
+                    } catch {
+                        self.terminateImmediately()
+                    }
+                }
+            } else if !completed {
+                terminateImmediately()
+            }
+            if error is RequestDeadline { throw failure("Reference request timed out") }
+            throw error
+        }
+    }
+
+    private func receive(id: Int, timeout: TimeInterval) async throws -> [String: Any] {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             try Task.checkCancellation()
@@ -457,11 +510,7 @@ final class ComputerUseReferenceDriver: ObservableObject {
                 buffer.removeSubrange(...newline)
                 guard !line.isEmpty else { continue }
                 let message = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
-                if message["id"] as? Int == id {
-                    completed = true
-                    if let error = message["error"] { throw failure("MCP error: \(error)") }
-                    return message
-                }
+                if message["id"] as? Int == id { return message }
             }
             guard let output, proxy?.isRunning == true, daemon?.isRunning == true else { throw failure("Reference process exited") }
             var bytes = [UInt8](repeating: 0, count: 65536)
@@ -473,8 +522,19 @@ final class ComputerUseReferenceDriver: ObservableObject {
             else if errno != EAGAIN && errno != EINTR { throw failure("MCP pipe read failed") }
             else { try await Task.sleep(for: .milliseconds(20)) }
         }
-        throw failure("Reference request timed out")
+        throw RequestDeadline.exceeded
     }
+
+    #if DEBUG
+    // Pipe-backed fixture exercises the real framing and recovery code without
+    // opening Chrome or granting browser access.
+    func installTestTransport(process: Process, input: FileHandle, output: FileHandle) {
+        daemon = process; proxy = process; self.input = input; self.output = output
+        let fd = output.fileDescriptor
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+    }
+    func waitForReadRecovery() async { await readRecovery?.value }
+    #endif
 
     private func send(_ value: [String: Any]) throws {
         guard let input else { throw failure("Reference MCP not connected") }
@@ -505,19 +565,24 @@ final class ComputerUseReferenceDriver: ObservableObject {
     }
 
     func endCommand(session: String) async {
+        await readRecovery?.value
         guard daemon?.isRunning == true, proxy?.isRunning == true else {
             await stop()
             return
         }
         do {
             let response = try await call(name: "end_session", arguments: ["session": session])
-            if (response["result"] as? [String: Any])?["isError"] as? Bool == true {
-                await stop()
-            }
-        } catch { await stop() }
+            if Self.requiresChromeReconnect(response) { invalidateChromeAccess() }
+        } catch {
+            // request() handles uncertain in-flight cleanup. A completed RPC
+            // error alone does not establish that Chrome disconnected.
+            if daemon?.isRunning != true || proxy?.isRunning != true { invalidateChromeAccess() }
+        }
     }
 
     func stop() async {
+        readRecovery?.cancel()
+        await readRecovery?.value
         chromeEvents?.cancel(); chromeEvents = nil; chromeEventURL = nil
         invalidateChromeAccess()
         chromeSession = nil
