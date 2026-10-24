@@ -136,4 +136,162 @@ struct LiveDictationKeyboardInputTests {
             #expect(posts == 0)
         }
     }
+
+    @Test("a burst precreates every pair, validates once, and preserves whole Unicode graphemes")
+    func burstPreservesUnicodeAndCapturedProcess() throws {
+        let text = "Aé e\u{301}👩🏽‍💻🇮🇳好!"
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: text, translate: { _, _ in nil }))
+        #expect(steps.count == LiveDictationKeyboardInput.maximumBurstGraphemes)
+        var created = 0
+        var validations = 0
+        var events: [(CGEventType, pid_t, [UniChar])] = []
+        let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: {
+            validations += 1
+            #expect(events.isEmpty)
+            #expect(created == steps.count)
+            return true
+        }, matchesLayout: { _ in false }, continuationFailure: { nil }, postEvent: { event, pid in
+            #expect(created == steps.count)
+            events.append((event.type, pid, LiveDictationKeyboardInput.unicodeUnits(in: event)))
+        }, createEvents: {
+            created += 1
+            return LiveDictationKeyboardInput.makeEvents(for: $0)
+        })
+        #expect(sent)
+        #expect(validations == 1)
+        #expect(events.count == steps.count * 2)
+        for (index, step) in steps.enumerated() {
+            #expect(events[index * 2].0 == .keyDown)
+            #expect(events[index * 2 + 1].0 == .keyUp)
+            for event in events[(index * 2)...(index * 2 + 1)] {
+                #expect(event.1 == 12345)
+                #expect(event.2 == Array(step.text.utf16))
+            }
+        }
+    }
+
+    @Test("failure creating the last pair prevents every event in a burst")
+    func burstPreflightsEveryEventPair() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "abc", translate: { _, _ in nil }))
+        var created = 0
+        var posts = 0
+        var validations = 0
+        var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+        let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: {
+            validations += 1
+            return true
+        }, matchesLayout: { _ in true }, continuationFailure: { nil }, postEvent: { _, _ in posts += 1 },
+        onFailure: { failures.append($0) }, createEvents: {
+            created += 1
+            return created == steps.count ? nil : LiveDictationKeyboardInput.makeEvents(for: $0)
+        })
+        #expect(!sent)
+        #expect(created == 3)
+        #expect(posts == 0)
+        #expect(validations == 0)
+        #expect(failures == [.eventCreation])
+    }
+
+    @Test("empty and oversized bursts fail before event preparation")
+    func burstSizeIsBounded() throws {
+        for text in ["", "123456789"] {
+            let steps = try #require(LiveDictationKeyboardInput.makePlan(text: text, translate: { _, _ in nil }))
+            var created = 0
+            var posts = 0
+            var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+            let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: { true },
+                matchesLayout: { _ in true }, continuationFailure: { nil }, postEvent: { _, _ in posts += 1 },
+                onFailure: { failures.append($0) }, createEvents: {
+                    created += 1
+                    return LiveDictationKeyboardInput.makeEvents(for: $0)
+                })
+            #expect(!sent)
+            #expect(created == 0)
+            #expect(posts == 0)
+            #expect(failures == [.invalidBurstSize])
+        }
+    }
+
+    @Test("layout drift before or inside a burst never retries or drops key-up")
+    func burstLayoutDrift() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "xy", translate: { code, _ in
+            code == 7 ? "x" : code == 16 ? "y" : nil
+        }))
+        #expect(steps.allSatisfy { $0.usesPhysicalKey })
+        for initiallyChanged in [false, true] {
+            var changed = initiallyChanged
+            var events: [CGEventType] = []
+            var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+            let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: { true },
+                matchesLayout: { _ in !changed }, continuationFailure: { nil }, postEvent: { event, _ in
+                    events.append(event.type)
+                    if event.type == .keyDown { changed = true }
+                }, onFailure: { failures.append($0) })
+            #expect(!sent)
+            #expect(events == (initiallyChanged ? [] : [.keyDown, .keyUp]))
+            #expect(failures == [.layoutChanged])
+        }
+    }
+
+    @Test("cancellation, focus loss, and termination stop before the next complete pair")
+    func burstContinuationFailures() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "abc", translate: { _, _ in nil }))
+        let reasons: [LiveDictationKeyboardInput.DispatchFailure] = [.cancelled, .frontmostChanged, .applicationUnavailable]
+        for reason in reasons {
+            for failInitially in [true, false] {
+                var shouldFail = failInitially
+                var events: [CGEventType] = []
+                var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+                var validations = 0
+                let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: {
+                    validations += 1
+                    return true
+                }, matchesLayout: { _ in true }, continuationFailure: { shouldFail ? reason : nil },
+                postEvent: { event, pid in
+                    #expect(pid == 12345)
+                    events.append(event.type)
+                    if event.type == .keyDown { shouldFail = true }
+                }, onFailure: { failures.append($0) })
+                #expect(!sent)
+                #expect(events == (failInitially ? [] : [.keyDown, .keyUp]))
+                #expect(validations == (failInitially ? 0 : 1))
+                #expect(failures == [reason])
+            }
+        }
+    }
+
+    @Test("invalid process and original target rejection never post a burst")
+    func burstTargetGuards() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "abc", translate: { _, _ in nil }))
+        for pid in [pid_t(0), ProcessInfo.processInfo.processIdentifier, pid_t(12345)] {
+            var events = 0
+            var validations = 0
+            var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+            let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: pid, validateTarget: {
+                validations += 1
+                return false
+            }, matchesLayout: { _ in true }, continuationFailure: { nil }, postEvent: { _, _ in events += 1 },
+            onFailure: { failures.append($0) })
+            #expect(!sent)
+            #expect(events == 0)
+            #expect(validations == (pid == 12345 ? 1 : 0))
+            #expect(failures == [pid == 12345 ? .targetValidationFailed : .invalidProcess])
+        }
+    }
+
+    @Test("cancellation during the original target check is rechecked before the first post")
+    func burstCancellationAfterTargetValidation() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "abc", translate: { _, _ in nil }))
+        var cancelled = false
+        var events = 0
+        var failures: [LiveDictationKeyboardInput.DispatchFailure] = []
+        let sent = LiveDictationKeyboardInput.dispatchBurst(steps, to: 12345, validateTarget: {
+            cancelled = true
+            return true
+        }, matchesLayout: { _ in true }, continuationFailure: { cancelled ? .cancelled : nil },
+        postEvent: { _, _ in events += 1 }, onFailure: { failures.append($0) })
+        #expect(!sent)
+        #expect(events == 0)
+        #expect(failures == [.cancelled])
+    }
 }

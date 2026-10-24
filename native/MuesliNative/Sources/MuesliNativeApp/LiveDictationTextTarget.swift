@@ -2,7 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Owns one revisable range for one hands-free session. Never writes AXValue,
-/// types deletion keystrokes, or uses the clipboard. Unsupported editors must
+/// or types deletion keystrokes. Codex final cleanup uses one leased paste;
+/// live drafts use targeted keyboard bursts. Unsupported editors must
 /// use the caller's preview/history path instead of an unverified replacement.
 @MainActor
 final class LiveDictationTextTarget {
@@ -36,6 +37,7 @@ final class LiveDictationTextTarget {
 
     /// The transport is selected before any write and never changed on failure.
     struct Access {
+        typealias FinalPaste = (String, @escaping () -> Bool, @escaping () async -> Bool, @escaping (String) -> Void) async -> Bool
         let snapshot: () -> Snapshot?
         let isFocused: () -> Bool
         let select: (NSRange) -> Bool
@@ -43,12 +45,14 @@ final class LiveDictationTextTarget {
         let transport: Transport
         let keyboardPlan: ((String) -> [KeyboardStep]?)?
         let allowsEmptyLineSentinelRemoval: Bool
+        let finalPaste: FinalPaste?
 
         init(snapshot: @escaping () -> Snapshot?, isFocused: @escaping () -> Bool,
              select: @escaping (NSRange) -> Bool, replaceSelection: @escaping (String) -> Bool,
              transport: Transport = .axSelectedText,
              keyboardPlan: ((String) -> [KeyboardStep]?)? = nil,
-             allowsEmptyLineSentinelRemoval: Bool = false) {
+             allowsEmptyLineSentinelRemoval: Bool = false,
+             finalPaste: FinalPaste? = nil) {
             self.snapshot = snapshot
             self.isFocused = isFocused
             self.select = select
@@ -56,6 +60,7 @@ final class LiveDictationTextTarget {
             self.transport = transport
             self.keyboardPlan = keyboardPlan
             self.allowsEmptyLineSentinelRemoval = allowsEmptyLineSentinelRemoval
+            self.finalPaste = finalPaste
         }
     }
 
@@ -171,7 +176,12 @@ final class LiveDictationTextTarget {
         isFinishing = true
         guard await acquireOperation() else { return false }
         defer { releaseOperation() }
-        let delivered = await performUpdate(text: text)
+        let delivered: Bool
+        if let paste = access.finalPaste {
+            delivered = await performFinalPaste(text: text, paste: paste)
+        } else {
+            delivered = await performUpdate(text: text)
+        }
         cancel()
         return delivered
     }
@@ -198,17 +208,9 @@ final class LiveDictationTextTarget {
         guard validateCurrent() else { return false }
         // Empty provisional hypotheses never erase existing or previously emitted text.
         if text.isEmpty { return true }
-        let keyboardPlan: [KeyboardStep]?
-        if access.transport == .targetedKeyboard {
-            // Validate every proposed grapheme before changing even the selection.
-            guard let plan = access.keyboardPlan?(text), !plan.isEmpty,
-                  plan.allSatisfy({ $0.text.count == 1 }),
-                  plan.map(\.text).joined().utf16.elementsEqual(text.utf16) else {
-                return suspend("keyboard_text_unsupported")
-            }
-            keyboardPlan = plan
-        } else {
-            keyboardPlan = nil
+        let usesKeyboard = access.transport == .targetedKeyboard
+        guard !usesKeyboard || LiveDictationKeyboardInput.isSupported(text) else {
+            return suspend("keyboard_text_unsupported")
         }
         let nextText = (expected.text as NSString).replacingCharacters(in: ownedRange, with: text)
         if nextText.utf16.elementsEqual(expected.text.utf16) { return true }
@@ -222,10 +224,10 @@ final class LiveDictationTextTarget {
         }
         // Keyboard shortening retypes one retained grapheme instead of sending
         // Delete. A live preview must never retype a frozen committed grapheme.
-        if keyboardPlan != nil, prefixCount == proposed.count { prefixCount -= 1 }
+        if usesKeyboard, prefixCount == proposed.count { prefixCount -= 1 }
         let prefixLength = proposed.prefix(prefixCount).reduce(0) { $0 + $1.utf16.count }
         if prefixLength < frozenPrefixLength {
-            if maximumRewrittenGraphemes != nil, keyboardPlan != nil,
+            if maximumRewrittenGraphemes != nil, usesKeyboard,
                text.utf16.count == frozenPrefixLength,
                text.utf16.elementsEqual(frozenCommittedText.utf16) {
                 onDiagnostic("preview_deferred_committed_boundary")
@@ -239,6 +241,20 @@ final class LiveDictationTextTarget {
         }
         let editRange = NSRange(location: ownedRange.location + prefixLength,
                                 length: ownedRange.length - prefixLength)
+        let replacement = proposed.dropFirst(prefixCount).joined()
+        let keyboardPlan: [KeyboardStep]?
+        if usesKeyboard {
+            // Plan only the changed suffix, so an agreed prefix never splits a
+            // burst. Preflight the complete replacement before selecting text.
+            guard let plan = access.keyboardPlan?(replacement), !plan.isEmpty,
+                  plan.allSatisfy({ !$0.text.isEmpty && $0.text.count <= 8 }),
+                  plan.map(\.text).joined().utf16.elementsEqual(replacement.utf16) else {
+                return suspend("keyboard_text_unsupported")
+            }
+            keyboardPlan = plan
+        } else {
+            keyboardPlan = nil
+        }
         hasAttemptedWrite = true
         isMutating = true
         defer {
@@ -249,7 +265,7 @@ final class LiveDictationTextTarget {
             }
         }
         if let keyboardPlan {
-            return await performKeyboardUpdate(plan: keyboardPlan, prefixCount: prefixCount)
+            return await performKeyboardUpdate(plan: keyboardPlan, prefixLength: prefixLength)
         }
         let selected = Snapshot(text: expected.text, selection: editRange)
         guard access.select(editRange) else { return suspend("selection_write_failed") }
@@ -258,7 +274,6 @@ final class LiveDictationTextTarget {
         guard mutationIsCurrent(), access.snapshot() == selected else {
             return suspend("selection_readback_changed")
         }
-        let replacement = proposed.dropFirst(prefixCount).joined()
         guard access.replaceSelection(replacement) else { return suspend("text_write_failed") }
         let next = Snapshot(text: nextText, selection: nextCaret)
         guard await awaitReadback(next, stale: selected, stage: "text") != nil else { return false }
@@ -268,15 +283,96 @@ final class LiveDictationTextTarget {
         return true
     }
 
-    private func performKeyboardUpdate(plan: [KeyboardStep], prefixCount: Int) async -> Bool {
+    /// Cleanup can change earlier words, but unchanged leading/trailing text
+    /// need not disappear. Select only the differing middle and paste it once.
+    /// This is chosen at capture time, never a retry after an uncertain write.
+    private func performFinalPaste(text: String, paste: Access.FinalPaste) async -> Bool {
+        guard validateCurrent() else { return false }
+        if text.isEmpty { return true }
+        guard LiveDictationKeyboardInput.isSupported(text) else {
+            return suspend("final_paste_text_unsupported")
+        }
+        let old = (expected.text as NSString).substring(with: ownedRange)
+        if old.utf16.elementsEqual(text.utf16) { return true }
+        let previous = old.map(String.init)
+        let proposed = text.map(String.init)
+        var prefix = 0
+        while prefix < min(previous.count, proposed.count),
+              previous[prefix].utf16.elementsEqual(proposed[prefix].utf16) { prefix += 1 }
+        var suffix = 0
+        while suffix < min(previous.count, proposed.count) - prefix,
+              previous[previous.count - suffix - 1].utf16.elementsEqual(proposed[proposed.count - suffix - 1].utf16) {
+            suffix += 1
+        }
+        // Empty clipboard text is not a reliable deletion operation. Include
+        // one unchanged neighbour in the same replacement, never a Delete key.
+        if prefix + suffix == proposed.count {
+            if prefix > 0 { prefix -= 1 } else { suffix -= 1 }
+        }
+        let prefixLength = proposed.prefix(prefix).reduce(0) { $0 + $1.utf16.count }
+        let suffixLength = proposed.suffix(suffix).reduce(0) { $0 + $1.utf16.count }
+        let replacement = proposed[prefix..<(proposed.count - suffix)].joined()
+        let editRange = NSRange(location: ownedRange.location + prefixLength,
+            length: ownedRange.length - prefixLength - suffixLength)
+        let selected = Snapshot(text: expected.text, selection: editRange)
+        let nextText = (expected.text as NSString).replacingCharacters(in: editRange, with: replacement)
+        let pasted = Snapshot(text: nextText,
+            selection: NSRange(location: editRange.location + replacement.utf16.count, length: 0))
+        let sentinelRemoved: Snapshot? = canAcknowledgeEmptyLineSentinelRemoval
+            && selected.text.utf16.elementsEqual("\n".utf16)
+            && selected.selection == NSRange(location: 0, length: 0)
+            ? Snapshot(text: replacement, selection: pasted.selection) : nil
+        let oldBase = ownedRange.location
+        hasAttemptedWrite = true
+        isMutating = true
+        defer {
+            isMutating = false
+            if pendingTextValidation {
+                pendingTextValidation = false
+                _ = validateCurrent()
+            }
+        }
+        guard access.select(editRange) else { return suspend("selection_write_failed") }
+        guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
+        canAcknowledgeEmptyLineSentinelRemoval = false
+        var acknowledged = false
+        let delivered = await paste(replacement, { [self] in
+            mutationIsCurrent() && access.snapshot() == selected
+        }, { [self] in
+            guard let observed = await awaitReadback(pasted, stale: selected, stage: "final_paste",
+                                                    alternate: sentinelRemoved) else { return false }
+            hasInsertedText = true
+            expected = observed
+            ownedRange = NSRange(location: oldBase, length: text.utf16.count)
+            acknowledged = true
+            return true
+        }, { [self] event in onDiagnostic("final_paste:\(event)") })
+        guard delivered, acknowledged else {
+            if isClosed || isSuspended { return false }
+            return suspend("final_paste_failed")
+        }
+        guard validateCurrent() else { return false }
+        // A retained suffix leaves the paste caret in the middle; move it to
+        // the end only while the exact pasted snapshot still belongs to us.
+        let complete = Snapshot(text: expected.text,
+            selection: NSRange(location: oldBase + text.utf16.count, length: 0))
+        if expected != complete {
+            guard access.select(complete.selection) else { return suspend("selection_write_failed") }
+            guard await awaitReadback(complete, stale: expected, stage: "final_caret") != nil else { return false }
+            expected = complete
+        }
+        onDiagnostic("final_paste_acknowledged:characters=\(replacement.count)")
+        return true
+    }
+
+    private func performKeyboardUpdate(plan: [KeyboardStep], prefixLength: Int) async -> Bool {
         let originalBase = ownedRange.location
-        let prefixLength = plan.prefix(prefixCount).reduce(0) { $0 + $1.text.utf16.count }
         let editRange = NSRange(location: originalBase + prefixLength,
                                 length: ownedRange.length - prefixLength)
         var current = Snapshot(text: expected.text, selection: editRange)
         guard access.select(editRange) else { return suspend("selection_write_failed") }
         guard await awaitReadback(current, stale: expected, stage: "selection") != nil else { return false }
-        for step in plan.dropFirst(prefixCount) {
+        for step in plan {
             guard mutationIsCurrent(), access.snapshot() == current else {
                 return suspend("keyboard_target_changed")
             }
@@ -295,6 +391,14 @@ final class LiveDictationTextTarget {
                 sentinelRemoved = nil
             }
             canAcknowledgeEmptyLineSentinelRemoval = false
+            // The renderer can expose intermediate states of an already posted
+            // burst. Only these exact prefixes may settle toward the complete ACK.
+            var intermediateText = ""
+            let intermediates = step.text.dropLast().map { character in
+                intermediateText.append(character)
+                return Snapshot(text: (current.text as NSString).replacingCharacters(in: current.selection, with: intermediateText),
+                    selection: NSRange(location: current.selection.location + intermediateText.utf16.count, length: 0))
+            }
             guard step.send({
                 guard self.mutationIsCurrent() else { return false }
                 guard let snapshot = self.access.snapshot() else {
@@ -313,7 +417,7 @@ final class LiveDictationTextTarget {
                 return suspend("keyboard_dispatch_failed")
             }
             guard let acknowledged = await awaitReadback(next, stale: current, stage: "keyboard_text",
-                                                        alternate: sentinelRemoved) else { return false }
+                                                        alternate: sentinelRemoved, intermediates: intermediates) else { return false }
             if let sentinelRemoved, acknowledged == sentinelRemoved {
                 onDiagnostic("keyboard_empty_line_sentinel_removed")
             }
@@ -333,7 +437,7 @@ final class LiveDictationTextTarget {
     /// the same desired caret. Only a complete desired/alternate snapshot succeeds.
     /// Polling never retries a mutation, and no queued operation can run meanwhile.
     private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String,
-                               alternate: Snapshot? = nil) async -> Snapshot? {
+                               alternate: Snapshot? = nil, intermediates: [Snapshot] = []) async -> Snapshot? {
         let deadline = readbackTiming.now() + readbackTiming.timeout
         var reportedStates = Set<String>()
         while true {
@@ -353,6 +457,8 @@ final class LiveDictationTextTarget {
             let alternateText = alternate.map { observed.text.utf16.elementsEqual($0.text.utf16) } ?? false
             let oldCaret = observed.selection == stale.selection
             let newCaret = observed.selection == desired.selection
+            let intermediateText = intermediates.contains { observed.text.utf16.elementsEqual($0.text.utf16) }
+            let intermediateCaret = intermediates.contains { observed.selection == $0.selection }
             let textState = newText ? "new" : oldText ? "old" : alternateText ? "alternate" : "other"
             let caretState = newCaret ? "new" : oldCaret ? "old" : "other"
             let state = "\(textState):\(caretState)"
@@ -370,7 +476,7 @@ final class LiveDictationTextTarget {
                     .elementsEqual(withoutTrailingNewlines(desired.text).utf16)
                 onDiagnostic("\(stage)_readback_state:text=\(textState),lengths=\(observed.text.utf16.count)/\(stale.text.utf16.count)/\(desired.text.utf16.count),caret=\(caretState),ranges=\(observed.selection.location):\(observed.selection.length)/\(stale.selection.location):\(stale.selection.length)/\(desired.selection.location):\(desired.selection.length),caseOnly=\(caseOnly),trailingNewlineOnly=\(trailingNewlineOnly)")
             }
-            guard (oldText || newText || alternateText) && (oldCaret || newCaret) else {
+            guard (oldText || newText || alternateText || intermediateText) && (oldCaret || newCaret || intermediateCaret) else {
                 suspend("\(stage)_readback_changed")
                 return nil
             }
@@ -526,14 +632,25 @@ private final class AccessibilityTarget {
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
         }, transport: transport, keyboardPlan: { [self] text in
             guard let plan = LiveDictationKeyboardInput.makePlan(text: text) else { return nil }
-            return plan.map { step in
-                LiveDictationTextTarget.KeyboardStep(text: step.text, send: { validate, onFailure in
-                    LiveDictationKeyboardInput.post(step, to: self.application.processIdentifier,
-                                                   validateTarget: validate, onFailure: onFailure)
+            // Keep the initial key separate for Codex's empty-line placeholder
+            // acknowledgment, then deliver bounded bursts without per-key waits.
+            var bursts: [[LiveDictationKeyboardInput.Step]] = []
+            if let first = plan.first { bursts.append([first]) }
+            for start in stride(from: 1, to: plan.count, by: 8) {
+                bursts.append(Array(plan[start..<min(start + 8, plan.count)]))
+            }
+            return bursts.map { burst in
+                LiveDictationTextTarget.KeyboardStep(text: burst.map(\.text).joined(), send: { validate, onFailure in
+                    LiveDictationKeyboardInput.postBurst(burst, to: self.application.processIdentifier,
+                                                        validateTarget: validate, onFailure: onFailure)
                 })
             }
         }, allowsEmptyLineSentinelRemoval: LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(
-            for: application.bundleIdentifier))
+            for: application.bundleIdentifier), finalPaste: transport == .targetedKeyboard ? { [self] text, validate, acknowledge, diagnostic in
+                await LiveDictationFinalPaste.perform(text: text, to: application.processIdentifier,
+                    validateTarget: validate, acknowledge: acknowledge,
+                    onDiagnostic: diagnostic)
+            } : nil)
     }
 
     func observeChanges(onFocusChange: @escaping () -> Void, onTextChange: @escaping () -> Void,

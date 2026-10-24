@@ -33,6 +33,12 @@ struct LiveDictationTextTargetTests {
         var beforeKeyboardValidation: (() -> Void)?
         var allowsEmptyLineSentinelRemoval = false
         var removesInitialNewline = false
+        var keyboardBurstSize = 1
+        var finalPasteEnabled = false
+        var finalPastes: [String] = []
+        var beforeFinalPaste: (() -> Void)?
+        var finalPasteSucceeds = true
+        var afterFinalAcknowledgement: (() -> Void)?
 
         init(_ text: String = "Before  after", selection: NSRange = NSRange(location: 7, length: 0)) {
             self.text = text
@@ -69,7 +75,16 @@ struct LiveDictationTextTargetTests {
         }
 
         var access: LiveDictationTextTarget.Access {
-            .init(snapshot: { [self] in .init(text: text, selection: selection) },
+            let paste: LiveDictationTextTarget.Access.FinalPaste? = finalPasteEnabled ? { [self] text, validate, acknowledge, _ in
+                beforeFinalPaste?()
+                guard validate(), finalPasteSucceeds else { return false }
+                finalPastes.append(text)
+                applyReplacement(text)
+                let acknowledged = await acknowledge()
+                afterFinalAcknowledgement?()
+                return acknowledged
+            } : nil
+            return .init(snapshot: { [self] in .init(text: text, selection: selection) },
                   isFocused: { [self] in focused },
                   select: { [self] range in
                       selections += 1
@@ -90,8 +105,9 @@ struct LiveDictationTextTargetTests {
                       return replacementSucceeds
                   }, transport: transport, keyboardPlan: { [self] text in
                       guard LiveDictationKeyboardInput.isSupported(text) else { return nil }
-                      return text.map { character in
-                          let value = String(character)
+                      let characters = text.map(String.init)
+                      return stride(from: 0, to: characters.count, by: keyboardBurstSize).map { start in
+                          let value = characters[start..<min(start + keyboardBurstSize, characters.count)].joined()
                           return .init(text: value, send: { [self] validate, onFailure in
                               beforeKeyboardValidation?()
                               guard validate() else {
@@ -108,7 +124,157 @@ struct LiveDictationTextTargetTests {
                               return true
                           })
                       }
-                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval)
+                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, finalPaste: paste)
+        }
+    }
+
+    @Test func finalCleanupPastesChangedMiddleOnceAndPreservesContext() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "hello", tail: " old world"))
+        let oldSteps = editor.keyboardSteps
+        #expect(await target.finish(text: "Hello new world"))
+        #expect(editor.finalPastes == ["Hello new"])
+        #expect(editor.keyboardSteps == oldSteps)
+        #expect(editor.text == "Before Hello new world after")
+        #expect(editor.selection == NSRange(location: 7 + "Hello new world".utf16.count, length: 0))
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func finalPasteShorteningAndUnicodePreserveExactBoundaries() async throws {
+        for (old, final) in [("hello extra", "hello"), ("extra hello", "hello"), ("👩🏽‍💻 old e\u{301}", "👩🏽‍💻 new e\u{301}")] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: old))
+            #expect(await target.finish(text: final))
+            #expect(editor.finalPastes.count == 1)
+            #expect(editor.finalPastes[0].isEmpty == false)
+            #expect(editor.text.utf16.elementsEqual(("Before " + final + " after").utf16))
+        }
+    }
+
+    @Test func finalPasteRejectsLateEditsAndNeverFallsBackToTyping() async throws {
+        for change in 0..<3 {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "draft"))
+            let oldSteps = editor.keyboardSteps
+            editor.beforeFinalPaste = {
+                if change == 0 { editor.text += "user edit" }
+                if change == 1 { editor.focused = false }
+                if change == 2 { editor.finalPasteSucceeds = false }
+            }
+            #expect(await target.finish(text: "Clean final.") == false)
+            #expect(editor.finalPastes.isEmpty)
+            #expect(editor.keyboardSteps == oldSteps)
+            #expect(target.isSuspended)
+        }
+    }
+
+    @Test func identicalFinalAndEmptyFinalNeverTouchClipboard() async throws {
+        for final in ["draft", ""] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "draft"))
+            #expect(await target.finish(text: final))
+            #expect(editor.finalPastes.isEmpty)
+            #expect(editor.text == "Before draft after")
+        }
+    }
+
+    @Test func finalPasteCanBeFirstInsertionIntoEmptyCodexComposer() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.finish(text: "Complete text."))
+        #expect(editor.text == "Complete text.")
+        #expect(editor.finalPastes == ["Complete text."])
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func unacknowledgedFinalPasteNeverRetriesOrTypesFallback() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        let steps = editor.keyboardSteps
+        editor.corruptReadback = true
+        #expect(await target.finish(text: "Clean final.") == false)
+        #expect(editor.finalPastes.count == 1)
+        #expect(editor.keyboardSteps == steps)
+        #expect(await target.finish(text: "Retry") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func burstReadbackWaitsForWholeBatchAndRejectsUnrelatedText() async throws {
+        for unrelated in [false, true] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.keyboardBurstSize = 8
+            var ticks = 0
+            editor.afterKeyboard = {
+                if editor.keyboardSteps.count == 1 {
+                    editor.text = unrelated ? "user" : "abc"
+                    editor.selection = NSRange(location: unrelated ? 4 : 3, length: 0)
+                }
+            }
+            let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 0.5, now: { Double(ticks) * 0.1 }, wait: {
+                ticks += 1
+                #expect(editor.keyboardSteps == ["abcdefgh"])
+                editor.text = "abcdefgh"
+                editor.selection = NSRange(location: 8, length: 0)
+            })
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+            #expect(await target.update(text: "abcdefghijklmnop") == !unrelated)
+            #expect(editor.keyboardSteps.count == (unrelated ? 1 : 2))
+            #expect(ticks == (unrelated ? 0 : 1))
+            if !unrelated { #expect(editor.text == "abcdefghijklmnop") }
+        }
+    }
+
+    @Test func cancellationDuringBurstAcknowledgementNeverSendsNextBurst() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.keyboardBurstSize = 8
+        editor.afterKeyboard = {
+            editor.text = "abc"
+            editor.selection = NSRange(location: 3, length: 0)
+        }
+        var target: LiveDictationTextTarget?
+        let timing = LiveDictationTextTarget.ReadbackTiming(wait: { target?.cancel() })
+        target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        #expect(await target?.update(text: "abcdefghijklmnop") == false)
+        #expect(editor.keyboardSteps == ["abcdefgh"])
+    }
+
+    @Test func finalCaretMoveNeverOverwritesLateUserChanges() async throws {
+        for change in 0..<3 {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "old ending"))
+            editor.afterFinalAcknowledgement = {
+                if change == 0 { editor.text += " user" }
+                if change == 1 { target.cancel() }
+                if change == 2 { editor.selectionSucceeds = false }
+            }
+            #expect(await target.finish(text: "New ending") == false)
+            #expect(editor.finalPastes == ["New"])
+            #expect(editor.text.hasPrefix("Before New ending after"))
+            #expect(editor.selection == NSRange(location: 10, length: 0))
         }
     }
 

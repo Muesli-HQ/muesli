@@ -144,7 +144,11 @@ this AX text setter.
 For the observed Codex bundle, choose targeted keyboard delivery at capture time.
 Keep AX ownership/selection verification, retain the exact common grapheme prefix,
 and type the changed suffix through marked keyboard events addressed to the
-captured process. Verify each step's full value and caret before continuing.
+captured process. A single first key handles the empty-composer placeholder;
+subsequent bursts contain at most eight whole graphemes. Precreate every event
+pair before posting a burst, then verify its full value and caret before the
+next burst. Exact intermediate prefixes of the posted burst may settle, but
+cannot acknowledge completion or authorize another burst. Unrelated edits fail.
 Never switch transports after an uncertain write. Pure shortening selects and
 retypes one retained grapheme instead of synthesizing deletion keys. Empty
 provisional hypotheses preserve visible text. Preflight controls and line breaks
@@ -170,7 +174,19 @@ acceptance remains a separate manual check.
 At stop, cancel provisional decoding and use the retained complete WAV through
 the existing dictation ASR, artifact filtering, optional cleanup and custom-word
 pipeline. Apply final text (and existing sentence-spacing policy) once to the
-still-valid owned range. If ownership was lost, save the result in history and
+still-valid owned range. For Codex, final delivery is selected at capture time
+as a leased clipboard paste, separate from the live keyboard transport. Preserve
+the common leading and trailing text, select only the differing middle, and
+dispatch one targeted Paste command after exact selection verification. Final
+success requires exact resulting text/caret acknowledgment; dispatch alone is
+insufficient. Clipboard providers are read off the main actor with a bounded
+wait, and all item/type data must be saved with an unchanged generation before
+staging. Restore saved contents only while still owning the staged clipboard,
+after confirmed consumption or a failure before dispatch. After an unacknowledged
+dispatch, retain the staged payload so a delayed receiver cannot paste the old
+clipboard. Never overwrite a newer clipboard value or retry through another
+transport. Multiline/control text remains unsupported by this composer lease.
+If ownership was lost, save the result in history and
 tell the user; do not overwrite their edits or paste into the newly focused app.
 An empty final result does not erase already visible text. Cancel leaves inserted
 text intact and rejects all late callbacks. Finalization remains identified by
@@ -183,9 +199,10 @@ These PRs are integration boundaries, not dependencies to merge blindly:
 Live status verified October 24: #603, #645 and #476 open/ready; #630 and #646
 open/draft. No overlapping PR is merged into this implementation branch.
 
-- #603, clipboard providers: keep live AX replacement outside PasteController;
-  preserve final task ownership. Its asynchronous clipboard completion fixes
-  remain applicable to the ordinary fallback path.
+- #603, clipboard providers: keep live revisions outside PasteController and
+  preserve final task ownership. The dedicated Codex final-paste helper reads
+  providers off-main with a deadline and verifies insertion independently of
+  dispatch; reconcile this helper's ownership rules when integrating #603.
 - #645, Traditional Chinese: run output transformations in the authoritative
   final pipeline; replace only a valid owned span. Do not broaden the existing
   native-Nemotron eligibility gate or insert untransformed final text twice.
@@ -286,3 +303,12 @@ All 50 native cursor/keyboard tests passed after this change, including both
 split-update orders, stuck partial acknowledgment, and unrelated edits. The
 original log does not establish which component differed; manual acceptance
 and, if needed, the expanded diagnostic remain necessary.
+
+The smoother-delivery follow-up passed 100 native tests across four suites.
+Live keyboard previews acknowledge bounded bursts rather than every grapheme;
+final cleanup pastes the changed middle once, retaining exact common prefixes
+and suffixes. Tests cover intermediate burst readbacks, clipboard provider
+deadlines, clipboard ownership changes, focus/edit/cancellation races, and
+unacknowledged dispatch without retries. Classifier and CI shard checks passed.
+Injected event sinks validate transport behavior without posting input to apps;
+the actual Codex composer experience still requires a manual dictation trial.

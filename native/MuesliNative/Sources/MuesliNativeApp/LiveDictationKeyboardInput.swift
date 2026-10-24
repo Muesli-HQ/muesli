@@ -4,8 +4,10 @@ import Carbon
 
 /// Targeted keyboard transport for editors that acknowledge AXSelectedText
 /// without changing their document. Dispatch is not proof of insertion: the
-/// owner must verify text and selection after every step before sending more.
+/// owner must verify text and selection after each step or bounded burst.
 enum LiveDictationKeyboardInput {
+    static let maximumBurstGraphemes = 8
+
     enum DispatchFailure: String {
         case invalidProcess = "invalid_process"
         case eventCreation = "event_creation"
@@ -13,6 +15,8 @@ enum LiveDictationKeyboardInput {
         case frontmostChanged = "frontmost_changed"
         case applicationUnavailable = "application_unavailable"
         case targetValidationFailed = "target_validation_failed"
+        case invalidBurstSize = "invalid_burst_size"
+        case cancelled
     }
 
     struct Step {
@@ -150,6 +154,84 @@ enum LiveDictationKeyboardInput {
         // changes during posting, key-up still goes only to the captured process.
         postEvent(events.down, pid)
         postEvent(events.up, pid)
+        return true
+    }
+
+    /// Sends at most eight whole graphemes. The caller verifies the final AX
+    /// snapshot after the burst; false can mean some complete pairs were posted.
+    /// Original text validation runs once, before any event, and is never reused
+    /// after posting a prefix that intentionally changes that original text.
+    @MainActor
+    static func postBurst(_ steps: [Step], to pid: pid_t, validateTarget: () -> Bool,
+                          onFailure: (DispatchFailure) -> Void = { _ in }) -> Bool {
+        let application = NSRunningApplication(processIdentifier: pid)
+        return dispatchBurst(steps, to: pid, validateTarget: validateTarget,
+            matchesLayout: { step in
+                directCharacter(keyCode: step.keyCode, flags: step.flags) == step.text
+            }, continuationFailure: {
+                if Task.isCancelled { return .cancelled }
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                    return .frontmostChanged
+                }
+                guard let application, !application.isTerminated else { return .applicationUnavailable }
+                return nil
+            }, postEvent: { event, processID in event.postToPid(processID) }, onFailure: onFailure)
+    }
+
+    /// Pure dispatch seam: tests can exercise partial failures without posting
+    /// events or reading an application. All event pairs and physical mappings
+    /// are preflighted before the first post. Layout and continuation checks run
+    /// again before each pair, with no return between its key-down and key-up.
+    static func dispatchBurst(
+        _ steps: [Step], to pid: pid_t,
+        validateTarget: () -> Bool,
+        matchesLayout: (Step) -> Bool,
+        continuationFailure: () -> DispatchFailure?,
+        postEvent: (CGEvent, pid_t) -> Void,
+        onFailure: (DispatchFailure) -> Void = { _ in },
+        createEvents: (Step) -> (down: CGEvent, up: CGEvent)? = makeEvents
+    ) -> Bool {
+        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier else {
+            onFailure(.invalidProcess)
+            return false
+        }
+        guard !steps.isEmpty, steps.count <= maximumBurstGraphemes else {
+            onFailure(.invalidBurstSize)
+            return false
+        }
+        if let failure = continuationFailure() {
+            onFailure(failure)
+            return false
+        }
+        var pairs: [(down: CGEvent, up: CGEvent)] = []
+        pairs.reserveCapacity(steps.count)
+        for step in steps {
+            guard let pair = createEvents(step) else {
+                onFailure(.eventCreation)
+                return false
+            }
+            guard !step.usesPhysicalKey || matchesLayout(step) else {
+                onFailure(.layoutChanged)
+                return false
+            }
+            pairs.append(pair)
+        }
+        guard validateTarget() else {
+            onFailure(.targetValidationFailed)
+            return false
+        }
+        for (step, pair) in zip(steps, pairs) {
+            guard !step.usesPhysicalKey || matchesLayout(step) else {
+                onFailure(.layoutChanged)
+                return false
+            }
+            if let failure = continuationFailure() {
+                onFailure(failure)
+                return false
+            }
+            postEvent(pair.down, pid)
+            postEvent(pair.up, pid)
+        }
         return true
     }
 
