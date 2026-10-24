@@ -2193,7 +2193,7 @@ struct SettingsView: View {
                 settingsRow("Only show events with a meeting link", controlWidth: meetingControlWidth) {
                     settingsControl("calendar_meeting_links_only")
                 }
-                settingsDescription("Hide calendar items without a detected meeting link from Coming Up, the menu bar and meeting detection. Turn off to include in-person and dial-in events.")
+                settingsDescription("Hide events without a meeting link.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
