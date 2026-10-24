@@ -102,6 +102,28 @@ struct GranolaImportTests {
         }
     }
 
+    @Test func manualNoteEditsRefreshStoredAndSyncedWordCounts() throws {
+        for transcript in ["", "Transcript words"] {
+            try withStore { store in
+                let record = GranolaImportRecord(id: UUID().uuidString.lowercased(), title: "Count", createdAt: Date(),
+                    summary: "Generated summary excluded", notes: "Original manual notes", transcript: transcript,
+                    workspace: "", ownerEmail: "")
+                _ = try store.importGranola([record])
+                let meeting = try #require(store.recentMeetings(limit: 1).first)
+                let transcriptWords = transcript.isEmpty ? 0 : 2
+                for (notes, words) in [("One two three four", 4), ("", 0)] {
+                    try store.updateMeetingManualNotes(id: meeting.id, manualNotes: notes)
+                    let saved = try #require(try store.meeting(id: meeting.id))
+                    #expect(saved.wordCount == transcriptWords + words)
+                    #expect(saved.manualNotes == notes)
+                    #expect(saved.formattedNotes == record.summary)
+                    let synced = try #require(store.textRecordsNeedingSync().first)
+                    #expect(synced.wordCount == transcriptWords + words)
+                }
+            }
+        }
+    }
+
     @Test func syncedIdentityPreventsDuplicateImport() throws {
         let records = try GranolaImport.parse(csv())
         try withStore { source in

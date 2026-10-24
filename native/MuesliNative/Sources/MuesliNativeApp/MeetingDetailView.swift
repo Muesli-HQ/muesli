@@ -6,6 +6,11 @@ enum MeetingDocumentMode: Hashable {
     case transcript
 }
 
+enum MeetingNotesSource {
+    case summary
+    case manual
+}
+
 private enum RecordingContentMode: Hashable {
     case notes
     case live
@@ -96,6 +101,7 @@ struct MeetingDetailView: View {
     @State private var editableTitle: String
     @State private var editableNotes: String
     @State private var editingNotesCitation: MeetingChatCitation?
+    @State private var editingNotesSource: MeetingNotesSource?
     @State private var editableTranscript: String
     @State private var editableManualNotes: String
     @State private var loadedMeetingID: Int64?
@@ -863,9 +869,10 @@ struct MeetingDetailView: View {
         if isEditingNotes {
             notesSaveTask?.cancel()
             notesSaveTask = nil
-            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, controller: controller)
+            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, source: editingNotesSource, controller: controller)
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
         } else if isEditingTranscript {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
@@ -890,6 +897,7 @@ struct MeetingDetailView: View {
         } else {
             documentMode = .notes
             editingNotesCitation = citationTarget(for: meeting)?.citation
+            editingNotesSource = Self.notesSource(for: meeting, citation: editingNotesCitation)
             editableNotes = Self.notesContent(for: meeting, citation: editingNotesCitation)
             isEditingNotes = true
         }
@@ -1826,13 +1834,19 @@ struct MeetingDetailView: View {
         for meeting: MeetingRecord,
         notes: String,
         citation: MeetingChatCitation? = nil,
+        source: MeetingNotesSource? = nil,
         controller: MuesliController
     ) {
-        if usesManualNotes(for: meeting, citation: citation) {
+        if (source ?? notesSource(for: meeting, citation: citation)) == .manual {
             controller.updateMeetingManualNotes(id: meeting.id, notes: notes)
         } else {
             controller.updateMeetingNotes(id: meeting.id, notes: notes)
         }
+    }
+
+    /// Capture this on entering the editor; autosave can change the fallback predicate.
+    static func notesSource(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> MeetingNotesSource {
+        usesManualNotes(for: meeting, citation: citation) ? .manual : .summary
     }
 
     private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
@@ -1891,8 +1905,9 @@ struct MeetingDetailView: View {
         notesSaveTask?.cancel()
         let notes = editableNotes
         let citation = editingNotesCitation
+        let source = editingNotesSource
         let c = controller
-        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, controller: c) }
+        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, source: source, controller: c) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
@@ -2035,6 +2050,7 @@ struct MeetingDetailView: View {
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
             isEditingTranscript = false
             showFolderPopover = false
             showNewFolderPrompt = false

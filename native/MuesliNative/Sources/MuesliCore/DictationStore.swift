@@ -3014,21 +3014,31 @@ public final class DictationStore {
     public func updateMeetingManualNotes(id: Int64, manualNotes: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        let sql = "UPDATE meetings SET manual_notes = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { try? exec("ROLLBACK", db: db) } }
+        guard let meeting = try meeting(id: id, db: db) else {
+            throw DictationStoreError.meetingNotFound(id: id)
+        }
+        let wordCount = Self.countWords(in: meeting.rawTranscript) + Self.countWords(in: manualNotes)
+        let sql = "UPDATE meetings SET manual_notes = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (manualNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 3, id)
+        sqlite3_bind_int64(statement, 2, Int64(wordCount))
+        sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 4, id)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        try exec("COMMIT", db: db)
+        committed = true
     }
 
     public func updateMeetingStatus(id: Int64, status: MeetingStatus) throws {
