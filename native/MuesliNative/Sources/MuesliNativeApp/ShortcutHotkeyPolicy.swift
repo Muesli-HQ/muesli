@@ -37,7 +37,7 @@ struct ShortcutHotkeyPolicy {
             return hotkey.isValidDictationShortcut
         case .quil:
             return isValidQuilShortcut(hotkey)
-        case .meetingRecording:
+        case .meetingRecording, .presetCycle:
             return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
         case .computerUse:
             return false
@@ -83,7 +83,9 @@ struct ShortcutHotkeyPolicy {
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig,
-        isMeetingRecordingEnabled: Bool
+        isMeetingRecordingEnabled: Bool,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         guard isValidQuilShortcut(hotkey) else { return .conflict(message: quilKeyCountMessage) }
         if hotkeysConflict(hotkey, dictationHotkey) {
@@ -94,6 +96,9 @@ struct ShortcutHotkeyPolicy {
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
+        }
+        if isPresetCyclingEnabled && hotkeysConflict(hotkey, presetCycleHotkey) {
+            return conflict(with: "Cycle Presets", hotkey: presetCycleHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
@@ -134,7 +139,9 @@ struct ShortcutHotkeyPolicy {
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         guard hotkey.isValidDictationShortcut else {
             return .conflict(message: dictationShortcutMessage)
@@ -145,6 +152,9 @@ struct ShortcutHotkeyPolicy {
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
+        if isPresetCyclingEnabled && hotkeysConflict(hotkey, presetCycleHotkey) {
+            return conflict(with: "Cycle Presets", hotkey: presetCycleHotkey)
+        }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
 
@@ -153,13 +163,18 @@ struct ShortcutHotkeyPolicy {
         dictationHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
             return conflict(with: "Dictation", hotkey: dictationHotkey)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
+        }
+        if isPresetCyclingEnabled && hotkeysConflict(hotkey, presetCycleHotkey) {
+            return conflict(with: "Cycle Presets", hotkey: presetCycleHotkey)
         }
         return .updated
     }
@@ -168,13 +183,43 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         computerUseHotkey: HotkeyConfig,
-        isComputerUseEnabled: Bool
+        isComputerUseEnabled: Bool,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
             return conflict(with: "Dictation", hotkey: dictationHotkey)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
+        }
+        if isPresetCyclingEnabled && hotkeysConflict(hotkey, presetCycleHotkey) {
+            return conflict(with: "Cycle Presets", hotkey: presetCycleHotkey)
+        }
+        return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
+
+    static func validatePresetCycleHotkey(
+        _ hotkey: HotkeyConfig,
+        dictationHotkey: HotkeyConfig,
+        computerUseHotkey: HotkeyConfig,
+        isComputerUseEnabled: Bool,
+        meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
+        isMeetingRecordingEnabled: Bool = false,
+        quilHotkey: HotkeyConfig = .quilDefault,
+        isQuilEnabled: Bool = false
+    ) -> ShortcutHotkeyUpdateResult {
+        if hotkeysConflict(hotkey, dictationHotkey) {
+            return conflict(with: "Dictation", hotkey: dictationHotkey)
+        }
+        if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return conflict(with: "Computer Use Command", hotkey: computerUseHotkey)
+        }
+        if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
+        }
+        if isQuilEnabled && hotkeysConflict(hotkey, quilHotkey) {
+            return conflict(with: "Quill", hotkey: quilHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
     }
@@ -200,14 +245,18 @@ struct ShortcutHotkeyPolicy {
         currentHotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        presetCycleHotkey: HotkeyConfig = .presetCycleDefault,
+        isPresetCyclingEnabled: Bool = false
     ) -> (hotkey: HotkeyConfig, result: ShortcutHotkeyUpdateResult) {
         (currentHotkey, validateComputerUseHotkey(
             currentHotkey,
             dictationHotkey: dictationHotkey,
             isComputerUseEnabled: true,
             meetingRecordingHotkey: meetingRecordingHotkey,
-            isMeetingRecordingEnabled: isMeetingRecordingEnabled
+            isMeetingRecordingEnabled: isMeetingRecordingEnabled,
+            presetCycleHotkey: presetCycleHotkey,
+            isPresetCyclingEnabled: isPresetCyclingEnabled
         ))
     }
 

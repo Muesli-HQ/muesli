@@ -29,6 +29,10 @@ struct TranscriptCleanupPromptsManagerView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
             header
 
+            if !appState.config.enablePostProcessor {
+                cleanupDisabledNotice
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
                     presetSection(title: "Built-in Presets") {
@@ -118,6 +122,20 @@ struct TranscriptCleanupPromptsManagerView: View {
         }
     }
 
+    private var cleanupDisabledNotice: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(MuesliTheme.accent)
+            Text("AI transcript cleanup is currently off in Settings. Selecting or creating a preset will attempt to enable it.")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
     private func presetSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
             Text(title.uppercased())
@@ -156,7 +174,7 @@ struct TranscriptCleanupPromptsManagerView: View {
             actionButton("Use", systemImage: "checkmark") {
                 controller.selectTranscriptCleanupPrompt(id: preset.id)
             }
-            .disabled(activePromptID == preset.id)
+            .disabled(activePromptID == preset.id && appState.config.enablePostProcessor)
 
             actionButton("Duplicate", systemImage: "doc.on.doc") {
                 beginDuplicatingPrompt(name: preset.name, prompt: preset.prompt)
@@ -174,7 +192,7 @@ struct TranscriptCleanupPromptsManagerView: View {
             actionButton("Use", systemImage: "checkmark") {
                 controller.selectTranscriptCleanupPrompt(id: preset.id)
             }
-            .disabled(activePromptID == preset.id)
+            .disabled(activePromptID == preset.id && appState.config.enablePostProcessor)
 
             actionButton("Edit", systemImage: "pencil") {
                 beginEditingPrompt(preset)

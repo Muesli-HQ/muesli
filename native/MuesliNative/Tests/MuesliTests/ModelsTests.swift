@@ -1796,6 +1796,126 @@ struct AppConfigTests {
         #expect(PostProcessorOption.defaultSystemPrompt.contains("Never copy app context into the output"))
     }
 
+    @Test("built-in cleanup presets include clean basic, prompt polisher, technical spec, short dictation, and newsletter")
+    func builtInCleanupPresetsIncludeExpandedPresets() {
+        let builtIns = TranscriptCleanupPrompts.builtIns
+        #expect(builtIns.count == 5)
+        let ids = builtIns.map(\.id)
+        #expect(ids.contains(TranscriptCleanupPrompts.defaultID))
+        #expect(ids.contains(TranscriptCleanupPrompts.promptPolisherID))
+        #expect(ids.contains(TranscriptCleanupPrompts.technicalSpecID))
+        #expect(ids.contains(TranscriptCleanupPrompts.shortDictationID))
+        #expect(ids.contains(TranscriptCleanupPrompts.newsletterID))
+
+        for preset in builtIns {
+            #expect(!preset.name.isEmpty)
+            #expect(preset.prompt.contains("<APP-CONTEXT>"))
+            #expect(TranscriptCleanupPrompts.resolve(id: preset.id, custom: []).id == preset.id)
+        }
+
+        #expect(builtIns.first { $0.id == TranscriptCleanupPrompts.technicalSpecID }?.name.contains("ASD") == true)
+        #expect(builtIns.first { $0.id == TranscriptCleanupPrompts.shortDictationID }?.name == "Short Dictation")
+        #expect(builtIns.first { $0.id == TranscriptCleanupPrompts.newsletterID }?.name.contains("Newsletter") == true)
+    }
+
+    @Test("preset cycle hotkey and enablement roundtrip in AppConfig")
+    func presetCycleHotkeyRoundtripsInAppConfig() throws {
+        var config = AppConfig()
+        #expect(config.enablePresetCyclingHotkey)
+        #expect(config.presetCycleHotkey == HotkeyConfig.presetCycleDefault)
+
+        config.enablePresetCyclingHotkey = false
+        config.presetCycleHotkey = HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 35)
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+
+        #expect(!decoded.enablePresetCyclingHotkey)
+        #expect(decoded.presetCycleHotkey == config.presetCycleHotkey)
+    }
+
+    @Test("preset cycle hotkey policy validation and conflict rejection")
+    func presetCycleHotkeyPolicyValidationAndConflict() {
+        let presetCycle = HotkeyConfig.presetCycleDefault
+        #expect(ShortcutHotkeyPolicy.allowsCombination(presetCycle, action: .presetCycle))
+        #expect(!ShortcutHotkeyPolicy.allowsCombination(HotkeyConfig.default, action: .presetCycle))
+
+        // Preset cycling rejects conflict with dictation
+        let dictationConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            .default,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        )
+        #expect(!dictationConflict.didUpdate)
+
+        // Preset cycling rejects conflict with Quill when Quill is enabled
+        let quilConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            .quilDefault,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            quilHotkey: .quilDefault,
+            isQuilEnabled: true
+        )
+        #expect(!quilConflict.didUpdate)
+
+        // Dictation rejects conflict with preset cycling when preset cycling is enabled
+        let dictationVsPreset = ShortcutHotkeyPolicy.validateDictationHotkey(
+            presetCycle,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!dictationVsPreset.didUpdate)
+
+        // Computer Use rejects conflict with preset cycling when preset cycling is enabled
+        let cuaVsPreset = ShortcutHotkeyPolicy.validateComputerUseHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!cuaVsPreset.didUpdate)
+
+        // Quill rejects conflict with preset cycling when preset cycling is enabled
+        let quilVsPreset = ShortcutHotkeyPolicy.validateQuilHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            meetingRecordingHotkey: .meetingRecordingDefault,
+            isMeetingRecordingEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!quilVsPreset.didUpdate)
+
+        // Meeting recording rejects conflict with preset cycling when preset cycling is enabled
+        let meetingConflictResult = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: true
+        )
+        #expect(!meetingConflictResult.didUpdate)
+
+        // When preset cycling is disabled, shortcuts are allowed
+        let meetingAllowed = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            presetCycle,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false,
+            presetCycleHotkey: presetCycle,
+            isPresetCyclingEnabled: false
+        )
+        #expect(meetingAllowed.didUpdate)
+    }
+
     @Test("dictation app context prompt includes OCR text")
     func dictationAppContextPromptIncludesOCRText() {
         let ocrText = String(repeating: "a", count: 3_200) + "tail"
