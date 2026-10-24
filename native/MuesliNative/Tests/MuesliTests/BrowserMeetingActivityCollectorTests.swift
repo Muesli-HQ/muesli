@@ -101,6 +101,159 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(meetings.map(\.normalizedID) == ["googleMeet:meet.google.com/pwm-txwq-txy"])
     }
 
+    @Test("a browser using the mic finds the call in a background tab")
+    func attributedBrowserFindsCallInBackgroundTab() async {
+        let collector = BrowserMeetingActivityCollector(
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in [
+                "https://www.eftps.gov/eftps/payments",
+                "https://admin.teams.microsoft.com/dashboard",
+                "https://meet.google.com/qfm-jwnh-ret",
+            ] }
+        )
+
+        let meetings = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+
+        #expect(meetings.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(meetings.first?.isFocused == false)
+    }
+
+    @Test("only room URLs count when scanning background tabs")
+    func backgroundScanRequiresARoomURL() {
+        let rooms = [
+            "https://meet.google.com/qfm-jwnh-ret",
+            "https://us02web.zoom.us/j/81234567890?pwd=abc",
+            "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc/0",
+            "https://teams.live.com/meet/9312345678901",
+            "https://acme.webex.com/acme/j.php?MTID=m1234abcd",
+        ]
+        let notRooms = [
+            "https://admin.teams.microsoft.com/dashboard",
+            "https://zoom.us/profile",
+            "https://www.eftps.gov/eftps/payments",
+            "https://meet.google.com/landing",
+        ]
+        #expect(rooms.allSatisfy { MeetingURLNormalizer.normalizeRoom($0) != nil })
+        #expect(notRooms.allSatisfy { MeetingURLNormalizer.normalizeRoom($0) == nil })
+    }
+
+    @Test("a slow tab scan keeps the call it found before instead of reporting no meeting")
+    func slowTabScanKeepsTheCachedCall() async {
+        var tabs: [String]? = ["https://meet.google.com/qfm-jwnh-ret"]
+        let collector = BrowserMeetingActivityCollector(
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in tabs }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        tabs = nil
+        let slow = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        tabs = []
+        let empty = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(2),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+
+        #expect(first.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(slow.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(empty.isEmpty)
+    }
+
+    @Test("a slow tab scan keeps the call while the focused window shows an ordinary page")
+    func slowTabScanKeepsTheCachedCallBehindAnOrdinaryFocusedPage() async {
+        var tabs: [String]? = ["https://meet.google.com/qfm-jwnh-ret"]
+        let collector = BrowserMeetingActivityCollector(
+            focusedDocumentURLProvider: { _ in "https://example.com/doc" },
+            activeTabURLProvider: { _ in "https://example.com/doc" },
+            allTabURLsProvider: { _ in tabs }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        tabs = nil
+        let slow = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+
+        #expect(first.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(slow.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+    }
+
+    @Test("a slow front-tab read keeps a background-tab call while the focused window shows an ordinary page")
+    func slowActiveTabReadKeepsTheCachedBackgroundCall() async {
+        var activeTab: BrowserActiveTabProbeResult = .url("https://example.com/doc")
+        let collector = BrowserMeetingActivityCollector(
+            focusedDocumentURLProvider: { _ in "https://example.com/doc" },
+            activeTabProbeResultProvider: { _ in activeTab },
+            allTabURLsProvider: { _ in ["https://meet.google.com/qfm-jwnh-ret"] }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        activeTab = .timedOut
+        let slow = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+        let unattributed = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(2)
+        )
+
+        #expect(first.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(slow.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(unattributed.isEmpty)
+    }
+
+    @Test("a browser that is not using the mic is not searched tab by tab")
+    func unattributedBrowserIsNotScannedTabByTab() async {
+        var scanned = false
+        let collector = BrowserMeetingActivityCollector(
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in scanned = true; return ["https://meet.google.com/qfm-jwnh-ret"] }
+        )
+
+        let meetings = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now
+        )
+
+        #expect(meetings.isEmpty)
+        #expect(!scanned)
+    }
+
     @Test("refresh prefers listed meeting URL over focused non-meeting document")
     func refreshPrefersListedMeetingURLOverFocusedNonMeetingDocument() async {
         let collector = BrowserMeetingActivityCollector(
