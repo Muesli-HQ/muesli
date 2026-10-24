@@ -133,6 +133,8 @@ case "${shard}" in
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
+      AudioFileImportControllerTests
+      MeetingHookIntegrationTests
       MeetingCaptureLifecycleTests
       AudioQueueInputRecorderTests
       FallbackStreamingDictationRecorderTests
