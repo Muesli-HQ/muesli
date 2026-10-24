@@ -6845,6 +6845,13 @@ public final class MuesliController: NSObject {
         activeMeetingSession?.isPaused == true
     }
 
+    /// The red dot on the menu bar and Dock icons: audio is being captured right now. A paused
+    /// meeting and a meeting that is only processing do not show it.
+    var isRecordingIndicatorActive: Bool {
+        let meetingCapturing = activeMeetingSession?.isRecording == true && activeMeetingSession?.isPaused != true
+        return meetingCapturing || dictationState == .recording
+    }
+
     private var meetingTerminationState: MeetingTerminationState {
         MeetingTerminationPolicy.state(
             isStarting: isStartingMeetingRecording,
