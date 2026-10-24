@@ -10865,7 +10865,8 @@ public final class MuesliController: NSObject {
             }
             fputs("[gemma-preparation] failed: \(error)\n", stderr)
         })
-        if !allowed {
+        if !allowed, !isInteractiveAudioActivityInProgress,
+           !dictationAudioSessionManager.hasActiveSession, !quilAudioSessionManager.hasActiveSession {
             indicator.isToggleDictation = false
             quilHotkeyMonitor.cancelToggleMode()
             hotkeyMonitor.cancelToggleMode()

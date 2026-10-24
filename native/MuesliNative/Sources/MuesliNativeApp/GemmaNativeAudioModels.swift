@@ -31,11 +31,12 @@ enum GemmaNativeAudioModels {
         ("tokenizer_config.json", 2750, "47a25a81fe589682f4e3ca0b580943a70e241c599b463c1fe1954419dc0a4b6f")
     ])
     static func descriptor(for model: Gemma4LiteRTModel) -> ManagedCleanupModel { model.isCleanupOnly ? cleanup : (model == .e4b ? e4b : e2b) }
+    static func overrideDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        guard let path = environment["MUESLI_GEMMA_MLX_MODEL_DIR"], !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
     static func directory(for model: Gemma4LiteRTModel, environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
-        if let path = environment["MUESLI_GEMMA_MLX_MODEL_DIR"], !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        return artifactDirectory(descriptor(for: model))
+        overrideDirectory(environment: environment) ?? artifactDirectory(descriptor(for: model))
     }
     static func artifactDirectory(_ artifact: ManagedCleanupModel) -> URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/mlx-evaluation/" + artifact.revision)
@@ -48,7 +49,7 @@ enum GemmaNativeAudioModels {
                                  progressSnapshot: ModelDownloadProgressHandler? = nil) async throws -> URL {
         let target = descriptor(for: model)
         let destination = directory(for: model)
-        if ProcessInfo.processInfo.environment["MUESLI_GEMMA_MLX_MODEL_DIR"] != nil {
+        if overrideDirectory() != nil {
             try target.validate(modelURL: destination.appendingPathComponent(target.modelFilename))
         } else {
             try await ModelDownloadCoordinator.shared.download(target.manifest(id: model.repoID), to: destination) { snapshot in

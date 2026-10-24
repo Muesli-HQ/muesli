@@ -62,3 +62,11 @@ CI's Swift 6.3 legacy build engine did not compile MLX Metal resources. All thre
 Quill admission also prepares a selected non-Gemma local ASR backend through `preloadRequired`, even if hosted dictation is selected. Its backend/model/language forms an additional preparation key, so an empty Gemma list cannot bypass that load. A suspended-preparation regression test verifies recording admission stays blocked until it completes. Local validation passed 69 application tests plus the 10-test encoder suite; fixture-only references skipped.
 
 The available optional Quill model intentionally remains part of the shared pre-recording warm-up, following the explicit product requirement to finish a shared warm-up before allowing dictation. Missing or failed optional models remain best-effort and do not disable ordinary dictation. The review suggestion to move available Quill warm-up behind recording would reverse that requested behavior, so it was not applied. Computer-use harness work remains separate.
+
+### Swift 6.3 CI compatibility correction
+
+The Swift 6.3 preview build engine produced duplicate app-target outputs, so CI retains `--build-system native`. `build_mlx_test_metallib.sh` compiles only the resolved/pinned MLX checkout's ten prepared Metal sources with `xcrun metal`/`metallib` and upstream kernel flags. The shard runner supplies this library when SwiftPM did not produce one. This replaces the earlier Swift Build CI approach; no dependency/toolchain bump was introduced.
+
+The new standalone library passed 70 application tests and the 10-test encoder suite locally (fixture-only reference cases skipped). A mocked shard invocation exercised discovery, actual Metal compilation, environment propagation, and skip-build test execution. Classifier, shard assignment, shell syntax, and diff checks passed.
+
+Preparation no longer clears toggle-to-stop state during an active interaction/audio session. Native model override resolution is shared across path selection, download, and deletion, treating an empty value as unset. Legacy LiteRT overrides remain explicitly unsupported; no alternate weights are silently substituted.
