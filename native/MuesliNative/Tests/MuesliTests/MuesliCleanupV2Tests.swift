@@ -24,6 +24,23 @@ struct MuesliCleanupV2Tests {
         #expect(Gemma4LiteRTModelStore.cleanupOverrideURL(environment: ["MUESLI_CLEANUP_V2_MODEL_PATH": " /tmp/model "]) == URL(fileURLWithPath: "/tmp/model"))
     }
 
+    @Test func legacyOverrideGuardsNormalizeBlankPaths() {
+        #expect(!Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: [:]))
+        for key in [Gemma4LiteRTModelStore.modelPathEnvVar, "MUESLI_CLEANUP_V2_MODEL_PATH"] {
+            for blank in ["", "  ", "\n\t"] {
+                let environment = [key: blank]
+                #expect(!Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: environment))
+                for model in [Gemma4LiteRTModel.e2b, .e4b, .muesliCleanupV2] {
+                    #expect(Gemma4LiteRTModelStore.isAvailableLocally(model: model, environment: environment)
+                        == GemmaNativeAudioModels.isAvailable(model, environment: environment))
+                }
+            }
+            let environment = [key: " /tmp/legacy-model "]
+            #expect(Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: environment))
+            #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+        }
+    }
+
     @Test func trainingContract() {
 
         let request = MuesliCleanupV2Prompt.request("hello", appContext: String(repeating: "x", count: 1300))
@@ -104,61 +121,8 @@ struct ManagedCleanupV12Tests {
         #expect(!ran)
     }
 
-    @Test func gemmaLongIdleWarmup() async throws {
-        guard #available(macOS 15, *),
-              let fixturePath = ProcessInfo.processInfo.environment["MUESLI_LATENCY_FIXTURE"],
-              let reportPath = ProcessInfo.processInfo.environment["MUESLI_IDLE_REPORT"] else { return }
-        struct Fixture: Decodable {
-            let rawASRText: String
-            let appContextText: String?
-            let cleanupOutputText: String
-        }
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
-        let inputs = [fixture.rawASRText,
-                      "Put this in bullet points. First send the report tomorrow. Second check the formatting. Third compare the latency.",
-                      "Make a numbered list. First open the settings. Second select the cleanup model. Third test the output."]
-        let transcriber = Gemma4LiteRTTranscriber()
-        var baseline: [String] = []
-        var rows: [[String: Any]] = []
-        for input in inputs {
-            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
-                appContext: fixture.appContextText, model: .muesliCleanupV2)
-            baseline.append(result.text)
-            #expect(!result.didFallback)
-        }
-        #expect(baseline[0] == fixture.cleanupOutputText)
-        let recent = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        #expect(!recent)
-        Gemma4LiteRTLogging.profile("idle_test waiting_seconds=180")
-        try await Task.sleep(for: .seconds(180))
-        let expired = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime - 3)
-        #expect(!expired)
-        let cancelledTask = Task {
-            withUnsafeCurrentTask { $0?.cancel() }
-            return await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        }
-        let cancelled = await cancelledTask.value
-        #expect(!cancelled)
-        let warmStart = ProcessInfo.processInfo.systemUptime
-        let ran = await transcriber.warmUpCleanupIfIdle(requestedAt: warmStart)
-        #expect(ran)
-        let warmSeconds = ProcessInfo.processInfo.systemUptime - warmStart
-        let duplicate = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        #expect(!duplicate)
-        try await Task.sleep(for: .seconds(15))
-        for (index, input) in inputs.enumerated() {
-            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
-                appContext: fixture.appContextText, model: .muesliCleanupV2)
-            #expect(!result.didFallback)
-            #expect(result.text == baseline[index])
-            #expect(result.rawOutput == result.text)
-            rows.append(["index": index, "seconds": result.processingTime, "output": result.text,
-                         "baseline": baseline[index], "warmupSeconds": warmSeconds])
-        }
-        try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
-            .write(to: URL(fileURLWithPath: reportPath))
-        await transcriber.shutdown()
-    }
+    // The retired LiteRT idle-refresh experiment is intentionally removed.
+    // Native preparation and readiness invalidation are covered by GemmaNativeAudioTests.
 
     /// Private fixture is a cleanup debug log row, kept outside the repository.
     @Test func gemmaLatencyInvestigation() async throws {

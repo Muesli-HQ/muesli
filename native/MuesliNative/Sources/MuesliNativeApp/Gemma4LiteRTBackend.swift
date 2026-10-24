@@ -201,15 +201,19 @@ enum Gemma4LiteRTModelStore {
         environment[backendEnvVar]?.lowercased() == "cpu" ? "cpu" : "gpu"
     }
 
+    static func hasLegacyModelOverride(environment: [String: String]) -> Bool {
+        localOverrideURL(environment: environment) != nil || cleanupOverrideURL(environment: environment) != nil
+    }
+
     static func isAvailableLocally(model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment, fileManager: FileManager = .default) -> Bool {
-        guard environment[modelPathEnvVar] == nil, environment["MUESLI_CLEANUP_V2_MODEL_PATH"] == nil else { return false }
+        guard !hasLegacyModelOverride(environment: environment) else { return false }
         return GemmaNativeAudioModels.isAvailable(model, environment: environment)
     }
     static func ensureModelDownloaded(model: Gemma4LiteRTModel = .e2b,
         progress: ((Double, String?) -> Void)? = nil, progressSnapshot: ModelDownloadProgressHandler? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment, fileManager: FileManager = .default) async throws -> URL {
-        guard environment[modelPathEnvVar] == nil, environment["MUESLI_CLEANUP_V2_MODEL_PATH"] == nil else {
+        guard !hasLegacyModelOverride(environment: environment) else {
             throw NSError(domain: "GemmaModelStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "LiteRT artifacts are no longer used. Set MUESLI_GEMMA_MLX_MODEL_DIR to the pinned MLX model directory."])
         }
         return try await GemmaNativeAudioModels.ensureDownloaded(model, progress: progress, progressSnapshot: progressSnapshot)
