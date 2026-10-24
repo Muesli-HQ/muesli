@@ -912,6 +912,44 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
+    @Test("a corrupt legacy catalog cannot disable meeting video storage")
+    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let legacy = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        #expect(controller.store == nil)
+        #expect(!controller.hasMedia(meetingID: id))
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try videos.save([clip])
+        controller.reload()
+        #expect(controller.items == [clip])
+    }
+
+    @Test("a failed initial meeting keeps video without retained audio or notes")
+    func failedMeetingKeepsVideo() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let config = ConfigStore(supportDirectory: support)
+        let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
+        let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try Data([1]).write(to: videos.url(for: clip.path))
+        try videos.save([clip])
+        let controller = makeController(dictationStore: store, configStore: config)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(try videos.items() == [clip])
+    }
+
     @Test("a failed initial meeting keeps its retained audio even without manual notes")
     func failedMeetingKeepsRetainedAudio() throws {
         let store = try makeStore()
@@ -1138,6 +1176,22 @@ struct MeetingsNavigationTests {
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("explicit screen recording retains audio without another save prompt")
+    func screenRecordingSkipsRetentionPrompt() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: {
+                Issue.record("Screen recording already opted into retaining media")
+                return false
+            }
+        ))
+        // The separate audio preference must not override an explicit never policy.
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: { true }
+        )))
     }
 
     @Test("WAV recovery reports success and double failure reports the fallback error")

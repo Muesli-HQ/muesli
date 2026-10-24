@@ -747,6 +747,10 @@ struct SettingsView: View {
 
             permissionsSection
 
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
+
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
                     compactActionButton("Clear dictation history", role: .destructive) {
@@ -1154,7 +1158,7 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
                 "Show transcript on hover",
-                description: "Show recent transcript beside the waveform.",
+                description: "Show live transcript when hovering over the pill or notch.",
                 controlWidth: meetingControlWidth
             ) {
                 settingsControl("meeting_hover_transcript")
