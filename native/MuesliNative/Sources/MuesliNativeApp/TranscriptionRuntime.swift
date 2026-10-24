@@ -711,13 +711,9 @@ actor TranscriptionCoordinator {
         case "gemma4-litert":
             if #available(macOS 15, *) {
                 let model = Gemma4LiteRTModel.resolved(backend.model)
-                if GemmaNativeAudioPolicy.isEnabled(for: model) {
-                    progress?(0.9, "Loading native Swift \(model.label)...")
-                    try await nativeGemma(for: model).prepare(model: model)
-                    progress?(1, "Ready")
-                } else {
-                    try await gemma4LiteRTTranscriber.prepare(model: model, progress: progress, progressSnapshot: progressSnapshot)
-                }
+                // The compatibility facade performs managed target + drafter downloads
+                // before preparing the shared native engine, including progress snapshots.
+                try await gemma4LiteRTTranscriber.prepare(model: model, progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "\(backend.label) requires macOS 15 or later.",

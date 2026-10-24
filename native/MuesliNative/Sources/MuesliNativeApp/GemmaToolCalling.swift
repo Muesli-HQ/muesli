@@ -82,8 +82,8 @@ struct GemmaToolGrammar {
         #"integer ::= "-"? ("0" | [1-9] [0-9]*)"#
     ]
     private var next = 0
-    private static func literal(_ value: String) -> String {
-        String(decoding: try! JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes]), as: UTF8.self)
+    private static func literal(_ value: String) throws -> String {
+        String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes]), as: UTF8.self)
     }
     private mutating func rule(_ body: String) -> String {
         let name = "r\(next)"; next += 1
@@ -103,7 +103,7 @@ struct GemmaToolGrammar {
             return rule(branches.joined(separator: " | "))
         }
         if let choices = value["enum"] as? [String], !choices.isEmpty {
-            return rule(choices.map { Self.literal(GemmaToolCalling.argument($0)) }.joined(separator: " | "))
+            return rule(try choices.map { try Self.literal(GemmaToolCalling.argument($0)) }.joined(separator: " | "))
         }
         switch value["type"] as? String ?? (value["required"] != nil ? "object" : "") {
         case "string": return "str"
@@ -116,14 +116,14 @@ struct GemmaToolGrammar {
             let minimum = value["minItems"] as? Int ?? 0
             if let maximum = value["maxItems"] as? Int {
                 guard minimum >= 0, maximum >= minimum, maximum <= 100 else { throw GemmaToolCalling.invalid() }
-                let variants = (minimum...maximum).map { count in
-                    Self.literal("[") + " " + Array(repeating: item, count: count).joined(separator: " " + Self.literal(",") + " ") + " " + Self.literal("]")
+                let variants = try (minimum...maximum).map { count in
+                    try Self.literal("[") + " " + Array(repeating: item, count: count).joined(separator: " " + Self.literal(",") + " ") + " " + Self.literal("]")
                 }
                 return rule(variants.joined(separator: " | "))
             }
             guard minimum >= 0, minimum <= 100 else { throw GemmaToolCalling.invalid() }
             if minimum > 0 {
-                return rule(Self.literal("[") + " " + Array(repeating: item, count: minimum).joined(separator: " " + Self.literal(",") + " ") + #" ("," "# + item + #")* "]""#)
+                return rule(try Self.literal("[") + " " + Array(repeating: item, count: minimum).joined(separator: " " + Self.literal(",") + " ") + #" ("," "# + item + #")* "]""#)
             }
             return rule(#""[" ("# + item + #" ("," "# + item + #")*)? "]""#)
         case "object":
@@ -131,15 +131,15 @@ struct GemmaToolGrammar {
             let required = Set(value["required"] as? [String] ?? [])
             guard required.isSubset(of: Set(properties.keys)) else { throw GemmaToolCalling.invalid() }
             // Two states per field preserve comma placement when optional fields are absent.
-            var empty = Self.literal("")
-            var nonempty = Self.literal("")
+            var empty = try Self.literal("")
+            var nonempty = try Self.literal("")
             for key in properties.keys.sorted().reversed() {
-                let field = Self.literal(key + ":") + " " + (try schema(properties[key]!, depth: depth + 1))
+                let field = try Self.literal(key + ":") + " " + (try schema(properties[key]!, depth: depth + 1))
                 let oldEmpty = empty, oldNonempty = nonempty
                 empty = rule(field + " " + oldNonempty + (required.contains(key) ? "" : " | " + oldEmpty))
-                nonempty = rule(Self.literal(",") + " " + field + " " + oldNonempty + (required.contains(key) ? "" : " | " + oldNonempty))
+                nonempty = rule(try Self.literal(",") + " " + field + " " + oldNonempty + (required.contains(key) ? "" : " | " + oldNonempty))
             }
-            return rule(Self.literal("{") + " " + empty + " " + Self.literal("}"))
+            return rule(try Self.literal("{") + " " + empty + " " + Self.literal("}"))
         default: throw GemmaToolCalling.invalid()
         }
     }
@@ -150,7 +150,7 @@ struct GemmaToolGrammar {
             guard let function = tool["function"] as? [String: Any], let name = function["name"] as? String,
                   name.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil,
                   let parameters = function["parameters"] as? [String: Any] else { throw GemmaToolCalling.invalid() }
-            choices.append(literal("<|tool_call>call:" + name) + " " + (try builder.schema(parameters)) + " " + literal("<tool_call|>"))
+            choices.append(try literal("<|tool_call>call:" + name) + " " + (try builder.schema(parameters)) + " " + literal("<tool_call|>"))
         }
         builder.rules.append("root ::= " + choices.joined(separator: " | "))
         return builder.rules.joined(separator: "\n")

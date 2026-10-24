@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Benchmarks may narrow the test target locally, but CI shards must see every test.
+unset MUESLI_CLEANUP_EVALUATION_ONLY
+
 list_filters=false
 if [[ "${1:-}" == "--list-filters" ]]; then
   list_filters=true
@@ -81,6 +84,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
       GemmaMTPEvaluationTests
       GemmaNativeAudioTests
