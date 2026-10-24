@@ -70,3 +70,7 @@ The Swift 6.3 preview build engine produced duplicate app-target outputs, so CI 
 The new standalone library passed 70 application tests and the 10-test encoder suite locally (fixture-only reference cases skipped). A mocked shard invocation exercised discovery, actual Metal compilation, environment propagation, and skip-build test execution. Classifier, shard assignment, shell syntax, and diff checks passed.
 
 Preparation no longer clears toggle-to-stop state during an active interaction/audio session. Native model override resolution is shared across path selection, download, and deletion, treating an empty value as unset. Legacy LiteRT overrides remain explicitly unsupported; no alternate weights are silently substituted.
+
+### Model deletion isolation
+
+Legacy general/cleanup override variables no longer suppress deletion of unrelated app-managed model directories. Deletion still never resolves an external override path and preserves shared drafter artifacts. Cache-path construction accepts the existing FileManager injection so deletion tests use isolated temporary homes rather than the maintainer's actual model cache. Tests cover all three Gemma models with both legacy overrides present and verify the external file and drafter remain. Final local validation passed 71 application tests plus the 10-test encoder suite (fixture-only references skipped).
