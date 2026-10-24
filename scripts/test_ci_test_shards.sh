@@ -20,7 +20,7 @@ perl -ne '
     print "$1\n";
     $awaiting_suite_type = 0;
   }
-' "$test_root"/*.swift \
+' "$test_root"/*.swift "$test_root/../GemmaAudioEvaluationTests"/*.swift \
   | sort -u > "$tmp_dir/discovered"
 
 for shard in core dictation-transcription meetings; do
