@@ -147,8 +147,50 @@ final class LiveTranscriptPresentationModel {
     }
 }
 
+/// New captions pull the panel to the bottom only while the reader is already there. Once they
+/// scroll up the panel stays put, and it follows again when they return to the bottom.
+struct LiveTranscriptFollowState: Equatable {
+    /// True at first render, before any bottom marker has been measured.
+    private(set) var isAtBottom = true
+
+    /// How far below the visible area the marker may sit and still count as the bottom.
+    static let bottomTolerance: CGFloat = 24
+
+    var shouldFollowNewContent: Bool { isAtBottom }
+
+    /// A provisional tail that is non-empty and differs from the last one. Only then does a
+    /// follower scroll: whitespace-only churn and a tail that went empty need no scroll.
+    static func tailChanged(from old: String, to new: String) -> Bool {
+        let trimmedNew = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedNew.isEmpty && trimmedNew != old.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `markerMinY` is the marker's top edge in the scroll view's space. A lazy stack keeps rows
+    /// loaded below the visible area, so whether the marker exists says nothing about whether
+    /// the reader can see it. An unloaded marker reports `.infinity`.
+    mutating func noteBottomMarker(markerMinY: CGFloat, viewportHeight: CGFloat) {
+        guard viewportHeight > 0 else { return }
+        isAtBottom = markerMinY <= viewportHeight + Self.bottomTolerance
+    }
+}
+
+private struct LiveTranscriptMarkerMinYKey: PreferenceKey {
+    static let defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct LiveTranscriptViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct LiveTranscriptFeedView: View {
     static let bottomAnchorID = "liveTranscriptBottom"
+    static let scrollSpace = "liveTranscriptScroll"
 
     let messages: [TranscriptChatMessage]
     let partialYou: String
@@ -157,6 +199,9 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
+    /// Reports the top edge of the marker after the last caption, in the scroll space named
+    /// `LiveTranscriptFeedView.scrollSpace`. Reports `.infinity` while the marker is not loaded.
+    var onBottomMarkerChange: ((CGFloat) -> Void)? = nil
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -208,8 +253,17 @@ struct LiveTranscriptFeedView: View {
                 Color.clear
                     .frame(height: 1)
                     .id(Self.bottomAnchorID)
+                    .background {
+                        GeometryReader { marker in
+                            Color.clear.preference(
+                                key: LiveTranscriptMarkerMinYKey.self,
+                                value: marker.frame(in: .named(Self.scrollSpace)).minY
+                            )
+                        }
+                    }
             }
         }
+        .onPreferenceChange(LiveTranscriptMarkerMinYKey.self) { onBottomMarkerChange?($0) }
         .padding(.horizontal, horizontalPadding)
         .padding(.top, topPadding)
         .padding(.bottom, bottomPadding)
@@ -223,6 +277,9 @@ struct LiveTranscriptView: View {
     var partialYou: String = ""
     var partialOthers: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
+    @State private var follow = LiveTranscriptFollowState()
+    @State private var markerMinY: CGFloat = .infinity
+    @State private var viewportHeight: CGFloat = 0
     @State private var didCopy = false
 
     private var copyText: String {
@@ -243,45 +300,65 @@ struct LiveTranscriptView: View {
                         partialOthers: presentation.partialOthers,
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
+                        bottomPadding: MuesliTheme.spacing8,
+                        onBottomMarkerChange: {
+                            markerMinY = $0
+                            follow.noteBottomMarker(markerMinY: $0, viewportHeight: viewportHeight)
+                        }
                     )
                     .textSelection(.enabled)
                 }
+                .coordinateSpace(name: LiveTranscriptFeedView.scrollSpace)
+                .background {
+                    GeometryReader { viewport in
+                        Color.clear.preference(
+                            key: LiveTranscriptViewportHeightKey.self,
+                            value: viewport.size.height
+                        )
+                    }
+                }
+                .onPreferenceChange(LiveTranscriptViewportHeightKey.self) {
+                    viewportHeight = $0
+                    follow.noteBottomMarker(markerMinY: markerMinY, viewportHeight: $0)
+                }
                 .onChange(of: transcript) { _, newTranscript in
+                    // Decided before the new lines lay out: the marker is still on screen if the
+                    // reader was at the bottom.
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: newTranscript,
                         partialYou: partialYou,
                         partialOthers: partialOthers
                     )
+                    guard followsNewLines else { return }
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
-                // Partials update every engine chunk; scrolling on each growth
-                // would yank a user who scrolled up back to the bottom every few
-                // seconds. Scroll only when a tail appears (empty → non-empty);
-                // committed captions keep their existing scroll behavior.
+                // A reader at the bottom follows a growing tail, which keeps the new lines from
+                // pushing the marker out of view and ending the follow. A reader who scrolled up
+                // is left alone: the follow decision is read before the new lines lay out.
                 .onChange(of: partialYou) { old, new in
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: transcript,
                         partialYou: new,
                         partialOthers: partialOthers
                     )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if followsNewLines, LiveTranscriptFollowState.tailChanged(from: old, to: new) {
                         scrollToBottom(proxy)
                     }
                 }
                 .onChange(of: partialOthers) { old, new in
+                    let followsNewLines = follow.shouldFollowNewContent
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: new
                     )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if followsNewLines, LiveTranscriptFollowState.tailChanged(from: old, to: new) {
                         scrollToBottom(proxy)
                     }
                 }
