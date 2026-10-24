@@ -30,6 +30,8 @@ struct LiveDictationTextTargetTests {
         var keyboardNoOp = false
         var keyboardFailureAt: Int?
         var afterKeyboard: (() -> Void)?
+        var allowsEmptyLineSentinelRemoval = false
+        var removesInitialNewline = false
 
         init(_ text: String = "Before  after", selection: NSRange = NSRange(location: 7, length: 0)) {
             self.text = text
@@ -47,7 +49,11 @@ struct LiveDictationTextTargetTests {
         }
 
         private func applyReplacement(_ replacement: String) {
-            let nextText = (text as NSString).replacingCharacters(in: selection, with: replacement)
+            var nextText = (text as NSString).replacingCharacters(in: selection, with: replacement)
+            if removesInitialNewline, text.utf16.elementsEqual("\n".utf16),
+               selection == NSRange(location: 0, length: 0) {
+                nextText = replacement
+            }
             let nextCaret = NSRange(location: selection.location + (replacement as NSString).length, length: 0)
             if replacementCaretFirst { pendingText = nextText } else { text = nextText }
             if replacementTextFirst { pendingCaret = nextCaret } else { selection = nextCaret }
@@ -94,7 +100,7 @@ struct LiveDictationTextTargetTests {
                               return true
                           })
                       }
-                  })
+                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval)
         }
     }
 
@@ -420,6 +426,128 @@ struct LiveDictationTextTargetTests {
             #expect(diagnostics.contains { $0.contains(observed == "i" ? "caseOnly=true" : "trailingNewlineOnly=true") })
             #expect(diagnostics.last == "keyboard_text_readback_changed")
             #expect(editor.keyboardSteps == ["I"])
+        }
+    }
+
+    @Test func codexEmptyLineSentinelPolicyIsExplicitAndExact() {
+        #expect(LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(for: "com.openai.codex"))
+        for bundle in [nil, "com.openai.codex.beta", "com.apple.TextEdit", "COM.OPENAI.CODEX"] {
+            #expect(!LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(for: bundle))
+        }
+    }
+
+    @Test func removedInitialSentinelSupportsFullPreviewRevisionAndFinalCleanup() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "I am talking"))
+        #expect(editor.text == "I am talking")
+        #expect(await target.update(text: "I am speaking clearly"))
+        #expect(editor.text == "I am speaking clearly")
+        #expect(await target.finish(text: "I am speaking clearly. "))
+        #expect(editor.text == "I am speaking clearly. ")
+        #expect(editor.selection == NSRange(location: editor.text.utf16.count, length: 0))
+        #expect(diagnostics == ["keyboard_empty_line_sentinel_removed"])
+        #expect(editor.replacements == 0)
+        #expect(!target.isSuspended)
+    }
+
+    @Test func initialSentinelAlternateWaitsForCaretAndUsesUTF16() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        editor.replacementTextFirst = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        clock.onWait = {
+            #expect(editor.keyboardSteps.count == clock.ticks)
+            editor.flushSplitReplacement()
+            target.textTargetDidChange()
+        }
+        #expect(await target.update(text: "🦊 hi"))
+        #expect(editor.text == "🦊 hi")
+        #expect(editor.selection == NSRange(location: 5, length: 0))
+        #expect(diagnostics.contains { $0.contains("text=alternate") && $0.contains("caret=old") })
+        #expect(diagnostics.filter { $0 == "keyboard_empty_line_sentinel_removed" }.count == 1)
+        #expect(await target.finish(text: "🦊 Hi. "))
+        #expect(editor.text == "🦊 Hi. ")
+    }
+
+    @Test func retainedInitialNewlineIsPreservedAcrossPreviewAndFinal() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "I speak"))
+        #expect(editor.text == "I speak\n")
+        #expect(await target.finish(text: "I speak. "))
+        #expect(editor.text == "I speak. \n")
+    }
+
+    @Test func sentinelCompatibilityRequiresEligibleCaptureAndKeyboardTransport() async throws {
+        let cases: [(String, NSRange, LiveDictationTextTarget.Transport, Bool)] = [
+            ("\n", NSRange(location: 0, length: 0), .targetedKeyboard, false),
+            ("\n", NSRange(location: 0, length: 0), .axSelectedText, true),
+            ("\n", NSRange(location: 1, length: 0), .targetedKeyboard, true),
+            ("\n", NSRange(location: 0, length: 1), .targetedKeyboard, true),
+            ("\r\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+            ("\n\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+            ("existing\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+        ]
+        for (initial, selection, transport, capability) in cases {
+            let editor = Editor(initial, selection: selection)
+            editor.transport = transport
+            editor.allowsEmptyLineSentinelRemoval = capability
+            // Simulate removal of preexisting content. Selected newline replacement
+            // is naturally valid, so use an unrelated edit for that one case.
+            let mutate = { editor.text = selection.length == 1 ? "unexpected" : "I" }
+            editor.afterKeyboard = mutate
+            editor.afterReplacement = mutate
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "I speak") == false)
+            #expect(target.isSuspended)
+            #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? 1 : 0))
+            #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+        }
+    }
+
+    @Test func retainedSentinelCannotDisappearOnLaterKey() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.afterKeyboard = {
+            if editor.keyboardSteps.count == 2 { editor.text.removeLast() }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "I speak") == false)
+        #expect(target.isSuspended)
+        #expect(editor.keyboardSteps == ["I", " "])
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func alternateSentinelReadbackTimeoutOrCancellationSendsNoMoreKeys() async throws {
+        for cancel in [false, true] {
+            let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.allowsEmptyLineSentinelRemoval = true
+            editor.removesInitialNewline = true
+            editor.replacementTextFirst = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = { if cancel { target.cancel() } }
+            #expect(await target.update(text: "I speak") == false)
+            editor.flushSplitReplacement()
+            #expect(await target.finish(text: "I speak.") == false)
+            #expect(!target.hasInsertedText)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
         }
     }
 

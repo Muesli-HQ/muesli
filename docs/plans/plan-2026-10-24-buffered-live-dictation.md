@@ -92,6 +92,21 @@ before any selection: unsupported multiline cleanup remains in history rather
 than risking an Enter/Tab action in a chat composer. Other applications retain
 the AX path until their compatibility is verified separately.
 
+The next instrumented Codex trial established a different first-key mismatch:
+observed/stale/desired UTF-16 lengths were 1/1/2, the caret exactly matched the
+desired position, and text differed only by trailing newline. The empty composer
+exposed a single line-break placeholder that disappeared when the first key was
+inserted. For Codex only, a capture of exactly LF with a collapsed caret at zero
+may acknowledge the first keyboard step with that original placeholder removed.
+Adopt the exact observed snapshot for subsequent edits; never trim newlines from
+general snapshots. A retained newline still uses ordinary acknowledgment. The
+exception does not cover other editors, existing content, CRLF, multiple lines,
+nonzero selections, or later revisions. An alternate text snapshot with an old
+caret may wait but cannot authorize another key before the expected caret arrives.
+All 57 native cursor/keyboard tests passed, including the instrumented initial
+state followed by a full preview, revision, and final cleanup. Actual editor
+acceptance remains a separate manual check.
+
 At stop, cancel provisional decoding and use the retained complete WAV through
 the existing dictation ASR, artifact filtering, optional cleanup and custom-word
 pipeline. Apply final text (and existing sentence-spacing policy) once to the

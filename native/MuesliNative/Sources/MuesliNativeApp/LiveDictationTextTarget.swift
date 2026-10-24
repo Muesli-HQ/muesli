@@ -24,6 +24,10 @@ final class LiveDictationTextTarget {
         bundleIdentifier == "com.openai.codex" ? .targetedKeyboard : .axSelectedText
     }
 
+    static func allowsEmptyLineSentinelRemoval(for bundleIdentifier: String?) -> Bool {
+        bundleIdentifier == "com.openai.codex"
+    }
+
     struct KeyboardStep {
         let text: String
         /// Dispatch must revalidate immediately before posting both events.
@@ -38,17 +42,20 @@ final class LiveDictationTextTarget {
         let replaceSelection: (String) -> Bool
         let transport: Transport
         let keyboardPlan: ((String) -> [KeyboardStep]?)?
+        let allowsEmptyLineSentinelRemoval: Bool
 
         init(snapshot: @escaping () -> Snapshot?, isFocused: @escaping () -> Bool,
              select: @escaping (NSRange) -> Bool, replaceSelection: @escaping (String) -> Bool,
              transport: Transport = .axSelectedText,
-             keyboardPlan: ((String) -> [KeyboardStep]?)? = nil) {
+             keyboardPlan: ((String) -> [KeyboardStep]?)? = nil,
+             allowsEmptyLineSentinelRemoval: Bool = false) {
             self.snapshot = snapshot
             self.isFocused = isFocused
             self.select = select
             self.replaceSelection = replaceSelection
             self.transport = transport
             self.keyboardPlan = keyboardPlan
+            self.allowsEmptyLineSentinelRemoval = allowsEmptyLineSentinelRemoval
         }
     }
 
@@ -69,6 +76,7 @@ final class LiveDictationTextTarget {
     private let readbackTiming: ReadbackTiming
     private var isMutating = false
     private var pendingTextValidation = false
+    private var canAcknowledgeEmptyLineSentinelRemoval = false
     private var nativeTarget: AccessibilityTarget?
     private let onDiagnostic: (String) -> Void
     private(set) var isSuspended = false
@@ -89,6 +97,10 @@ final class LiveDictationTextTarget {
         self.readbackTiming = readbackTiming
         expected = snapshot
         ownedRange = snapshot.selection
+        canAcknowledgeEmptyLineSentinelRemoval = access.transport == .targetedKeyboard
+            && access.allowsEmptyLineSentinelRemoval
+            && snapshot.text.utf16.elementsEqual("\n".utf16)
+            && snapshot.selection == NSRange(location: 0, length: 0)
         Self.activeTarget = self
     }
 
@@ -187,14 +199,14 @@ final class LiveDictationTextTarget {
         }
         let selected = Snapshot(text: expected.text, selection: ownedRange)
         guard access.select(ownedRange) else { return suspend("selection_write_failed") }
-        guard await awaitReadback(selected, stale: expected, stage: "selection") else { return false }
+        guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
         // Revalidate immediately before the second write, even after its ACK.
         guard mutationIsCurrent(), access.snapshot() == selected else {
             return suspend("selection_readback_changed")
         }
         guard access.replaceSelection(text) else { return suspend("text_write_failed") }
         let next = Snapshot(text: nextText, selection: nextCaret)
-        guard await awaitReadback(next, stale: selected, stage: "text") else { return false }
+        guard await awaitReadback(next, stale: selected, stage: "text") != nil else { return false }
         hasInsertedText = true
         expected = next
         ownedRange = NSRange(location: ownedRange.location, length: (text as NSString).length)
@@ -217,7 +229,7 @@ final class LiveDictationTextTarget {
                                 length: ownedRange.length - prefixLength)
         var current = Snapshot(text: expected.text, selection: editRange)
         guard access.select(editRange) else { return suspend("selection_write_failed") }
-        guard await awaitReadback(current, stale: expected, stage: "selection") else { return false }
+        guard await awaitReadback(current, stale: expected, stage: "selection") != nil else { return false }
         for step in plan.dropFirst(prefixCount) {
             guard mutationIsCurrent(), access.snapshot() == current else {
                 return suspend("keyboard_target_changed")
@@ -225,40 +237,63 @@ final class LiveDictationTextTarget {
             let nextText = (current.text as NSString).replacingCharacters(in: current.selection, with: step.text)
             let next = Snapshot(text: nextText,
                 selection: NSRange(location: current.selection.location + step.text.utf16.count, length: 0))
+            // Codex can expose an empty composer as one newline, then remove
+            // that placeholder on the first key. Do not normalize at capture:
+            // only acknowledge this exact observed first-key transformation.
+            let sentinelRemoved: Snapshot?
+            if canAcknowledgeEmptyLineSentinelRemoval,
+               current.text.utf16.elementsEqual("\n".utf16),
+               current.selection == NSRange(location: 0, length: 0) {
+                sentinelRemoved = Snapshot(text: step.text, selection: next.selection)
+            } else {
+                sentinelRemoved = nil
+            }
+            canAcknowledgeEmptyLineSentinelRemoval = false
             guard step.send({ self.mutationIsCurrent() && self.access.snapshot() == current }) else {
                 return suspend("keyboard_dispatch_failed")
             }
-            guard await awaitReadback(next, stale: current, stage: "keyboard_text") else { return false }
+            guard let acknowledged = await awaitReadback(next, stale: current, stage: "keyboard_text",
+                                                        alternate: sentinelRemoved) else { return false }
+            if let sentinelRemoved, acknowledged == sentinelRemoved {
+                onDiagnostic("keyboard_empty_line_sentinel_removed")
+            }
             hasInsertedText = true
             // Track acknowledged prefixes so cancellation leaves exactly the text
             // already delivered; later events and queued updates cannot resume it.
-            expected = next
-            ownedRange = NSRange(location: originalBase, length: next.selection.location - originalBase)
-            current = next
+            expected = acknowledged
+            ownedRange = NSRange(location: originalBase, length: acknowledged.selection.location - originalBase)
+            current = acknowledged
         }
         return true
     }
 
     /// An accepted native setter can precede the browser's cached AX tree update.
-    /// Exact old/new text and caret components may settle independently. Anything
-    /// else revokes ownership, and only the complete desired snapshot succeeds.
+    /// Exact old/new text and caret components may settle independently. The
+    /// optional first-key sentinel result is another exact text candidate, with
+    /// the same desired caret. Only a complete desired/alternate snapshot succeeds.
     /// Polling never retries a mutation, and no queued operation can run meanwhile.
-    private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String) async -> Bool {
+    private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String,
+                               alternate: Snapshot? = nil) async -> Snapshot? {
         let deadline = readbackTiming.now() + readbackTiming.timeout
         var reportedStates = Set<String>()
         while true {
-            guard mutationIsCurrent() else { return false }
-            guard let observed = access.snapshot() else { return suspend("\(stage)_readback_unavailable") }
-            if observed == desired { return true }
+            guard mutationIsCurrent() else { return nil }
+            guard let observed = access.snapshot() else {
+                suspend("\(stage)_readback_unavailable")
+                return nil
+            }
+            if observed == desired { return observed }
+            if let alternate, observed == alternate { return observed }
             // AX value and selection are separate reads and may be refreshed by
-            // the editor in either order. Only the exact old/new components are
+            // the editor in either order. Only the exact allowed components are
             // eligible to settle; an intermediate snapshot never authorizes the
             // next write, even if its caret is beyond the stale text's end.
             let oldText = observed.text.utf16.elementsEqual(stale.text.utf16)
             let newText = observed.text.utf16.elementsEqual(desired.text.utf16)
+            let alternateText = alternate.map { observed.text.utf16.elementsEqual($0.text.utf16) } ?? false
             let oldCaret = observed.selection == stale.selection
             let newCaret = observed.selection == desired.selection
-            let textState = newText ? "new" : oldText ? "old" : "other"
+            let textState = newText ? "new" : oldText ? "old" : alternateText ? "alternate" : "other"
             let caretState = newCaret ? "new" : oldCaret ? "old" : "other"
             let state = "\(textState):\(caretState)"
             let timedOut = readbackTiming.now() >= deadline
@@ -275,10 +310,14 @@ final class LiveDictationTextTarget {
                     .elementsEqual(withoutTrailingNewlines(desired.text).utf16)
                 onDiagnostic("\(stage)_readback_state:text=\(textState),lengths=\(observed.text.utf16.count)/\(stale.text.utf16.count)/\(desired.text.utf16.count),caret=\(caretState),ranges=\(observed.selection.location):\(observed.selection.length)/\(stale.selection.location):\(stale.selection.length)/\(desired.selection.location):\(desired.selection.length),caseOnly=\(caseOnly),trailingNewlineOnly=\(trailingNewlineOnly)")
             }
-            guard (oldText || newText) && (oldCaret || newCaret) else {
-                return suspend("\(stage)_readback_changed")
+            guard (oldText || newText || alternateText) && (oldCaret || newCaret) else {
+                suspend("\(stage)_readback_changed")
+                return nil
             }
-            guard !timedOut else { return suspend("\(stage)_readback_timeout") }
+            guard !timedOut else {
+                suspend("\(stage)_readback_timeout")
+                return nil
+            }
             await readbackTiming.wait()
         }
     }
@@ -433,7 +472,8 @@ private final class AccessibilityTarget {
                                                    validateTarget: validate)
                 })
             }
-        })
+        }, allowsEmptyLineSentinelRemoval: LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(
+            for: application.bundleIdentifier))
     }
 
     func observeChanges(onFocusChange: @escaping () -> Void, onTextChange: @escaping () -> Void,
