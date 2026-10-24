@@ -55,14 +55,10 @@ struct ComputerUseLocalPlannerBenchmarkTests {
                  ComputerUseToolRegistry.nativeToolDefinitions(), "move_cursor")
             ]
             for (name, system, prompt, tools, expected) in cases {
-                let compareMTP = ProcessInfo.processInfo.environment["MUESLI_CUA_MTP_COMPARISON"] == "1"
-                let originalMTP = ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_MTP"]
-                defer {
-                    if let originalMTP { setenv("MUESLI_GEMMA_TOOL_MTP", originalMTP, 1) }
-                    else { unsetenv("MUESLI_GEMMA_TOOL_MTP") }
-                }
-                for mode in (compareMTP ? ["0", "1", "hybrid", "0", "1", "hybrid"] : [originalMTP ?? "0"]) {
-                    if compareMTP { setenv("MUESLI_GEMMA_TOOL_MTP", mode, 1) }
+                // Compare defaults against MUESLI_GEMMA_MLX_MTP=0 in separate processes:
+                // shared resident engines intentionally snapshot policy at initialization.
+                let mode = GemmaMTPPolicy.isEnabled() ? "hybrid" : "off"
+                for _ in 0..<2 {
                     let start = Date()
                     do {
                         let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: system, userPrompt: prompt, model: model.id, tools: tools)

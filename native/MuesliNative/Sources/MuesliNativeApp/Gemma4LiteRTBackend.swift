@@ -114,7 +114,6 @@ enum Gemma4LiteRTModelStore {
     static let promptEnvVar = "MUESLI_GEMMA4_LITERT_PROMPT"
     static let cacheDirEnvVar = "MUESLI_GEMMA4_LITERT_CACHE_DIR"
     static let backendEnvVar = "MUESLI_GEMMA4_LITERT_BACKEND"
-    static let mtpEnvVar = "MUESLI_GEMMA4_LITERT_MTP"
     // Preserve the original E2B constants as source-compatible defaults.
     static let repoID = Gemma4LiteRTModel.e2b.repoID
     static let modelFilename = Gemma4LiteRTModel.e2b.filename
@@ -200,13 +199,6 @@ enum Gemma4LiteRTModelStore {
 
     static func resolvedBackend(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         environment[backendEnvVar]?.lowercased() == "cpu" ? "cpu" : "gpu"
-    }
-
-    static func shouldEnableMTP(
-        modelSupportsMTP: Bool,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        modelSupportsMTP && environment[mtpEnvVar] != "0"
     }
 
     static func isAvailableLocally(model: Gemma4LiteRTModel = .e2b,

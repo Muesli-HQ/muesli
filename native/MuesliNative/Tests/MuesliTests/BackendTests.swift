@@ -299,16 +299,6 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(Gemma4LiteRTTranscriber.maxOutputTokens == 128)
     }
 
-    @Test("gemma4 enables MTP only for supported models unless disabled")
-    func gemma4MTPSelection() {
-        #expect(Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: true, environment: [:]))
-        #expect(!Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: false, environment: [:]))
-        #expect(!Gemma4LiteRTModelStore.shouldEnableMTP(
-            modelSupportsMTP: true,
-            environment: [Gemma4LiteRTModelStore.mtpEnvVar: "0"]
-        ))
-    }
-
     @available(macOS 15, *)
     @Test("gemma4 response parser throws on unrecognized content")
     func gemma4ResponseParserThrowsOnUnknownShape() {
