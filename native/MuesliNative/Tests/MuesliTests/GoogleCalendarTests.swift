@@ -295,12 +295,16 @@ struct GoogleCalendarTests {
     @Test("CalendarMonitor skips short-form Teams links without a meeting ID")
     func shortFormTeamsLinkRequiresMeetingID() {
         for host in ["teams.microsoft.com", "teams.live.com"] {
-            let notes = """
-            Old link: https://\(host)/meet/?p=Stale
-            Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
-            """
-            let url = CalendarMonitor.findMeetingURL(in: notes)
-            #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+            for suffix in ["", "?p=Stale", "#fragment", "/?p=Stale"] {
+                let invalidLink = "https://\(host)/meet/\(suffix)"
+                #expect(CalendarMonitor.findMeetingURL(in: invalidLink) == nil)
+                let notes = """
+                Old link: \(invalidLink)
+                Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+                """
+                let url = CalendarMonitor.findMeetingURL(in: notes)
+                #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+            }
         }
     }
 
@@ -338,6 +342,9 @@ struct GoogleCalendarTests {
         for nonMeetingURL in [
             "https://teams.live.com/v2/",
             "https://teams.live.com/meet/",
+            "https://teams.live.com/meet/?p=Stale",
+            "https://teams.live.com/meet/#fragment",
+            "https://teams.live.com/meet//?p=Stale",
             "https://notteams.live.com/meet/9312345678901",
         ] {
             let event = EKEvent(eventStore: EKEventStore())
