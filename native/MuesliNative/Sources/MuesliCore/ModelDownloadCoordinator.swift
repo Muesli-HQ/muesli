@@ -329,6 +329,12 @@ public actor ModelDownloadCoordinator {
         try validateManifestPaths(manifest, in: directory)
         let callerID = UUID()
         let jobKey = makeJobKey(for: manifest, directory: directory)
+        // A canceled job still owns its partial files until finish runs. Drain it
+        // before registering a fresh caller, and recheck after actor reentrancy.
+        while let previous = inFlight[jobKey], previous.isCancelled {
+            _ = try? await previous.value
+            try Task.checkCancellation()
+        }
         if inFlight[jobKey] != nil {
             if let progress {
                 progressHandlers[jobKey, default: [:]][callerID] = progress

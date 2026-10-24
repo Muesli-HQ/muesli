@@ -173,13 +173,14 @@ struct ManagedCleanupV12Tests {
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
         var rows: [[String: Any]] = []
         let warmupExperiment = ProcessInfo.processInfo.environment["MUESLI_LATENCY_WARMUP"] == "1"
-        for (label, contextTokens, context) in [
-            ("full_4096", Int32(4096), fixture.appContextText),
-            ("full_2048", Int32(2048), fixture.appContextText),
-            ("app_only_4096", Int32(4096), Optional("App: ChatGPT")),
-            ("full_4096_repeat", Int32(4096), fixture.appContextText)
+        // Native MLX uses a dynamic KV cache, not LiteRT's fixed context allocation.
+        // Compare actual prompt contexts, not unsupported allocation budgets.
+        for (label, context) in [
+            ("full_context", fixture.appContextText),
+            ("app_only", Optional("App: ChatGPT")),
+            ("full_context_repeat", fixture.appContextText)
         ] {
-            if warmupExperiment && label != "full_4096" { continue }
+            if warmupExperiment && label != "full_context" { continue }
             let transcriber = Gemma4LiteRTTranscriber()
             if warmupExperiment {
                 Gemma4LiteRTLogging.profile("experiment warmup=unrelated_short_input")
@@ -192,7 +193,7 @@ struct ManagedCleanupV12Tests {
                 }
                 Gemma4LiteRTLogging.profile("experiment variant=\(label) iteration=\(iteration)")
                 let result = try await transcriber.cleanTranscript(fixture.rawASRText,
-                    systemPrompt: "", appContext: context, model: .muesliCleanupV2, contextTokens: contextTokens)
+                    systemPrompt: "", appContext: context, model: .muesliCleanupV2)
                 rows.append(["variant": label, "iteration": iteration, "generationSeconds": result.processingTime,
                              "output": result.text, "rawOutput": result.rawOutput, "fallback": result.didFallback,
                              "matchesRecordedOutput": result.text == fixture.cleanupOutputText])

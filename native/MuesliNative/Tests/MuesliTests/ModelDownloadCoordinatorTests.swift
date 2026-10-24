@@ -1831,17 +1831,21 @@ struct ModelDownloadCoordinatorTests {
             }
             firstReturned.markCompleted()
         }
-        try await Task.sleep(for: .milliseconds(20))
-        let second = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved) }
-        try await Task.sleep(for: .milliseconds(20))
+        #expect(tracker.waitUntilRequestStarts())
+        let registered = DownloadCompletionFlag()
+        let second = Task {
+            try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved) { _ in
+                registered.markCompleted()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !registered.isCompleted && ContinuousClock.now < deadline { await Task.yield() }
+        #expect(registered.isCompleted)
         first.cancel()
 
-        try await Task.sleep(for: .milliseconds(20))
+        await #expect(throws: CancellationError.self) { try await first.value }
         #expect(firstReturned.isCompleted)
         try await second.value
-        await #expect(throws: CancellationError.self) {
-            try await first.value
-        }
         #expect(tracker.requestCount == 1)
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
     }
@@ -2116,6 +2120,29 @@ struct ModelDownloadCoordinatorTests {
         }
         #expect(tracker.activeCount == 0)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+    }
+
+    @Test("a new caller retries after cancellation instead of joining a canceled transfer")
+    func newCallerAfterCancellationStartsReplacement() async throws {
+        let tracker = DownloadTestTracker()
+        let data = Data(repeating: 0x44, count: 256 * 1024)
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: data, chunkSize: 4096, delay: 0.002, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "retry-after-cancel", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/retry")), expectedByteCount: Int64(data.count))])
+        let first = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        #expect(tracker.waitUntilRequestStarts())
+        // No cancelAndWait: the replacement must itself drain a canceled writer.
+        await coordinator.cancel(modelID: manifest.id)
+        try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true)
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == data)
+        #expect(tracker.requestCount == 2)
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {
