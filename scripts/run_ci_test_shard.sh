@@ -216,7 +216,9 @@ if [[ "${list_filters}" == true ]]; then
   exit 0
 fi
 
-build_args=(--package-path native/MuesliNative)
+# Swift 6.3 defaults to the legacy build engine, which does not compile Metal.
+# Swift Build applies Xcode's resource rules, including MLX's shader library.
+build_args=(--package-path native/MuesliNative --build-system swiftbuild)
 if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi

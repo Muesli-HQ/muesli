@@ -393,6 +393,24 @@ struct GemmaNativeAudioTests {
         #expect(attempted == [.e2b])
     }
 
+    @MainActor @Test func nonGemmaQuillDependencyBlocksUntilPreparationCompletes() async {
+        let gate = GemmaRecordingPreparationGate()
+        let plan = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil,
+            additionalPreparationKey: "quill-asr:whisper:base")
+        #expect(plan.entries.isEmpty && !plan.isEmpty)
+        var resume: CheckedContinuation<Void, Never>?
+        var ready = false
+        #expect(!gate.request(plan, prepare: {
+            await withCheckedContinuation { resume = $0 }
+        }, ready: { ready = true }, failed: { _ in Issue.record("Preparation failed") }))
+        while resume == nil { await Task.yield() }
+        #expect(!ready && gate.pendingKey == plan.key)
+        resume?.resume()
+        await gate.waitForPreparation()
+        #expect(ready && gate.readyKey == plan.key)
+        #expect(gate.request(plan, prepare: { Issue.record("Ready backend reloaded") }, ready: {}, failed: { _ in }))
+    }
+
     @Test func quillInteractionRequiresItsModelWithoutHostedCredentials() async throws {
         enum Failure: Error { case invalidArtifact }
         // Hosted dictation credentials are not inputs to a local Quill plan.
