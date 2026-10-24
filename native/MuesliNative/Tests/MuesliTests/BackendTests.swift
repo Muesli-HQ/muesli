@@ -104,6 +104,11 @@ struct SenseVoiceTranscriberTests {
 
 @Suite("Gemma4LiteRTTranscriber")
 struct Gemma4LiteRTTranscriberTests {
+    private final class IsolatedModelFileManager: FileManager, @unchecked Sendable {
+        let isolatedHome: URL
+        init(home: URL) { isolatedHome = home; super.init() }
+        override var homeDirectoryForCurrentUser: URL { isolatedHome }
+    }
 
     @Test("gemma4 model uses managed download metadata")
     func gemma4Model() {
@@ -175,7 +180,8 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
         #expect(!Gemma4LiteRTModelStore.isValidLiteRTLMFile(at: dir, minimumSizeBytes: 1))
 
-        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment)
+        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment,
+            fileManager: IsolatedModelFileManager(home: dir.appendingPathComponent("home")))
 
         #expect(FileManager.default.fileExists(atPath: dir.path))
         #expect(FileManager.default.fileExists(atPath: sentinelURL.path))
@@ -194,11 +200,39 @@ struct Gemma4LiteRTTranscriberTests {
         try Data("keep".utf8).write(to: siblingURL)
 
         let environment = [Gemma4LiteRTModelStore.modelPathEnvVar: modelURL.path]
-        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment)
+        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment,
+            fileManager: IsolatedModelFileManager(home: dir.appendingPathComponent("home")))
 
         #expect(FileManager.default.fileExists(atPath: modelURL.path))
         #expect(FileManager.default.fileExists(atPath: siblingURL.path))
         #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+    }
+
+    @Test("legacy overrides preserve external files without blocking managed deletion")
+    func unrelatedOverridesDoNotBlockManagedDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let fm = IsolatedModelFileManager(home: root.appendingPathComponent("home"))
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let external = root.appendingPathComponent("external.litertlm")
+        try Data("external".utf8).write(to: external)
+        for model in Gemma4LiteRTModel.allCases {
+            let managed = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.descriptor(for: model), fileManager: fm)
+            let legacy = Gemma4LiteRTModelStore.cacheDirectory(for: model, fileManager: fm)
+            let drafter = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.drafter(for: model), fileManager: fm)
+            for directory in [managed, legacy, drafter] {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                try Data("keep-or-delete".utf8).write(to: directory.appendingPathComponent("sentinel"))
+            }
+            try Gemma4LiteRTModelStore.deleteModelFiles(model: model, environment: [
+                Gemma4LiteRTModelStore.modelPathEnvVar: external.path,
+                "MUESLI_CLEANUP_V2_MODEL_PATH": external.path,
+            ], fileManager: fm)
+            #expect(!fm.fileExists(atPath: managed.path))
+            #expect(!fm.fileExists(atPath: legacy.path))
+            #expect(fm.fileExists(atPath: drafter.appendingPathComponent("sentinel").path))
+            #expect(try Data(contentsOf: external) == Data("external".utf8))
+        }
     }
 
     @Test("gemma4 default paths use managed model cache")

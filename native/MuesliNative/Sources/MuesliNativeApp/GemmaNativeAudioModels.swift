@@ -38,8 +38,8 @@ enum GemmaNativeAudioModels {
     static func directory(for model: Gemma4LiteRTModel, environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         overrideDirectory(environment: environment) ?? artifactDirectory(descriptor(for: model))
     }
-    static func artifactDirectory(_ artifact: ManagedCleanupModel) -> URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/mlx-evaluation/" + artifact.revision)
+    static func artifactDirectory(_ artifact: ManagedCleanupModel, fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/mlx-evaluation/" + artifact.revision)
     }
     static func isAvailable(_ model: Gemma4LiteRTModel, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         descriptor(for: model).isPresent(at: directory(for: model, environment: environment))
