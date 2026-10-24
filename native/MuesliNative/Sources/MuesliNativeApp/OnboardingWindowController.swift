@@ -116,6 +116,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Welcome to Muesli"
+        window.identifier = NSUserInterfaceItemIdentifier("window.onboarding")
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.titlebarAppearsTransparent = true

@@ -171,6 +171,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = AppIdentity.displayName
+        window.identifier = NSUserInterfaceItemIdentifier("window.dashboard")
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentMinSize = NSSize(

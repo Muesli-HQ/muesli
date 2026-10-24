@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "description": "Reviewed path policy for the advisory macOS UI-rendering suites. The trusted dispatcher must read this file from its pinned default-branch revision, not from a pull-request checkout.",
+  "categories": {
+    "ui": [
+      "native/MuesliNative/Sources/MuesliNativeApp/*View.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/*Window*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/AppEntry.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/AppDelegate.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/AppState.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/MuesliController.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/MuesliTheme.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/MuesliSetting*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/MuesliSettings*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Onboarding*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/PreferencesWindowController.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/RecentHistoryWindowController.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Floating*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Notch*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/RecordingIndicator*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Indicator*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/FeatureTour*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Diagnostic*View.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Markdown*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/AppFonts.swift"
+    ],
+    "state": [
+      "native/MuesliNative/Sources/MuesliNativeApp/ConfigStore.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/RuntimePaths.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Models.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/Meeting*State*.swift",
+      "native/MuesliNative/Sources/MuesliNativeApp/OnboardingProgress.swift",
+      "native/MuesliNative/Sources/MuesliCore/DictationStore.swift",
+      "native/MuesliNative/Sources/MuesliCore/StorageModels.swift"
+    ],
+    "assets": [
+      "native/MuesliNative/Sources/MuesliNativeApp/Resources/**",
+      "assets/AppIcon*",
+      "assets/fonts/**",
+      "assets/**/*.xcassets/**"
+    ],
+    "fixtures_and_baselines": [
+      "native/MuesliNative/Sources/MuesliNativeApp/VisualTesting/**",
+      "native/MuesliNative/Tests/MuesliSnapshotTests/**",
+      "native/VisualTesting/Fixtures/**",
+      "native/VisualTesting/Baselines/**",
+      "native/VisualTesting/*.json"
+    ],
+    "project": [
+      "native/MuesliNative/Package.swift",
+      "native/MuesliNative/Package.resolved",
+      "native/MuesliXcode/project.yml",
+      "native/MuesliXcode/VisualE2ETests/**",
+      "native/MuesliXcode/VisualTestHost/**",
+      "native/MuesliXcode/*.xcscheme"
+    ],
+    "rendering_infrastructure": [
+      "scripts/classify_ui_changes.py",
+      "scripts/ui_rendering_paths.json",
+      "scripts/run_ui_rendering_tests.sh",
+      "scripts/ui_rendering_report.py",
+      "scripts/test_classify_ui_changes.py",
+      "scripts/test_ui_rendering_report.py",
+      "ci/ui-rendering-profile.json",
+      "docs/ui-rendering-ci.md"
+    ]
+  }
+}

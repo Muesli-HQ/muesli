@@ -193,6 +193,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .help(label)
         .accessibilityLabel(label)
+        .accessibilityIdentifier("sidebar.\(tab.rawValue)")
         // Match the expanded rows so a tour targeting the sidebar keeps its
         // spotlight when the rail is collapsed mid-tour.
         .featureTourTarget(
@@ -335,6 +336,7 @@ struct SidebarView: View {
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .focused($isSearchFieldFocused)
+                .accessibilityIdentifier("sidebar.search")
             if !appState.searchQuery.isEmpty {
                 Button {
                     controller.clearSearch()
@@ -600,6 +602,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, sidebarRowOuterPadding)
+        .accessibilityIdentifier("sidebar.\(tab.rawValue)")
         .featureTourTarget(tab == .timeline ? .timelineSidebar : nil)
     }
 
