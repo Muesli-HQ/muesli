@@ -94,6 +94,14 @@ struct DashboardRootView: View {
             } detail: {
                 detailContent
             }
+            .sheet(
+                item: Binding<MeetingContactCreationRequest?>(
+                    get: { appState.meetingContactCreationRequest },
+                    set: { appState.meetingContactCreationRequest = $0 }
+                )
+            ) { request in
+                NewMeetingContactView(flow: request.flow)
+            }
         }
         .tint(MuesliTheme.accent)
         .frame(
