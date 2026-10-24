@@ -423,6 +423,16 @@ enum MeetingSummaryClient {
         return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
     }
 
+    static let emptyRecordingNotes = "No speech was captured in this recording."
+
+    /// A recording with no transcript and no typed notes has nothing to title or summarize.
+    /// Sending it to the model produced invented titles ("Meeting Title Required") and a
+    /// summary that said the transcript was empty.
+    static func hasNothingToSummarize(transcript: String, manualNotes: String?) -> Bool {
+        transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (manualNotes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     static func summaryFailureNotes(transcript: String, meetingTitle: String, error: Error, manualNotes: String? = nil) -> String {
         let trimmedTitle = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
