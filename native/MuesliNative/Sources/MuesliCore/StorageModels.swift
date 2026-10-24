@@ -453,6 +453,12 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         )
     }
 
+    /// A summary-less import edits, copies and exports its original manual notes.
+    public var usesImportedManualNotes: Bool {
+        source == .granolaImport
+            && formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public var notesState: MeetingNotesState {
         let trimmed = formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .missing }

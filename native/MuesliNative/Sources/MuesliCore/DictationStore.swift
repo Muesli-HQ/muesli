@@ -320,6 +320,12 @@ public final class DictationStore {
         }
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meeting_folders_parent ON meeting_folders(parent_id)", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_folder ON meetings(folder_id)", nil, nil, nil)
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_meetings_live_chronological
+                ON meetings(julianday(start_time) DESC, id DESC) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_meetings_folder_chronological
+                ON meetings(folder_id, julianday(start_time) DESC, id DESC) WHERE deleted_at IS NULL;
+            """, db: db)
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL", nil, nil, nil) != SQLITE_OK {
             let msg = String(cString: sqlite3_errmsg(db))
             if !msg.localizedCaseInsensitiveContains("duplicate column") {
@@ -936,8 +942,8 @@ public final class DictationStore {
 
         var sql: String
         if folderID != nil {
-            // Recursive CTE collects the selected folder and all descendants
-            // without needing one placeholder per folder.
+            // Each descendant contributes at most `limit` candidates via the folder/date
+            // index. The final merge sorts only those candidates, not the folder's history.
             sql = """
                 WITH RECURSIVE folder_tree(id) AS (
                     SELECT id FROM meeting_folders WHERE id = ?
@@ -946,7 +952,15 @@ public final class DictationStore {
                     JOIN folder_tree ft ON mf.parent_id = ft.id
                 )
                 SELECT \(Self.meetingColumns) FROM meetings
-                WHERE folder_id IN (SELECT id FROM folder_tree) AND deleted_at IS NULL\(originCondition)
+                WHERE id IN (
+                    SELECT candidate.id FROM folder_tree f
+                    JOIN meetings candidate ON candidate.id IN (
+                        SELECT id FROM meetings
+                        WHERE folder_id = f.id AND deleted_at IS NULL\(originCondition)
+                        ORDER BY julianday(start_time) DESC, id DESC
+                        LIMIT ?
+                    )
+                )
                 ORDER BY julianday(start_time) DESC, id DESC
                 """
         } else {
@@ -962,6 +976,8 @@ public final class DictationStore {
         var bindIndex: Int32 = 1
         if let folderID {
             sqlite3_bind_int64(statement, bindIndex, folderID)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, Int64(limit ?? -1))
             bindIndex += 1
         }
         if let limit {
@@ -5850,7 +5866,7 @@ extension DictationStore {
             sqlite3_reset(insert); sqlite3_clear_bindings(insert)
             text(record.title, 1, insert); text(formatISODate(record.createdAt), 2, insert)
             text(record.transcript, 3, insert); text(record.summary, 4, insert); text(record.notes, 5, insert)
-            sqlite3_bind_int64(insert, 6, Int64(Self.countWords(in: record.transcript)))
+            sqlite3_bind_int64(insert, 6, Int64(Self.countWords(in: record.transcript) + Self.countWords(in: record.notes)))
             sqlite3_bind_int64(insert, 7, try importFolder())
             sqlite3_bind_double(insert, 8, Date().timeIntervalSince1970)
             text(record.syncIdentity, 9, insert)

@@ -109,6 +109,8 @@ struct MeetingExporter {
         case .notes:
             if let notesOverride {
                 parts.append(notesOverride)
+            } else if meeting.usesImportedManualNotes {
+                parts.append(meeting.manualNotes)
             } else if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {

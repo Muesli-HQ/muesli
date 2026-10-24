@@ -53,12 +53,33 @@ struct MeetingExporterTests {
     func granolaSummaryDoesNotUseLocalFallbackHeuristics() {
         let summary = "## Raw Transcript\nImported summary text"
         let meeting = makeMeeting(formattedNotes: summary, source: .granolaImport)
+        #expect(MeetingDetailView.defaultDocumentMode(for: meeting) == .notes)
+        #expect(MeetingDetailView.defaultDocumentMode(for: makeMeeting(rawTranscript: "", formattedNotes: summary, source: .granolaImport)) == .notes)
         for content: MeetingExportContent in [.notes, .fullMeeting] {
             #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content).contains(summary))
         }
         let withoutSummary = makeMeeting(formattedNotes: "", source: .granolaImport)
         let notes = MeetingExporter.buildMarkdown(meeting: withoutSummary, content: .notes)
         #expect(!notes.contains(withoutSummary.rawTranscript))
+        #expect(MeetingDetailView.defaultDocumentMode(for: withoutSummary) == .transcript)
+    }
+
+    @Test("Manual-note-only Granola imports display, copy and export the same notes")
+    func granolaManualNotesFallback() {
+        let meeting = makeMeeting(rawTranscript: "", formattedNotes: " \n", manualNotes: "My original notes", source: .granolaImport)
+        #expect(meeting.usesImportedManualNotes)
+        #expect(MeetingDetailView.defaultDocumentMode(for: meeting) == .notes)
+        #expect(MeetingDetailView.notesContent(for: meeting) == meeting.manualNotes)
+        #expect(MeetingDetailView.notesCopyContent(for: meeting) == meeting.manualNotes)
+        #expect(MeetingDetailView.notesExportOverride(for: meeting) == meeting.manualNotes)
+        for content: MeetingExportContent in [.notes, .fullMeeting] {
+            #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content).contains(meeting.manualNotes))
+        }
+        let withSummary = makeMeeting(manualNotes: "Manual", source: .granolaImport)
+        #expect(!withSummary.usesImportedManualNotes)
+        #expect(MeetingDetailView.notesContent(for: withSummary) == withSummary.formattedNotes)
+        // Clearing a manual note must not switch subsequent edits into the summary field.
+        #expect(makeMeeting(formattedNotes: "", manualNotes: "", source: .granolaImport).usesImportedManualNotes)
     }
 
     // MARK: - Markdown composition

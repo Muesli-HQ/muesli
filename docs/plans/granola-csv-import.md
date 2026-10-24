@@ -32,6 +32,11 @@ transcript-only, and manual-note-only records are accepted. Missing content stay
 empty. A malformed row rejects the file before persistence; database failures
 roll back the entire import batch.
 
+When a summary is absent, Notes displays, edits, copies and exports the original
+manual notes. Summary and manual-note imports open in Notes; transcript-only
+imports open in Transcript. Word counts include transcript and manual-note words,
+matching native meeting storage, and exclude generated summaries.
+
 Imports skip existing document IDs, including tombstones, without overwriting
 local edits. The stable sync identity also prevents a repeat import from creating
 another local row when that document has already arrived via iCloud. Existing
@@ -70,6 +75,9 @@ available for unsupported archive variants. macOS metadata files are ignored.
 The preview and default meeting browser sort newest first by document creation
 date. The store orders by date before applying the browser's 200-record limit,
 so a large historical import does not displace newer meetings based on insertion order.
+Partial date indexes cover live meetings globally and within each folder. Folder
+queries take at most the requested limit from each descendant before merging,
+so the browser does not sort the entire imported history on every refresh.
 Completion shows a brief success message without zero-count diagnostics.
 Existing automatically created “Imported from Granola” folders are renamed in
 place to “Granola” once on upgrade. Within the Granola folder, rows omit the

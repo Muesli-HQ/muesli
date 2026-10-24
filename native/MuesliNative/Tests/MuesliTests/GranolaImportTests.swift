@@ -88,6 +88,20 @@ struct GranolaImportTests {
         }
     }
 
+    @Test func countsTranscriptAndManualNotesButNotGeneratedSummary() throws {
+        let records = [("One two", "Three four", 4), ("", "Manual words", 2), ("", "", 0)].map { transcript, notes, count in
+            (GranolaImportRecord(id: UUID().uuidString.lowercased(), title: "Count", createdAt: Date(),
+                                 summary: "Generated summary words", notes: notes, transcript: transcript,
+                                 workspace: "Team", ownerEmail: ""), count)
+        }
+        for (record, expected) in records {
+            try withStore { store in
+                _ = try store.importGranola([record])
+                #expect(try store.recentMeetings(limit: 1).first?.wordCount == expected)
+            }
+        }
+    }
+
     @Test func syncedIdentityPreventsDuplicateImport() throws {
         let records = try GranolaImport.parse(csv())
         try withStore { source in
@@ -271,6 +285,51 @@ struct GranolaImportTests {
                 #expect(visible.first?.title == "Meeting 0")
                 #expect(visible.last?.title == "Meeting 199")
             }
+        }
+    }
+
+    @Test func folderLimitMergesDescendantsAfterFilteringOriginAndDeletion() throws {
+        let records = (0..<30).map { index in
+            GranolaImportRecord(id: UUID().uuidString.lowercased(), title: "Meeting \(index)",
+                                createdAt: Date(timeIntervalSince1970: 1_790_000_000 - Double(index * 3600)),
+                                summary: "Summary", notes: "", transcript: "Transcript", workspace: "", ownerEmail: "")
+        }
+        try withStore { store in
+            _ = try store.importGranola(records)
+            let root = try #require(store.listFolders().first)
+            let child = try store.createFolder(name: "Child", parentID: root.id)
+            let grandchild = try store.createFolder(name: "Grandchild", parentID: child)
+            let other = try store.createFolder(name: "Other")
+            let rows = try store.recentMeetings()
+            for (index, row) in rows.enumerated() {
+                try store.moveMeeting(id: row.id, toFolder: [root.id, child, grandchild][index % 3])
+            }
+            try store.moveMeeting(id: rows[0].id, toFolder: other)
+            try store.deleteMeeting(id: rows[1].id)
+            var db: OpaquePointer?
+            #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+            defer { sqlite3_close(db) }
+            #expect(sqlite3_exec(db, "UPDATE meetings SET source = 'ios' WHERE id = \(rows[2].id)", nil, nil, nil) == SQLITE_OK)
+            #expect(try store.recentMeetings(limit: 3, folderID: root.id).map(\.title) == ["Meeting 2", "Meeting 3", "Meeting 4"])
+            #expect(try store.recentMeetings(limit: 3, folderID: root.id, origin: .thisMac).map(\.title) == ["Meeting 3", "Meeting 4", "Meeting 5"])
+            #expect(try store.recentMeetings(limit: 3, folderID: root.id, origin: .fromIPhone).map(\.title) == ["Meeting 2"])
+            #expect(try store.recentMeetings(folderID: root.id).count == 28)
+            #expect(try store.recentMeetings(limit: 0, folderID: root.id).isEmpty)
+        }
+    }
+
+    @Test func chronologicalQueryHandlesMixedTimestampFormatsAndInvalidDates() throws {
+        try withStore { store in
+            let formats = ["2026-10-24T09:00:00Z", "2026-10-24T15:00:00+05:30", "2026-10-24 10:00:00", "invalid", "2026-10-24T10:00:00.500Z"]
+            for (index, timestamp) in formats.enumerated() {
+                let record = GranolaImportRecord(id: UUID().uuidString.lowercased(), title: "Meeting \(index)", createdAt: Date(), summary: "Summary", notes: "", transcript: "", workspace: "", ownerEmail: "")
+                _ = try store.importGranola([record])
+                var db: OpaquePointer?
+                #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+                defer { sqlite3_close(db) }
+                #expect(sqlite3_exec(db, "UPDATE meetings SET start_time = '\(timestamp)' WHERE title = 'Meeting \(index)'", nil, nil, nil) == SQLITE_OK)
+            }
+            #expect(try store.recentMeetings().map(\.title) == ["Meeting 4", "Meeting 2", "Meeting 1", "Meeting 0", "Meeting 3"])
         }
     }
 

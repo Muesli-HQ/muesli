@@ -717,7 +717,7 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
+                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
                     DisclosureGroup("Original manual notes from Granola") {
                         MeetingNotesView(markdown: meeting.manualNotes)
                             .frame(height: 200)
@@ -1836,7 +1836,8 @@ struct MeetingDetailView: View {
     }
 
     private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
-        meeting.status == .noteOnly || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
+        meeting.status == .noteOnly || meeting.usesImportedManualNotes
+            || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
     }
 
     /// The notes action exports the same source the detail view displays. Other
@@ -1857,9 +1858,13 @@ struct MeetingDetailView: View {
         return meeting.formattedNotes
     }
 
-    private static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
+    static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
         if meeting.status == .noteOnly || meeting.status == .recording || meeting.status == .processing || meeting.status == .failed {
             return .notes
+        }
+        if meeting.source == .granolaImport {
+            return !meeting.manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .notes : .transcript
         }
         return meeting.notesState == .structuredNotes
             ? MeetingDocumentMode.notes
