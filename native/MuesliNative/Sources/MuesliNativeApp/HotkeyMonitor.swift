@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
+import IOKit.hidsystem
 import MuesliCore
 
 enum MuesliSyntheticKeyboardEvent {
@@ -76,6 +77,9 @@ final class HotkeyMonitor {
     var onCancel: (() -> Void)?
     var onToggleStart: (() -> Void)?
     var onToggleStop: (() -> Void)?
+    /// Optional shared-session gate. Standalone monitors retain their original behavior.
+    var admitInteraction: (() -> Bool)?
+    var onInteractionSettled: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var combinationActivation: CombinationActivation = .toggle
@@ -105,6 +109,8 @@ final class HotkeyMonitor {
     // Tracks the physical chord, independent of the session: after Escape cancels
     // a held chord, it stays down and must not start another session until released.
     private var registeredHotKeyIsDown = false
+    private var targetPhysicalDown = false
+    private var combinationPhysicalDown = false
     private var prepareWorkItem: DispatchWorkItem?
     private var startWorkItem: DispatchWorkItem?
     private var armCancelWorkItem: DispatchWorkItem?
@@ -223,6 +229,9 @@ final class HotkeyMonitor {
             self.registeredHotKeyHandler = nil
         }
         registeredHotKeyIsDown = false
+        targetPhysicalDown = false
+        combinationPhysicalDown = false
+        notifyIfSettled()
     }
 
     func configure(keyCode: UInt16) {
@@ -286,6 +295,7 @@ final class HotkeyMonitor {
         } else if shouldCancel {
             onCancel?()
         }
+        notifyIfSettled()
     }
 
     /// Call externally to stop toggle mode (e.g., from floating indicator click)
@@ -295,6 +305,7 @@ final class HotkeyMonitor {
             fputs("[hotkey] toggle stopped externally\n", stderr)
             onToggleStop?()
         }
+        notifyIfSettled()
     }
 
     /// Cancel toggle mode without triggering onToggleStop (discard path)
@@ -303,6 +314,7 @@ final class HotkeyMonitor {
             toggleActive = false
             fputs("[hotkey] toggle cancelled externally\n", stderr)
         }
+        notifyIfSettled()
     }
 
     /// End an interaction without emitting lifecycle callbacks. The caller owns
@@ -329,7 +341,15 @@ final class HotkeyMonitor {
     }
 
     var hasPendingOrActiveSession: Bool {
-        targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown
+        targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown || armCancelWorkItem != nil
+    }
+
+    func notifyIfSettled() {
+        if !hasPendingOrActiveSession
+            && !targetPhysicalDown && !combinationPhysicalDown && !registeredHotKeyIsDown
+        {
+            onInteractionSettled?()
+        }
     }
 
     func suspendForShortcutCapture() {
@@ -384,6 +404,7 @@ final class HotkeyMonitor {
         flags: NSEvent.ModifierFlags,
         isRepeat: Bool
     ) -> Bool {
+        defer { notifyIfSettled() }
         if type == .keyDown && keyCode == 53 {
             if combinationActivation == .pushToTalk,
                combinationKeyDown || prepared || active {
@@ -407,6 +428,10 @@ final class HotkeyMonitor {
 
         guard let targetMods = combinationModifiers,
               let targetKey = combinationKeyCode else { return false }
+
+        if type == .keyUp, keyCode == targetKey {
+            combinationPhysicalDown = false
+        }
 
         if type == .flagsChanged, combinationKeyDown,
            HotkeyConfig.supportedCombinationModifiers(from: flags) != targetMods {
@@ -433,6 +458,10 @@ final class HotkeyMonitor {
               HotkeyConfig.supportedCombinationModifiers(from: flags) == targetMods
         else { return false }
 
+        guard !combinationPhysicalDown else { return true }
+        combinationPhysicalDown = true
+        guard admitInteraction?() ?? true else { return false }
+
         if combinationActivation == .pushToTalk {
             beginCombinationPushToTalk()
         } else {
@@ -452,11 +481,15 @@ final class HotkeyMonitor {
             fireCombinationToggle()
             return
         }
+        let generation = sessionGeneration
         let item = DispatchWorkItem { [weak self] in
-            guard let self, self.combinationKeyDown, !self.combinationTriggered else { return }
+            guard let self, self.sessionGeneration == generation,
+                self.combinationKeyDown, !self.combinationTriggered
+            else { return }
             self.combinationTriggered = true
             self.combinationWorkItem = nil
             self.fireCombinationToggle()
+            self.notifyIfSettled()
         }
         combinationWorkItem = item
         scheduleAfter(startDelay, item)
@@ -489,6 +522,7 @@ final class HotkeyMonitor {
         } else if wasPrepared {
             onCancel?()
         }
+        notifyIfSettled()
     }
 
     private func fireCombinationToggle() {
@@ -513,6 +547,7 @@ final class HotkeyMonitor {
         if notify && wasPending {
             onCancel?()
         }
+        notifyIfSettled()
     }
 
     @discardableResult
@@ -575,6 +610,7 @@ final class HotkeyMonitor {
         case UInt32(kEventHotKeyPressed):
             guard !registeredHotKeyIsDown else { return }
             registeredHotKeyIsDown = true
+            guard admitInteraction?() ?? true else { return }
             if combinationActivation == .pushToTalk {
                 beginCombinationPushToTalk()
             } else {
@@ -587,6 +623,7 @@ final class HotkeyMonitor {
             } else {
                 cancelCombinationPending(notify: false)
             }
+            notifyIfSettled()
         default:
             break
         }
@@ -620,7 +657,7 @@ final class HotkeyMonitor {
 
         // Text editing owns fresh hotkey starts, but an already-armed hotkey
         // session must still receive key-up/Escape cleanup events.
-        if targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown {
+        if hasPendingOrActiveSession || targetPhysicalDown || combinationPhysicalDown || registeredHotKeyIsDown {
             return true
         }
 
@@ -628,9 +665,13 @@ final class HotkeyMonitor {
     }
 
     func handleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags) {
+        defer { notifyIfSettled() }
         if keyCode == targetKeyCode {
             let isDown = isModifierDown(keyCode: targetKeyCode, flags: flags)
             if isDown {
+                guard !targetPhysicalDown else { return }
+                targetPhysicalDown = true
+                guard admitInteraction?() ?? true else { return }
                 if !targetKeyDown {
                     armCancelWorkItem?.cancel()
                     armCancelWorkItem = nil
@@ -672,6 +713,8 @@ final class HotkeyMonitor {
                     scheduleTimers()
                 }
             } else {
+                targetPhysicalDown = false
+                guard targetKeyDown || armed || prepared || active else { return }
                 fputs("[hotkey] target key \(targetKeyCode) up\n", stderr)
                 let wasDown = targetKeyDown
                 let wasArmed = armed
@@ -729,7 +772,19 @@ final class HotkeyMonitor {
         }
     }
 
+    private static let deviceModifierMasks: [UInt16: UInt] = [
+        55: UInt(NX_DEVICELCMDKEYMASK), 54: UInt(NX_DEVICERCMDKEYMASK),
+        56: UInt(NX_DEVICELSHIFTKEYMASK), 60: UInt(NX_DEVICERSHIFTKEYMASK),
+        58: UInt(NX_DEVICELALTKEYMASK), 61: UInt(NX_DEVICERALTKEYMASK),
+        59: UInt(NX_DEVICELCTLKEYMASK), 62: UInt(NX_DEVICERCTLKEYMASK),
+    ]
+    private static let deviceModifierMask = deviceModifierMasks.values.reduce(0, |)
+
     private func isModifierDown(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+        // Aggregate flags stay set when the opposite-side modifier is still held.
+        if let mask = Self.deviceModifierMasks[keyCode], flags.rawValue & Self.deviceModifierMask != 0 {
+            return flags.rawValue & mask != 0
+        }
         switch keyCode {
         case 55, 54: return flags.contains(.command)
         case 56, 60: return flags.contains(.shift)
@@ -741,6 +796,7 @@ final class HotkeyMonitor {
     }
 
     func handleKeyDown(keyCode: UInt16) {
+        defer { notifyIfSettled() }
         // Escape cancels any active recording
         if keyCode == 53 {
             if toggleActive || active || armed || prepared || armCancelWorkItem != nil {
@@ -810,15 +866,18 @@ final class HotkeyMonitor {
 
     private func scheduleArmCancel() {
         armCancelWorkItem?.cancel()
+        let generation = sessionGeneration
         let item = DispatchWorkItem { [weak self] in
             guard let self,
-                  !self.targetKeyDown,
-                  !self.toggleActive,
+                self.sessionGeneration == generation,
+                !self.targetKeyDown,
+                !self.toggleActive,
                   !self.prepared,
                   !self.active
             else { return }
             self.armCancelWorkItem = nil
             self.onCancel?()
+            self.notifyIfSettled()
         }
         armCancelWorkItem = item
         scheduleAfter(doubleTapWindow, item)

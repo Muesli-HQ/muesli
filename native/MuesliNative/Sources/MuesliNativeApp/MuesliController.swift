@@ -395,7 +395,7 @@ public final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
-    private let hotkeyMonitor = HotkeyMonitor()
+    private let hotkeyMonitor = DictationHotkeyGroup()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
@@ -4611,19 +4611,22 @@ public final class MuesliController: NSObject {
         guard result.didUpdate else { return result }
         updateConfig {
             $0.dictationHotkey = hotkey
-            if !hotkey.isCombination { $0.dictationCombinationActivation = .pushToTalk }
+            if !$0.hasDictationCombination { $0.dictationCombinationActivation = .pushToTalk }
         }
-        hotkeyMonitor.configure(hotkey)
+        hotkeyMonitor.configure(config.dictationHotkeys)
         configureComputerUseHotkeyMonitor()
         return result
     }
 
-    private func validateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+    private func validateDictationHotkey(
+        _ hotkey: HotkeyConfig, otherDictationHotkeys: [HotkeyConfig]? = nil
+    ) -> ShortcutHotkeyUpdateResult {
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
             return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
         let result = ShortcutHotkeyPolicy.validateDictationHotkey(
             hotkey,
+            otherDictationHotkeys: otherDictationHotkeys ?? config.additionalDictationHotkeys,
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
@@ -4642,6 +4645,48 @@ public final class MuesliController: NSObject {
         return result
     }
 
+    @discardableResult
+    func addAdditionalDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = validateDictationHotkey(hotkey, otherDictationHotkeys: config.dictationHotkeys)
+        guard result.didUpdate else { return result }
+        let previous = config.additionalDictationHotkeys
+        updateConfig { $0.additionalDictationHotkeys.append(hotkey) }
+        guard
+            (try? JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath())))?
+                .additionalDictationHotkeys == config.additionalDictationHotkeys
+        else {
+            updateConfig { $0.additionalDictationHotkeys = previous }
+            return .unavailable(message: "The added shortcut could not be verified. Check Shortcuts before using it.")
+        }
+        hotkeyMonitor.configure(config.dictationHotkeys)
+        return result
+    }
+
+    @discardableResult
+    func removeAdditionalDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        guard config.additionalDictationHotkeys.contains(hotkey) else {
+            return .unavailable(message: "That additional shortcut is no longer saved.")
+        }
+        let previous = config.additionalDictationHotkeys
+        let previousActivation = config.dictationCombinationActivation
+        updateConfig {
+            $0.additionalDictationHotkeys.removeAll { $0 == hotkey }
+            if !$0.hasDictationCombination { $0.dictationCombinationActivation = .pushToTalk }
+        }
+        guard
+            (try? JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath())))?
+                .additionalDictationHotkeys == config.additionalDictationHotkeys
+        else {
+            updateConfig {
+                $0.additionalDictationHotkeys = previous
+                $0.dictationCombinationActivation = previousActivation
+            }
+            return .unavailable(message: "The removed shortcut could not be verified. Check Shortcuts before using it.")
+        }
+        hotkeyMonitor.configure(config.dictationHotkeys)
+        return .updated
+    }
+
     var dictationActivationUnavailableReason: String? {
         ShortcutHotkeyPolicy.dictationActivationUnavailableReason(
             state: dictationState,
@@ -4654,8 +4699,7 @@ public final class MuesliController: NSObject {
         if let reason = dictationActivationUnavailableReason {
             throw MuesliSettings.Failure.rejected(reason)
         }
-        let hotkey = shortcut ?? config.dictationHotkey
-        if activation == .toggle && !hotkey.isCombination {
+        if activation == .toggle && !(shortcut?.isCombination ?? config.hasDictationCombination) {
             throw MuesliSettings.Failure.rejected("Toggle activation needs a dictation key combination. Assign one first.")
         }
         if let shortcut {
@@ -4673,7 +4717,7 @@ public final class MuesliController: NSObject {
             $0.dictationCombinationActivation = activation
         }
         if let shortcut {
-            hotkeyMonitor.configure(shortcut)
+            hotkeyMonitor.configure(config.dictationHotkeys)
             configureComputerUseHotkeyMonitor()
         }
     }
@@ -4686,6 +4730,7 @@ public final class MuesliController: NSObject {
         let result = ShortcutHotkeyPolicy.validateComputerUseHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
+            additionalDictationHotkeys: config.additionalDictationHotkeys,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
             isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
@@ -4710,6 +4755,7 @@ public final class MuesliController: NSObject {
             let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
+                additionalDictationHotkeys: config.additionalDictationHotkeys,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
                 isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
             )
@@ -4760,6 +4806,7 @@ public final class MuesliController: NSObject {
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
+            additionalDictationHotkeys: config.additionalDictationHotkeys,
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey
         )
@@ -4782,6 +4829,7 @@ public final class MuesliController: NSObject {
             let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
                 config.meetingRecordingHotkey,
                 dictationHotkey: config.dictationHotkey,
+                additionalDictationHotkeys: config.additionalDictationHotkeys,
                 computerUseHotkey: config.computerUseHotkey,
                 isComputerUseEnabled: config.enableComputerUseHotkey
             )
@@ -4801,6 +4849,7 @@ public final class MuesliController: NSObject {
         let result = ShortcutHotkeyPolicy.validateQuilHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
+            additionalDictationHotkeys: config.additionalDictationHotkeys,
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
@@ -4820,6 +4869,7 @@ public final class MuesliController: NSObject {
             let result = ShortcutHotkeyPolicy.validateQuilHotkey(
                 config.quilHotkey,
                 dictationHotkey: config.dictationHotkey,
+                additionalDictationHotkeys: config.additionalDictationHotkeys,
                 computerUseHotkey: config.computerUseHotkey,
                 isComputerUseEnabled: config.enableComputerUseHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
@@ -4853,6 +4903,7 @@ public final class MuesliController: NSObject {
     func resetShortcutDefaults() {
         updateConfig { config in
             config.dictationHotkey = .default
+            config.additionalDictationHotkeys = []
             config.dictationCombinationActivation = .pushToTalk
             config.quilHotkey = .quilDefault
             config.enableQuilMode = false
@@ -4866,7 +4917,7 @@ public final class MuesliController: NSObject {
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
         hotkeyMonitor.combinationActivation = .pushToTalk
-        hotkeyMonitor.configure(.default)
+        hotkeyMonitor.configure(config.dictationHotkeys)
         quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
@@ -5044,9 +5095,7 @@ public final class MuesliController: NSObject {
     }
 
     func startHotkeyMonitor(hotkey: HotkeyConfig? = nil) {
-        if let hotkey {
-            hotkeyMonitor.configure(hotkey)
-        }
+        hotkeyMonitor.configure(hotkey.map { [$0] } ?? config.dictationHotkeys)
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
     }
@@ -5059,21 +5108,25 @@ public final class MuesliController: NSObject {
 
     /// Recorder owns a temporary pause, never changes feature enablement/config.
     func beginShortcutCapture() -> Bool {
-        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        let otherMonitors = [computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
         guard !isCapturingShortcut, dictationState == .idle,
               !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
               !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
               interactiveAudioSessionOwnership.canStart(.dictation),
-              monitors.allSatisfy({ !$0.hasPendingOrActiveSession }) else { return false }
+            !hotkeyMonitor.hasPendingOrActiveSession,
+            otherMonitors.allSatisfy({ !$0.hasPendingOrActiveSession })
+        else { return false }
         isCapturingShortcut = true
-        monitors.forEach { $0.suspendForShortcutCapture() }
+        hotkeyMonitor.suspendForShortcutCapture()
+        otherMonitors.forEach { $0.suspendForShortcutCapture() }
         return true
     }
 
     func endShortcutCapture() {
         guard isCapturingShortcut else { return }
         isCapturingShortcut = false
-        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        hotkeyMonitor.resumeAfterShortcutCapture()
+        [computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
             .forEach { $0.resumeAfterShortcutCapture() }
     }
 
@@ -5085,7 +5138,7 @@ public final class MuesliController: NSObject {
     /// chord, and a registered chord would intercept Muesli's own paste.
     func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
         let candidate = Self.hotkey(for: chord)
-        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
+        return (config.dictationHotkeys + [config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey])
             .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
     }
 
@@ -5244,6 +5297,7 @@ public final class MuesliController: NSObject {
             config.meetingTranscriptionBackend = backend.backend
             config.meetingTranscriptionModel = backend.model
             config.dictationHotkey = hotkey
+            config.additionalDictationHotkeys = []
             config.computerUseHotkey = HotkeyConfig.computerUseDefault(avoiding: hotkey)
             config.enableComputerUseHotkey = false
             config.enableComputerUsePlanner = true
@@ -5269,7 +5323,7 @@ public final class MuesliController: NSObject {
             }
         }
         selectBackend(backend)
-        hotkeyMonitor.configure(hotkey)
+        hotkeyMonitor.configure(config.dictationHotkeys)
         configureComputerUseHotkeyMonitor()
         clearDictationTestLifecycle()
 
@@ -9279,7 +9333,7 @@ public final class MuesliController: NSObject {
             return
         }
         guard !hotkeyMonitor.isRunning else { return }
-        hotkeyMonitor.configure(config.dictationHotkey)
+        hotkeyMonitor.configure(config.dictationHotkeys)
         hotkeyMonitor.start()
     }
 
@@ -9303,7 +9357,7 @@ public final class MuesliController: NSObject {
             computerUseHotkeyMonitor.stop()
             return
         }
-        guard !ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.dictationHotkey) else {
+        guard !config.dictationHotkeys.contains(where: { ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, $0) }) else {
             computerUseHotkeyMonitor.stop()
             fputs("[cua] computer use hotkey disabled because it matches dictation hotkey\n", stderr)
             return
@@ -9330,7 +9384,8 @@ public final class MuesliController: NSObject {
             quilHotkeyMonitor.stop()
             return
         }
-        let conflicts = ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.dictationHotkey)
+        let conflicts =
+            config.dictationHotkeys.contains { ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, $0) }
             || (config.enableComputerUseHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.computerUseHotkey))
             || (config.enableMeetingRecordingHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.meetingRecordingHotkey))
         guard !conflicts else {
@@ -9351,6 +9406,7 @@ public final class MuesliController: NSObject {
         let validation = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             config.meetingRecordingHotkey,
             dictationHotkey: config.dictationHotkey,
+            additionalDictationHotkeys: config.additionalDictationHotkeys,
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey
         )

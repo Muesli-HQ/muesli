@@ -2114,6 +2114,11 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var additionalDictationHotkeys: [HotkeyConfig] = []
+    var dictationHotkeys: [HotkeyConfig] { [dictationHotkey] + additionalDictationHotkeys }
+    var hasDictationCombination: Bool {
+        dictationHotkeys.contains { $0.isCombination && $0.isValidDictationShortcut }
+    }
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
     var enableQuilMode: Bool = false
@@ -2285,6 +2290,7 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case additionalDictationHotkeys = "additional_dictation_hotkeys"
         case enablePushToTalk = "enable_push_to_talk"
         case quilHotkey = "quil_hotkey"
         case enableQuilMode = "enable_quil_mode"
@@ -2445,6 +2451,17 @@ struct AppConfig: Codable {
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
             .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
+        var acceptedHotkeys: [HotkeyConfig] = []
+        if var extras = try? c.nestedUnkeyedContainer(forKey: .additionalDictationHotkeys) {
+            while !extras.isAtEnd {
+                guard let element = try? extras.superDecoder() else { break }
+                guard let hotkey = try? HotkeyConfig(from: element), hotkey.isValidDictationShortcut,
+                    !([dictationHotkey] + acceptedHotkeys).contains(where: { ShortcutHotkeyPolicy.hotkeysConflict(hotkey, $0) })
+                else { continue }
+                acceptedHotkeys.append(hotkey)
+            }
+        }
+        additionalDictationHotkeys = acceptedHotkeys
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
@@ -2534,7 +2551,7 @@ struct AppConfig: Codable {
             HotkeyMonitor.CombinationActivation.self,
             forKey: .dictationCombinationActivation
         )) ?? defaults.dictationCombinationActivation
-        if !dictationHotkey.isCombination {
+        if !dictationHotkey.isCombination && !additionalDictationHotkeys.contains(where: \.isCombination) {
             dictationCombinationActivation = .pushToTalk
         }
         pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
