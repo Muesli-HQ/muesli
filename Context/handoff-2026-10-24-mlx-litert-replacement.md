@@ -54,3 +54,11 @@ Final follow-up validation: 67 focused application tests and the 10-test encoder
 ### Quill readiness follow-up
 
 Quill preparation/start no longer require credentials for the separately selected hosted dictation provider. The native preparation plan includes its actual local Gemma audio dependency even when hosted dictation is selected, and treats the Quill model as required for Quill interactions. Ordinary dictation keeps optional Quill preparation best-effort. Warm-up keys distinguish these requirements. 68 application tests and the 10-test encoder suite passed; fixture-only reference cases remained skipped.
+
+### Native CI build engine and non-Gemma Quill
+
+CI's Swift 6.3 legacy build engine did not compile MLX Metal resources. All three shards failed at the explicit resource check before executing tests. The shard runner now explicitly selects `--build-system swiftbuild` for build, product-path discovery, and test execution; this matches the locally validated resource-producing build engine without changing dependencies. See Swift's resource support documentation: https://github.com/swiftlang/swift-package-manager/blob/main/Sources/PackageManagerDocs/Documentation.docc/SwiftBuildPreview.md .
+
+Quill admission also prepares a selected non-Gemma local ASR backend through `preloadRequired`, even if hosted dictation is selected. Its backend/model/language forms an additional preparation key, so an empty Gemma list cannot bypass that load. A suspended-preparation regression test verifies recording admission stays blocked until it completes. Local validation passed 69 application tests plus the 10-test encoder suite; fixture-only references skipped.
+
+The available optional Quill model intentionally remains part of the shared pre-recording warm-up, following the explicit product requirement to finish a shared warm-up before allowing dictation. Missing or failed optional models remain best-effort and do not disable ordinary dictation. The review suggestion to move available Quill warm-up behind recording would reverse that requested behavior, so it was not applied. Computer-use harness work remains separate.

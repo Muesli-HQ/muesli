@@ -93,8 +93,12 @@ struct GemmaPreparationPlan: Equatable, Sendable {
         var required: Bool
     }
     let entries: [Entry]
-    var key: String { entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false) {
+    /// A local non-Gemma ASR dependency used by Quill, prepared by the coordinator.
+    let additionalPreparationKey: String?
+    var isEmpty: Bool { entries.isEmpty && additionalPreparationKey == nil }
+    var key: String { (additionalPreparationKey.map { $0 + "|" } ?? "") + entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false, additionalPreparationKey: String? = nil) {
+        self.additionalPreparationKey = additionalPreparationKey
         var result: [Entry] = []
         func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool, required: Bool) {
             guard let model else { return }
@@ -146,7 +150,7 @@ final class GemmaRecordingPreparationGate {
                  prepare: @escaping @MainActor () async throws -> Void,
                  ready: @escaping @MainActor () -> Void,
                  failed: @escaping @MainActor (Error) -> Void) -> Bool {
-        if plan.entries.isEmpty { invalidate(); return true }
+        if plan.isEmpty { invalidate(); return true }
         if readyKey == plan.key { return true }
         if pendingKey == plan.key { return false }
         invalidate()

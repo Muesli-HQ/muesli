@@ -10813,16 +10813,28 @@ public final class MuesliController: NSObject {
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
-        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill, requireQuill: forQuill)
+        // Hosted dictation readiness says nothing about the local ASR Quill uses.
+        let localASRKey = forQuill && selectedBackend.backend != "gemma4-litert"
+            ? "quill-asr:\(selectedBackend.backend):\(selectedBackend.model):\(config.resolvedAppleSpeechLanguage)" : nil
+        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill,
+            requireQuill: forQuill, additionalPreparationKey: localASRKey)
     }
 
     /// No audio session is armed or started when this returns false.
     private func ensureNativeModelsReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
         let plan = nativePreparationPlan(forQuill: forQuill)
-        if plan.entries.isEmpty { indicator.hideLoading() }
+        if plan.isEmpty { indicator.hideLoading() }
+        let localBackend = selectedBackend
+        let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
             guard let self else { throw CancellationError() }
+            if plan.additionalPreparationKey != nil {
+                try await self.transcriptionCoordinator.preloadRequired(
+                    backend: localBackend, enablePostProcessor: false, includeMeetingHelpers: false,
+                    appleSpeechLanguage: appleSpeechLanguage)
+                try Task.checkCancellation()
+            }
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
                 Task { @MainActor in
                     guard let self, self.nativeRecordingGate.pendingKey == plan.key,
