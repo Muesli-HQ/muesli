@@ -415,12 +415,7 @@ if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
   # Legacy name is still read by Gemma4LiteRTLogging for saved diagnostic tooling.
   /usr/bin/plutil -insert LSEnvironment.MUESLI_GEMMA4_LITERT_PROFILE_PATH -string "$HOME/Library/Application Support/$APP_SUPPORT_DIR_NAME/gemma-native-audio-profile.log" "$STAGED_APP_DIR/Contents/Info.plist"
 fi
-# Persist the requested computer-use experiment across Finder/LaunchServices launches.
-# Scope this build opt-in to DevC; other lanes and shipped defaults remain unchanged.
-if [[ "$BUNDLE_ID" == "com.muesli.dev.c" && "${MUESLI_GEMMA_TOOL_MTP:-}" == "hybrid" ]]; then
-  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MUESLI_GEMMA_TOOL_MTP string hybrid' "$STAGED_APP_DIR/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MUESLI_GEMMA_MLX_MTP string 1' "$STAGED_APP_DIR/Contents/Info.plist"
-fi
+# Gemma MTP defaults on in the shared Swift policy; no lane-specific activation flags.
 
 bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
 

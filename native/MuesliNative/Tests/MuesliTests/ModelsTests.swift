@@ -417,7 +417,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
-        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
+        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~3.55 GB")
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
@@ -425,7 +425,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E4BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E4BLiteRT.model == Gemma4LiteRTModel.e4b.repoID)
         #expect(BackendOption.gemma4E4BLiteRT.label == "Gemma 4 E4B")
-        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~3.7 GB")
+        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~5.15 GB")
         #expect(BackendOption.experimental.contains(.gemma4E4BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E4BLiteRT))
     }

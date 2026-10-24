@@ -83,7 +83,7 @@ actor GemmaNativeAudioTranscriber {
     // An environment override keeps paired developer benchmarks independent of saved settings.
     private let mtpBlock: Int
     init(mtpBlock: Int? = nil) {
-        self.mtpBlock = mtpBlock ?? (ProcessInfo.processInfo.environment["MUESLI_GEMMA_MLX_MTP"] == "0" ? 1 : 3)
+        self.mtpBlock = mtpBlock ?? GemmaMTPPolicy.blockSize()
     }
     private func loadDrafter(model: Gemma4LiteRTModel) async throws {
         if drafter?.model == model { return }
@@ -365,11 +365,9 @@ actor GemmaNativeAudioTranscriber {
         let grammar = try GemmaToolGrammar.make(toolsJSON: toolsJSON)
         // Hybrid mode replays forced spans through target verification; never splice
         // tokens into matcher state without the corresponding target-cache inputs.
-        let toolMode = ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_MTP"] ?? "0"
-        let toolMTP = mtpBlock > 1 && ["1", "hybrid"].contains(toolMode)
-        let hybrid = toolMTP && toolMode == "hybrid"
+        let toolMTP = mtpBlock > 1
         let constraint = try GrammarConstraint(tokenizer: tokenizer, grammar: grammar,
-            fastForward: !toolMTP || hybrid, hostTokenizer: context.tokenizer)
+            fastForward: true, hostTokenizer: context.tokenizer)
         var raw = ""
         let start = Date()
         if toolMTP {
@@ -379,7 +377,7 @@ actor GemmaNativeAudioTranscriber {
             let hybridDrafter = GemmaGrammarDrafter(base: drafter!.value, processor: processor)
             var iterator = try MTPSpeculativeTokenIterator(
                 input: LMInput(tokens: MLXArray(ids)), mainModel: context.model,
-                drafter: hybrid ? hybridDrafter : drafter!.value, parameters: GenerateParameters(maxTokens: 768, temperature: 0, topK: 1),
+                drafter: hybridDrafter, parameters: GenerateParameters(maxTokens: 768, temperature: 0, topK: 1),
                 blockSize: mtpBlock, components: GenerationComponents(logitProcessorFactory: { processor }))
             var output = [Int]()
             var ended = false
@@ -391,7 +389,7 @@ actor GemmaNativeAudioTranscriber {
             }
             guard ended, processor.terminated else { throw GemmaToolCalling.invalid() }
             raw = context.tokenizer.decode(tokenIds: output, skipSpecialTokens: false)
-            log("tool_mtp hybrid=\(hybrid) forced=\(processor.forcedCount) skipped_drafter_blocks=\(hybridDrafter.skippedBlocks) proposed=\(iterator.proposedCount) accepted=\(iterator.acceptedCount) prefill_seconds=\(iterator.promptPrefillTime) passthrough=\(iterator.passthroughReason ?? "none")")
+            log("tool_mtp hybrid=true forced=\(processor.forcedCount) skipped_drafter_blocks=\(hybridDrafter.skippedBlocks) proposed=\(iterator.proposedCount) accepted=\(iterator.acceptedCount) prefill_seconds=\(iterator.promptPrefillTime) passthrough=\(iterator.passthroughReason ?? "none")")
         } else {
             try GuidedGenerationLoop.run(input: LMInput(tokens: MLXArray(ids)), context: context,
                 constraint: constraint, maxTokens: 768, vocabSize: tokenizer.vocabSize) { delta in

@@ -9,6 +9,17 @@ struct GemmaNativeAudioTests {
     init() {
         if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
     }
+    @Test func mtpDefaultsOnWithOneDiagnosticOptOut() {
+        for value in ["", "1", "unexpected"] {
+            #expect(GemmaMTPPolicy.isEnabled(environment: [GemmaMTPPolicy.environmentKey: value]))
+            #expect(GemmaMTPPolicy.blockSize(environment: [GemmaMTPPolicy.environmentKey: value]) == 3)
+        }
+        #expect(GemmaMTPPolicy.blockSize(environment: [:]) == 3)
+        #expect(GemmaMTPPolicy.blockSize(environment: [GemmaMTPPolicy.environmentKey: "0"]) == 1)
+        #expect(!GemmaMTPPolicy.isEnabled(environment: [GemmaMTPPolicy.environmentKey: " 0 "]))
+        // Retired runtime-specific switches must not override the shared default.
+        #expect(GemmaMTPPolicy.blockSize(environment: ["MUESLI_GEMMA_TOOL_MTP": "0", "MUESLI_GEMMA4_LITERT_MTP": "0"]) == 3)
+    }
     @Test func emptyNativeOverrideUsesManagedArtifacts() {
         let empty = ["MUESLI_GEMMA_MLX_MODEL_DIR": ""]
         #expect(GemmaNativeAudioModels.overrideDirectory(environment: empty) == nil)

@@ -1,6 +1,18 @@
 import Foundation
 import MuesliCore
 
+/// One process-wide default for all Gemma interfaces and managed drafter downloads.
+/// Set the diagnostic opt-out before launching the app; resident engines keep this policy.
+enum GemmaMTPPolicy {
+    static let environmentKey = "MUESLI_GEMMA_MLX_MTP"
+    static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines) != "0"
+    }
+    static func blockSize(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int {
+        isEnabled(environment: environment) ? 3 : 1
+    }
+}
+
 /// Pinned, previously evaluated full E-series checkpoints; shared download verification contract.
 enum GemmaNativeAudioModels {
     static let e2b = ManagedCleanupModel("mlx-community/gemma-4-e2b-it-4bit", "238767527555cb75a05732a84dff5d6ba0dd6809", [
@@ -43,7 +55,7 @@ enum GemmaNativeAudioModels {
     }
     static func isAvailable(_ model: Gemma4LiteRTModel, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         descriptor(for: model).isPresent(at: directory(for: model, environment: environment))
-            && (environment["MUESLI_GEMMA_MLX_MTP"] == "0" || drafter(for: model).isPresent(at: artifactDirectory(drafter(for: model))))
+            && (!GemmaMTPPolicy.isEnabled(environment: environment) || drafter(for: model).isPresent(at: artifactDirectory(drafter(for: model))))
     }
     static func ensureDownloaded(_ model: Gemma4LiteRTModel, progress: ((Double, String?) -> Void)? = nil,
                                  progressSnapshot: ModelDownloadProgressHandler? = nil) async throws -> URL {
@@ -57,7 +69,7 @@ enum GemmaNativeAudioModels {
                 progressSnapshot?(snapshot)
             }
         }
-        if ProcessInfo.processInfo.environment["MUESLI_GEMMA_MLX_MTP"] != "0" {
+        if GemmaMTPPolicy.isEnabled() {
             let assistant = drafter(for: model)
             try await ModelDownloadCoordinator.shared.download(assistant.manifest(id: model.repoID + "-drafter"), to: artifactDirectory(assistant)) { snapshot in
                 progress?(snapshot.fractionCompleted ?? 0, "Downloading \(model.label) MTP weights")

@@ -6,7 +6,7 @@ Native Swift/MLX now handles Gemma E2B/E4B dictation, Gemma cleanup v12, text/di
 
 Remove CLiteRTLM_mac and stale cached packaging artifacts. Add official mlx-swift-lm 3.32.3 (including guided generation), swift-transformers 1.3.2 tokenizer, and mlx-swift 0.32.3. Audio frontend/encoder are native Swift with independent reference and end-to-end tests. Python is only an explicitly invoked offline reference-tensor exporter, never an application runtime dependency. Apache-2.0 attribution/license accompanies the encoder port from Transformers commit 50e35cc0ca18ec19b80653690de553e6decf74f5.
 
-Shared per-model engines, bounded warm-up, recording admission gate/pill, silence handling, strict completion checks, and per-stage timing are included. Computer use retains tool schema constraints, strict argument parsing, allowed-tool scope, and existing execution approvals. The combined grammar/MTP mode is opt-in; DevC has it embedded for manual tests. No browser/task-routing or context-pruning changes are included.
+Shared per-model engines, bounded warm-up, recording admission gate/pill, silence handling, strict completion checks, and per-stage timing are included. Computer use retains tool schema constraints, strict argument parsing, allowed-tool scope, and existing execution approvals. MTP defaults on across every Gemma interface, including combined grammar/MTP tool generation. The one diagnostic opt-out is MUESLI_GEMMA_MLX_MTP=0 before app launch. No browser/task-routing or context-pruning changes are included.
 
 ## Evidence and limits
 
@@ -29,9 +29,9 @@ Cold/idle prefill remains slow: a recent first dictation needed about 12.8 s inf
 
 ## Reproduction
 
-Use existing worktree-specific caches and scripts/dev-test.sh --lane C --local-only. Set MUESLI_GEMMA_TOOL_MTP=hybrid at build time to embed the combined decoder only in DevC. Default production tool planning stays grammar-guided; dictation/cleanup/Quill use MTP unless MUESLI_GEMMA_MLX_MTP=0.
+Use existing worktree-specific caches and scripts/dev-test.sh --lane C --local-only. No MTP build flags are required. Dictation, cleanup, text/audio Quill and constrained tool generation share the default-on GemmaMTPPolicy. Set MUESLI_GEMMA_MLX_MTP=0 before process launch for diagnostic non-speculative generation; tool grammar constraints stay enabled. Retired MUESLI_GEMMA_TOOL_MTP and MUESLI_GEMMA4_LITERT_MTP switches have no effect. Resident engines snapshot the policy on initialization, so restart between comparisons.
 
-Opt-in model benchmarks: MUESLI_CUA_BENCHMARK=1 and MUESLI_CUA_MTP_COMPARISON=1 with fixedPlannerPrompts. MUESLI_MLX_EVAL_METALLIB must point to the built MLX metallib. Offline parity fixtures are intentionally not committed; tests explicitly requiring parity fail if those fixtures are absent.
+Opt-in model benchmarks: MUESLI_CUA_BENCHMARK=1 with fixedPlannerPrompts, in separate default and MUESLI_GEMMA_MLX_MTP=0 processes. MUESLI_CUA_MTP_COMPARISON=1 enables the tokenizer-backed forced-grammar replay test. MUESLI_MLX_EVAL_METALLIB must point to the built MLX metallib. Offline parity fixtures are intentionally not committed; tests explicitly requiring parity fail if those fixtures are absent.
 
 ## PR #668 review follow-up
 
@@ -74,3 +74,11 @@ Preparation no longer clears toggle-to-stop state during an active interaction/a
 ### Model deletion isolation
 
 Legacy general/cleanup override variables no longer suppress deletion of unrelated app-managed model directories. Deletion still never resolves an external override path and preserves shared drafter artifacts. Cache-path construction accepts the existing FileManager injection so deletion tests use isolated temporary homes rather than the maintainer's actual model cache. Tests cover all three Gemma models with both legacy overrides present and verify the external file and drafter remain. Final local validation passed 71 application tests plus the 10-test encoder suite (fixture-only references skipped).
+
+### 2026-10-25: Shared default-on MTP policy
+
+GemmaMTPPolicy owns the default block size (3) and single diagnostic opt-out (block size 1). Managed artifact availability/downloads and engine creation use it. Tool generation always retains grammar fast-forwarding; the MTP branch uses GemmaGrammarDrafter and target-side grammar processing, with termination/schema checks unchanged. Removed the tool-specific mode selector, unused legacy MTP helper and DevC-only Info.plist activation. Benchmarks compare fresh processes instead of mutating process environment beneath resident engines. Quill direct-audio matching/routing and computer-use harness behavior remain unchanged.
+
+The failed dictation-transcription CI shard reported exactly two stale ModelsTests assertions: old LiteRT sizes of 2.6/3.7 GB versus managed MLX target sizes of 3.55/5.15 GB. Updated those expectations; the native encoder and grammar suites passed in that failed run.
+
+Validation on Apple M5 / 24 GiB: the focused build/test run passed 369 tests; the complete dictation-transcription shard passed 468 application tests plus the 10-test encoder suite (reference-only encoder cases skipped). The shared cache was reused. Real-model checks passed 34 tool generations: four fixtures repeated twice for each E2B/E4B with default-on MTP and with the single opt-out, plus one list_apps call per model. Expected tool names and required arguments were checked; no OS action was executed. Default logs show mtp=true, hybrid=true, accepted drafts and passthrough=none; opt-out logs show mtp=false with constrained=true. Tokenizer-backed forced replay and premature EOS rejection passed. These were correctness runs, not controlled latency measurements. Classifier, shard assignments, update-flow, shell syntax and diff checks passed. DevC was not rebuilt in this follow-up.

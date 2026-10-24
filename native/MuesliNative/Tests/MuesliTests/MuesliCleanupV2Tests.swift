@@ -223,7 +223,7 @@ struct ManagedCleanupV12Tests {
         await transcriber.shutdown()
     }
 
-    /// Run in separate processes with MUESLI_GEMMA4_LITERT_MTP=1 and =0.
+    /// Run in separate processes with MUESLI_GEMMA_MLX_MTP=1 and =0.
     @Test func gemmaLongDictationTiming() async throws {
         guard #available(macOS 15, *),
               let root = ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"],
