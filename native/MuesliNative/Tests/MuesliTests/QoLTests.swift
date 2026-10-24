@@ -492,6 +492,21 @@ struct FloatingMeetingTranscriptTests {
         #expect(receivedMouseDown == NSPoint(x: 20, y: 20))
     }
 
+    @Test("Only the black notch transcript forces dark appearance", arguments: [false, true])
+    @MainActor
+    func transcriptAppearance(usesNotchBackground: Bool) throws {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 320))
+        container.appearance = NSAppearance(named: .aqua)
+        let controller = FloatingMeetingTranscriptPanelController(
+            usesNotchBackground: usesNotchBackground,
+            onHoverChanged: { _ in }, onOpenNotes: {}, onDismiss: {}, onTogglePause: {})
+        controller.show(in: container, frame: container.bounds)
+        let hosting = try #require(container.subviews.first)
+        #expect(hosting.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ==
+            (usesNotchBackground ? .darkAqua : .aqua))
+        controller.hide()
+    }
+
     @Test("shown overlay retains its hosting view and routes dismissal")
     @MainActor
     func shownOverlayRoutesDismissal() {

@@ -27,6 +27,15 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
     ],
     targets: [
+        // Local source patch of the pinned wrapper; reuse its existing runtime and macros.
+        .target(
+            name: "MuesliLLM",
+            dependencies: [.product(name: "LLM", package: "LLM.swift")],
+            path: "Sources/MuesliLLM",
+            exclude: ["README.md", "generation-limit.patch"],
+            resources: [.copy("LICENSE")]
+        ),
+
         .target(
             name: "MuesliCore",
             dependencies: [],
@@ -42,7 +51,7 @@ let package = Package(
                 .product(name: "AIElementsSwift", package: "AIElementsSwift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
-                .product(name: "LLM", package: "LLM.swift"),
+                "MuesliLLM",
                 .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
@@ -54,7 +63,7 @@ let package = Package(
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
-            resources: [.copy("Resources/muesli-export-logo.png")],
+            resources: [.copy("Resources/muesli-export-logo.png"), .copy("Resources/recording-announcement.aiff")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("Contacts"),
@@ -112,7 +121,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

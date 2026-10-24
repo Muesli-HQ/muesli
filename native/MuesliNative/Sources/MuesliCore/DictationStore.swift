@@ -343,6 +343,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
+        try MeetingVideoStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
