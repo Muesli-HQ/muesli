@@ -337,6 +337,20 @@ actor TranscriptionCoordinator {
         }
     }
 
+    /// Display-only ASR: never supplies the instruction to the Gemma audio prompt.
+    /// Missing Parakeet artifacts do not trigger a download or block the edit.
+    func transcribeQuilDisplayAudio(at url: URL) async throws -> String {
+        guard BackendOption.parakeetUnified.isDownloaded else {
+            throw ParakeetUnifiedTranscriber.TranscriberError.notLoaded
+        }
+        try Task.checkCancellation()
+        try await parakeetUnifiedTranscriber.loadModels()
+        try Task.checkCancellation()
+        let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
+        try Task.checkCancellation()
+        return result.text
+    }
+
     func transformAudioForQuil(
         wavURL: URL, selectedText: String, appContext: String?, model: String
     ) async throws -> String {
