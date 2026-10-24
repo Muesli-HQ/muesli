@@ -93,7 +93,8 @@ struct GemmaPreparationPlan: Equatable, Sendable {
     }
     let entries: [Entry]
     var key: String { entries.map { "\($0.model.rawValue):\($0.audio):\($0.text)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?) {
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?,
+         optionalModelAvailable: (Gemma4LiteRTModel) -> Bool = { _ in true }) {
         var result: [Entry] = []
         func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool) {
             guard let model else { return }
@@ -103,8 +104,10 @@ struct GemmaPreparationPlan: Equatable, Sendable {
             } else { result.append(Entry(model: model, audio: audio, text: text)) }
         }
         add(dictation, audio: true, text: false)
-        add(cleanup, audio: false, text: true)
-        add(quill, audio: quill != nil && quill == dictation, text: true)
+        // Missing optional features must not prevent an otherwise-ready dictation.
+        // The selected dictation model remains mandatory, even if not downloaded.
+        if let cleanup, optionalModelAvailable(cleanup) { add(cleanup, audio: false, text: true) }
+        if let quill, optionalModelAvailable(quill) { add(quill, audio: quill == dictation, text: true) }
         entries = result
     }
 }

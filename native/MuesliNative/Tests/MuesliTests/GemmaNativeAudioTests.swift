@@ -302,6 +302,18 @@ struct GemmaNativeAudioTests {
         }
     }
 
+    @Test func missingOptionalModelsDoNotBlockDictation() {
+        let upgraded = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b,
+            optionalModelAvailable: { _ in false })
+        #expect(upgraded.entries.isEmpty)
+        let required = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b,
+            optionalModelAvailable: { _ in false })
+        #expect(required.entries == [.init(model: .e2b, audio: true, text: false)])
+        let downloaded = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b,
+            optionalModelAvailable: { $0 == .muesliCleanupV2 })
+        #expect(downloaded.entries == [.init(model: .muesliCleanupV2, audio: false, text: true)])
+        #expect(upgraded.key != downloaded.key)
+    }
     @Test func preparationPlanDeduplicatesModels() {
         let same = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e2b)
         #expect(same.entries.count == 2)

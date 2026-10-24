@@ -151,3 +151,19 @@ other hard prerequisites. Only the local activation workflow may use
 never derive the mutation source from model arguments. Manual model cards may
 configure inactive models. Voice must distinguish saved-for-later preferences
 from effective model activation, and report partial writes accurately.
+
+## Native Gemma evaluation builds
+
+`MUESLI_CLEANUP_EVALUATION_ONLY=1` narrows the application test target to the
+optimized runtime evaluation suites; it does not change runtime dependencies or
+package pins. Use it only for explicit local release-mode benchmarks with a
+worktree-specific cache. `run_ci_test_shard.sh` clears it so CI always builds the
+full test target. `GemmaAudioEvaluation` contains the shipping native encoder;
+its historical name and the `mlx-evaluation` cache directory are retained to avoid
+invalidating existing verified multi-GB artifacts. Reference/model tests need
+explicit fixture flags; ordinary CI exercises synthetic/frontend/guard tests.
+
+Packaged apps disable MLX TF32 process-wide to preserve the encoder's evaluated
+FP32 behavior. Bodhan uses FP16 activations and has regression coverage, but this
+is not evidence of unchanged throughput on every GPU; retain cross-backend
+performance validation as a release gate.

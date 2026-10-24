@@ -32,3 +32,11 @@ Cold/idle prefill remains slow: a recent first dictation needed about 12.8 s inf
 Use existing worktree-specific caches and scripts/dev-test.sh --lane C --local-only. Set MUESLI_GEMMA_TOOL_MTP=hybrid at build time to embed the combined decoder only in DevC. Default production tool planning stays grammar-guided; dictation/cleanup/Quill use MTP unless MUESLI_GEMMA_MLX_MTP=0.
 
 Opt-in model benchmarks: MUESLI_CUA_BENCHMARK=1 and MUESLI_CUA_MTP_COMPARISON=1 with fixedPlannerPrompts. MUESLI_MLX_EVAL_METALLIB must point to the built MLX metallib. Offline parity fixtures are intentionally not committed; tests explicitly requiring parity fail if those fixtures are absent.
+
+## PR #668 review follow-up
+
+Preserved the maintainer's merge of main and ready-for-review state. Fixed the Models download entry point to use the shared download/verify/prepare facade, including target/drafter progress callbacks. Optional missing cleanup/Quill models no longer enter recording admission; selected native dictation remains mandatory. Regression covers unavailable optional models and subsequent availability changes.
+
+Packaging now writes the dev profile path with plutil, removes the unused always-true plist flag, rejects any retained LiteRT Mach-O dependency before installation, and bundles runtime licenses/notices with About acknowledgements. CI clears the benchmark test-selection environment flag and discovers/runs the separate native encoder test suite. Grammar literal serialization propagates errors instead of using try!.
+
+Validation: 65 focused application tests and the 10-test encoder suite passed (reference-only tests explicitly skipped without fixtures); shard discovery, classifier/update-flow, shell syntax and diff checks passed. Installed DevC passed the new linkage guard; a synthetic linked executable was correctly rejected. A profile path containing spaces and an apostrophe round-tripped intact. Cross-GPU Bodhan performance under the process-wide TF32 policy remains a release validation item; no unchanged-throughput claim is made. Existing WhisperKit checkout has no swift-transformers dependency. Computer-use harness behavior remains out of scope.
