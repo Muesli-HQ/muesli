@@ -30,6 +30,9 @@ private func openTimeTurner(_ options: GlobalOptions) throws -> VisualMemoryStor
 
 private func captureDate(_ value: String?) throws -> Date? {
     guard let value else { return nil }
+    guard value.range(of: #"T.*(?:Z|[+-][0-9]{2}:[0-9]{2})$"#, options: .regularExpression) != nil else {
+        throw CLIError.invalidInput("Timestamp must include a timezone: \(value)")
+    }
     // Require a timezone; date-only and machine-local interpretations are ambiguous for agents.
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -48,6 +51,11 @@ private struct CapturePayload: Encodable {
     let source: String
     let bundleID: String
     let ocrText: String
+    let appName: String?
+    let windowTitle: String?
+    let captureCompletedAtUnix: Double?
+    let pixelWidth: Int?
+    let pixelHeight: Int?
     let mediaPath: String
     let archiveFrameIndex: Int?
     let mediaExists: Bool
@@ -58,6 +66,9 @@ private struct CapturePayload: Encodable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         capturedAt = formatter.string(from: item.capturedAt)
         capturedAtUnix = item.capturedAt.timeIntervalSince1970
+        appName = item.appName; windowTitle = item.windowTitle
+        captureCompletedAtUnix = item.captureCompletedAt?.timeIntervalSince1970
+        pixelWidth = item.pixelWidth; pixelHeight = item.pixelHeight
         source = item.source; bundleID = item.bundleID; ocrText = item.text
         mediaPath = try store.url(for: item.path).path
         archiveFrameIndex = item.frameIndex
@@ -74,6 +85,7 @@ struct TimeTurnerSearch: ParsableCommand {
     @Option(name: .long, help: "Exclusive ISO-8601 capture time, with timezone.") var until: String?
     @Option(name: .long, help: "Exact bundle ID or app name, case-insensitive.") var app: String?
     @Option(name: .long, help: "Maximum results, 1–1000.") var limit = 50
+    @Option(name: .long, help: "Continuation token from meta.nextCursor; keep the same search filters.") var cursor: String?
     func run() throws {
         try runTimeTurner(command: "muesli-cli time-turner search", options: global) { try execute() }
     }
@@ -82,11 +94,27 @@ struct TimeTurnerSearch: ParsableCommand {
         let start = try captureDate(from) ?? .distantPast
         let end = try captureDate(until) ?? .distantFuture
         guard start < end else { throw CLIError.invalidInput("--from must be earlier than --until.") }
+        var position: VisualMemoryCursor?
+        if let cursor {
+            guard cursor.utf8.count <= 4096, let data = Data(base64Encoded: cursor),
+                  let decoded = try? JSONDecoder().decode(VisualMemoryCursor.self, from: data),
+                  decoded.capturedAtUnix.isFinite, !decoded.id.isEmpty else {
+                throw CLIError.invalidInput("Invalid continuation token.")
+            }
+            position = decoded
+        }
         let store = try openTimeTurner(global)
         do {
-            let rows = try store.searchMoments(text: query, from: start, until: end, app: app, limit: limit)
-            let captures = try rows.map { try CapturePayload($0, store: store) }
-            emitSuccess(command: "muesli-cli time-turner search", data: captures, dbPath: store.root.appendingPathComponent("catalog.sqlite"), warnings: rows.count == limit ? ["Result limit reached; narrow the time range to retrieve additional captures."] : [])
+            let rows = try store.searchMoments(text: query, from: start, until: end, app: app, limit: limit + 1, after: position)
+            let page = Array(rows.prefix(limit))
+            let captures = try page.map { try CapturePayload($0, store: store) }
+            let hasMore = rows.count > limit
+            let next = try hasMore ? page.last.map {
+                try JSONEncoder().encode(VisualMemoryCursor(capturedAtUnix: $0.capturedAt.timeIntervalSince1970, id: $0.id)).base64EncodedString()
+            } : nil
+            emitSuccess(command: "muesli-cli time-turner search", data: captures,
+                dbPath: store.root.appendingPathComponent("catalog.sqlite"), nextCursor: next, hasMore: hasMore)
+
         } catch let error as CLIError { throw error }
         catch { throw CLIError.databaseError(error.localizedDescription) }
     }
@@ -112,6 +140,7 @@ struct TimeTurnerGet: ParsableCommand {
                 guard FileManager.default.fileExists(atPath: source.path) else { throw CLIError.notFound("Capture media is missing or expired.") }
                 let image: CGImage
                 if let frame = item.frameIndex {
+                    guard frame >= 0 else { throw CLIError.databaseError("Capture has an invalid archive frame index.") }
                     let generator = AVAssetImageGenerator(asset: AVURLAsset(url: source))
                     generator.appliesPreferredTrackTransform = true
                     generator.requestedTimeToleranceBefore = .zero

@@ -12,6 +12,8 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public var source: String
     public var bundleID: String
     public var text: String
+    public var appName: String?
+    public var windowTitle: String?
     public var path: String
     public var duration: Double
     public var meetingOffset: Double
@@ -24,7 +26,8 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public init(id: String = UUID().uuidString, kind: Kind, meetingID: Int64? = nil,
                 capturedAt: Date = Date(), source: String, bundleID: String = "", text: String = "",
                 path: String, duration: Double = 0, meetingOffset: Double = 0, frameIndex: Int? = nil, bytes: Int64 = 0,
-                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil) {
+                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil, appName: String? = nil, windowTitle: String? = nil) {
+        self.appName = appName; self.windowTitle = windowTitle
         self.id = id; self.kind = kind; self.meetingID = meetingID; self.capturedAt = capturedAt
         self.source = source; self.bundleID = bundleID; self.text = text; self.path = path
         self.captureCompletedAt = captureCompletedAt; self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
@@ -37,6 +40,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     public let root: URL
     private var db: OpaquePointer?
     private let lock = NSRecursiveLock()
+    private var hasCaptureTable = false
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(root: URL, readOnly: Bool = false) throws {
@@ -47,28 +51,15 @@ public final class VisualMemoryStore: @unchecked Sendable {
             throw failure()
         }
         sqlite3_busy_timeout(db, 5_000)
+        hasCaptureTable = try scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='time_turner_captures'") > 0
         if readOnly { return }
         try execute("PRAGMA journal_mode=WAL")
         try execute("CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, kind TEXT NOT NULL, meeting_id INTEGER, captured REAL NOT NULL, body TEXT NOT NULL)")
         try execute("CREATE INDEX IF NOT EXISTS evidence_time ON evidence(kind,captured)")
         try execute("CREATE INDEX IF NOT EXISTS evidence_meeting ON evidence(meeting_id)")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS evidence_search USING fts5(id UNINDEXED, text)")
-        // Public read-only SQL surface. Dates in the JSON payload use Foundation's
-        // reference epoch; consumers should use these explicit Unix/UTC columns.
-        try execute("""
-            CREATE VIEW IF NOT EXISTS time_turner_captures AS
-            SELECT id, captured AS captured_at_unix,
-                   strftime('%Y-%m-%dT%H:%M:%fZ', captured, 'unixepoch') AS captured_at_utc,
-                   json_extract(body, '$.captureCompletedAt') + 978307200 AS capture_completed_at_unix,
-                   json_extract(body, '$.source') AS source,
-                   json_extract(body, '$.bundleID') AS bundle_id,
-                   json_extract(body, '$.text') AS ocr_text,
-                   json_extract(body, '$.path') AS media_relative_path,
-                   json_extract(body, '$.frameIndex') AS archive_frame_index,
-                   json_extract(body, '$.pixelWidth') AS pixel_width,
-                   json_extract(body, '$.pixelHeight') AS pixel_height
-            FROM evidence WHERE kind = 'moment'
-            """)
+        try migrateCaptureTable()
+
     }
     deinit { sqlite3_close(db) }
     private func failure() -> NSError {
@@ -78,6 +69,85 @@ public final class VisualMemoryStore: @unchecked Sendable {
     private func execute(_ sql: String) throws {
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw failure() }
     }
+    private func scalar(_ sql: String) throws -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw failure() }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    /// Versioned, transactional projection for SQL consumers. Evidence remains the
+    /// compatibility record; triggers keep typed columns in sync even for older writers.
+    private func migrateCaptureTable() throws {
+        let version = try scalar("PRAGMA user_version")
+        guard version <= 1 else { throw NSError(domain: "VisualMemoryStore", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Screen history was created by a newer Muesli version."]) }
+        guard version < 1 else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            // Another connection may have upgraded while BEGIN waited for its lock.
+            if try scalar("PRAGMA user_version") == 1 {
+                try execute("COMMIT"); hasCaptureTable = true; return
+            }
+            try execute("DROP VIEW IF EXISTS time_turner_captures")
+            try execute("""
+                CREATE TABLE time_turner_captures (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    captured_at_unix REAL NOT NULL,
+                    captured_at_utc TEXT NOT NULL,
+                    capture_completed_at_unix REAL,
+                    source TEXT NOT NULL,
+                    bundle_id TEXT NOT NULL COLLATE NOCASE,
+                    app_name TEXT NOT NULL COLLATE NOCASE,
+                    window_title TEXT,
+                    ocr_text TEXT NOT NULL,
+                    media_relative_path TEXT NOT NULL,
+                    archive_frame_index INTEGER,
+                    pixel_width INTEGER,
+                    pixel_height INTEGER,
+                    media_bytes INTEGER NOT NULL
+                );
+                CREATE INDEX captures_time ON time_turner_captures(captured_at_unix DESC,id);
+                CREATE INDEX captures_bundle_time ON time_turner_captures(bundle_id,captured_at_unix DESC,id);
+                CREATE INDEX captures_app_time ON time_turner_captures(app_name,captured_at_unix DESC,id);
+                """)
+            let projection = """
+                SELECT id, captured, strftime('%Y-%m-%dT%H:%M:%fZ', captured, 'unixepoch'),
+                    json_extract(body,'$.captureCompletedAt') + 978307200,
+                    json_extract(body,'$.source'), coalesce(json_extract(body,'$.bundleID'),''),
+                    coalesce(json_extract(body,'$.appName'), CASE WHEN instr(json_extract(body,'$.source'),' · ')>0
+                        THEN substr(json_extract(body,'$.source'),1,instr(json_extract(body,'$.source'),' · ')-1)
+                        ELSE json_extract(body,'$.source') END),
+                    json_extract(body,'$.windowTitle'), json_extract(body,'$.text'),
+                    json_extract(body,'$.path'), json_extract(body,'$.frameIndex'),
+                    json_extract(body,'$.pixelWidth'), json_extract(body,'$.pixelHeight'), json_extract(body,'$.bytes')
+                FROM evidence WHERE kind='moment'
+                """
+            try execute("INSERT INTO time_turner_captures " + projection)
+            for event in ["INSERT", "UPDATE"] {
+                let oldIDCleanup = event == "UPDATE" ? "DELETE FROM time_turner_captures WHERE id=OLD.id;" : ""
+                try execute("""
+                    CREATE TRIGGER captures_after_\(event.lowercased()) AFTER \(event) ON evidence BEGIN
+                        \(oldIDCleanup)
+                        DELETE FROM time_turner_captures WHERE id=NEW.id;
+                        INSERT INTO time_turner_captures \(projection) AND id=NEW.id;
+                    END;
+                    """)
+            }
+            try execute("""
+                CREATE TRIGGER captures_after_delete AFTER DELETE ON evidence BEGIN
+                    DELETE FROM time_turner_captures WHERE id=OLD.id;
+                END;
+                DELETE FROM evidence_search;
+                INSERT INTO evidence_search SELECT id,json_extract(body,'$.source') || ' ' || json_extract(body,'$.text') FROM evidence;
+                PRAGMA user_version=1;
+                COMMIT;
+                """)
+            hasCaptureTable = true
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
     public func url(for path: String) throws -> URL {
         let resolved = root.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
         guard !path.hasPrefix("/"), resolved.path.hasPrefix(root.standardizedFileURL.resolvingSymlinksInPath().path + "/") else {
@@ -149,13 +219,17 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// Literal word/phrase search with a half-open UTC time range and bounded results.
     /// This does not expose SQL or FTS expression syntax to callers.
     public func searchMoments(text: String = "", from: Date = .distantPast,
-                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100) throws -> [VisualMemoryItem] {
+                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100, after: VisualMemoryCursor? = nil) throws -> [VisualMemoryItem] {
         lock.lock(); defer { lock.unlock() }
         let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchClause = phrase.isEmpty ? "" : " AND id IN (SELECT id FROM evidence_search WHERE evidence_search MATCH ?)"
-        let appClause = app == nil ? "" : " AND (lower(json_extract(body,'$.bundleID'))=lower(?) OR lower(CASE WHEN instr(json_extract(body,'$.source'),' · ')>0 THEN substr(json_extract(body,'$.source'),1,instr(json_extract(body,'$.source'),' · ')-1) ELSE json_extract(body,'$.source') END)=lower(?))"
+        let legacyAppClause = app == nil ? "" : " AND (lower(json_extract(body,'$.bundleID'))=lower(?) OR lower(CASE WHEN instr(json_extract(body,'$.source'),' · ')>0 THEN substr(json_extract(body,'$.source'),1,instr(json_extract(body,'$.source'),' · ')-1) ELSE json_extract(body,'$.source') END)=lower(?))"
+        let appClause = app == nil ? "" : (hasCaptureTable
+            ? " AND id IN (SELECT id FROM time_turner_captures WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
+            : legacyAppClause)
+        let cursorClause = after == nil ? "" : " AND (captured<? OR (captured=? AND id>?))"
         var stmt: OpaquePointer?
-        let sql = "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + " ORDER BY captured DESC,id LIMIT ?"
+        let sql = "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + cursorClause + " ORDER BY captured DESC,id LIMIT ?"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_double(stmt, 1, from.timeIntervalSince1970)
@@ -169,7 +243,12 @@ public final class VisualMemoryStore: @unchecked Sendable {
             sqlite3_bind_text(stmt, slot, app, -1, transient); slot += 1
             sqlite3_bind_text(stmt, slot, app, -1, transient); slot += 1
         }
-        sqlite3_bind_int(stmt, slot, Int32(max(1, min(1000, limit))))
+        if let after {
+            sqlite3_bind_double(stmt, slot, after.capturedAtUnix); slot += 1
+            sqlite3_bind_double(stmt, slot, after.capturedAtUnix); slot += 1
+            sqlite3_bind_text(stmt, slot, after.id, -1, transient); slot += 1
+        }
+        sqlite3_bind_int(stmt, slot, Int32(max(1, min(1001, limit))))
         var result: [VisualMemoryItem] = []
         var status = sqlite3_step(stmt)
         while status == SQLITE_ROW {
@@ -284,5 +363,14 @@ public struct VisualMemoryScrubScale {
         let lower = upper - 1
         let local = (position - positions[lower]) / (positions[upper] - positions[lower])
         return dates[lower].addingTimeInterval(local * dates[upper].timeIntervalSince(dates[lower]))
+    }
+}
+
+/// Stable keyset position; does not depend on the referenced capture still existing.
+public struct VisualMemoryCursor: Codable, Sendable {
+    public let capturedAtUnix: Double
+    public let id: String
+    public init(capturedAtUnix: Double, id: String) {
+        self.capturedAtUnix = capturedAtUnix; self.id = id
     }
 }
