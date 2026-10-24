@@ -149,6 +149,7 @@ actor TranscriptionCoordinator {
     private let diarizerLoadOperationTimeout: Duration
     private let diarizerDiagnostics: DiarizerPreloadDiagnostics
     private var activeBackend: String?
+    private let nativeGemmaReadinessInvalidated: @MainActor @Sendable () -> Void
 
     init(
         diarizerModelLoader: @escaping DiarizerModelLoader = { policy in
@@ -156,12 +157,14 @@ actor TranscriptionCoordinator {
         },
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
-        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
+        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
+        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
         self.diarizerDiagnostics = diarizerDiagnostics
+        self.nativeGemmaReadinessInvalidated = nativeGemmaReadinessInvalidated
     }
 
     private var _nemotron35Transcriber: Any?
@@ -213,12 +216,16 @@ actor TranscriptionCoordinator {
     }
 
     func unloadGemma4LiteRTTranscriber() async {
+        // Invalidate before suspension so a cached plan cannot admit recording.
+        await nativeGemmaReadinessInvalidated()
         if #available(macOS 15, *) {
             nativeGemmaEngines.removeAll()
             // The planner can load a shared engine without creating this facade.
             await Gemma4LiteRTTranscriber.shared.shutdown()
             _gemma4LiteRTTranscriber = nil
         }
+        // Also discard preparation that raced with the asynchronous teardown.
+        await nativeGemmaReadinessInvalidated()
     }
 
     func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {

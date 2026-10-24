@@ -478,6 +478,35 @@ struct GemmaNativeAudioTests {
         await gate.waitForPreparation()
         #expect(preparations == 3)
     }
+    @MainActor @Test func sharedEngineUnloadInvalidatesAllPreparedModes() async {
+        let gate = GemmaRecordingPreparationGate()
+        let coordinator = TranscriptionCoordinator(nativeGemmaReadinessInvalidated: { gate.invalidate() })
+        let dictation = GemmaPreparationPlan(dictation: .e2b, cleanup: nil, quill: nil)
+        let quill = GemmaPreparationPlan(dictation: .e2b, cleanup: nil, quill: .e4b, requireQuill: true)
+        for plan in [dictation, quill] {
+            #expect(!gate.request(plan, prepare: {}, ready: {}, failed: { _ in Issue.record("Unexpected failure") }))
+            await gate.waitForPreparation()
+            #expect(gate.request(plan, prepare: {}, ready: {}, failed: { _ in }))
+        }
+        // Deleting even an unselected Gemma model uses this shared unload path.
+        await coordinator.unloadGemma4LiteRTTranscriber()
+        #expect(gate.readyKey == nil && gate.pendingKey == nil)
+        for plan in [dictation, quill] {
+            #expect(!gate.request(plan, prepare: {}, ready: {}, failed: { _ in }))
+            await gate.waitForPreparation()
+        }
+        // A preparation suspended during unload cannot republish stale readiness.
+        var suspended: CheckedContinuation<Void, Never>?
+        var finished = false
+        let other = GemmaPreparationPlan(dictation: .e4b, cleanup: nil, quill: nil)
+        #expect(!gate.request(other, prepare: { await withCheckedContinuation { suspended = $0 }; finished = true },
+            ready: { Issue.record("Stale preparation marked ready") }, failed: { _ in }))
+        while suspended == nil { await Task.yield() }
+        await coordinator.unloadGemma4LiteRTTranscriber()
+        suspended?.resume()
+        while !finished { await Task.yield() }
+        #expect(gate.readyKey == nil && gate.pendingKey == nil)
+    }
     @Test func optionalPreparationFailureDoesNotBlockRequiredDictation() async throws {
         enum Failure: Error { case invalidArtifact }
         let plan = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b)

@@ -394,7 +394,12 @@ public final class MuesliController: NSObject {
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
-    let transcriptionCoordinator = TranscriptionCoordinator()
+    private(set) lazy var transcriptionCoordinator = TranscriptionCoordinator(
+        nativeGemmaReadinessInvalidated: { [weak self] in
+            self?.nativeRecordingGate.invalidate()
+            self?.indicator.hideLoading()
+        }
+    )
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
