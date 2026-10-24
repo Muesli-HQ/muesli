@@ -374,27 +374,30 @@ final class QuilSelectionSnapshot {
         )
     }
 
+    var selectionToVerifyByCopy: String? { usesClipboardFallback ? text : nil }
+
+    /// AX-only: safe both before and after staging the replacement clipboard.
     func isStillCurrent() -> Bool {
         guard isTargetStillFocused(),
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
-        if usesClipboardFallback {
-            // Google Docs does not expose its selection through AX. Re-copy once,
-            // immediately before replacement, rather than at every lifecycle guard.
-            return true
-        }
-        guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
-        guard let selectedRange else { return true }
-        guard let currentRange = DictationContextCapture.selectedTextRange(focused) else { return false }
-        return currentRange.location == selectedRange.location
-            && currentRange.length == selectedRange.length
+        return Self.selectionMatches(
+            expectedText: text, currentText: DictationContextCapture.selectedTextValue(in: focused),
+            expectedRange: selectedRange, currentRange: DictationContextCapture.selectedTextRange(focused),
+            usesClipboardFallback: usesClipboardFallback
+        )
     }
 
-    func isStillCurrentForReplacement() -> Bool {
-        guard isStillCurrent() else { return false }
-        if usesClipboardFallback {
-            return PasteController.copySelectedText() == text
+    static func selectionMatches(
+        expectedText: String, currentText: String,
+        expectedRange: CFRange?, currentRange: CFRange?, usesClipboardFallback: Bool
+    ) -> Bool {
+        // Opaque browser editors need the bounded late Copy verification as well.
+        if !usesClipboardFallback || !currentText.isEmpty {
+            guard currentText == expectedText else { return false }
         }
-        return true
+        guard let expectedRange else { return true }
+        guard let currentRange else { return false }
+        return currentRange.location == expectedRange.location && currentRange.length == expectedRange.length
     }
 
     func matches(context: DictationContext?) -> Bool {
@@ -408,12 +411,57 @@ final class QuilSelectionSnapshot {
     }
 
     /// Safe to call after Quill has staged its replacement on the clipboard.
-    /// Full text equality is checked before staging; this last guard only ensures
-    /// focus has not moved during the short paste dispatch delay.
+    /// Used together with the AX selection checks at each paste gate.
     func isTargetStillFocused() -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
         return CFEqual(focused, element)
+    }
+}
+
+/// Retains only whether real input occurred while an asynchronous replacement was pending.
+/// Tests supply a synthetic source; they never install desktop event monitors.
+@MainActor
+final class QuilPendingInputGuard {
+    typealias Source = (@escaping @MainActor () -> Void) -> (() -> Void)?
+    private(set) var isUnchanged = true
+    private var stopSource: (() -> Void)?
+
+    init(source: Source? = nil) {
+        stopSource = (source ?? Self.monitorInput) { [weak self] in self?.isUnchanged = false }
+        if stopSource == nil { isUnchanged = false }
+    }
+
+    deinit {
+        // Destruction may occur off-main; AppKit monitor removal belongs on main.
+        if let stopSource { DispatchQueue.main.async { stopSource() } }
+    }
+
+    func stop() {
+        stopSource?()
+        stopSource = nil
+    }
+
+    private static func monitorInput(_ invalidate: @escaping @MainActor () -> Void) -> (() -> Void)? {
+        let mask: NSEvent.EventTypeMask = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                         .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                                         .leftMouseUp, .rightMouseUp, .otherMouseUp]
+        let global = NSEvent.addGlobalMonitorForEvents(matching: mask) { event in
+            if !MuesliSyntheticKeyboardEvent.isMarked(event) { invalidate() }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: mask) { event in
+            if !MuesliSyntheticKeyboardEvent.isMarked(event) { invalidate() }
+            return event
+        }
+        guard let global, let local else {
+            if let global { NSEvent.removeMonitor(global) }
+            if let local { NSEvent.removeMonitor(local) }
+            return nil
+        }
+        return {
+            NSEvent.removeMonitor(global)
+            NSEvent.removeMonitor(local)
+        }
     }
 }
 
