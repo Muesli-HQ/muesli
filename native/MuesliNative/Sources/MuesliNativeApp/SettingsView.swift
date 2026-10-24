@@ -2193,7 +2193,6 @@ struct SettingsView: View {
                 settingsRow("Only show events with a meeting link", controlWidth: meetingControlWidth) {
                     settingsControl("calendar_meeting_links_only")
                 }
-                settingsDescription("Hide events without a meeting link.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
