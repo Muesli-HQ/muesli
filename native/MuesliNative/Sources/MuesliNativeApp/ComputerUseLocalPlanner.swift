@@ -151,7 +151,7 @@ struct GemmaComputerUseInference: ComputerUseLocalInferenceBackend {
         guard #available(macOS 15, *) else {
             throw ComputerUsePlannerError.invalidResponse("On-device planning requires macOS 15 or later.")
         }
-        return try await Gemma4LiteRTTranscriber.shared.generateToolResponse(systemPrompt: systemPrompt,
+        return try await GemmaNativeAudioTranscriber.shared(for: model).generateToolResponse(systemPrompt: systemPrompt,
             userPrompt: userPrompt, model: model, toolsJSON: toolsJSON)
     }
 }
