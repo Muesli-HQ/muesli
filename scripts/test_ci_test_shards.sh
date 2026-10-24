@@ -59,3 +59,5 @@ if [[ "$failed" == true ]]; then
 fi
 
 echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d ' ') assigned, $(wc -l < "$tmp_dir/baseline" | tr -d ' ') legacy-unsharded)."
+
+bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"

@@ -328,7 +328,7 @@ actor Gemma4LiteRTTranscriber {
     func cleanTranscript(_ text: String, systemPrompt: String, appContext: String?, model: Gemma4LiteRTModel,
                          maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens, contextTokens: Int32 = 4096) async throws
         -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
-        try await GemmaNativeAudioTranscriber.shared(for: model).cleanTranscript(text, systemPrompt: systemPrompt, appContext: appContext, model: model)
+        try await GemmaNativeAudioTranscriber.shared(for: model).cleanTranscript(text, systemPrompt: systemPrompt, appContext: appContext, model: model, maxOutputTokens: maxOutputTokens)
     }
     func generateFromAudio(wavURL: URL, systemPrompt: String, userPrompt: String, model: Gemma4LiteRTModel, maxOutputTokens: Int32) async throws -> String {
         try await GemmaNativeAudioTranscriber.shared(for: model).generateFromAudio(wavURL: wavURL, systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, maxOutputTokens: maxOutputTokens)

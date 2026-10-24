@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MuesliCore
+import MLX
 @testable import MuesliNativeApp
 
 @Suite
@@ -266,6 +267,8 @@ struct ManagedCleanupV12Tests {
     @Test func gemmaLimitPreservesOriginalTranscript() async throws {
         guard #available(macOS 15, *),
               ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"] != nil else { return }
+        if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
+        Memory.cacheLimit = 256 * 1024 * 1024
         let transcriber = Gemma4LiteRTTranscriber()
         let input = "First send the report tomorrow morning. Then email the customer and archive the results."
         let capped = try await transcriber.cleanTranscript(input, systemPrompt: "", appContext: nil,

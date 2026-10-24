@@ -435,11 +435,11 @@ actor GemmaNativeAudioTranscriber {
         guard !result.skippedSilence else { throw QuilTransformationError.emptyInstruction }
         return result.text
     }
-    func cleanTranscript(_ text: String, systemPrompt: String, appContext: String?, model: Gemma4LiteRTModel) async throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
+    func cleanTranscript(_ text: String, systemPrompt: String, appContext: String?, model: Gemma4LiteRTModel, maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens) async throws -> (text: String, rawOutput: String, processingTime: Double, didFallback: Bool) {
         let request = Gemma4LiteRTTranscriber.cleanupRequest(text, systemPrompt: systemPrompt, appContext: appContext, model: model)
         TranscriptCleanupDebugLogger.prompt(request)
         let effectiveSystem = TranscriptCleanupClient.systemPromptWithAppContextGuidance(systemPrompt, appContext: appContext)
-        let result = try await generatePrompt(Self.framed(system: model.isCleanupOnly ? nil : effectiveSystem, user: request), model: model, maxTokens: Int(Gemma4LiteRTTranscriber.maxCleanupOutputTokens))
+        let result = try await generatePrompt(Self.framed(system: model.isCleanupOnly ? nil : effectiveSystem, user: request), model: model, maxTokens: max(1, Int(maxOutputTokens)))
         if model.isCleanupOnly {
             let guarded = MuesliCleanupV2Prompt.guardResult(result.raw, input: text, generationCompleted: result.completed)
             return (guarded.text, result.raw, result.seconds, guarded.didFallback)

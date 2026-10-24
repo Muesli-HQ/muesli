@@ -240,7 +240,10 @@ swift build "${build_args[@]}" --build-tests
 bin_path="$(swift build "${build_args[@]}" --show-bin-path)"
 metallib="$(find "${bin_path}" -path '*mlx-swift_Cmlx.bundle/*' -name default.metallib -print -quit)"
 if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
-  scratch="${MUESLI_SWIFTPM_SCRATCH_PATH:-native/MuesliNative/.build}"
+  scratch="${MUESLI_SWIFTPM_SCRATCH_PATH:-.build}"
+  if [[ "$scratch" != /* ]]; then
+    scratch="$PWD/native/MuesliNative/$scratch"
+  fi
   metallib="$bin_path/muesli-test.metallib"
   bash scripts/build_mlx_test_metallib.sh "$scratch/checkouts/mlx-swift" "$metallib"
 fi

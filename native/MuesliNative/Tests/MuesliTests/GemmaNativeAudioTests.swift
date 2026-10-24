@@ -460,6 +460,24 @@ struct GemmaNativeAudioTests {
         gate.invalidate()
         #expect(gate.readyKey == nil && gate.pendingKey == nil)
     }
+    @MainActor @Test func switchingPreparedModesRetainsReadinessUntilInvalidation() async {
+        let gate = GemmaRecordingPreparationGate()
+        let dictation = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b)
+        let quill = GemmaPreparationPlan(dictation: .e2b, cleanup: nil, quill: .e4b, requireQuill: true)
+        var preparations = 0
+        for plan in [dictation, quill] {
+            #expect(!gate.request(plan, prepare: { preparations += 1 }, ready: {}, failed: { _ in Issue.record("Unexpected failure") }))
+            await gate.waitForPreparation()
+        }
+        for plan in [dictation, quill, dictation] {
+            #expect(gate.request(plan, prepare: { preparations += 1 }, ready: {}, failed: { _ in Issue.record("Unexpected failure") }))
+        }
+        #expect(preparations == 2)
+        gate.invalidate()
+        #expect(!gate.request(dictation, prepare: { preparations += 1 }, ready: {}, failed: { _ in }))
+        await gate.waitForPreparation()
+        #expect(preparations == 3)
+    }
     @Test func optionalPreparationFailureDoesNotBlockRequiredDictation() async throws {
         enum Failure: Error { case invalidArtifact }
         let plan = GemmaPreparationPlan(dictation: .e2b, cleanup: .muesliCleanupV2, quill: .e4b)

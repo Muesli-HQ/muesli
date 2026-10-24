@@ -24,6 +24,12 @@ private final class DownloadTestTracker: @unchecked Sendable {
         lock.unlock()
     }
 
+    var activeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return active
+    }
+
     func waitUntilRequestStarts(timeout: TimeInterval = 2) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -129,6 +135,12 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        // Do not block URLSession's protocol queue: it must deliver stopLoading
+        // while the simulated server is still streaming a delayed response.
+        DispatchQueue.global().async { self.deliverResponse() }
+    }
+
+    private func deliverResponse() {
         let response: Response? = {
             Self.lock.lock()
             defer { Self.lock.unlock() }
@@ -1786,8 +1798,8 @@ struct ModelDownloadCoordinatorTests {
         }
     }
 
-    @Test("cancelling one duplicate caller does not cancel the shared transfer")
-    func cancellingOneDuplicateCallerPreservesSharedTransfer() async throws {
+    @Test("cancelling one duplicate caller does not cancel the shared transfer", arguments: [false, true])
+    func cancellingOneDuplicateCallerPreservesSharedTransfer(cancelWhenUnobserved: Bool) async throws {
         let tracker = DownloadTestTracker()
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
@@ -1812,7 +1824,7 @@ struct ModelDownloadCoordinatorTests {
         let firstReturned = DownloadCompletionFlag()
         let first = Task {
             do {
-                try await coordinator.download(manifest, to: directory)
+                try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved)
             } catch {
                 firstReturned.markCompleted()
                 throw error
@@ -1820,7 +1832,8 @@ struct ModelDownloadCoordinatorTests {
             firstReturned.markCompleted()
         }
         try await Task.sleep(for: .milliseconds(20))
-        let second = Task { try await coordinator.download(manifest, to: directory) }
+        let second = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved) }
+        try await Task.sleep(for: .milliseconds(20))
         first.cancel()
 
         try await Task.sleep(for: .milliseconds(20))
@@ -2078,6 +2091,31 @@ struct ModelDownloadCoordinatorTests {
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
         try FileManager.default.removeItem(at: partURL)
         #expect(!FileManager.default.fileExists(atPath: partURL.path))
+    }
+
+    @Test("caller-owned assistant transfer stops when the last caller cancels")
+    func lastAssistantCallerCancellationStopsTransfer() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: Data(repeating: 0x43, count: 2 * 1024 * 1024),
+                  chunkSize: 4096, delay: 0.01, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "assistant-drafter", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/drafter")), expectedByteCount: 2 * 1024 * 1024)])
+        let task = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        #expect(tracker.waitUntilRequestStarts())
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while tracker.activeCount > 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tracker.activeCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {

@@ -86,7 +86,7 @@ enum GemmaNativeAudioModels {
         }
         let block = try await GemmaMTPPolicy.optionalDrafterBlock(requested: GemmaMTPPolicy.blockSize()) {
             let assistant = drafter(for: model)
-            try await ModelDownloadCoordinator.shared.download(assistant.manifest(id: model.repoID + "-drafter"), to: artifactDirectory(assistant)) { snapshot in
+            try await ModelDownloadCoordinator.shared.download(assistant.manifest(id: assistant.repoID + "-drafter"), to: artifactDirectory(assistant), cancelWhenUnobserved: true) { snapshot in
                 progress?(snapshot.fractionCompleted ?? 0, "Downloading \(model.label) MTP weights")
                 progressSnapshot?(snapshot)
             }
@@ -167,24 +167,32 @@ struct GemmaPreparationPlan: Equatable, Sendable {
 @MainActor
 final class GemmaRecordingPreparationGate {
     private(set) var readyKey: String?
+    private var readyKeys: Set<String> = []
     private(set) var pendingKey: String?
     private var generation = UUID()
     private var task: Task<Void, Never>?
 
-    func invalidate() {
+    private func cancelPending() {
         generation = UUID()
         task?.cancel(); task = nil
-        readyKey = nil; pendingKey = nil
+        pendingKey = nil
+    }
+
+    func invalidate() {
+        cancelPending()
+        readyKey = nil
+        readyKeys.removeAll()
     }
 
     func request(_ plan: GemmaPreparationPlan,
                  prepare: @escaping @MainActor () async throws -> Void,
                  ready: @escaping @MainActor () -> Void,
                  failed: @escaping @MainActor (Error) -> Void) -> Bool {
-        if plan.isEmpty { invalidate(); return true }
-        if readyKey == plan.key { return true }
+        if plan.isEmpty { cancelPending(); readyKey = nil; return true }
+        if readyKeys.contains(plan.key) { cancelPending(); readyKey = plan.key; return true }
         if pendingKey == plan.key { return false }
-        invalidate()
+        cancelPending()
+        readyKey = nil
         let token = generation
         pendingKey = plan.key
         task = Task { [weak self] in
@@ -192,6 +200,7 @@ final class GemmaRecordingPreparationGate {
                 try await prepare()
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
+                self.readyKeys.insert(plan.key)
                 self.readyKey = plan.key; self.pendingKey = nil; self.task = nil
                 ready()
             } catch {
