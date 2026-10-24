@@ -7,11 +7,93 @@ import MuesliCore
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
     @MainActor
-    private func makeNotch() -> NotchIndicatorController {
+    private func makeNotch(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) -> NotchIndicatorController {
         NotchIndicatorController(resolveGeometry: { screen in
             NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
-        })
+        }, pointerLocation: pointerLocation)
+    }
+
+    @Test("Dismissing transcript restores instructions and preference changes allow reopening")
+    @MainActor
+    func transcriptRestoresInstruction() throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        _ = notch.show(on: screen, title: "Meeting", detail: "", recording: true,
+            paused: false, meeting: true, handsFree: true, active: true, icon: NSImage(),
+            accent: .red, instruction: "Review the current action")
+        let instructionFrame = try #require(notch.expandedPanelFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.dismissMeetingTranscript()
+        #expect(notch.meetingTranscriptFrame == nil)
+        #expect(notch.expandedPanelFrame == instructionFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.meetingTranscriptEnabled = false
+        notch.meetingTranscriptEnabled = true
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.hide()
+        #expect(notch.expandedPanelFrame == nil)
+    }
+
+    @Test("Moving into the transcript retains it; leaving both surfaces collapses it")
+    @MainActor
+    func meetingTranscriptPointerTransition() async throws {
+        let screen = try #require(NSScreen.main)
+        var pointer = NSPoint(x: -10000, y: -10000)
+        let notch = makeNotch(pointerLocation: { pointer })
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        _ = notch.show(on: screen, title: "Meeting", detail: "", recording: true,
+            paused: false, meeting: true, handsFree: true, active: true, icon: NSImage(), accent: .red)
+        notch.setMeetingTranscriptHovered(true)
+        let frame = try #require(notch.meetingTranscriptFrame)
+        pointer = NSPoint(x: frame.midX, y: frame.midY)
+        notch.setMeetingTranscriptHovered(false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(notch.meetingTranscriptFrame == frame)
+        pointer = NSPoint(x: -10000, y: -10000)
+        notch.setMeetingTranscriptHovered(false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+    }
+
+    @Test("Meeting transcript expands beneath the notch and survives pause", arguments: [false, true])
+    @MainActor
+    func meetingTranscriptExpansion(paused: Bool) throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        notch.updateMeetingTranscript(transcript: "You: A meeting row", partialYou: "Next", partialOthers: "")
+        func show(_ paused: Bool) {
+            _ = notch.show(on: screen, title: "Meeting", detail: "Meeting", recording: true,
+                paused: paused, meeting: true, handsFree: true, active: true,
+                icon: NSImage(), accent: .red)
+        }
+        show(paused)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        let frame = try #require(notch.meetingTranscriptFrame)
+        #expect(frame.size == FloatingMeetingTranscriptPlacement.panelSize)
+        #expect(frame.maxY == screen.frame.maxY - 32)
+        show(!paused)
+        #expect(notch.meetingTranscriptFrame == frame)
+        notch.meetingTranscriptEnabled = false
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.meetingTranscriptEnabled = true
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.hide()
+        #expect(notch.meetingTranscriptFrame == nil)
     }
 
     @Test("Cursor feedback must not hide the active computer-use notch")

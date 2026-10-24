@@ -75,10 +75,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             detail = countdownOverride
         } else if controller.config.showNextMeetingInMenuBar {
             let now = Date()
-            let hidden = controller.appState.hiddenCalendarEventIDs
             let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
-            let nextEvent = controller.appState.upcomingCalendarEvents
-                .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
+            let nextEvent = controller.appState.visibleUpcomingCalendarEvents
+                .filter { $0.startDate > now && $0.startDate < endOfToday }
                 .sorted { $0.startDate < $1.startDate }
                 .first
 
@@ -118,8 +117,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
 
         // Upcoming calendar events
-        let hidden = controller.appState.hiddenCalendarEventIDs
-        let upcomingEvents = controller.appState.upcomingCalendarEvents.filter { !$0.isAllDay && !hidden.contains($0.id) }
+        let upcomingEvents = controller.appState.visibleUpcomingCalendarEvents
         if !upcomingEvents.isEmpty {
             addUpcomingEventsSection(upcomingEvents)
             menu.addItem(.separator())
@@ -130,6 +128,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let pauseTitle = controller.isMeetingRecordingPaused() ? "Resume Meeting Recording" : "Pause Meeting Recording"
             menu.addItem(actionItem(title: pauseTitle, action: #selector(MuesliController.toggleMeetingRecordingPause)))
             menu.addItem(actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
+            if controller.visualMemory.recordingMeetingID != nil {
+                menu.addItem(actionItem(title: controller.visualMemory.pauseState.userPaused ? "Resume Screen Recording" : "Pause Screen Recording", action: #selector(MuesliController.toggleMeetingScreenPause)))
+                menu.addItem(actionItem(title: "Stop Screen Recording", action: #selector(MuesliController.stopMeetingScreenRecording)))
+            } else {
+                let screen = actionItem(title: controller.visualMemory.isPreparing ? "Preparing Screen Recording…" : "Record Screen…", action: #selector(MuesliController.startMeetingScreenRecording))
+                screen.isEnabled = !controller.isMeetingRecordingPaused() && !controller.visualMemory.isPreparing && !controller.visualMemory.isFinalizing
+                menu.addItem(screen)
+            }
             menu.addItem(actionItem(title: "Discard Meeting Recording...", action: #selector(MuesliController.discardMeetingWithConfirmation)))
         } else {
             menu.addItem(actionItem(
