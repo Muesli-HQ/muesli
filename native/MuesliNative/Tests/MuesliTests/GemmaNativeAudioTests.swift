@@ -9,6 +9,14 @@ struct GemmaNativeAudioTests {
     init() {
         if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
     }
+    @Test func emptyNativeOverrideUsesManagedArtifacts() {
+        let empty = ["MUESLI_GEMMA_MLX_MODEL_DIR": ""]
+        #expect(GemmaNativeAudioModels.overrideDirectory(environment: empty) == nil)
+        #expect(GemmaNativeAudioModels.directory(for: .e2b, environment: empty)
+            == GemmaNativeAudioModels.directory(for: .e2b, environment: [:]))
+        let path = "/tmp/muesli-model-override"
+        #expect(GemmaNativeAudioModels.overrideDirectory(environment: ["MUESLI_GEMMA_MLX_MODEL_DIR": path])?.path == path)
+    }
     @Test func silenceDoesNotFilterQuietSpeech() throws {
         #expect(try GemmaNativeAudioPolicy.isDigitalSilence([0, 0, 0]))
         #expect(try GemmaNativeAudioPolicy.isDigitalSilence([1e-8, -1e-8]))

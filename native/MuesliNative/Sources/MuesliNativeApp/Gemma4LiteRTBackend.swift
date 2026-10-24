@@ -225,7 +225,7 @@ enum Gemma4LiteRTModelStore {
     static func deleteModelFiles(model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment, fileManager: FileManager = .default) throws {
         // Overrides are external user-owned artifacts; never delete them from a model card.
-        guard environment["MUESLI_GEMMA_MLX_MODEL_DIR"] == nil, environment[modelPathEnvVar] == nil, environment["MUESLI_CLEANUP_V2_MODEL_PATH"] == nil else { return }
+        guard GemmaNativeAudioModels.overrideDirectory(environment: environment) == nil, environment[modelPathEnvVar] == nil, environment["MUESLI_CLEANUP_V2_MODEL_PATH"] == nil else { return }
         let directory = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.descriptor(for: model))
         if fileManager.fileExists(atPath: directory.path) { try fileManager.removeItem(at: directory) }
         // Explicit deletion also retires the app-owned legacy model and compiler

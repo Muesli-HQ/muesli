@@ -216,9 +216,7 @@ if [[ "${list_filters}" == true ]]; then
   exit 0
 fi
 
-# Swift 6.3 defaults to the legacy build engine, which does not compile Metal.
-# Swift Build applies Xcode's resource rules, including MLX's shader library.
-build_args=(--package-path native/MuesliNative --build-system swiftbuild)
+build_args=(--package-path native/MuesliNative --build-system native)
 if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi
@@ -240,8 +238,9 @@ swift build "${build_args[@]}" --build-tests
 bin_path="$(swift build "${build_args[@]}" --show-bin-path)"
 metallib="$(find "${bin_path}" -path '*mlx-swift_Cmlx.bundle/*' -name default.metallib -print -quit)"
 if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
-  echo "Missing compiled MLX Metal library in ${bin_path}" >&2
-  exit 1
+  scratch="${MUESLI_SWIFTPM_SCRATCH_PATH:-native/MuesliNative/.build}"
+  metallib="$bin_path/muesli-test.metallib"
+  bash scripts/build_mlx_test_metallib.sh "$scratch/checkouts/mlx-swift" "$metallib"
 fi
 export MUESLI_MLX_EVAL_METALLIB="${metallib}"
 swift test "${args[@]}" --skip-build
