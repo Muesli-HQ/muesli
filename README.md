@@ -44,6 +44,7 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
+- **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
 - **Meeting notes and answers** — Use templates, re-summarize with another model, and ask questions across meetings with references to source passages. Export notes, transcripts, and answers as Markdown or PDF.
 - **Your choice of AI** — Generate summaries with OpenAI or Anthropic API keys, OpenRouter, ChatGPT sign-in, Claude Code, Ollama, LM Studio, or a custom endpoint. Hosted providers receive the transcript for the requested task.
 - **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
