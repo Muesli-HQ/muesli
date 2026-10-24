@@ -475,6 +475,40 @@ struct GoogleCalendarTests {
 
     // MARK: - Cached meeting detection event selection
 
+    @Test("Calendar link filtering shares visibility with detection and preserves the raw cache")
+    func calendarMeetingLinkVisibility() {
+        let state = AppState()
+        let now = date("2026-04-10T10:02:00Z")
+        let url = URL(string: "https://teams.microsoft.com/meet/123?p=Test")!
+        func event(_ id: String, linked: Bool, allDay: Bool = false) -> UnifiedCalendarEvent {
+            UnifiedCalendarEvent(id: id, title: id, startDate: date("2026-04-10T10:00:00Z"),
+                                 endDate: date("2026-04-10T10:30:00Z"), isAllDay: allDay,
+                                 source: .eventKit, meetingURL: linked ? url : nil)
+        }
+        state.upcomingCalendarEvents = [event("focus", linked: false), event("call", linked: true),
+                                        event("hidden", linked: true), event("all-day", linked: true, allDay: true)]
+        state.hiddenCalendarEventIDs = ["hidden"]
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["call"])
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: state.visibleUpcomingCalendarEvents, now: now)?.id == "call")
+
+        state.config.calendarMeetingLinksOnly = false
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["focus", "call"])
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: state.visibleUpcomingCalendarEvents, now: now)?.id == "focus")
+        // Opting out of display filtering does not broaden scheduled prompts or auto-record.
+        let promptNow = date("2026-04-10T10:00:30Z")
+        #expect(ScheduledMeetingNotificationPolicy.upcomingCandidates(
+            from: state.visibleUpcomingCalendarEvents, now: promptNow, hiddenEventIDs: state.hiddenCalendarEventIDs
+        ).map(\.id) == ["call"])
+        #expect(ScheduledMeetingNotificationPolicy.autoRecordCandidates(
+            from: state.visibleUpcomingCalendarEvents, now: promptNow, hiddenEventIDs: state.hiddenCalendarEventIDs
+        ).map(\.id) == ["call"])
+
+        state.config.calendarMeetingLinksOnly = true
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["call"])
+        #expect(state.upcomingCalendarEvents.count == 4)
+        #expect(state.hiddenCalendarEventIDs == ["hidden"])
+    }
+
     @Test("cached meeting detection ignores recently ended events")
     func cachedDetectionIgnoresRecentlyEndedEvents() {
         let now = date("2026-04-10T10:08:00Z")

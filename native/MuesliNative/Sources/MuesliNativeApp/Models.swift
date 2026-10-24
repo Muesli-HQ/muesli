@@ -2240,6 +2240,7 @@ struct AppConfig: Codable {
     var hiddenCalendarEventIDs: [String] = []
     var hiddenCalendarEventSourceHints: [String: String] = [:]
     var disabledCalendarIDs: [String] = []
+    var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
     var quilBackend: String = TranscriptCleanupBackendOption.local.backend
     var quilModel: String = PostProcessorOption.defaultQuilOption.id
@@ -2396,6 +2397,7 @@ struct AppConfig: Codable {
         case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
         case hiddenCalendarEventSourceHints = "hidden_calendar_event_source_hints"
         case disabledCalendarIDs = "disabled_calendar_ids"
+        case calendarMeetingLinksOnly = "calendar_meeting_links_only"
         case enablePostProcessor = "enable_post_processor"
         case quilBackend = "quil_backend"
         case quilModel = "quil_model"
@@ -2643,6 +2645,7 @@ struct AppConfig: Codable {
             forKey: .hiddenCalendarEventSourceHints
         )) ?? defaults.hiddenCalendarEventSourceHints
         disabledCalendarIDs = (try? c.decode([String].self, forKey: .disabledCalendarIDs)) ?? defaults.disabledCalendarIDs
+        calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         quilBackend = TranscriptCleanupBackendOption
             .resolved(try? c.decode(String.self, forKey: .quilBackend))
