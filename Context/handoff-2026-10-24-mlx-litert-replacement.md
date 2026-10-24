@@ -50,3 +50,7 @@ CI builds test products first and locates MLX's compiled metallib before executi
 Optional artifact availability now runs during asynchronous preparation rather than MainActor plan construction. The LiteRT packaging guard uses the staged executable name (not the app display name), including Preprod/Canary bundles whose binary is still named Muesli. A synthetic MuesliPreprod.app/Muesli fixture verifies this distinction.
 
 Final follow-up validation: 67 focused application tests and the 10-test encoder suite passed on the finished edits (reference-only fixture cases skipped). Classifier, shard assignment, update-flow, shell syntax, and diff checks passed. Mocked CI invocation verified Metal resource discovery and fail-closed behavior for a missing resource.
+
+### Quill readiness follow-up
+
+Quill preparation/start no longer require credentials for the separately selected hosted dictation provider. The native preparation plan includes its actual local Gemma audio dependency even when hosted dictation is selected, and treats the Quill model as required for Quill interactions. Ordinary dictation keeps optional Quill preparation best-effort. Warm-up keys distinguish these requirements. 68 application tests and the 10-test encoder suite passed; fixture-only reference cases remained skipped.

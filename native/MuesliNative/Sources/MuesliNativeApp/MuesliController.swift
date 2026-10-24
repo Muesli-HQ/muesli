@@ -9765,8 +9765,8 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
-        guard ensureDictationBackendReady() else { return }
         guard ensureQuilModelIsAvailable() else { return }
+        guard ensureDictationBackendReady(forQuill: true) else { return }
         indicator.instructionMode = .quill
         quilSelectionSnapshot = nil
         quilTargetCaptureError = nil
@@ -9779,7 +9779,10 @@ public final class MuesliController: NSObject {
 
     private func handleQuilStart() {
         guard canStartQuil else { return }
-        guard ensureDictationBackendReady() else { quilHotkeyMonitor.cancelToggleMode(); return }
+        guard ensureQuilModelIsAvailable(), ensureDictationBackendReady(forQuill: true) else {
+            quilHotkeyMonitor.cancelToggleMode()
+            return
+        }
         indicator.instructionMode = .quill
         quilStartedAt = Date()
         indicator.powerProvider = { [weak self] in
@@ -10800,30 +10803,30 @@ public final class MuesliController: NSObject {
         selectedDictationProvider.usesStreamingBackend(selectedBackend)
     }
 
-    private var nativePreparationPlan: GemmaPreparationPlan {
+    private func nativePreparationPlan(forQuill: Bool = false) -> GemmaPreparationPlan {
         guard GemmaNativeAudioPolicy.isEnabled(for: .e2b) else {
             return GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
         }
-        let dictation: Gemma4LiteRTModel? = !selectedDictationProvider.isHosted && selectedBackend.backend == "gemma4-litert"
+        let dictation: Gemma4LiteRTModel? = (forQuill || !selectedDictationProvider.isHosted) && selectedBackend.backend == "gemma4-litert"
             ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
-        let cleanup: Gemma4LiteRTModel? = config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        let cleanup: Gemma4LiteRTModel? = !forQuill && config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
-        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill)
+        return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill, requireQuill: forQuill)
     }
 
     /// No audio session is armed or started when this returns false.
-    private func ensureNativeModelsReady() -> Bool {
+    private func ensureNativeModelsReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
-        let plan = nativePreparationPlan
+        let plan = nativePreparationPlan(forQuill: forQuill)
         if plan.entries.isEmpty { indicator.hideLoading() }
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
             guard let self else { throw CancellationError() }
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
                 Task { @MainActor in
                     guard let self, self.nativeRecordingGate.pendingKey == plan.key,
-                          self.nativePreparationPlan.key == plan.key,
+                          self.nativePreparationPlan(forQuill: forQuill).key == plan.key,
                           self.dictationState == .idle, !self.isMeetingRecording() else { return }
                     self.indicator.showLoading(message)
                     self.statusBarController?.setStatus(message)
@@ -10831,7 +10834,7 @@ public final class MuesliController: NSObject {
             }
         }, ready: { [weak self] in
             guard let self else { return }
-            guard self.nativePreparationPlan.key == plan.key else {
+            guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else {
                 self.nativeRecordingGate.invalidate()
                 self.indicator.hideLoading()
                 return
@@ -10861,9 +10864,11 @@ public final class MuesliController: NSObject {
         return allowed
     }
 
-    private func ensureDictationBackendReady() -> Bool {
+    private func ensureDictationBackendReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
-        if let message = HostedDictationActivationPolicy.blockingMessage(
+        // Quill always uses selectedBackend locally (or Gemma direct audio),
+        // independent of the selected hosted dictation provider and credentials.
+        if !forQuill, let message = HostedDictationActivationPolicy.blockingMessage(
             provider: selectedDictationProvider,
             openAIAPIKey: resolvedOpenAIAPIKey(),
             openRouterAPIKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
@@ -10876,7 +10881,7 @@ public final class MuesliController: NSObject {
                     : "OpenAI not configured"
             )
         }
-        guard !dictationBackendReadiness.allowsDictation else { return ensureNativeModelsReady() }
+        guard !dictationBackendReadiness.allowsDictation else { return ensureNativeModelsReady(forQuill: forQuill) }
         guard let message = dictationBackendReadiness.blockingMessage(
             backendLabel: selectedBackend.label
         ) else { return true }

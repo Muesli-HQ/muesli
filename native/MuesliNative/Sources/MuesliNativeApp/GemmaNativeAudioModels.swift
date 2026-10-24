@@ -90,21 +90,23 @@ struct GemmaPreparationPlan: Equatable, Sendable {
         let model: Gemma4LiteRTModel
         var audio: Bool
         var text: Bool
+        var required: Bool
     }
     let entries: [Entry]
-    var key: String { entries.map { "\($0.model.rawValue):\($0.audio):\($0.text)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?) {
+    var key: String { entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false) {
         var result: [Entry] = []
-        func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool) {
+        func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool, required: Bool) {
             guard let model else { return }
             if let i = result.firstIndex(where: { $0.model == model }) {
                 result[i].audio = result[i].audio || audio
                 result[i].text = result[i].text || text
-            } else { result.append(Entry(model: model, audio: audio, text: text)) }
+                result[i].required = result[i].required || required
+            } else { result.append(Entry(model: model, audio: audio, text: text, required: required)) }
         }
-        add(dictation, audio: true, text: false)
-        add(cleanup, audio: false, text: true)
-        add(quill, audio: quill == dictation, text: true)
+        add(dictation, audio: true, text: false, required: true)
+        add(cleanup, audio: false, text: true, required: false)
+        add(quill, audio: quill == dictation, text: true, required: requireQuill)
         entries = result
     }
     /// Optional feature failures do not prevent ordinary dictation. Each feature
@@ -115,11 +117,11 @@ struct GemmaPreparationPlan: Equatable, Sendable {
         for entry in entries {
             try Task.checkCancellation()
             // Perform filesystem work in preparation, never in the hotkey's plan construction.
-            if !entry.audio && !optionalModelAvailable(entry.model) { continue }
+            if !entry.required && !optionalModelAvailable(entry.model) { continue }
             do { try await operation(entry) }
             catch {
                 try Task.checkCancellation()
-                if entry.audio || error is CancellationError { throw error }
+                if entry.required || error is CancellationError { throw error }
                 optionalFailure(entry, error)
             }
         }

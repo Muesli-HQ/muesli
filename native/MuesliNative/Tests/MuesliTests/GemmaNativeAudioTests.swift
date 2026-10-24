@@ -393,6 +393,27 @@ struct GemmaNativeAudioTests {
         #expect(attempted == [.e2b])
     }
 
+    @Test func quillInteractionRequiresItsModelWithoutHostedCredentials() async throws {
+        enum Failure: Error { case invalidArtifact }
+        // Hosted dictation credentials are not inputs to a local Quill plan.
+        let ordinary = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: .e4b)
+        let quill = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: .e4b, requireQuill: true)
+        #expect(ordinary.key != quill.key)
+        #expect(quill.entries[0].required && !quill.entries[0].audio)
+        var attempted = false
+        do {
+            try await quill.prepare(optionalModelAvailable: { _ in false }, using: { _ in
+                attempted = true
+                throw Failure.invalidArtifact
+            }, optionalFailure: { _, _ in Issue.record("Quill's required model was treated as optional") })
+            Issue.record("Quill must not record with a failed model")
+        } catch Failure.invalidArtifact { }
+        #expect(attempted)
+        let directAudio = GemmaPreparationPlan(dictation: .e2b, cleanup: nil, quill: .e2b, requireQuill: true)
+        #expect(directAudio.entries.count == 1)
+        #expect(directAudio.entries[0].audio && directAudio.entries[0].text && directAudio.entries[0].required)
+    }
+
     @Test func optionalPreparationCancellationStillPropagates() async throws {
         let plan = GemmaPreparationPlan(dictation: nil, cleanup: .muesliCleanupV2, quill: .e4b)
         do {
