@@ -75,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller?.handleICloudRemoteNotification(userInfo: userInfo)
     }
 
+    /// Quitting waits this long for the controller to wind down, then goes ahead.
+    private static let shutdownDeadline: TimeInterval = 8
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationTask != nil {
             return .terminateLater
@@ -85,7 +88,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let controller else { return .terminateNow }
 
         terminationTask = Task { @MainActor [weak self] in
-            await controller.shutdown()
+            let finished = await ShutdownDeadline.run(seconds: Self.shutdownDeadline) {
+                await controller.shutdown()
+            }
+            if !finished {
+                fputs("[muesli-native] shutdown still waiting on step=\(controller.shutdownStep) after \(Self.shutdownDeadline) s; quitting anyway\n", stderr)
+            }
             self?.terminationTask = nil
             sender.reply(toApplicationShouldTerminate: true)
         }
