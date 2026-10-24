@@ -6,6 +6,91 @@ import SQLite3
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    @Test func migratesLegacyViewAndRepairsSearchWithoutLosingEvidence() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let item = VisualMemoryItem(id: "legacy", kind: .moment, capturedAt: Date(timeIntervalSince1970: 1000.125),
+            source: "Editor · Old title", bundleID: "com.example.editor", text: "legacy roadmap", path: "still.heic")
+        let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self).replacingOccurrences(of: "'", with: "''")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, """
+            CREATE TABLE evidence(id TEXT PRIMARY KEY,kind TEXT,meeting_id INTEGER,captured REAL,body TEXT);
+            CREATE VIRTUAL TABLE evidence_search USING fts5(id UNINDEXED,text);
+            CREATE VIEW time_turner_captures AS SELECT id FROM evidence;
+            INSERT INTO evidence VALUES('legacy','moment',NULL,1000.125,'\(body)');
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "roadmap", app: "EDITOR").map(\.id) == ["legacy"])
+        #expect(try store.moment(id: "legacy") == item)
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT app_name,window_title,captured_at_unix FROM time_turner_captures", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "Editor")
+        #expect(sqlite3_column_type(stmt, 1) == SQLITE_NULL)
+        #expect(sqlite3_column_double(stmt, 2) == 1000.125)
+        sqlite3_finalize(stmt)
+        var updated = item
+        updated.appName = "Renamed · App"; updated.windowTitle = "Exact title"
+        updated.path = "archive.mp4"; updated.frameIndex = 7
+        try store.save([updated])
+        #expect(try store.searchMoments(app: "Renamed · App").map(\.id) == ["legacy"])
+        #expect(try store.searchMoments(app: "Editor").isEmpty)
+        let reopened = try VisualMemoryStore(root: root)
+        #expect(try reopened.moment(id: "legacy") == updated)
+        updated.kind = .meetingVideo
+        try store.save([updated])
+        #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM time_turner_captures", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+        sqlite3_finalize(stmt)
+    }
+
+    @Test func failedMigrationRollsBackTheLegacyView() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, """
+            CREATE TABLE evidence(id TEXT PRIMARY KEY,kind TEXT,meeting_id INTEGER,captured REAL,body TEXT);
+            CREATE VIRTUAL TABLE evidence_search USING fts5(id UNINDEXED,text);
+            CREATE VIEW time_turner_captures AS SELECT id FROM evidence;
+            INSERT INTO evidence VALUES('broken','moment',NULL,1000,'invalid json');
+            """, nil, nil, nil) == SQLITE_OK)
+        #expect(throws: (any Error).self) { _ = try VisualMemoryStore(root: root) }
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT type FROM sqlite_master WHERE name='time_turner_captures'", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "view")
+        sqlite3_finalize(stmt)
+        #expect(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+        sqlite3_finalize(stmt)
+    }
+
+    @Test func paginationKeepsEqualTimestampsAndSurvivesCursorDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let time = Date(timeIntervalSince1970: 1000.125)
+        let captures = ["a", "b", "c"].map {
+            VisualMemoryItem(id: $0, kind: .moment, capturedAt: time, source: "Editor", text: "roadmap", path: $0 + ".heic")
+        }
+        try store.save(captures)
+        let first = try #require(store.searchMoments(text: "roadmap", limit: 1).first)
+        #expect(first.id == "a")
+        let cursor = VisualMemoryCursor(capturedAtUnix: first.capturedAt.timeIntervalSince1970, id: first.id)
+        try store.delete(ids: [first.id])
+        #expect(try store.searchMoments(text: "roadmap", after: cursor).map(\.id) == ["b", "c"])
+        try store.save([VisualMemoryItem(id: "new", kind: .moment, capturedAt: time.addingTimeInterval(1), source: "Editor", text: "roadmap", path: "new.heic")])
+        #expect(try store.searchMoments(after: cursor).map(\.id) == ["b", "c"])
+    }
+
     @Test func roundTripAndSharedChunkDeletion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

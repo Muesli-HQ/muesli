@@ -459,7 +459,7 @@ final class VisualMemoryController {
             let url = try store.url(for: path)
             try result.data.write(to: url, options: .atomic)
             do { try store.save([VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, bundleID: bundle,
-                text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted, pixelWidth: image.width, pixelHeight: image.height)]) }
+                text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted, pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)]) }
             catch { try? FileManager.default.removeItem(at: url); throw error }
             lastFingerprint = result.fingerprint; lastText = result.text; lastSource = source
             reload(); ambientStatus = "On · this Mac"

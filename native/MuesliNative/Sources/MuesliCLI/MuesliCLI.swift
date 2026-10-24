@@ -53,6 +53,8 @@ struct MetaBody: Encodable {
     let generatedAt: String
     let dbPath: String
     let warnings: [String]
+    var nextCursor: String? = nil
+    var hasMore: Bool? = nil
 }
 
 struct SuccessEnvelope<T: Encodable>: Encodable {
@@ -115,11 +117,11 @@ func appBundlePath() -> String? {
     return FileManager.default.fileExists(atPath: defaultPath) ? defaultPath : nil
 }
 
-func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL, warnings: [String] = []) {
+func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL, warnings: [String] = [], nextCursor: String? = nil, hasMore: Bool? = nil) {
     let envelope = SuccessEnvelope(
         command: command,
         data: data,
-        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath.path, warnings: warnings)
+        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath.path, warnings: warnings, nextCursor: nextCursor, hasMore: hasMore)
     )
     emitJSON(envelope)
 }
@@ -374,7 +376,7 @@ struct MuesliCLI: AsyncParsableCommand {
 
     static func specPayload() -> CommandSpecPayload {
         CommandSpecPayload(commands: [
-            .init(name: "time-turner search", usage: "muesli-cli time-turner search [--query <phrase>] [--from <ISO8601>] [--until <ISO8601>] [--app <bundle-id-or-name>] [--limit <1-1000>] [--support-dir <dir>]", summary: "Search local screen OCR and source titles by capture time and app.", examples: ["muesli-cli time-turner search --query roadmap --app ChatGPT"]),
+            .init(name: "time-turner search", usage: "muesli-cli time-turner search [--query <phrase>] [--from <ISO8601>] [--until <ISO8601>] [--app <bundle-id-or-name>] [--limit <1-1000>] [--cursor <token>] [--support-dir <dir>]", summary: "Search local screen OCR and source titles by capture time and app.", examples: ["muesli-cli time-turner search --query roadmap --app ChatGPT"]),
             .init(name: "time-turner get", usage: "muesli-cli time-turner get <id> [--output <new.png>] [--support-dir <dir>]", summary: "Read OCR and metadata; export the original still or exact archived frame as PNG for visual inspection.", examples: ["muesli-cli time-turner get CAPTURE_ID --output /tmp/capture.png"]),
             .init(name: "spec", usage: "muesli-cli spec", summary: "Dump the command tree and CLI schema metadata.", examples: ["muesli-cli spec"]),
             .init(name: "info", usage: "muesli-cli info [--db-path <path>] [--support-dir <dir>]", summary: "Show resolved support and database paths.", examples: ["muesli-cli info", "muesli-cli info --support-dir ~/Library/Application\\ Support/Muesli"]),
