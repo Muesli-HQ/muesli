@@ -555,6 +555,7 @@ public final class MuesliController: NSObject {
     private var quilStartedAt: Date?
     private var pendingQuilStopStartedAt: Date?
     private var pendingQuilStopSessionID: UUID?
+    private let quilInstructionPreview = QuilInstructionPreview()
     private var quilTask: Task<Void, Never>?
     private var quilTaskID: UUID?
     private var quilSelectionSnapshot: QuilSelectionSnapshot?
@@ -9894,12 +9895,17 @@ public final class MuesliController: NSObject {
                 : TranscriptCleanupClient.defaultModel(for: backend))
             : configuredModel
         let dictationBackend = selectedBackend
-        let directAudio = QuilModelPolicy.usesDirectAudio(dictation: dictationBackend, backend: backend, model: model)
+        let directAudio = QuilModelPolicy.usesDirectAudio(backend: backend, model: model)
         let configSnapshot = config
         let contextCaptureTask = quilContextCaptureTask
+        let audio = QuilRecordedAudio(url: wavURL)
+        let processingStartedAt = Date()
+        Gemma4LiteRTLogging.profile("quill request=\(taskID) route=\(directAudio ? "direct_audio" : "asr_text") model=\(model) started")
         quilTask = Task { [weak self] in
             guard let self else { return }
-            defer { try? FileManager.default.removeItem(at: wavURL) }
+            // Both consumers retain the recording until their actual work finishes,
+            // including a preview that takes time to observe cancellation.
+            defer { withExtendedLifetime(audio) {}; self.quilInstructionPreview.stop(requestID: taskID) }
             do {
                 let instruction: String
                 if directAudio {
@@ -9908,6 +9914,15 @@ public final class MuesliController: NSObject {
                         guard self.quilTaskID == taskID else { return }
                         self.indicator.showQuilInstruction("Audio instruction", config: self.config)
                     }
+                    try Task.checkCancellation()
+                    guard self.quilTaskID == taskID else { throw CancellationError() }
+                    let coordinator = self.transcriptionCoordinator
+                    self.quilInstructionPreview.start(audio: audio, requestID: taskID,
+                        transcribe: { try await coordinator.transcribeQuilDisplayAudio(at: $0) },
+                        display: { [weak self] text in
+                            guard let self, self.quilTaskID == taskID else { return }
+                            self.indicator.showQuilInstruction(text, config: self.config)
+                        })
                 } else {
                     let result = try await self.transcriptionCoordinator.transcribeDictation(
                         at: wavURL,
@@ -9947,9 +9962,10 @@ public final class MuesliController: NSObject {
                 }
                 let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
                 let replacement: String
+                let generationStartedAt = Date()
                 if directAudio {
                     replacement = try await self.transcriptionCoordinator.transformAudioForQuil(
-                        wavURL: wavURL, selectedText: snapshot.text, appContext: promptContext, model: model
+                        wavURL: audio.url, selectedText: snapshot.text, appContext: promptContext, model: model
                     )
                 } else {
                     replacement = try await WritingService.generate(
@@ -9958,6 +9974,9 @@ public final class MuesliController: NSObject {
                     )
                 }
                 try Task.checkCancellation()
+                let previewText = self.quilInstructionPreview.stop(requestID: taskID)
+                let displayInstruction = directAudio ? (previewText ?? instruction) : instruction
+                Gemma4LiteRTLogging.profile("quill request=\(taskID) generation_completed seconds=\(Date().timeIntervalSince(generationStartedAt)) stop_to_generation_seconds=\(Date().timeIntervalSince(processingStartedAt)) preview_available=\(previewText != nil)")
                 let selectionStillCurrent = await MainActor.run {
                     snapshot.isStillCurrentForReplacement()
                 }
@@ -9970,7 +9989,7 @@ public final class MuesliController: NSObject {
                         let saved = self.persistQuilTransformation(
                             outputText: replacement,
                             originalText: snapshot.text,
-                            instruction: instruction,
+                            instruction: displayInstruction,
                             backend: backend,
                             model: model,
                             duration: duration,
@@ -9996,6 +10015,7 @@ public final class MuesliController: NSObject {
                             : .keyboardShortcut,
                         retainStagedTextOnFailure: true,
                         onPasteDispatched: {
+                            Gemma4LiteRTLogging.profile("quill request=\(taskID) paste_dispatched stop_to_paste_seconds=\(Date().timeIntervalSince(processingStartedAt))")
                             // The post-dictation correction monitor cannot distinguish a
                             // user edit from Quill's deliberate rewrite. Once Quill actually
                             // replaces the selection, the original dictation is no longer a
@@ -10035,7 +10055,7 @@ public final class MuesliController: NSObject {
                             let saved = self.persistQuilTransformation(
                                 outputText: replacement,
                                 originalText: snapshot.text,
-                                instruction: instruction,
+                                instruction: displayInstruction,
                                 backend: backend,
                                 model: model,
                                 duration: duration,
@@ -10187,6 +10207,7 @@ public final class MuesliController: NSObject {
     }
 
     private func clearQuilSession(cancelAudioReason: String? = nil) {
+        quilInstructionPreview.stop()
         quilTask?.cancel()
         quilTask = nil
         quilTaskID = nil
@@ -10803,18 +10824,26 @@ public final class MuesliController: NSObject {
         selectedDictationProvider.usesStreamingBackend(selectedBackend)
     }
 
+    private var quillUsesDirectAudio: Bool {
+        let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let model = config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return QuilModelPolicy.usesDirectAudio(backend: backend,
+            model: model.isEmpty ? TranscriptCleanupClient.defaultModel(for: backend) : model)
+    }
+
     private func nativePreparationPlan(forQuill: Bool = false) -> GemmaPreparationPlan {
         guard GemmaNativeAudioPolicy.isEnabled(for: .e2b) else {
             return GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
         }
-        let dictation: Gemma4LiteRTModel? = (forQuill || !selectedDictationProvider.isHosted) && selectedBackend.backend == "gemma4-litert"
+        let directQuill = forQuill && quillUsesDirectAudio
+        let dictation: Gemma4LiteRTModel? = !directQuill && (forQuill || !selectedDictationProvider.isHosted) && selectedBackend.backend == "gemma4-litert"
             ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
         let cleanup: Gemma4LiteRTModel? = !forQuill && config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
         // Hosted dictation readiness says nothing about the local ASR Quill uses.
-        let localASRKey = forQuill && selectedBackend.backend != "gemma4-litert"
+        let localASRKey = forQuill && !directQuill && selectedBackend.backend != "gemma4-litert"
             ? "quill-asr:\(selectedBackend.backend):\(selectedBackend.model):\(config.resolvedAppleSpeechLanguage)" : nil
         return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill,
             requireQuill: forQuill, additionalPreparationKey: localASRKey)
@@ -10879,8 +10908,10 @@ public final class MuesliController: NSObject {
 
     private func ensureDictationBackendReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
-        // Quill always uses selectedBackend locally (or Gemma direct audio),
-        // independent of the selected hosted dictation provider and credentials.
+        // Gemma Quill needs only its own audio model. Display-only Parakeet
+        // never gates recording or waits for the selected dictation backend.
+        if forQuill && quillUsesDirectAudio { return ensureNativeModelsReady(forQuill: true) }
+        // Other Quill backends still use the selected local ASR for instructions.
         if !forQuill, let message = HostedDictationActivationPolicy.blockingMessage(
             provider: selectedDictationProvider,
             openAIAPIKey: resolvedOpenAIAPIKey(),
