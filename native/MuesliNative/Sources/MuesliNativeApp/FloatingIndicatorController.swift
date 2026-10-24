@@ -269,6 +269,7 @@ final class FloatingIndicatorController: NSObject {
         self.configStore = configStore
         self.pointerLocation = pointerLocation
         super.init()
+        notchIndicator.onOpenMeetingNotes = { [weak self] in self?.onOpenMeetingNotes?() }
         notchIndicator.onOpenHome = { [weak self] in self?.onOpenHome?() }
         notchIndicator.onCancel = { [weak self] in self?.cancelNotchActivity() }
         notchIndicator.onToggleMeetingPause = { [weak self] in self?.toggleNotchMeetingPause() }
@@ -465,6 +466,7 @@ final class FloatingIndicatorController: NSObject {
         if !recording {
             isMeetingRecordingPaused = false
             hideMeetingTranscript(reset: true)
+            notchIndicator.updateMeetingTranscript(transcript: "", partialYou: "", partialOthers: "")
         }
         if recording {
             setState(.recording, config: config)
@@ -517,6 +519,7 @@ final class FloatingIndicatorController: NSObject {
         partialYou: String,
         partialOthers: String
     ) {
+        notchIndicator.updateMeetingTranscript(transcript: transcript, partialYou: partialYou, partialOthers: partialOthers)
         meetingTranscriptPanel.update(
             transcript: transcript,
             partialYou: partialYou,
@@ -525,6 +528,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func refreshMeetingTranscriptPreference(config: AppConfig) {
+        notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
         guard config.showMeetingTranscriptOnIndicatorHover else {
             hideMeetingTranscript()
             return
@@ -757,6 +761,7 @@ final class FloatingIndicatorController: NSObject {
             case .recording: title = isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
+            notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
             if notchIndicator.show(on: screen, title: title,
                 detail: state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title,
                 recording: state == .recording, paused: isMeetingRecordingPaused, meeting: isMeetingRecording,
