@@ -30,6 +30,7 @@ public enum MeetingSource: String, Codable, Sendable {
     case meeting
     case iOS = "ios"
     case audioImport = "audio_import"
+    case granolaImport = "granola_import"
 }
 
 public enum RecordOriginFilter: String, Codable, CaseIterable, Hashable, Sendable {

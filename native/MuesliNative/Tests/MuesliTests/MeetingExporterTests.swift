@@ -17,7 +17,8 @@ struct MeetingExporterTests {
         templateName: String? = "Default",
         templateKind: MeetingTemplateKind? = .builtin,
         status: MeetingStatus = .completed,
-        manualNotes: String = ""
+        manualNotes: String = "",
+        source: MeetingSource = .meeting
     ) -> MeetingRecord {
         MeetingRecord(
             id: 1,
@@ -31,8 +32,33 @@ struct MeetingExporterTests {
             status: status,
             manualNotes: manualNotes,
             selectedTemplateName: templateName,
-            selectedTemplateKind: templateKind
+            selectedTemplateKind: templateKind,
+            source: source
         )
+    }
+
+    @Test("Granola export preserves source and manual notes without inventing duration")
+    func granolaExportMetadata() {
+        let meeting = makeMeeting(manualNotes: "Original user notes", source: .granolaImport)
+        let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: .fullMeeting)
+        #expect(markdown.contains("**Source:** Imported from Granola"))
+        #expect(markdown.contains("**Created in Granola:**"))
+        #expect(!markdown.contains("**Duration:**"))
+        #expect(markdown.contains("Original user notes"))
+        #expect(MeetingDetailView.notesCopyContent(for: meeting) == meeting.formattedNotes)
+        #expect(SyncOriginDisplay.badgeLabel(forMeetingSource: .granolaImport) == "Imported from Granola")
+    }
+
+    @Test("Granola exports preserve summaries regardless of fallback-like headings")
+    func granolaSummaryDoesNotUseLocalFallbackHeuristics() {
+        let summary = "## Raw Transcript\nImported summary text"
+        let meeting = makeMeeting(formattedNotes: summary, source: .granolaImport)
+        for content: MeetingExportContent in [.notes, .fullMeeting] {
+            #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content).contains(summary))
+        }
+        let withoutSummary = makeMeeting(formattedNotes: "", source: .granolaImport)
+        let notes = MeetingExporter.buildMarkdown(meeting: withoutSummary, content: .notes)
+        #expect(!notes.contains(withoutSummary.rawTranscript))
     }
 
     // MARK: - Markdown composition

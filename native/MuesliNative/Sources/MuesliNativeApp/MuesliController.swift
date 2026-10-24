@@ -1150,6 +1150,18 @@ public final class MuesliController: NSObject {
         (try? dictationStore.recentMeetings(limit: 10)) ?? []
     }
 
+    func importGranolaMeetings(_ records: [GranolaImportRecord]) async throws -> GranolaImportReport {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let report = try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).importGranola(records)
+        }.value
+        if report.imported > 0 {
+            syncAppState()
+            scheduleICloudSyncAfterLocalChange()
+        }
+        return report
+    }
+
     func meeting(id: Int64) -> MeetingRecord? {
         if let row = appState.meetingRows.first(where: { $0.id == id }) {
             return row
