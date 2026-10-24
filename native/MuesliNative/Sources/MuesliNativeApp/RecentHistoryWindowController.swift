@@ -33,6 +33,22 @@ struct DashboardPresentationReadiness<Action> {
     }
 }
 
+struct DashboardWindowActivationLatch {
+    private var isCountedAsOpen = false
+
+    mutating func markOpened() -> Bool {
+        guard !isCountedAsOpen else { return false }
+        isCountedAsOpen = true
+        return true
+    }
+
+    mutating func markClosed() -> Bool {
+        guard isCountedAsOpen else { return false }
+        isCountedAsOpen = false
+        return true
+    }
+}
+
 enum DashboardWindowPresentation: Equatable {
     case restored
     case compactMeetingTrailing
@@ -64,6 +80,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var keyMonitor: Any?
     private var presentationReadiness = DashboardPresentationReadiness<ReadyAction>()
+    private var activationLatch = DashboardWindowActivationLatch()
 
     var presentationWindow: NSWindow? {
         window
@@ -85,7 +102,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         applyAppearance(to: window)
         controller.syncAppState()
         apply(presentation, to: window)
-        if !window.isVisible {
+        if activationLatch.markOpened() {
             controller.noteWindowOpened()
         }
 
@@ -160,7 +177,9 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
-        controller.noteWindowClosed()
+        if activationLatch.markClosed() {
+            controller.noteWindowClosed()
+        }
     }
 
     private func buildWindow() {
