@@ -17,7 +17,8 @@ struct MeetingExporterTests {
         templateName: String? = "Default",
         templateKind: MeetingTemplateKind? = .builtin,
         status: MeetingStatus = .completed,
-        manualNotes: String = ""
+        manualNotes: String = "",
+        source: MeetingSource = .meeting
     ) -> MeetingRecord {
         MeetingRecord(
             id: 1,
@@ -31,8 +32,54 @@ struct MeetingExporterTests {
             status: status,
             manualNotes: manualNotes,
             selectedTemplateName: templateName,
-            selectedTemplateKind: templateKind
+            selectedTemplateKind: templateKind,
+            source: source
         )
+    }
+
+    @Test("Granola export preserves source and manual notes without inventing duration")
+    func granolaExportMetadata() {
+        let meeting = makeMeeting(manualNotes: "Original user notes", source: .granolaImport)
+        let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: .fullMeeting)
+        #expect(markdown.contains("**Source:** Imported from Granola"))
+        #expect(markdown.contains("**Created in Granola:**"))
+        #expect(!markdown.contains("**Duration:**"))
+        #expect(markdown.contains("Original user notes"))
+        #expect(MeetingDetailView.notesCopyContent(for: meeting) == meeting.formattedNotes)
+        #expect(SyncOriginDisplay.badgeLabel(forMeetingSource: .granolaImport) == "Imported from Granola")
+    }
+
+    @Test("Granola exports preserve summaries regardless of fallback-like headings")
+    func granolaSummaryDoesNotUseLocalFallbackHeuristics() {
+        let summary = "## Raw Transcript\nImported summary text"
+        let meeting = makeMeeting(formattedNotes: summary, source: .granolaImport)
+        #expect(MeetingDetailView.defaultDocumentMode(for: meeting) == .notes)
+        #expect(MeetingDetailView.defaultDocumentMode(for: makeMeeting(rawTranscript: "", formattedNotes: summary, source: .granolaImport)) == .notes)
+        for content: MeetingExportContent in [.notes, .fullMeeting] {
+            #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content).contains(summary))
+        }
+        let withoutSummary = makeMeeting(formattedNotes: "", source: .granolaImport)
+        let notes = MeetingExporter.buildMarkdown(meeting: withoutSummary, content: .notes)
+        #expect(!notes.contains(withoutSummary.rawTranscript))
+        #expect(MeetingDetailView.defaultDocumentMode(for: withoutSummary) == .transcript)
+    }
+
+    @Test("Manual-note-only Granola imports display, copy and export the same notes")
+    func granolaManualNotesFallback() {
+        let meeting = makeMeeting(rawTranscript: "", formattedNotes: " \n", manualNotes: "My original notes", source: .granolaImport)
+        #expect(meeting.usesImportedManualNotes)
+        #expect(MeetingDetailView.defaultDocumentMode(for: meeting) == .notes)
+        #expect(MeetingDetailView.notesContent(for: meeting) == meeting.manualNotes)
+        #expect(MeetingDetailView.notesCopyContent(for: meeting) == meeting.manualNotes)
+        #expect(MeetingDetailView.notesExportOverride(for: meeting) == meeting.manualNotes)
+        for content: MeetingExportContent in [.notes, .fullMeeting] {
+            #expect(MeetingExporter.buildMarkdown(meeting: meeting, content: content).contains(meeting.manualNotes))
+        }
+        let withSummary = makeMeeting(manualNotes: "Manual", source: .granolaImport)
+        #expect(!withSummary.usesImportedManualNotes)
+        #expect(MeetingDetailView.notesContent(for: withSummary) == withSummary.formattedNotes)
+        // Clearing a manual note must not switch subsequent edits into the summary field.
+        #expect(makeMeeting(formattedNotes: "", manualNotes: "", source: .granolaImport).usesImportedManualNotes)
     }
 
     // MARK: - Markdown composition
