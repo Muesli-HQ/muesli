@@ -12,6 +12,12 @@ Push-to-talk, hosted transcription, voice-note recording, and native Nemotron
 streaming retain their existing routes. The new mode is off for existing and new
 configurations until enabled through the canonical settings definition.
 
+Hands-free pauses do not finalize sentences or force the draft to commit. A user
+may hesitate between words and then continue the same thought. Grow the stable
+prefix through agreement across decodes, retain a revisable tail, and reserve
+authoritative final transcription and optional cleanup for the stop hotkey.
+Silence, VAD, and model EOU signals must not substitute for that explicit stop.
+
 Meetings expose “Selected final model (experimental preview)” in the existing
 live-transcript selector. It uses the selected Parakeet v3/Whisper model and
 language, with independent mic/system sessions. Existing VAD chunks remain the
@@ -89,15 +95,17 @@ has it; it cannot be assumed for our batch Parakeet TDT v3/WhisperKit adapters.
 [FluidAudio distinguishes these models and VAD](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Models.md).
 
 The current implementation follows common-prefix confirmation during ordinary
-updates and protects committed editor text. It is not a complete implementation
-of these policies: a full-window fallback can commit mature words without two
-agreeing hypotheses, and hands-free capture has no VAD-driven utterance-final
-event. Meeting durable VAD segmentation is separate. Follow-up should expose
-explicit segment finalization, preserve continuous-speech prefix commitment,
-and prefer confirmed segment/silence boundaries for trimming. WhisperKit can
-also use its supported prefix/seek controls rather than rediscovering all owned
-words. Treat these as architectural follow-ups, not properties of the recovery
-fix or proof of parity with native Nemotron streaming.
+updates and protects committed editor text. Its remaining confirmation gap is
+the full-window fallback, which can commit mature words without two agreeing
+hypotheses. Follow-up should preserve agreement-based prefix commitment and
+trim only audio already accounted for by confirmed text, retaining context for
+the unresolved tail. Window pressure or a pause must not force sentence
+completion. Hands-free capture intentionally has no VAD-driven utterance-final
+event; this is a product requirement, not a missing capability. Meeting durable
+VAD segmentation remains separate and does not establish linguistic sentence
+completion. WhisperKit can also use its supported prefix/seek controls rather
+than rediscovering all owned words. These remain architectural follow-ups, not
+properties of the recovery fix or proof of parity with native Nemotron streaming.
 
 ## Cursor ownership and final cleanup
 
