@@ -996,8 +996,10 @@ final class MeetingSession {
         Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
-        let manualNotes = await manualNotesProvider?()
         let participantNames = await participantNamesProvider?() ?? []
+        // Read notes last: edits made during title generation or screen-context drain
+        // must participate in this request, not the earlier title snapshot.
+        let manualNotes = await manualNotesProvider?()
         let formattedNotes: String
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(

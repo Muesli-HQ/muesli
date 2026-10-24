@@ -706,6 +706,105 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.sourcePID == 6789)
     }
 
+    private func slackHelper(
+        _ bundleID: String = "com.tinyspeck.slackmacgap.helper",
+        input: Bool = true,
+        output: Bool = true,
+        pid: pid_t = 6789
+    ) -> AudioProcessActivity {
+        AudioProcessActivity(pid: pid, bundleID: bundleID, appName: "Slack Helper",
+                             isRunningInput: input, isRunningOutput: output)
+    }
+
+    @Test("Slack helpers retain parent attribution and helper PID with or without a calendar", arguments: [
+        "com.tinyspeck.slackmacgap.helper",
+        "com.tinyspeck.slackmacgap.helper.Renderer",
+        "COM.TINYSPECK.SLACKMACGAP.HELPER",
+    ], [false, true])
+    func slackHelperAttribution(bundleID: String, withCalendar: Bool) throws {
+        let candidate = try #require(resolver().resolve(snapshot(
+            micActive: false, cameraActive: false,
+            calendarEvent: withCalendar ? CalendarEventContext(id: "slack", title: "Huddle") : nil,
+            audioInputProcesses: [slackHelper(bundleID)]
+        )))
+        let sessionID = "app:com.tinyspeck.slackmacgap:session:1800000000"
+        #expect(candidate.id == (withCalendar ? "cal:slack" : sessionID))
+        #expect(candidate.suppressionID == sessionID)
+        #expect(candidate.platform == .slack)
+        #expect(candidate.appName == "Slack")
+        #expect(candidate.sourceBundleID == "com.tinyspeck.slackmacgap")
+        #expect(candidate.sourcePID == 6789)
+        #expect(candidate.meetingTitle == (withCalendar ? "Huddle" : nil))
+        #expect(candidate.evidence.contains(.audioInputProcess))
+    }
+
+    @Test("Slack helpers require input and output on the same process", arguments: [
+        "input", "output", "idle", "split",
+    ], [false, true])
+    func slackHelperRequiresFullDuplex(direction: String, withCalendar: Bool) {
+        var processes = [slackHelper(input: direction == "input" || direction == "split",
+                                     output: direction == "output")]
+        if direction == "split" {
+            processes.append(slackHelper("com.tinyspeck.slackmacgap.helper.Renderer",
+                                         input: false, output: true, pid: 6790))
+        }
+        let candidate = resolver().resolve(snapshot(
+            micActive: true, cameraActive: false,
+            calendarEvent: withCalendar ? CalendarEventContext(id: "slack", title: "Huddle") : nil,
+            runningApps: [RunningAppInfo(bundleID: "com.tinyspeck.slackmacgap", isActive: true)],
+            audioInputProcesses: processes
+        ))
+        #expect(candidate?.platform != .slack)
+        #expect(candidate?.sourceBundleID == nil)
+        #expect(candidate?.id == (withCalendar ? "cal:slack" : nil))
+    }
+
+    @Test("Slack helper mapping rejects lookalikes and does not expand other apps", arguments: [
+        "com.tinyspeck.slackmacgaphelper",
+        "com.tinyspeck.slackmacgap-fake.helper",
+        "evil.com.tinyspeck.slackmacgap.helper",
+        "com.tinyspeck.slackmacgap.other",
+        "com.tinyspeck.slackmacgap.helperish",
+        "net.whatsapp.WhatsApp.helper",
+        "com.microsoft.teams2.helper",
+    ])
+    func slackHelperRejectsUnrelatedBundleIDs(bundleID: String) {
+        #expect(resolver().resolve(snapshot(micActive: false, cameraActive: false,
+                                           audioInputProcesses: [slackHelper(bundleID)])) == nil)
+    }
+
+    @Test("Slack helper mapping preserves self exclusion", arguments: [
+        "com.tinyspeck.slackmacgap", "com.tinyspeck.slackmacgap.helper",
+    ])
+    func slackHelperRejectsSelf(selfBundleID: String) {
+        let resolver = resolver()
+        resolver.selfBundleID = selfBundleID
+        #expect(resolver.resolve(snapshot(micActive: false, cameraActive: false,
+                                         audioInputProcesses: [slackHelper()])) == nil)
+    }
+
+    @Test("Slack parent and helpers share suppression until the audio idle gap")
+    func slackHelperSessionHandoff() throws {
+        let resolver = resolver()
+        let bundleIDs = ["com.tinyspeck.slackmacgap", "com.tinyspeck.slackmacgap.helper",
+                         "com.tinyspeck.slackmacgap.helper.Renderer"]
+        var sessionIDs: [String] = []
+        for (index, bundleID) in bundleIDs.enumerated() {
+            let candidate = try #require(resolver.resolve(snapshot(
+                micActive: false, cameraActive: false,
+                audioInputProcesses: [slackHelper(bundleID, pid: pid_t(6789 + index))],
+                now: now.addingTimeInterval(Double(index * 2))
+            )))
+            sessionIDs.append(candidate.suppressionID)
+        }
+        #expect(Set(sessionIDs).count == 1)
+        let later = try #require(resolver.resolve(snapshot(
+            micActive: false, cameraActive: false, audioInputProcesses: [slackHelper()],
+            now: now.addingTimeInterval(15)
+        )))
+        #expect(later.suppressionID != sessionIDs.first)
+    }
+
     @Test("Slack audio session identity is stable while audio remains active")
     func slackAudioSessionIdentityIsStableWhileActive() {
         let resolver = resolver()
