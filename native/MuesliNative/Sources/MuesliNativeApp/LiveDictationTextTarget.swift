@@ -240,16 +240,45 @@ final class LiveDictationTextTarget {
     }
 
     /// An accepted native setter can precede the browser's cached AX tree update.
-    /// Only the exact pre-write state may wait; any other edit revokes ownership.
+    /// Exact old/new text and caret components may settle independently. Anything
+    /// else revokes ownership, and only the complete desired snapshot succeeds.
     /// Polling never retries a mutation, and no queued operation can run meanwhile.
     private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String) async -> Bool {
         let deadline = readbackTiming.now() + readbackTiming.timeout
+        var reportedStates = Set<String>()
         while true {
             guard mutationIsCurrent() else { return false }
             guard let observed = access.snapshot() else { return suspend("\(stage)_readback_unavailable") }
             if observed == desired { return true }
-            guard observed == stale else { return suspend("\(stage)_readback_changed") }
-            guard readbackTiming.now() < deadline else { return suspend("\(stage)_readback_timeout") }
+            // AX value and selection are separate reads and may be refreshed by
+            // the editor in either order. Only the exact old/new components are
+            // eligible to settle; an intermediate snapshot never authorizes the
+            // next write, even if its caret is beyond the stale text's end.
+            let oldText = observed.text.utf16.elementsEqual(stale.text.utf16)
+            let newText = observed.text.utf16.elementsEqual(desired.text.utf16)
+            let oldCaret = observed.selection == stale.selection
+            let newCaret = observed.selection == desired.selection
+            let textState = newText ? "new" : oldText ? "old" : "other"
+            let caretState = newCaret ? "new" : oldCaret ? "old" : "other"
+            let state = "\(textState):\(caretState)"
+            let timedOut = readbackTiming.now() >= deadline
+            if (observed != stale || timedOut) && reportedStates.insert(state).inserted {
+                let caseOnly = !newText && observed.text.lowercased().utf16.elementsEqual(desired.text.lowercased().utf16)
+                func withoutTrailingNewlines(_ text: String) -> String {
+                    var result = text
+                    while result.last == "\n" || result.last == "\r" || result.last == "\r\n" {
+                        result.removeLast()
+                    }
+                    return result
+                }
+                let trailingNewlineOnly = !newText && withoutTrailingNewlines(observed.text).utf16
+                    .elementsEqual(withoutTrailingNewlines(desired.text).utf16)
+                onDiagnostic("\(stage)_readback_state:text=\(textState),lengths=\(observed.text.utf16.count)/\(stale.text.utf16.count)/\(desired.text.utf16.count),caret=\(caretState),ranges=\(observed.selection.location):\(observed.selection.length)/\(stale.selection.location):\(stale.selection.length)/\(desired.selection.location):\(desired.selection.length),caseOnly=\(caseOnly),trailingNewlineOnly=\(trailingNewlineOnly)")
+            }
+            guard (oldText || newText) && (oldCaret || newCaret) else {
+                return suspend("\(stage)_readback_changed")
+            }
+            guard !timedOut else { return suspend("\(stage)_readback_timeout") }
             await readbackTiming.wait()
         }
     }

@@ -66,8 +66,11 @@ must be exercised during manual editor testing.
 
 Browser editors can acknowledge an AX write before their cached value/selection
 reflects it. Serialize preview and final mutations, then allow up to 500 ms for
-the exact pre-write snapshot to become the exact expected snapshot. Never repeat
-the write. Unexpected intermediate content, timeout, cancellation or a real
+the exact pre-write snapshot to become the exact expected snapshot. Value and
+caret are separate AX reads, so a pending write may also wait when each component
+exactly matches either its old or new state. Only the complete expected pair
+acknowledges the write. Never repeat the write. Unexpected content or caret,
+timeout, cancellation or a real
 focus departure permanently revokes ownership. Redundant notifications for the
 same focused element do not revoke it; a known foreign-app activation does, even
 when its notification is delivered after focus returns.
@@ -170,3 +173,15 @@ includes exact suffix revisions, shortening, Unicode, control preflight,
 ineffective setters, cancellation, and stopping after failed acknowledgment.
 CI shard assignment also passed. The user authorized deployment to lane B;
 actual Codex composer acceptance still requires a manual dictation trial.
+
+The subsequent trial inserted only `I`: its first 13-character preview stopped
+at `keyboard_text_readback_changed`, before acknowledgment of the first grapheme.
+The log confirms successful keyboard delivery followed by failed verification,
+but did not distinguish text mismatch from caret mismatch. Reconcile exact
+old/new components within the existing deadline, and emit content-free state
+classifications and lengths/ranges on mixed or rejected readbacks. Do not infer
+that unrelated content or arbitrary caret movement belongs to our write.
+All 50 native cursor/keyboard tests passed after this change, including both
+split-update orders, stuck partial acknowledgment, and unrelated edits. The
+original log does not establish which component differed; manual acceptance
+and, if needed, the expanded diagnostic remain necessary.

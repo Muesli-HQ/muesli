@@ -18,6 +18,10 @@ struct LiveDictationTextTargetTests {
         var delayReplacement = false
         var pendingSelection: NSRange?
         var pendingReplacement: String?
+        var replacementTextFirst = false
+        var replacementCaretFirst = false
+        var pendingText: String?
+        var pendingCaret: NSRange?
         var replacements = 0
         var selections = 0
         var selectedRanges: [NSRange] = []
@@ -43,9 +47,18 @@ struct LiveDictationTextTargetTests {
         }
 
         private func applyReplacement(_ replacement: String) {
-            text = (text as NSString).replacingCharacters(in: selection, with: replacement)
-            selection = NSRange(location: selection.location + (replacement as NSString).length, length: 0)
+            let nextText = (text as NSString).replacingCharacters(in: selection, with: replacement)
+            let nextCaret = NSRange(location: selection.location + (replacement as NSString).length, length: 0)
+            if replacementCaretFirst { pendingText = nextText } else { text = nextText }
+            if replacementTextFirst { pendingCaret = nextCaret } else { selection = nextCaret }
             if corruptReadback { text += "!" }
+        }
+
+        func flushSplitReplacement() {
+            if let pendingText { text = pendingText }
+            if let pendingCaret { selection = pendingCaret }
+            pendingText = nil
+            pendingCaret = nil
         }
 
         var access: LiveDictationTextTarget.Access {
@@ -307,10 +320,107 @@ struct LiveDictationTextTargetTests {
             onDiagnostic: { reasons.append($0) }, readbackTiming: clock.timing))
         #expect(await target.update(text: "late") == false)
         #expect(target.isSuspended)
-        #expect(reasons == ["text_readback_timeout"])
+        #expect(reasons.last == "text_readback_timeout")
         editor.flushReplacement()
         #expect(await target.finish(text: "do not retry") == false)
         #expect(editor.replacements == 1)
+    }
+
+    @Test func splitTextAndCaretReadbacksWaitForCompleteAcknowledgement() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            for textFirst in [true, false] {
+                let editor = Editor("", selection: NSRange(location: 0, length: 0))
+                editor.transport = transport
+                editor.replacementTextFirst = textFirst
+                editor.replacementCaretFirst = !textFirst
+                let clock = PollClock()
+                var diagnostics: [String] = []
+                let target = try #require(LiveDictationTextTarget(access: editor.access,
+                    onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+                clock.onWait = {
+                    // A second key must not be sent while the first key's text
+                    // and caret still disagree. Own notifications must not revoke us.
+                    #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? clock.ticks : 0))
+                    #expect(!target.hasInsertedText || clock.ticks > 1)
+                    target.textTargetDidChange()
+                    editor.flushSplitReplacement()
+                    target.textTargetDidChange()
+                }
+                #expect(await target.update(text: "I🦊"))
+                #expect(editor.text == "I🦊")
+                #expect(editor.selection == NSRange(location: 3, length: 0))
+                #expect(target.hasInsertedText)
+                #expect(!target.isSuspended)
+                #expect(clock.ticks == (transport == .targetedKeyboard ? 2 : 1))
+                #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+                #expect(diagnostics.contains { $0.contains(textFirst ? "text=new" : "text=old") && $0.contains(textFirst ? "caret=old" : "caret=new") })
+                target.cancel()
+            }
+        }
+    }
+
+    @Test func splitReadbackTimeoutNeverSendsNextKeyOrRetries() async throws {
+        for textFirst in [true, false] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.replacementTextFirst = textFirst
+            editor.replacementCaretFirst = !textFirst
+            let clock = PollClock()
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+            #expect(await target.update(text: "I am speaking") == false)
+            #expect(target.isSuspended)
+            #expect(!target.hasInsertedText)
+            #expect(clock.ticks == 5)
+            #expect(diagnostics.last == "keyboard_text_readback_timeout")
+            #expect(diagnostics.count == 2) // One mixed-state diagnostic, then timeout.
+            editor.flushSplitReplacement()
+            #expect(await target.finish(text: "I am speaking.") == false)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func unrelatedTextOrCaretDuringSplitReadbackStopsImmediately() async throws {
+        for changeText in [true, false] {
+            let editor = Editor("private", selection: NSRange(location: 7, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.replacementTextFirst = true
+            let clock = PollClock()
+            clock.onWait = {
+                if changeText { editor.text += " user edit" }
+                else { editor.selection = NSRange(location: 0, length: 0) }
+            }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+            #expect(await target.update(text: "I am speaking") == false)
+            #expect(clock.ticks == 1)
+            #expect(target.isSuspended)
+            #expect(diagnostics.last == "keyboard_text_readback_changed")
+            #expect(diagnostics.contains { $0.contains(changeText ? "text=other" : "caret=other") })
+            #expect(diagnostics.allSatisfy { !$0.contains("private") && !$0.contains("user edit") && !$0.contains("I am speaking") })
+            #expect(await target.update(text: "retry") == false)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func diagnosticOnlyTextDifferencesAreNeverAccepted() async throws {
+        for observed in ["i", "I\n"] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.afterKeyboard = { editor.text = observed }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(text: "I speak") == false)
+            #expect(target.isSuspended)
+            #expect(diagnostics.contains { $0.contains(observed == "i" ? "caseOnly=true" : "trailingNewlineOnly=true") })
+            #expect(diagnostics.last == "keyboard_text_readback_changed")
+            #expect(editor.keyboardSteps == ["I"])
+        }
     }
 
     @Test func unexpectedEditDuringReadbackRevokesOwnership() async throws {
