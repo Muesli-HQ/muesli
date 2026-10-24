@@ -75,10 +75,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             detail = countdownOverride
         } else if controller.config.showNextMeetingInMenuBar {
             let now = Date()
-            let hidden = controller.appState.hiddenCalendarEventIDs
             let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
-            let nextEvent = controller.appState.upcomingCalendarEvents
-                .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
+            let nextEvent = controller.appState.visibleUpcomingCalendarEvents
+                .filter { $0.startDate > now && $0.startDate < endOfToday }
                 .sorted { $0.startDate < $1.startDate }
                 .first
 
@@ -118,8 +117,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
 
         // Upcoming calendar events
-        let hidden = controller.appState.hiddenCalendarEventIDs
-        let upcomingEvents = controller.appState.upcomingCalendarEvents.filter { !$0.isAllDay && !hidden.contains($0.id) }
+        let upcomingEvents = controller.appState.visibleUpcomingCalendarEvents
         if !upcomingEvents.isEmpty {
             addUpcomingEventsSection(upcomingEvents)
             menu.addItem(.separator())

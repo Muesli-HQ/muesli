@@ -216,6 +216,14 @@ final class AppState {
     var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
+    /// Keep the complete cache for attendee reconciliation and hidden-event pruning.
+    /// Calendar presentation and passive detection share this filtered view.
+    var visibleUpcomingCalendarEvents: [UnifiedCalendarEvent] {
+        upcomingCalendarEvents.filter {
+            !$0.isAllDay && !hiddenCalendarEventIDs.contains($0.id)
+                && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
+        }
+    }
     var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
