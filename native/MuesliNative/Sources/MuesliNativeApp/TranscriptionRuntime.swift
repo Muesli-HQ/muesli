@@ -127,6 +127,37 @@ actor TranscriptionCoordinator {
     private let fluidTranscriber = FluidAudioTranscriber()
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
+
+    /// Constructs a preview session over already-loaded models. No microphone,
+    /// download, cleanup, or durable transcript ownership belongs to this layer.
+    nonisolated func makeBufferedTranscriptionSession(
+        backend: BackendOption,
+        whisperLanguage: WhisperKitLanguage,
+        parakeetLanguage: ParakeetLanguage,
+        onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void
+    ) throws -> BufferedTranscriptionSession {
+        guard backend.supportsBufferedLiveTranscription else {
+            throw NSError(domain: "MuesliBufferedTranscription", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Live previews require Parakeet v3 or WhisperKit."])
+        }
+        if backend.backend == "whisper" {
+            let transcriber = whisperTranscriber
+            let expectedModel = backend.model
+            return BufferedTranscriptionSession(decode: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel
+                )
+            }, onUpdate: onUpdate, onFailure: onFailure)
+        }
+        let transcriber = fluidTranscriber
+        return BufferedTranscriptionSession(decode: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: .v3
+            )
+        }, onUpdate: onUpdate, onFailure: onFailure)
+    }
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?
@@ -1488,7 +1519,7 @@ actor TranscriptionCoordinator {
             let language = backend.supportsWhisperLanguageSelection
                 ? whisperLanguage
                 : WhisperKitLanguage.defaultLanguage
-            return try await transcribeWithWhisperKit(url: url, language: language)
+            return try await transcribeWithWhisperKit(url: url, language: language, expectedModel: backend.model)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "parakeet-unified":
@@ -1512,15 +1543,16 @@ actor TranscriptionCoordinator {
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:
-            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
+            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage,
+                expectedVersion: FluidAudioModel.version(for: backend.model))
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedVersion: AsrModelVersion) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedVersion: expectedVersion)
         fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
@@ -1549,10 +1581,11 @@ actor TranscriptionCoordinator {
 
     private func transcribeWithWhisperKit(
         url: URL,
-        language: WhisperKitLanguage
+        language: WhisperKitLanguage,
+        expectedModel: String
     ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
-        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language)
+        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language, expectedModel: expectedModel)
         fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(

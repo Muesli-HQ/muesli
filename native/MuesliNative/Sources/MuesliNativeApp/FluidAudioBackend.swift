@@ -7,6 +7,10 @@ import MuesliCore
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
+    // Swift actors are reentrant across Core ML awaits. Share one permit across
+    // previews, final decoding, loading and unloading of this model instance.
+    private var decodeBusy = false
+    private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -29,6 +33,9 @@ actor FluidAudioTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
         if loadedVersion == version, asrManager != nil { return }
 
         if version == .redux, #unavailable(macOS 15) {
@@ -71,24 +78,62 @@ actor FluidAudioTranscriber {
     /// Transcribe a WAV file URL directly.
     /// `language` is an optional ISO code enabling FluidAudio's script-level
     /// token filter on the v3 joint decoder (v2 ignores the hint; nil = auto).
-    func transcribe(wavURL: URL, language: String? = nil) async throws -> ASRResult {
+    func transcribe(
+        wavURL: URL, language: String? = nil, expectedVersion: AsrModelVersion? = nil
+    ) async throws -> ASRResult {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
+        if let expectedVersion, loadedVersion != expectedVersion { throw TranscriberError.notLoaded }
         guard let asrManager else { throw TranscriberError.notLoaded }
         let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
     }
 
-    func shutdown() {
+    func transcribePreview(
+        samples: [Float], language: String? = nil, expectedVersion: AsrModelVersion = .v3
+    ) async throws -> BufferedTranscriptionWindow {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
+        guard loadedVersion == expectedVersion, let asrManager else { throw TranscriberError.notLoaded }
+        var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
+        let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
+                                                    language: language.flatMap(Language.init(rawValue:)))
+        try Task.checkCancellation()
+        let words = buildWordTimings(from: result.tokenTimings ?? []).map {
+            BufferedTranscriptionWord(text: $0.word, start: $0.startTime, end: $0.endTime)
+        }
+        return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
+    }
+
+    func shutdown() async {
+        await acquireDecode()
+        defer { releaseDecode() }
         asrManager = nil
         loadedVersion = nil
     }
 
-    func shutdown(ifLoadedVersion version: AsrModelVersion) {
+    func shutdown(ifLoadedVersion version: AsrModelVersion) async {
+        await acquireDecode()
+        defer { releaseDecode() }
         guard FluidAudioUnloadPolicy.shouldUnload(
             loadedVersion: loadedVersion,
             deletingVersion: version
         ) else { return }
-        shutdown()
+        asrManager = nil
+        loadedVersion = nil
+    }
+
+    private func acquireDecode() async {
+        if !decodeBusy { decodeBusy = true; return }
+        await withCheckedContinuation { decodeWaiters.append($0) }
+    }
+
+    private func releaseDecode() {
+        if decodeWaiters.isEmpty { decodeBusy = false }
+        else { decodeWaiters.removeFirst().resume() }
     }
 }
 

@@ -74,6 +74,9 @@ case "${shard}" in
   dictation-transcription)
     filters=(
       FluidAudioTranscriberTests
+      BufferedTranscriptionSessionTests
+      LiveDictationTextTargetTests
+      BufferedLiveTranscriptionPolicyTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
       CleanupFormattingTests
@@ -126,6 +129,7 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests

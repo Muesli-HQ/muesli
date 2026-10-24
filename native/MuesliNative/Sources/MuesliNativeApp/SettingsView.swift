@@ -246,6 +246,12 @@ struct SettingsView: View {
         if usesUnifiedMeetingTranscript {
             return "Creates the live and final transcript."
         }
+        if selected == .selectedModelBuffered {
+            guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
+                return "Choose Parakeet v3 or Whisper as the final model to enable this preview."
+            }
+            return "Previews Parakeet v3 or Whisper while recording. Completed segments remain authoritative."
+        }
         return "Adds a low-latency preview."
     }
 
@@ -1015,6 +1021,14 @@ struct SettingsView: View {
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
+            }
+            if appState.dictationProvider == .local,
+               displayedDictationBackend?.supportsBufferedLiveTranscription == true {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Live hands-free dictation") {
+                    settingsControl("buffered_live_dictation")
+                }
+                settingsDescription("Experimental. Text appears as you speak in supported fields and is cleaned up when you stop. Editing or moving the cursor stops updates; the final result remains in history. Push-to-talk is unchanged.")
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)

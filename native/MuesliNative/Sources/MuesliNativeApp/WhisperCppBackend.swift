@@ -6,6 +6,8 @@ import MuesliCore
 actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
+    private var decodeBusy = false
+    private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -25,6 +27,9 @@ actor WhisperKitTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
         if loadedModel == modelName, whisperKit != nil { return }
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
@@ -61,8 +66,13 @@ actor WhisperKitTranscriber {
     ///   Ignored for English-only `.en` models, which keep default English decoding.
     func transcribe(
         wavURL: URL,
-        language: WhisperKitLanguage = .defaultLanguage
+        language: WhisperKitLanguage = .defaultLanguage,
+        expectedModel: String? = nil
     ) async throws -> (text: String, processingTime: Double) {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
+        if let expectedModel, loadedModel != expectedModel { throw TranscriberError.notLoaded }
         guard let whisperKit else { throw TranscriberError.notLoaded }
         guard let loadedModel else { throw TranscriberError.notLoaded }
 
@@ -74,6 +84,24 @@ actor WhisperKitTranscriber {
         let text = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (text: text, processingTime: elapsed)
+    }
+
+    func transcribePreview(
+        samples: [Float], language: WhisperKitLanguage = .defaultLanguage, expectedModel: String
+    ) async throws -> BufferedTranscriptionWindow {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
+        guard let whisperKit, loadedModel == expectedModel else { throw TranscriberError.notLoaded }
+        var options = Self.makeDecodeOptions(language: language, modelName: expectedModel)
+        options.wordTimestamps = true
+        let results: [TranscriptionResult] = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
+        try Task.checkCancellation()
+        let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = results.flatMap(\.segments).flatMap { $0.words ?? [] }.map {
+            BufferedTranscriptionWord(text: $0.word, start: Double($0.start), end: Double($0.end))
+        }
+        return try BufferedTranscriptionWindow.aligned(text: text, words: words)
     }
 
     /// Build WhisperKit decode options for the loaded model.
@@ -98,6 +126,9 @@ actor WhisperKitTranscriber {
     /// Run a short silent transcription to trigger CoreML compilation.
     /// First-run compilation takes 10-30s; subsequent loads are instant.
     func warmup() async throws {
+        await acquireDecode()
+        defer { releaseDecode() }
+        try Task.checkCancellation()
         guard let whisperKit else { return }
         let silence = [Float](repeating: 0, count: 16000) // 1 second of silence at 16kHz
         let start = CFAbsoluteTimeGetCurrent()
@@ -106,9 +137,21 @@ actor WhisperKitTranscriber {
         fputs("[whisperkit] warmup transcription took \(String(format: "%.1f", elapsed))s\n", stderr)
     }
 
-    func shutdown() {
+    func shutdown() async {
+        await acquireDecode()
+        defer { releaseDecode() }
         whisperKit = nil
         loadedModel = nil
+    }
+
+    private func acquireDecode() async {
+        if !decodeBusy { decodeBusy = true; return }
+        await withCheckedContinuation { decodeWaiters.append($0) }
+    }
+
+    private func releaseDecode() {
+        if decodeWaiters.isEmpty { decodeBusy = false }
+        else { decodeWaiters.removeFirst().resume() }
     }
 
     // MARK: - Model Storage

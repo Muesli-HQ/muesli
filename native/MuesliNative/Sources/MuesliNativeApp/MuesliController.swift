@@ -531,6 +531,17 @@ public final class MuesliController: NSObject {
         session: any HostedDictationSession
     )?
     private var dictationTranscriptionTask: (id: UUID, task: Task<Void, Never>)?
+    private struct BufferedDictationContext {
+        let id: UUID
+        let session: BufferedTranscriptionSession
+        let target: LiveDictationTextTarget
+        let backend: BackendOption
+        let whisperLanguage: WhisperKitLanguage
+        let parakeetLanguage: ParakeetLanguage
+        var lastRevision: UInt64 = 0
+    }
+    private var bufferedDictationContext: BufferedDictationContext?
+    private var finalizingBufferedTarget: (id: UUID, target: LiveDictationTextTarget)?
     private var cleanupWarmupTask: Task<Void, Never>?
     private var cleanupWarmupTraceID: UUID?
     private var dictationLatencyTraceID: UUID?
@@ -3097,7 +3108,8 @@ public final class MuesliController: NSObject {
     // MARK: - Dictation Provider
 
     private func canChangePrimaryDictationModel() -> Bool {
-        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
+        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil,
+              bufferedDictationContext == nil, finalizingBufferedTarget == nil else {
             statusBarController?.setStatus("Finish the current dictation before changing models")
             return false
         }
@@ -11340,9 +11352,72 @@ public final class MuesliController: NSObject {
 
     private func cancelHostedDictation() {
         detachHostedDictation()?.cancel()
+        cancelBufferedDictation()
+    }
+
+    /// Only hands-free local dictation opts in. A missing safe target preserves
+    /// the existing paste-on-stop behavior without attempting speculative writes.
+    private func beginBufferedDictationIfNeeded() {
+        guard config.enableBufferedLiveDictation,
+              selectedDictationProvider == .local,
+              selectedBackend.supportsBufferedLiveTranscription,
+              currentDictationOutputMode == .paste,
+              !isDictationTestMode else { return }
+        guard let target = LiveDictationTextTarget.capture() else {
+            statusBarController?.setStatus("Live updates unavailable here; text will paste when you stop")
+            return
+        }
+        let id = UUID()
+        let backend = selectedBackend
+        let whisperLanguage = config.resolvedWhisperLanguage
+        let parakeetLanguage = config.resolvedParakeetLanguage
+        do {
+            let session = try transcriptionCoordinator.makeBufferedTranscriptionSession(
+                backend: backend,
+                whisperLanguage: whisperLanguage,
+                parakeetLanguage: parakeetLanguage,
+                onUpdate: { [weak self] update in
+                    Task { @MainActor [weak self] in
+                        guard let self, let current = self.bufferedDictationContext,
+                              current.id == id, update.revision > current.lastRevision else { return }
+                        self.bufferedDictationContext?.lastRevision = update.revision
+                        if !current.target.update(text: update.text) {
+                            current.session.cancel()
+                            self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
+                        }
+                    }
+                },
+                onFailure: { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.bufferedDictationContext?.id == id else { return }
+                        // Keep the target lease for final cleanup; failure of preview
+                        // inference must never trigger a duplicate normal paste.
+                        self.statusBarController?.setStatus("Live preview stopped; finishing transcription when you stop")
+                    }
+                }
+            )
+            bufferedDictationContext = BufferedDictationContext(
+                id: id, session: session, target: target, backend: backend,
+                whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage
+            )
+            dictationAudioSessionManager.onAudioBuffer = { samples in session.enqueue(samples) }
+        } catch {
+            target.cancel()
+            statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
+        }
+    }
+
+    private func cancelBufferedDictation() {
+        bufferedDictationContext?.session.cancel()
+        bufferedDictationContext?.target.cancel()
+        bufferedDictationContext = nil
+        finalizingBufferedTarget?.target.cancel()
+        finalizingBufferedTarget = nil
     }
 
     private func cancelInFlightDictationTranscription() {
+        finalizingBufferedTarget?.target.cancel()
+        finalizingBufferedTarget = nil
         let hostedSession = finalizingHostedDictationSession?.session
         let transcriptionTask = dictationTranscriptionTask?.task
         finalizingHostedDictationSession = nil
@@ -11352,6 +11427,10 @@ public final class MuesliController: NSObject {
     }
 
     private func clearInFlightDictationTranscription(id: UUID) {
+        if finalizingBufferedTarget?.id == id {
+            finalizingBufferedTarget?.target.cancel()
+            finalizingBufferedTarget = nil
+        }
         if finalizingHostedDictationSession?.id == id {
             finalizingHostedDictationSession = nil
         }
@@ -11619,6 +11698,7 @@ public final class MuesliController: NSObject {
             }
         }
 
+        beginBufferedDictationIfNeeded()
         dictationAudioSessionManager.beginRecording(
             mode: "toggle",
             duckingEnabled: config.muteSystemAudioDuringDictation,
@@ -11861,6 +11941,7 @@ public final class MuesliController: NSObject {
     /// For paste output, runs only once the pasteboard has either been restored or superseded
     /// by a newer copy. Persistence and dashboard queries therefore cannot lengthen transcript
     /// ownership of the clipboard or the visible Transcribing state.
+    @discardableResult
     private func finishStandardDictationBookkeeping(
         text: String,
         duration: TimeInterval,
@@ -11871,8 +11952,8 @@ public final class MuesliController: NSObject {
         backend: String,
         bodhanMeasurement: BodhanWBCSMeasurement?,
         transcriptionModel: DictationModelIdentity
-    ) {
-        _ = try? dictationStore.insertDictation(
+    ) -> Bool {
+        let savedID = try? dictationStore.insertDictation(
             text: text,
             durationSeconds: duration,
             appContext: appContext,
@@ -11895,6 +11976,7 @@ public final class MuesliController: NSObject {
             "backend": backend,
             "paste_method": outputMode.pasteMethod,
         ])
+        return savedID != nil
     }
 
     private func finishStandardDictationStop(
@@ -11902,8 +11984,15 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         hostedSession: (any HostedDictationSession)?
     ) {
+        let liveContext = bufferedDictationContext
+        bufferedDictationContext = nil
+        // The retained WAV is authoritative. Cancel provisional inference before
+        // entering the existing final ASR + cleanup pipeline; its backend gate
+        // drains any in-flight call before final decoding can start.
+        liveContext?.session.cancel()
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
+            liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
             clearCapturedDictationSessionContext()
@@ -11916,6 +12005,7 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
+            liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
             try? FileManager.default.removeItem(at: wavURL)
@@ -11940,7 +12030,8 @@ public final class MuesliController: NSObject {
         // Test mode always exercises the selected local model. Normal dictation
         // uses the configured provider while retaining the local selection for
         // an instant switch back.
-        let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
+        let transcriptionBackend = liveContext?.backend
+            ?? (isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend)
         let hostedFallbackBackend = isTestMode || hostedSession == nil
             ? nil
             : BackendOption.resolveHostedDictationFallback(
@@ -11950,7 +12041,8 @@ public final class MuesliController: NSObject {
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let bodhanTranscriptionLanguage = config.resolvedBodhanLanguage
         let bodhanTranscriptionOutputMode = config.resolvedBodhanOutputMode
-        let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
+        let whisperTranscriptionLanguage = liveContext?.whisperLanguage ?? config.resolvedWhisperLanguage
+        let parakeetTranscriptionLanguage = liveContext?.parakeetLanguage ?? config.resolvedParakeetLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
         let startingTargetApp = capturedDictationCorrectionTargetApp
@@ -11958,6 +12050,9 @@ public final class MuesliController: NSObject {
             ?? startingTargetApp?.appContext
             ?? ""
         let transcriptionTaskID = UUID()
+        if let liveContext {
+            finalizingBufferedTarget = (transcriptionTaskID, liveContext.target)
+        }
         if !isTestMode, let hostedSession {
             finalizingHostedDictationSession = (transcriptionTaskID, hostedSession)
         }
@@ -12010,7 +12105,7 @@ public final class MuesliController: NSObject {
                             bodhanOutputMode: bodhanTranscriptionOutputMode,
                             whisperLanguage: whisperTranscriptionLanguage,
                             qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                            parakeetLanguage: self.config.resolvedParakeetLanguage,
+                            parakeetLanguage: parakeetTranscriptionLanguage,
                             appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                             enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                             customWords: self.serializedCustomWords(),
@@ -12034,7 +12129,7 @@ public final class MuesliController: NSObject {
                         bodhanOutputMode: bodhanTranscriptionOutputMode,
                         whisperLanguage: whisperTranscriptionLanguage,
                         qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                        parakeetLanguage: self.config.resolvedParakeetLanguage,
+                        parakeetLanguage: parakeetTranscriptionLanguage,
                         appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                         enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                         customWords: self.serializedCustomWords(),
@@ -12076,17 +12171,51 @@ public final class MuesliController: NSObject {
                 }
                 guard !text.isEmpty else {
                     await MainActor.run {
+                        // Empty final recognition is not permission to erase a
+                        // previously visible hypothesis or the user's selection.
+                        liveContext?.target.cancel()
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
                         self.meetingMonitor.resumeAfterCooldown()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                         self.finishDictationLatencyTrace("empty_transcription", trace: completionLatencyTrace)
+                        if liveContext?.target.hasAttemptedWrite == true {
+                            self.indicator.showWarning("No final transcript; provisional text remains", icon: "exclamationmark.triangle", duration: 4)
+                        }
                     }
                     return
                 }
                 await MainActor.run {
-                    if outputMode == .paste {
+                    if let liveContext {
+                        let delivered = liveContext.target.finish(
+                            text: text + DictationPasteSpacing.trailingSeparator(after: text)
+                        )
+                        // No normal paste fallback: even an AX error may have
+                        // partially mutated the field. Preserve the final in history.
+                        self.releaseStandardDictationState()
+                        let saved = self.finishStandardDictationBookkeeping(
+                            text: text, duration: duration, appContext: storageContext,
+                            startedAt: startedAt, outputMode: outputMode,
+                            targetApp: startingTargetApp, backend: completionBackend,
+                            bodhanMeasurement: bodhanMeasurement, transcriptionModel: completionModel
+                        )
+                        if delivered {
+                            self.indicator.showDictationCompletion()
+                        } else if saved {
+                            self.indicator.showWarning("Final dictation saved in history", icon: "doc.text", duration: 4)
+                        } else {
+                            // The safe fallback depends on persistence. If it
+                            // fails, retain a user-visible copy without changing
+                            // either the destination field or the clipboard.
+                            let alert = NSAlert()
+                            alert.messageText = "Dictation could not be inserted or saved"
+                            alert.informativeText = text
+                            alert.addButton(withTitle: "OK")
+                            self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery") { _ in }
+                        }
+                        self.finishDictationLatencyTrace("buffered_live_completed", trace: completionLatencyTrace)
+                    } else if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
                         var didDispatchPaste = false
                         PasteController.paste(
@@ -12198,6 +12327,9 @@ public final class MuesliController: NSObject {
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                     self.finishDictationLatencyTrace("transcription_failed", trace: completionLatencyTrace)
+                    if liveContext?.target.hasAttemptedWrite == true {
+                        self.indicator.showWarning("Final transcription failed; provisional text remains", icon: "exclamationmark.triangle", duration: 4)
+                    }
                 }
             }
         }

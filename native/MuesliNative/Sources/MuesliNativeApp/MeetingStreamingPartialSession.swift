@@ -62,9 +62,19 @@ enum MeetingLiveCaptionModelStore {
     static func makeEngines(
         backend: MeetingLiveCaptionBackend,
         nemotronPromptId: Int32,
-        appleSpeechLanguage: String
+        appleSpeechLanguage: String,
+        bufferedSessionFactory: BufferedMeetingPartialEngine.SessionFactory? = nil
     ) async throws -> (mic: MeetingStreamingPartialEngine, system: MeetingStreamingPartialEngine) {
         switch backend {
+        case .selectedModelBuffered:
+            guard let bufferedSessionFactory else {
+                throw NSError(domain: "MeetingLiveCaptions", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "The selected meeting model does not support buffered live captions."])
+            }
+            return (
+                BufferedMeetingPartialEngine(makeSession: bufferedSessionFactory),
+                BufferedMeetingPartialEngine(makeSession: bufferedSessionFactory)
+            )
         case .parakeetRealtimeEOU:
             let mic = try await makeEngine(label: "You")
             do {
@@ -130,6 +140,8 @@ enum MeetingStreamingPartialDeliveryMode: Sendable {
 
 protocol MeetingStreamingPartialEngine: AnyObject, Sendable {
     var partialDeliveryMode: MeetingStreamingPartialDeliveryMode { get }
+    /// A bounded preview can be frozen for display without becoming a saved transcript.
+    var canSupplyFinalTranscript: Bool { get }
     func setPartialHandler(_ handler: @escaping @Sendable (String) -> Void) async
     func setFailureHandler(_ handler: @escaping @Sendable (Error) -> Void) async
     func process(samples: [Float]) async throws
@@ -144,6 +156,7 @@ protocol MeetingStreamingPartialEngine: AnyObject, Sendable {
 
 extension MeetingStreamingPartialEngine {
     var partialDeliveryMode: MeetingStreamingPartialDeliveryMode { .inline }
+    var canSupplyFinalTranscript: Bool { true }
     func setFailureHandler(_ handler: @escaping @Sendable (Error) -> Void) async {}
     func restart(
         partialHandler: @escaping @Sendable (String) -> Void,
@@ -154,6 +167,104 @@ extension MeetingStreamingPartialEngine {
     }
     func finish() async throws {}
     func finalizedText() async -> String? { nil }
+}
+
+/// Re-runs a batch model over bounded audio windows. Each VAD segment owns a
+/// fresh session, while the coordinator keeps the underlying model warm.
+actor BufferedMeetingPartialEngine: MeetingStreamingPartialEngine {
+    typealias SessionFactory = @Sendable (
+        @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
+        @escaping @Sendable (Error) -> Void
+    ) async throws -> BufferedTranscriptionSession
+
+    nonisolated let partialDeliveryMode = MeetingStreamingPartialDeliveryMode.asynchronous
+    nonisolated let canSupplyFinalTranscript = false
+    private let makeSession: SessionFactory
+    private var session: BufferedTranscriptionSession?
+    private var partialHandler: (@Sendable (String) -> Void)?
+    private var failureHandler: (@Sendable (Error) -> Void)?
+    private struct Snapshot {
+        var generation: UInt64 = 0
+        var lastRevision: UInt64 = 0
+        var text = ""
+    }
+    private let snapshot = OSAllocatedUnfairLock(initialState: Snapshot())
+    private var isStopped = false
+
+    init(makeSession: @escaping SessionFactory) {
+        self.makeSession = makeSession
+    }
+
+    func setPartialHandler(_ handler: @escaping @Sendable (String) -> Void) async {
+        partialHandler = handler
+    }
+
+    func setFailureHandler(_ handler: @escaping @Sendable (Error) -> Void) async {
+        failureHandler = handler
+    }
+
+    func process(samples: [Float]) async throws {
+        guard !isStopped, !samples.isEmpty else { return }
+        if session == nil {
+            let generation = snapshot.withLock { $0.generation }
+            let partialHandler = self.partialHandler
+            let failureHandler = self.failureHandler
+            let snapshot = self.snapshot
+            let created = try await makeSession({ update in
+                let current = snapshot.withLock { state -> Bool in
+                    guard state.generation == generation, update.revision > state.lastRevision else { return false }
+                    state.lastRevision = update.revision
+                    state.text = update.text
+                    return true
+                }
+                if current { partialHandler?(update.text) }
+            }, { error in
+                if snapshot.withLock({ $0.generation == generation }) { failureHandler?(error) }
+            })
+            guard !isStopped, snapshot.withLock({ $0.generation == generation }) else {
+                created.cancel()
+                throw CancellationError()
+            }
+            session = created
+        }
+        session?.enqueue(samples)
+    }
+
+    func restart(
+        partialHandler: @escaping @Sendable (String) -> Void,
+        failureHandler: @escaping @Sendable (Error) -> Void
+    ) async throws {
+        invalidateSession()
+        guard !isStopped else { throw CancellationError() }
+        self.partialHandler = partialHandler
+        self.failureHandler = failureHandler
+    }
+
+    func finish() async throws {
+        await session?.finish()
+    }
+
+    /// The enclosing session retains this only as frozen, provisional UI text.
+    func finalizedText() async -> String? {
+        snapshot.withLock { $0.text }
+    }
+
+    func shutdown() async {
+        isStopped = true
+        invalidateSession()
+        partialHandler = nil
+        failureHandler = nil
+    }
+
+    private func invalidateSession() {
+        snapshot.withLock { state in
+            state.generation &+= 1
+            state.lastRevision = 0
+            state.text = ""
+        }
+        session?.cancel()
+        session = nil
+    }
 }
 
 @available(macOS 26.0, *)
@@ -736,6 +847,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// Wait only for this chunk's native finalization; never persist a volatile
     /// preview. Timeout, source discontinuity, or dropped audio selects fallback.
     func finalizedSegmentText(id: UUID) async -> String? {
+        guard engine.canSupplyFinalTranscript else { return nil }
         guard engine.partialDeliveryMode == .asynchronous else { return pendingSegmentText(id: id) }
         let completed = await changes.wait(timeoutNanoseconds: finalizationTimeoutNanoseconds) {
             self.state.withLock { s in
@@ -750,7 +862,8 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     func pendingSegmentText(id: UUID) -> String? {
-        state.withLock { s in
+        guard engine.canSupplyFinalTranscript else { return nil }
+        return state.withLock { s in
             guard !s.isStopped, !s.didFail,
                   let segmentIndex = s.pendingSegments.firstIndex(where: { $0.id == id }) else { return nil }
             let segment = s.pendingSegments[segmentIndex]
@@ -889,6 +1002,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
         }
         return state.withLock { s in
             guard !s.isStopped, !s.didFail, s.lifecycleRevision == finishRevision else { return nil }
+            guard engine.canSupplyFinalTranscript else { return nil }
             if engine.partialDeliveryMode == .asynchronous {
                 return s.hasCompleteSegmentStart ? finalized : nil
             }
