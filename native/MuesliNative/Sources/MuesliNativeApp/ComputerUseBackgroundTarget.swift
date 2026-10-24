@@ -182,7 +182,39 @@ enum ComputerUseWindowIdentity {
     static func contains(_ element: AXUIElement, target: ComputerUseBackgroundTarget) -> Bool {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid == target.processID else { return false }
-        let window = attribute(element, kAXWindowAttribute) ?? element
-        return windowID(of: window) == target.windowID && frame(target) != nil
+        // Chromium's AXWindow may be an AXGroup with a compositor ID. Only
+        // accept an owning window/sheet, corroborated inside the same process.
+        func owner(of root: AXUIElement) -> CGWindowID? {
+            owningWindowID(start: root, role: {
+                ComputerUseObservationCapture.axString($0, kAXRoleAttribute)
+            }, parent: { attribute($0, kAXParentAttribute) }, windowID: { windowID(of: $0) }, belongsToProcess: {
+                var ownerPID: pid_t = 0
+                return AXUIElementGetPid($0, &ownerPID) == .success && ownerPID == target.processID
+            })
+        }
+        let ownerID = owner(of: element) ?? attribute(element, kAXWindowAttribute).flatMap { owner(of: $0) }
+        return ownerID == target.windowID && frame(target) != nil
+    }
+
+    /// Bounded and cycle-safe; a sheet belongs to its enclosing window when one
+    /// is exposed, otherwise its own window ID is the only available identity.
+    static func owningWindowID<Element: Equatable>(start: Element, maxDepth: Int = 32,
+        role: (Element) -> String, parent: (Element) -> Element?,
+        windowID: (Element) -> CGWindowID?, belongsToProcess: (Element) -> Bool) -> CGWindowID? {
+        var current: Element? = start
+        var visited: [Element] = []
+        var sheetID: CGWindowID?
+        for _ in 0..<maxDepth {
+            guard let element = current else { return sheetID }
+            guard !visited.contains(element), belongsToProcess(element) else { return nil }
+            visited.append(element)
+            switch role(element) {
+            case kAXWindowRole: return windowID(element)
+            case kAXSheetRole: sheetID = windowID(element)
+            default: break
+            }
+            current = parent(element)
+        }
+        return nil
     }
 }

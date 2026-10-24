@@ -6,6 +6,12 @@ The runtime still validates targets, permissions and arguments before execution.
 
 ## trycua background comparison
 
+Development launches select the reference planner with `--trycua-driver PATH`.
+`--trycua-probe-only` starts the endpoint probe but keeps subsequent commands on
+the native runtime. `--trycua-connect-approved` may be used without probe-only to
+attempt background reuse of an approved Chrome connection at startup; it never
+opens approval UI. Use `--trycua-browser-only` for the CDP-only comparison.
+
 `ComputerUseReferenceRuntime.definitions` intersects its allowlist with the
 selected driver's advertised schemas. The patched 0.36.0 catalog exposes:
 

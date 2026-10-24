@@ -69,8 +69,9 @@ enum ComputerUseBackgroundInput {
 
     static func scroll(point: CGPoint, target: ComputerUseBackgroundTarget, direction: ComputerUseScrollDirection, pages: Double) -> ComputerUseExecutionResult {
         guard !Task.isCancelled else { return .cancelled() }
-        let delta = ComputerUseToolExecutor.scrollDeltas(direction: direction, pages: min(max(pages, 0.1), 3))
-        guard ComputerUseWindowIdentity.resolve(target) != nil,
+        guard let frame = ComputerUseWindowIdentity.frame(target),
+              let delta = scrollPixelDeltas(direction: direction, pages: pages, frame: frame),
+              ComputerUseWindowIdentity.resolve(target) != nil,
               let source = CGEventSource(stateID: .privateState),
               let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                   wheel1: delta.vertical, wheel2: delta.horizontal, wheel3: 0),
@@ -79,6 +80,21 @@ enum ComputerUseBackgroundInput {
         }
         event.postToPid(target.processID)
         return .executed("Dispatched window-scoped scroll; verify effect in the next target snapshot")
+    }
+
+    /// Pixel events need viewport-sized deltas, not the foreground executor's
+    /// line units. Keep some overlap to make the next observation intelligible.
+    static func scrollPixelDeltas(direction: ComputerUseScrollDirection, pages: Double,
+                                  frame: CGRect) -> (vertical: Int32, horizontal: Int32)? {
+        let extent = (direction == .up || direction == .down) ? frame.height : frame.width
+        guard pages.isFinite, pages > 0, extent.isFinite, extent > 0 else { return nil }
+        let pixels = Int32(min(Double(Int32.max), max(1, (extent * 0.8 * min(pages, 3)).rounded())))
+        switch direction {
+        case .up: return (pixels, 0)
+        case .down: return (-pixels, 0)
+        case .left: return (0, pixels)
+        case .right: return (0, -pixels)
+        }
     }
 
     /// PID keyboard delivery does not itself prove a window target. Refuse when
@@ -162,7 +178,7 @@ final class ComputerUseBackgroundFocusGuard {
                 }
                 let userActed = self.userActed || self.restorationInvalidated
                 self.diagnostics.append("target activation pid=\(activated.processIdentifier), prior=\(prior?.processIdentifier ?? 0), userActivity=\(userActed)")
-                if !userActed { self.focusChanged = true }
+                self.recordTargetActivation(userActed: userActed)
                 if Self.shouldRestore(activatedBundle: activated.bundleIdentifier, targetBundle: bundleID,
                                       priorPID: prior?.processIdentifier, activatedPID: activated.processIdentifier, userActed: userActed) {
                     // NSRunningApplication can reject activation of our own
@@ -180,12 +196,21 @@ final class ComputerUseBackgroundFocusGuard {
         }
     }
 
+    func recordTargetActivation(userActed: Bool) {
+        if !userActed { focusChanged = true }
+    }
+
+    func recordRestoration(priorAppIsFrontmost: Bool) {
+        if focusChanged && priorAppIsFrontmost {
+            diagnostics.append("appFocusRestored=true; transient activation recorded")
+        }
+        // focusChanged is sticky until begin(): restoration does not make an
+        // interrupting action safe to repeat.
+    }
+
     /// App activation notifications alone miss key-window changes within Chrome.
     func checkWindowFocus() {
-        if focusChanged, NSWorkspace.shared.frontmostApplication?.processIdentifier == priorPID {
-            diagnostics.append("appFocusRestored=true; transient activation recorded")
-            focusChanged = false
-        }
+        recordRestoration(priorAppIsFrontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == priorPID)
         guard let priorPID, let priorKeyWindow,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == priorPID,
               let window = ComputerUseWindowIdentity.attribute(AXUIElementCreateApplication(priorPID), kAXFocusedWindowAttribute),
