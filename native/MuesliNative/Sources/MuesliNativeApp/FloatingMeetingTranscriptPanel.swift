@@ -229,6 +229,7 @@ final class FloatingMeetingTranscriptPanelController {
                 onTogglePause: onTogglePause
             )
         )
+        if usesNotchBackground { hostingView.appearance = NSAppearance(named: .darkAqua) }
         hostingView.wantsLayer = true
         return hostingView
     }
@@ -293,9 +294,13 @@ private struct FloatingMeetingTranscriptPanelView: View {
 
     private var header: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Text("Live transcript")
-                .font(MuesliTheme.callout().weight(.semibold))
-                .foregroundStyle(MuesliTheme.textPrimary)
+            Button(action: onOpenNotes) {
+                Text("Live transcript")
+                    .font(MuesliTheme.callout().weight(.semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+            }
+            .buttonStyle(.plain)
+            .help("Open meeting notes")
             Spacer()
             Circle()
                 .fill(model.isPaused ? MuesliTheme.textTertiary : MuesliTheme.success)

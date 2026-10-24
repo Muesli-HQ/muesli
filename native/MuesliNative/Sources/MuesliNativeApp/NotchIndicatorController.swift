@@ -189,13 +189,17 @@ final class NotchIndicatorController {
     private var transcriptDismissed = false
     private var transcriptExit: DispatchWorkItem?
     var meetingTranscriptEnabled = false {
-        didSet { if !meetingTranscriptEnabled { closeMeetingTranscript() } }
+        didSet {
+            guard oldValue != meetingTranscriptEnabled else { return }
+            transcriptDismissed = false
+            if !meetingTranscriptEnabled { closeMeetingTranscript() }
+        }
     }
     private lazy var meetingTranscript = FloatingMeetingTranscriptPanelController(
         usesNotchBackground: true,
         onHoverChanged: { [weak self] in self?.setMeetingTranscriptHovered($0) },
         onOpenNotes: { [weak self] in self?.closeMeetingTranscript(); self?.onOpenMeetingNotes?() },
-        onDismiss: { [weak self] in self?.transcriptDismissed = true; self?.closeMeetingTranscript() },
+        onDismiss: { [weak self] in self?.dismissMeetingTranscript() },
         onTogglePause: { [weak self] in self?.onToggleMeetingPause?() }
     )
     var onOpenMeetingNotes: (() -> Void)?
@@ -228,11 +232,20 @@ final class NotchIndicatorController {
         }
     }
 
+    func dismissMeetingTranscript() {
+        transcriptDismissed = true
+        closeMeetingTranscript()
+    }
+
+    var expandedPanelFrame: CGRect? {
+        instructionPanel?.isVisible == true ? instructionPanel?.frame : nil
+    }
+
     private func closeMeetingTranscript() {
         transcriptExit?.cancel()
         transcriptHovered = false
         meetingTranscript.hide()
-        if meeting { instructionPanel?.orderOut(nil) }
+        renderInstruction()
     }
 
     private var expanded = true
@@ -296,6 +309,9 @@ final class NotchIndicatorController {
         self.toolResults = toolResults
         self.appName = appName
         self.appIcon = appIcon
+        if self.screenBounds != screen.visibleFrame {
+            transcriptDismissed = false
+        }
         self.screenBounds = screen.visibleFrame
         self.accent = accent
         self.geometry = geometry

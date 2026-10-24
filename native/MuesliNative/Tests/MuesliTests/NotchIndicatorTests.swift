@@ -14,6 +14,32 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("Dismissing transcript restores instructions and preference changes allow reopening")
+    @MainActor
+    func transcriptRestoresInstruction() throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        _ = notch.show(on: screen, title: "Meeting", detail: "", recording: true,
+            paused: false, meeting: true, handsFree: true, active: true, icon: NSImage(),
+            accent: .red, instruction: "Review the current action")
+        let instructionFrame = try #require(notch.expandedPanelFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.dismissMeetingTranscript()
+        #expect(notch.meetingTranscriptFrame == nil)
+        #expect(notch.expandedPanelFrame == instructionFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.meetingTranscriptEnabled = false
+        notch.meetingTranscriptEnabled = true
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.hide()
+        #expect(notch.expandedPanelFrame == nil)
+    }
+
     @Test("Moving into the transcript retains it; leaving both surfaces collapses it")
     @MainActor
     func meetingTranscriptPointerTransition() async throws {
