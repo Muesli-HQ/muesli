@@ -60,15 +60,22 @@ def report(rows, events):
                 calls[event.get('step')] = action
         elif event['kind'] == 'tool_result' and event.get('step') in calls:
             calls[event.get('step')]['end'] = timestamp(event['timestamp'])
-    # Restrict to the command interval; don't blame idle activity after it ends.
+    if not rows or not events:
+        return {'samples_during_command': 0, 'samples_after_command': 0, 'targets': sorted(targets),
+                'changes': [], 'monitor_stops_driver': False}
+    # Include the last mutation's bounded tail, but not arbitrary idle activity.
     start, end = min(timestamp(e['timestamp']) for e in events), max(timestamp(e['timestamp']) for e in events)
+    observation_end = max([end] + [a['end'] + 2.0 for a in actions])
     changes = []
     previous = rows[0]
-    samples = 0
+    samples = tail_samples = 0
     for row in rows[1:]:
         t = timestamp(row['time'])
-        if start <= t <= end:
-            samples += 1
+        if start <= t <= observation_end:
+            if t <= end:
+                samples += 1
+            else:
+                tail_samples += 1
             nearby = [a['tool'] for a in actions if a['start'] <= t <= a['end'] + 2.0]
             label = classify(previous, row, pids, targets, bool(nearby))
             if label:
@@ -77,7 +84,8 @@ def report(rows, events):
                                 'to': [row['pid'], row['window']], 'nearby_actions': nearby,
                                 'hardware_event_ages': row.get('hardware_event_ages', {})})
         previous = row
-    return {'samples_during_command': samples, 'targets': sorted(targets), 'changes': changes,
+    return {'samples_during_command': samples, 'samples_after_command': tail_samples,
+            'targets': sorted(targets), 'changes': changes,
             'monitor_stops_driver': False,
             'limits': 'Temporal correlation only; does not prove causality or detect all key-focus theft. Window IDs are ordering proxies, not AX key-window proof. Window order is retained in the raw log for inspection.'}
 
