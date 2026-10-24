@@ -141,7 +141,7 @@ enum QuilModelPolicy {
         backend == .gemma4LiteRT
             && dictation.backend == BackendOption.gemma4E2BLiteRT.backend
             && dictation.model == model
-            && Gemma4LiteRTModel.allCases.contains { $0.repoID == model }
+            && Gemma4LiteRTModel.generalPurpose.contains { $0.repoID == model }
     }
 
     static let localMaximumInputCharacters = 2_500

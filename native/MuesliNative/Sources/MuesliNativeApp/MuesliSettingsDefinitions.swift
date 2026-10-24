@@ -60,6 +60,71 @@ extension MuesliController {
         }
     }
 
+    /// Shared cleanup-model definitions without constructing unrelated dynamic settings.
+    func cleanupModelDefinitions() -> [MuesliSetting] {
+        typealias Choice = MuesliSetting.Choice
+        var settings: [MuesliSetting] = []
+        func add(_ id: String, _ label: String, _ choices: [Choice],
+                 read: @escaping (AppConfig) -> String,
+                 presentation: MuesliSetting.Presentation = .automatic,
+                 followUpSelections: [String: String] = [:],
+                 discovery: MuesliSetting.Discovery? = nil,
+                 voiceRestriction: String? = nil,
+                 requestPermission: (() -> Void)? = nil,
+                 voiceUnavailable: @escaping (String) -> String? = { _ in nil },
+                 activation: MuesliSettingActivation? = nil,
+                 unavailable: @escaping (String) -> String? = { _ in nil },
+                 apply: @escaping (String) async throws -> Void) {
+            settings.append(.init(publicDiscovery: discovery, id: id, label: label, choices: choices, read: read,
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission, voiceUnavailable: voiceUnavailable, activation: activation))
+        }
+        func presets(_ id: String, _ label: String, _ options: [SummaryModelPreset], _ key: WritableKeyPath<AppConfig, String>,
+                     apply: ((String) -> Void)? = nil) {
+            add(id, label, options.map { Choice(id: $0.id, label: $0.label) },
+                read: { $0[keyPath: key].isEmpty ? options.first?.id ?? "" : $0[keyPath: key] }) { value in
+                let stored = value == options.first?.id ? "" : value
+                if let apply { apply(stored) }
+                else { self.updateConfig { $0[keyPath: key] = stored } }
+            }
+        }
+
+        presets("cleanup_chatgpt_model", "ChatGPT cleanup model", SummaryModelPreset.chatGPTTranscriptCleanupModels, \.postProcessorChatGPTModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.chatGPT))
+        }
+        presets("cleanup_openai_model", "OpenAI cleanup model", SummaryModelPreset.openAIModels, \.postProcessorOpenAIModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.openAI))
+        }
+        presets("cleanup_anthropic_model", "Anthropic cleanup model", SummaryModelPreset.anthropicModels, \.postProcessorAnthropicModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.anthropic))
+        }
+        presets("cleanup_openrouter_model", "OpenRouter cleanup model", SummaryModelPreset.openRouterModels, \.postProcessorOpenRouterModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.openRouter))
+        }
+
+        let allLocalCleanup = PostProcessorOption.all.map(OnDeviceCleanupModel.gguf)
+            + Gemma4LiteRTModel.allCases.map(OnDeviceCleanupModel.gemma4)
+        add("cleanup_on_device_model", "On-device cleanup model", allLocalCleanup.map { .init(id: $0.quilModelID, label: $0.label) },
+            read: { $0.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend ? $0.postProcessorGemmaModel : $0.activePostProcessorId },
+            unavailable: { value in
+                guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return "Unknown model." }
+                switch model {
+                case .gguf(let option): return option.isDownloaded && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
+                case .gemma4(let model):
+                    guard BackendOption.gemma4LiteRT(model).isCompatible() else {
+                        return "Gemma cleanup requires macOS 15 or later."
+                    }
+                    return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
+                }
+            }) { value in
+            guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return }
+            switch model {
+            case .gguf(let option): self.selectPostProcessor(option)
+            case .gemma4(let model): self.selectGemma4PostProcessor(model)
+            }
+        }
+        return settings
+    }
+
     func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
@@ -244,13 +309,15 @@ extension MuesliController {
             read: { $0.dictationProvider }) { value in
             if let provider = DictationProvider(rawValue: value) { self.selectDictationProvider(provider) }
         }
-        let backends = BackendOption.all
+        let backends = BackendOption.compatibleOptions()
         func backendID(_ option: BackendOption) -> String { option.backend + ":" + option.model }
         add("dictation_model", "Dictation model", backends.map { .init(id: backendID($0), label: $0.label) },
             read: { ($0.dictationProvider == DictationProvider.local.rawValue ? "" : "fallback:") + $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
-                guard let option = backends.first(where: { backendID($0) == value }), option.isDownloaded else {
-                    return "Download this dictation model from Models first."
+                guard let option = backends.first(where: { backendID($0) == value }) else {
+                    return "Unknown dictation model."
                 }
+                if let reason = option.incompatibilityReason() { return reason }
+                guard option.isDownloaded else { return "Download this dictation model from Models first." }
                 if !TranscriptCleanupBackendOption.resolved(self.config.postProcessorBackend).isCompatible(with: option) {
                     return "This model conflicts with the selected cleanup backend. Change cleanup first."
                 }
@@ -322,18 +389,7 @@ extension MuesliController {
         add("cleanup_preset", "Cleanup prompt preset", TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts).map { .init(id: $0.id, label: $0.name) },
             read: { $0.activeTranscriptCleanupPromptId },
             voiceRestriction: "Prompt settings can only be changed manually in Settings.") { self.selectTranscriptCleanupPrompt(id: $0) }
-        presets("cleanup_chatgpt_model", "ChatGPT cleanup model", SummaryModelPreset.chatGPTTranscriptCleanupModels, \.postProcessorChatGPTModel) {
-            self.updatePostProcessorModel($0, for: .hosted(.chatGPT))
-        }
-        presets("cleanup_openai_model", "OpenAI cleanup model", SummaryModelPreset.openAIModels, \.postProcessorOpenAIModel) {
-            self.updatePostProcessorModel($0, for: .hosted(.openAI))
-        }
-        presets("cleanup_anthropic_model", "Anthropic cleanup model", SummaryModelPreset.anthropicModels, \.postProcessorAnthropicModel) {
-            self.updatePostProcessorModel($0, for: .hosted(.anthropic))
-        }
-        presets("cleanup_openrouter_model", "OpenRouter cleanup model", SummaryModelPreset.openRouterModels, \.postProcessorOpenRouterModel) {
-            self.updatePostProcessorModel($0, for: .hosted(.openRouter))
-        }
+        settings.append(contentsOf: cleanupModelDefinitions())
 
         toggle("meeting_hover_transcript", "Show meeting transcript on hover", \.showMeetingTranscriptOnIndicatorHover)
         toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
@@ -341,6 +397,7 @@ extension MuesliController {
         toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
+        toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)
         menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })
         menu("meeting_reminder_time", "Meeting reminder timing", ScheduledMeetingNotificationLeadTime.allCases, \.scheduledMeetingNotificationLeadTime,
              title: { $0 == .atStart ? "At start" : "\(Int($0.seconds / 60)) minutes before" })
@@ -354,7 +411,9 @@ extension MuesliController {
         }
         add("dictation_fallback_model", "Hosted dictation fallback model", backends.filter(\.supportsHostedDictationFallback).map { .init(id: backendID($0), label: $0.label) },
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
-                backends.first(where: { backendID($0) == value })?.isDownloaded == true ? nil : "Download this model first."
+                guard let option = backends.first(where: { backendID($0) == value }) else { return "Unknown dictation model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                return option.isDownloaded ? nil : "Download this model first."
             }) { value in
             if let option = backends.first(where: { backendID($0) == value }) { self.selectBackend(option) }
         }
@@ -364,7 +423,9 @@ extension MuesliController {
                 if self.config.enableLiveStreamingPartials && self.config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript {
                     return "The live transcript model also produces the final transcript. Change the live transcript model instead."
                 }
-                return meetingModels.first(where: { backendID($0) == value })?.isDownloaded == true ? nil : "Download this meeting model from Models first."
+                guard let option = meetingModels.first(where: { backendID($0) == value }) else { return "Unknown meeting model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                return option.isDownloaded ? nil : "Download this meeting model from Models first."
             }) { value in
             if let option = meetingModels.first(where: { backendID($0) == value }) { self.selectMeetingTranscriptionBackend(option) }
         }
@@ -410,22 +471,7 @@ extension MuesliController {
         let localQuill = allLocalCleanup.filter {
             switch $0 {
             case .gguf(let option): return option.supportsQuil && option.isDownloaded
-            case .gemma4(let model): return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
-            }
-        }
-        add("cleanup_on_device_model", "On-device cleanup model", allLocalCleanup.map { .init(id: $0.quilModelID, label: $0.label) },
-            read: { $0.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend ? $0.postProcessorGemmaModel : $0.activePostProcessorId },
-            unavailable: { value in
-                guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return "Unknown model." }
-                switch model {
-                case .gguf(let option): return option.isDownloaded && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
-                case .gemma4(let model): return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
-                }
-            }) { value in
-            guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return }
-            switch model {
-            case .gguf(let option): self.selectPostProcessor(option)
-            case .gemma4(let model): self.selectGemma4PostProcessor(model)
+            case .gemma4(let model): return !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
             }
         }
         add("quill_source", "Quill writing model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
