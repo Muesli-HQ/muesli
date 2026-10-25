@@ -117,14 +117,14 @@ struct PlusPreviewShareView: View {
                 if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
                 HStack {
                     if account == nil {
-                        Button("Sign in with your account") { connect() }
+                        Button("Sign in with your account", systemImage: "person.crop.circle") { connect() }
                             .buttonStyle(SharingPrimaryButtonStyle())
                             .help("Sign in to Muesli Plus to check sharing access. Nothing is uploaded yet.")
                             .disabled(busy)
                     } else {
-                        Button("Disconnect") { disconnect() }.disabled(busy)
+                        Button("Disconnect", systemImage: "person.crop.circle.badge.xmark") { disconnect() }.disabled(busy)
                         Spacer()
-                        Button("Upload and invite") { upload() }
+                        Button("Upload and invite", systemImage: "square.and.arrow.up") { upload() }
                             .buttonStyle(SharingPrimaryButtonStyle())
                             .disabled(
                                 busy || attempted || !accepted || !validRecipients
@@ -264,14 +264,14 @@ private struct SharingSuccessView: View {
             }
             Text("Shared with " + recipients.joined(separator: ", ")).font(.callout).lineLimit(2).textSelection(.enabled)
             HStack(spacing: 12) {
-                Button("Open note") { NSWorkspace.shared.open(url) }
+                Button("Open note", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
                     .buttonStyle(SharingPrimaryButtonStyle())
-                Button(copied ? "Copied" : "Copy link") {
+                Button(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link") {
                     NSPasteboard.general.clearContents()
                     copied = NSPasteboard.general.setString(url.absoluteString, forType: .string)
                 }
                 .buttonStyle(SharingSecondaryButtonStyle())
-                Button("Manage access") {
+                Button("Manage access", systemImage: "person.2") {
                     var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                     components?.fragment = "permissions"
                     if let destination = components?.url { NSWorkspace.shared.open(destination) }
@@ -291,13 +291,14 @@ private struct SharingSuccessView: View {
 struct SharingSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .semibold))
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .background(Color(hex: configuration.isPressed ? 0x4B5563 : 0x374151),
-                        in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.3)))
+                        in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.3)))
     }
 }
 
@@ -305,13 +306,14 @@ struct SharingPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .semibold))
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
             .background(
                 Color(hex: 0x2563EB).opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4),
-                in: RoundedRectangle(cornerRadius: 8))
+                in: RoundedRectangle(cornerRadius: 6))
     }
 }
 

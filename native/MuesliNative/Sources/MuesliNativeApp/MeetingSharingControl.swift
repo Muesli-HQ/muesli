@@ -32,11 +32,12 @@ struct MeetingSharingControl: View {
         } label: {
             Label(receipt == nil ? "Share" : "Shared",
                   systemImage: receipt == nil ? "person.crop.circle.badge.plus" : "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16).padding(.vertical, 10)
+                .padding(.horizontal, 8).padding(.vertical, 5)
                 .background(Color(hex: receipt == nil ? 0x2563EB : 0x15803D),
-                            in: RoundedRectangle(cornerRadius: 8))
+                            in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .opacity(disabled ? 0.45 : 1)
@@ -67,17 +68,17 @@ struct MeetingSharingControl: View {
                     }
                     if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
                     HStack(spacing: 8) {
-                        Button("Manage access") {
+                        Button("Manage access", systemImage: "person.2") {
                             var url = URLComponents(url: receipt.url, resolvingAgainstBaseURL: false)
                             url?.fragment = "permissions"
                             if let destination = url?.url { NSWorkspace.shared.open(destination) }
                         }.buttonStyle(SharingPrimaryButtonStyle())
-                        Button(copied ? "Copied" : "Copy link") {
+                        Button(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link") {
                             NSPasteboard.general.clearContents()
                             copied = NSPasteboard.general.setString(receipt.url.absoluteString, forType: .string)
                         }.buttonStyle(SharingSecondaryButtonStyle())
                     }
-                    Button("Refresh access") { Task { await refresh() } }
+                    Button("Refresh access", systemImage: "arrow.clockwise") { Task { await refresh() } }
                         .buttonStyle(SharingSecondaryButtonStyle()).disabled(refreshing)
                 } else {
                     Text("This shared link is no longer available.")

@@ -861,7 +861,7 @@ struct MeetingDetailView: View {
             }
             exportMenu(for: meeting)
                 .tint(.white)
-                .padding(.horizontal, 8).padding(.vertical, 8)
+                .padding(.horizontal, 4).padding(.vertical, 4)
                 .background(Color(hex: 0x374151), in: RoundedRectangle(cornerRadius: 8))
 
             if isSummarizing {
