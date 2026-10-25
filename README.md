@@ -141,9 +141,15 @@ Choose and download models in the **Models** tab. English defaults to Parakeet U
 | Qwen3 ASR | Multilingual transcription | 1.3 GB |
 | Bodhan Core / Flex | Indic languages and English; FP16 or INT8; macOS 15+ | 2.46 GB / 1.27 GB weights |
 | Whisper | Tiny and Small in English or multilingual variants, Medium English, Large Turbo Multilingual | 153 MB–1.5 GB |
-| Gemma 4 E2B | On-device transcription and cleanup | 2.6 GB |
+| Gemma 4 E2B / E4B | On-device dictation, cleanup, Quill and Computer Use; macOS 15+ | 3.6 GB / 5.2 GB |
+| Muesli Cleanup Light | Fine-tuned Qwen 3.5 0.8B for everyday transcript cleanup | 505 MB |
+| Muesli Pro Cleanup (Beta) | Fine-tuned LFM 2.5, Qwen 3.5 or Gemma 4 with app and screen context | 731 MB–2.6 GB |
 
-Download sizes are storage estimates, not RAM requirements. Gemma cannot be selected for transcription and cleanup simultaneously.
+Download sizes are storage estimates, not RAM requirements. Gemma's optional MTP assistant adds about 190 MB per model family; E2B and Gemma Pro Cleanup share an assistant. Gemma cannot be selected for transcription and cleanup simultaneously.
+
+Gemma uses MLX Swift LM for generation and a native Swift/MLX audio encoder. Multi-token prediction (MTP) is on by default when verified assistant weights are available. If those weights cannot be downloaded or loaded, the main model remains usable with ordinary decoding. Computer Use keeps its tool-call grammar and validation in either mode. The app no longer packages LiteRT.
+
+Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. LFM and Qwen cleanup models continue to use LLM.swift's llama.cpp runtime.
 
 Live transcription is off by default. Apple Speech and Nemotron provide live and final transcripts; Parakeet Realtime EOU provides an English preview alongside a separate final meeting model. Enable it under **Settings → Meetings → Transcription**.
 
@@ -175,7 +181,7 @@ See [Help and troubleshooting](https://muesli.works/help) for setup and permissi
 | Component | Technology |
 |---|---|
 | Native app | Swift, AppKit, SwiftUI |
-| Local inference | CoreML / Apple Neural Engine, MLX Swift, Metal, LiteRT-LM, WhisperKit |
+| Local inference | CoreML / Apple Neural Engine, MLX Swift / MLX Swift LM, Metal, LLM.swift / llama.cpp, WhisperKit |
 | Audio and speakers | CoreAudio process tap, ScreenCaptureKit fallback, Silero VAD, pyannote diarization |
 | Storage and sync | SQLite in WAL mode; CloudKit private database for text sync |
 | Calendar | Apple EventKit |
@@ -224,9 +230,11 @@ Muesli has been possible because of the generosity of companies such as:
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)
 - [Bodhan AI Core](https://huggingface.co/bodhan-ai/indic-transcribe-core) and [Flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) — multilingual Indic/English ASR; community [Core](https://huggingface.co/phequals/indic-transcribe-core-coreml) and [Flex](https://huggingface.co/phequals/indic-transcribe-flex-coreml) CoreML/MLX conversions
-- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon decoding for both FP16 and INT8 Bodhan hybrid runtimes
-- [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — Native on-device Gemma runtime with Swift APIs and Metal acceleration
-- [Gemma 4 E2B LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) — Multimodal transcription and cleanup model
+- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon inference for Gemma and the FP16/INT8 Bodhan hybrid runtimes
+- [MLX Swift LM](https://github.com/ml-explore/mlx-swift-lm) — Gemma language-model inference and speculative decoding in native Swift
+- [Hugging Face Swift Transformers](https://github.com/huggingface/swift-transformers) — native Swift tokenization for the MLX models
+- [LLM.swift](https://github.com/obra/LLM.swift) and [llama.cpp](https://github.com/ggml-org/llama.cpp) — local GGUF inference for LFM and Qwen cleanup
+- [Gemma 4 E2B](https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit) and [E4B](https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit) — MLX Community conversions used for on-device audio and text tasks
 - [pyannote](https://github.com/pyannote/pyannote-audio) — Speaker diarization (via FluidAudio CoreML conversion)
 
 ---

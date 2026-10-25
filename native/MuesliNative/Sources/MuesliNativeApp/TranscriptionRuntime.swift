@@ -132,6 +132,7 @@ actor TranscriptionCoordinator {
     private var _cohereTranscriber: Any?
     private var _bodhanTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
+    private var nativeGemmaEngines: [Gemma4LiteRTModel: Any] = [:]
     private var _appleSpeechTranscriber: Any?
     private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
@@ -148,6 +149,7 @@ actor TranscriptionCoordinator {
     private let diarizerLoadOperationTimeout: Duration
     private let diarizerDiagnostics: DiarizerPreloadDiagnostics
     private var activeBackend: String?
+    private let nativeGemmaReadinessInvalidated: @MainActor @Sendable () -> Void
 
     init(
         diarizerModelLoader: @escaping DiarizerModelLoader = { policy in
@@ -155,12 +157,14 @@ actor TranscriptionCoordinator {
         },
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
-        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
+        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
+        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
         self.diarizerDiagnostics = diarizerDiagnostics
+        self.nativeGemmaReadinessInvalidated = nativeGemmaReadinessInvalidated
     }
 
     private var _nemotron35Transcriber: Any?
@@ -212,10 +216,16 @@ actor TranscriptionCoordinator {
     }
 
     func unloadGemma4LiteRTTranscriber() async {
-        if #available(macOS 15, *), let transcriber = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
-            await transcriber.shutdown()
+        // Invalidate before suspension so a cached plan cannot admit recording.
+        await nativeGemmaReadinessInvalidated()
+        if #available(macOS 15, *) {
+            nativeGemmaEngines.removeAll()
+            // The planner can load a shared engine without creating this facade.
+            await Gemma4LiteRTTranscriber.shared.shutdown()
             _gemma4LiteRTTranscriber = nil
         }
+        // Also discard preparation that raced with the asynchronous teardown.
+        await nativeGemmaReadinessInvalidated()
     }
 
     func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
@@ -341,11 +351,18 @@ actor TranscriptionCoordinator {
             instruction: "Carry out the spoken instruction in the attached audio.",
             appContext: appContext
         )
-        let raw = try await gemma4LiteRTTranscriber.generateFromAudio(
+        let raw: String
+        if GemmaNativeAudioPolicy.isEnabled(for: gemmaModel) {
+            raw = try await nativeGemma(for: gemmaModel).generateFromAudio(wavURL: wavURL,
+                systemPrompt: QuilTransformationPrompt.audioSystem, userPrompt: prompt, model: gemmaModel,
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens)
+        } else {
+            raw = try await gemma4LiteRTTranscriber.generateFromAudio(
             wavURL: wavURL, systemPrompt: QuilTransformationPrompt.audioSystem,
             userPrompt: prompt, model: gemmaModel,
             maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
         )
+        }
         try Task.checkCancellation()
         // Do not run an ASR fallback or corrective second generation on this path.
         return try QuilTransformationOutput.validated(raw)
@@ -424,6 +441,10 @@ actor TranscriptionCoordinator {
             guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
                 throw QuilTransformationError.modelUnavailable
             }
+            if GemmaNativeAudioPolicy.isEnabled(for: gemmaModel) {
+                return try await nativeGemma(for: gemmaModel).generateText(systemPrompt: QuilTransformationPrompt.system,
+                    userPrompt: userPrompt, model: gemmaModel, maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens)
+            }
             return try await gemma4LiteRTTranscriber.generateText(
                 systemPrompt: QuilTransformationPrompt.system,
                 userPrompt: userPrompt,
@@ -496,6 +517,24 @@ actor TranscriptionCoordinator {
             _bodhanTranscriber = BodhanTranscriber()
         }
         return _bodhanTranscriber as! BodhanTranscriber
+    }
+
+    @available(macOS 15, *)
+    private func nativeGemma(for model: Gemma4LiteRTModel) -> GemmaNativeAudioTranscriber {
+        if let engine = nativeGemmaEngines[model] as? GemmaNativeAudioTranscriber { return engine }
+        let engine = GemmaNativeAudioTranscriber.shared(for: model)
+        nativeGemmaEngines[model] = engine
+        return engine
+    }
+
+    func prepareNativeGemmaModels(_ plan: GemmaPreparationPlan, progress: @escaping @Sendable (String) -> Void) async throws {
+        guard #available(macOS 15, *) else { return }
+        try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
+            progress("Preparing \(entry.model.label)… Mic off")
+            try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
+        }, optionalFailure: { entry, error in
+            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+        })
     }
 
     @available(macOS 15, *)
@@ -676,11 +715,10 @@ actor TranscriptionCoordinator {
             )
         case "gemma4-litert":
             if #available(macOS 15, *) {
-                try await gemma4LiteRTTranscriber.prepare(
-                    model: Gemma4LiteRTModel.resolved(backend.model),
-                    progress: progress,
-                    progressSnapshot: progressSnapshot
-                )
+                let model = Gemma4LiteRTModel.resolved(backend.model)
+                // The compatibility facade performs managed target + drafter downloads
+                // before preparing the shared native engine, including progress snapshots.
+                try await gemma4LiteRTTranscriber.prepare(model: model, progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "\(backend.label) requires macOS 15 or later.",
@@ -920,9 +958,9 @@ actor TranscriptionCoordinator {
             case .local:
                 try await qwen3PostProcessor.prepare()
             case .gemma4LiteRT:
-                try await gemma4LiteRTTranscriber.prepare(
-                    model: Gemma4LiteRTModel.resolved(postProcessorModelId)
-                )
+                let model = Gemma4LiteRTModel.resolved(postProcessorModelId)
+                if GemmaNativeAudioPolicy.isEnabled(for: model) { try await nativeGemma(for: model).prepare(model: model) }
+                else { try await gemma4LiteRTTranscriber.prepare(model: model) }
             default:
                 return
             }
@@ -1184,9 +1222,7 @@ actor TranscriptionCoordinator {
             }
             await cohereTranscriber.shutdown()
             await bodhanTranscriber.shutdown()
-            if let gemma4 = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
-                await gemma4.shutdown()
-            }
+            await unloadGemma4LiteRTTranscriber()
         }
     }
 
@@ -1336,12 +1372,15 @@ actor TranscriptionCoordinator {
             return nil
         }
         do {
-            let cleanup = try await gemma4LiteRTTranscriber.cleanTranscript(
-                result.text,
-                systemPrompt: postProcessorSnapshot.systemPrompt,
-                appContext: appContext,
-                model: Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
-            )
+            let model = Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
+            let cleanup: (text: String, rawOutput: String, processingTime: Double, didFallback: Bool)
+            if GemmaNativeAudioPolicy.isEnabled(for: model) {
+                cleanup = try await nativeGemma(for: model).cleanTranscript(result.text,
+                    systemPrompt: postProcessorSnapshot.systemPrompt, appContext: appContext, model: model)
+            } else {
+                cleanup = try await gemma4LiteRTTranscriber.cleanTranscript(result.text,
+                    systemPrompt: postProcessorSnapshot.systemPrompt, appContext: appContext, model: model)
+            }
             let elapsedMs = cleanup.processingTime * 1000
             let trimmed = cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines)
             Qwen3PostProcessorLogging.logVerbose(
@@ -1602,7 +1641,13 @@ actor TranscriptionCoordinator {
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             Gemma4LiteRTLogging.log("transcribing \(url.lastPathComponent)")
-            let result = try await gemma4LiteRTTranscriber.transcribe(wavURL: url, model: model)
+            let result: (text: String, processingTime: Double)
+            if GemmaNativeAudioPolicy.isEnabled(for: model) {
+                let native = try await nativeGemma(for: model).transcribe(wavURL: url, model: model)
+                result = (native.text, native.processingTime)
+            } else {
+                result = try await gemma4LiteRTTranscriber.transcribe(wavURL: url, model: model)
+            }
             Gemma4LiteRTLogging.log("result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
