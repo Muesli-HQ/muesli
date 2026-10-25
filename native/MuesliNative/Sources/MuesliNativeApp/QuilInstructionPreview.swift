@@ -1,11 +1,28 @@
 import Foundation
+import os
 
 /// Shared ownership keeps the recording alive until both the edit and any
 /// cancelled-but-still-unwinding preview have stopped reading it.
 final class QuilRecordedAudio: Sendable {
+    private let preserveOriginal = OSAllocatedUnfairLock(initialState: false)
     let url: URL
     init(url: URL) { self.url = url }
-    deinit { try? FileManager.default.removeItem(at: url) }
+    func copyForRecovery(to directory: URL) throws -> URL {
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent("quill-\(UUID()).wav")
+            try FileManager.default.copyItem(at: url, to: destination)
+            return destination
+        } catch {
+            preserveOriginal.withLock { $0 = true }
+            throw NSError(domain: "QuillAudioRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "Could not save a recovery copy. The original recording remains at \(url.path). \(error.localizedDescription)"])
+        }
+    }
+    deinit {
+        if !preserveOriginal.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) }
+    }
+
 }
 
 /// Best-effort display only. Callers never await this task to generate or paste

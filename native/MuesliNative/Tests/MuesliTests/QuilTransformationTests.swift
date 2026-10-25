@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import Testing
 @testable import MuesliNativeApp
@@ -293,7 +294,34 @@ struct QuilAvailabilityGateTests {
 
 @Suite("Quill direct audio")
 struct QuilDirectAudioTests {
-    @Test("Gemma Quill always uses audio independently of the dictation model")
+    @Test("full WAV duration selects text fallback beyond the native limit")
+    func longRecordingFallback() throws {
+        #expect(!QuilModelPolicy.requiresLongAudioFallback(frameCount: 480_000, sampleRate: 16_000))
+        #expect(QuilModelPolicy.requiresLongAudioFallback(frameCount: 480_001, sampleRate: 16_000))
+        #expect(QuilModelPolicy.requiresLongAudioFallback(frameCount: 2_880_000, sampleRate: 16_000))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("quill-long-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 496_000))
+        buffer.frameLength = 496_000
+        buffer.floatChannelData![0].update(repeating: 0, count: 496_000)
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+        }
+        let before = try Data(contentsOf: url)
+        #expect(try QuilModelPolicy.requiresLongAudioFallback(wavURL: url))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var audio: QuilRecordedAudio? = QuilRecordedAudio(url: url)
+        let saved = try #require(audio).copyForRecovery(to: directory)
+        audio = nil
+        #expect(try Data(contentsOf: saved) == before)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+
+    @Test("Gemma Quill is audio eligible independently of the dictation model")
     func gemmaAlwaysUsesAudio() {
         for model in Gemma4LiteRTModel.generalPurpose {
             #expect(QuilModelPolicy.usesDirectAudio(backend: .gemma4LiteRT, model: model.repoID))

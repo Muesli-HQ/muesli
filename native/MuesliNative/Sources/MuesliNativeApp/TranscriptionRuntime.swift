@@ -337,8 +337,8 @@ actor TranscriptionCoordinator {
         }
     }
 
-    /// Display-only ASR: never supplies the instruction to the Gemma audio prompt.
-    /// Missing Parakeet artifacts do not trigger a download or block the edit.
+    /// Local ASR for short-audio display previews and required long-audio text fallback.
+    /// Never downloads artifacts; callers decide whether failure is optional or fatal.
     func transcribeQuilDisplayAudio(at url: URL) async throws -> String {
         guard BackendOption.parakeetUnified.isDownloaded else {
             throw ParakeetUnifiedTranscriber.TranscriberError.notLoaded

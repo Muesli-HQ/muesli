@@ -9917,18 +9917,21 @@ public final class MuesliController: NSObject {
                 : TranscriptCleanupClient.defaultModel(for: backend))
             : configuredModel
         let dictationBackend = selectedBackend
-        let directAudio = QuilModelPolicy.usesDirectAudio(backend: backend, model: model)
+        let audioEligible = QuilModelPolicy.usesDirectAudio(backend: backend, model: model)
         let configSnapshot = config
         let contextCaptureTask = quilContextCaptureTask
         let audio = QuilRecordedAudio(url: wavURL)
         let processingStartedAt = Date()
-        Gemma4LiteRTLogging.profile("quill request=\(taskID) route=\(directAudio ? "direct_audio" : "asr_text") model=\(model) started")
         quilTask = Task { [weak self] in
             guard let self else { return }
             // Both consumers retain the recording until their actual work finishes,
             // including a preview that takes time to observe cancellation.
             defer { withExtendedLifetime(audio) {}; self.quilInstructionPreview.stop(requestID: taskID) }
+            var longAudioFallback = false
             do {
+                if audioEligible { longAudioFallback = try QuilModelPolicy.requiresLongAudioFallback(wavURL: audio.url) }
+                let directAudio = audioEligible && !longAudioFallback
+                Gemma4LiteRTLogging.profile("quill request=\(taskID) route=\(directAudio ? "direct_audio" : "asr_text") long_audio_fallback=\(longAudioFallback) model=\(model) started")
                 let instruction: String
                 if directAudio {
                     instruction = "Audio instruction"
@@ -9945,7 +9948,18 @@ public final class MuesliController: NSObject {
                             guard let self, self.quilTaskID == taskID else { return }
                             self.indicator.showQuilInstruction(text, config: self.config)
                         })
+                } else if longAudioFallback {
+                    // Required full-recording ASR, with no display-preview deadline.
+                    // Do not use the selected dictation backend: it may itself be Gemma.
+                    let text = try await self.transcriptionCoordinator.transcribeQuilDisplayAudio(at: audio.url)
+                    try Task.checkCancellation()
+                    guard self.quilTaskID == taskID else { throw CancellationError() }
+                    instruction = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+                    self.statusBarController?.setStatus("Rewriting selection")
+                    self.indicator.showQuilInstruction(instruction, config: self.config)
                 } else {
+
                     let result = try await self.transcriptionCoordinator.transcribeDictation(
                         at: wavURL,
                         backend: dictationBackend,
@@ -10120,7 +10134,18 @@ public final class MuesliController: NSObject {
             } catch {
                 await MainActor.run {
                     guard self.quilTaskID == taskID else { return }
-                    self.presentQuilFailure(error)
+                    if longAudioFallback {
+                        do {
+                            let saved = try audio.copyForRecovery(to: AppIdentity.supportDirectoryURL.appendingPathComponent("quill-recovery", isDirectory: true))
+                            self.presentQuilFailure(NSError(domain: "QuillAudioFallback", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                                "Long Quill instructions require a working local Parakeet Unified model. \(error.localizedDescription) Recording saved at \(saved.path). Retry after resolving the error."]))
+                        } catch {
+                            self.presentQuilFailure(error)
+                        }
+                    } else {
+                        self.presentQuilFailure(error)
+                    }
+
                 }
             }
         }
