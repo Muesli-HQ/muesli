@@ -10,6 +10,7 @@ struct PlusPreviewShareView: View {
             || (identifier == "com.muesli.dev.c"
                 && Bundle.main.object(forInfoDictionaryKey: "MuesliPlusPreviewEnabled") as? Bool == true)
     }
+    var onShared: (URL, [String], Date) -> Void
     @Environment(\.dismiss) private var dismiss
     private struct NoteSnapshot {
         let title: String
@@ -36,7 +37,8 @@ struct PlusPreviewShareView: View {
     @State private var connectionTask: Task<Void, Never>?
     @State private var requestID = UUID().uuidString
 
-    init(title: String, summary: String, transcript: String) {
+    init(title: String, summary: String, transcript: String, onShared: @escaping (URL, [String], Date) -> Void = { _, _, _ in }) {
+        self.onShared = onShared
         _note = State(initialValue: NoteSnapshot(title: title, summary: summary, transcript: transcript))
     }
     private var emails: [String] { recipients.emails }
@@ -53,7 +55,7 @@ struct PlusPreviewShareView: View {
                 }.disabled(busy && code == nil)
             }
             if let sharedURL {
-                SharingSuccessView(url: sharedURL)
+                SharingSuccessView(url: sharedURL, recipients: emails)
             } else {
                 Text(
                     "A copy will leave this Mac. Only invited people who sign in can read it. Your local meeting stays unchanged."
@@ -225,6 +227,10 @@ struct PlusPreviewShareView: View {
                 else {
                     throw PlusPreviewClient.Failure(status: 0, message: "Check Shared notes to confirm the result.")
                 }
+                guard let expiresAt = result["expiresAt"] as? Double else {
+                    throw PlusPreviewClient.Failure(status: 0, message: "Check Shared notes to confirm the result.")
+                }
+                onShared(url, emails, Date(timeIntervalSince1970: expiresAt))
                 sharedURL = url
                 NSWorkspace.shared.open(url)
             } catch {
@@ -238,6 +244,7 @@ struct PlusPreviewShareView: View {
 
 private struct SharingSuccessView: View {
     let url: URL
+    let recipients: [String]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
     @State private var copied = false
@@ -255,6 +262,7 @@ private struct SharingSuccessView: View {
                     .accessibilityHidden(true)
                 Text("Shared").font(.title.bold())
             }
+            Text("Shared with " + recipients.joined(separator: ", ")).font(.callout).lineLimit(2).textSelection(.enabled)
             HStack(spacing: 12) {
                 Button("Open note") { NSWorkspace.shared.open(url) }
                     .buttonStyle(SharingPrimaryButtonStyle())
@@ -280,20 +288,20 @@ private struct SharingSuccessView: View {
     }
 }
 
-private struct SharingSecondaryButtonStyle: ButtonStyle {
+struct SharingSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(.primary)
+            .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color.primary.opacity(configuration.isPressed ? 0.18 : 0.1),
+            .background(Color(hex: configuration.isPressed ? 0x4B5563 : 0x374151),
                         in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.3)))
     }
 }
 
-private struct SharingPrimaryButtonStyle: ButtonStyle {
+struct SharingPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -307,7 +315,7 @@ private struct SharingPrimaryButtonStyle: ButtonStyle {
     }
 }
 
-private enum PlusPreviewClient {
+enum PlusPreviewClient {
     struct Failure: LocalizedError {
         let status: Int
         let message: String
