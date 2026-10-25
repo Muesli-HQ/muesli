@@ -34,6 +34,8 @@ struct LiveDictationTextTargetTests {
         var allowsEmptyLineSentinelRemoval = false
         var removesInitialNewline = false
         var keyboardBurstSize = 1
+        var useAcknowledgedWordGroups = false
+        var delayKeyboardSeparators = false
         var finalPasteEnabled = false
         var finalPastes: [String] = []
         var beforeFinalPaste: (() -> Void)?
@@ -105,10 +107,18 @@ struct LiveDictationTextTargetTests {
                       return replacementSucceeds
                   }, transport: transport, keyboardPlan: { [self] text in
                       guard LiveDictationKeyboardInput.isSupported(text) else { return nil }
-                      let characters = text.map(String.init)
-                      return stride(from: 0, to: characters.count, by: keyboardBurstSize).map { start in
-                          let value = characters[start..<min(start + keyboardBurstSize, characters.count)].joined()
-                          return .init(text: value, send: { [self] validate, onFailure in
+                      let values: [String]
+                      if useAcknowledgedWordGroups {
+                          guard let plan = LiveDictationKeyboardInput.makePlan(text: text, translate: { _, _ in nil }) else { return nil }
+                          values = LiveDictationKeyboardInput.acknowledgmentGroups(plan).map { $0.map(\.text).joined() }
+                      } else {
+                          let characters = text.map(String.init)
+                          values = stride(from: 0, to: characters.count, by: keyboardBurstSize).map { start in
+                              characters[start..<min(start + keyboardBurstSize, characters.count)].joined()
+                          }
+                      }
+                      return values.map { value in
+                          .init(text: value, send: { [self] validate, onFailure in
                               beforeKeyboardValidation?()
                               guard validate() else {
                                   onFailure(.targetValidationFailed)
@@ -119,7 +129,13 @@ struct LiveDictationTextTargetTests {
                                   onFailure(.eventCreation)
                                   return false
                               }
-                              if !keyboardNoOp { applyReplacement(value) }
+                              if !keyboardNoOp {
+                                  if delayKeyboardSeparators, value.contains(where: { $0.isWhitespace || $0.isPunctuation }) {
+                                      pendingReplacement = value
+                                  } else {
+                                      applyReplacement(value)
+                                  }
+                              }
                               afterKeyboard?()
                               return true
                           })
@@ -128,9 +144,136 @@ struct LiveDictationTextTargetTests {
         }
     }
 
+    @Test(arguments: [" ", ",", "\u{00A0}"])
+    func wordGroupsWaitForSeparatorTextAndCaretBeforeContinuing(separator: String) async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        let clock = PollClock()
+        var waitingForCaret = false
+        var expectedGroupCount = 0
+        clock.onWait = {
+            if waitingForCaret {
+                #expect(editor.keyboardSteps.count == expectedGroupCount, "No following word before the separator caret ACK")
+                editor.flushSplitReplacement()
+                waitingForCaret = false
+            } else {
+                #expect(editor.pendingReplacement == separator)
+                expectedGroupCount = editor.keyboardSteps.count
+                editor.replacementTextFirst = true
+                editor.flushReplacement()
+                editor.replacementTextFirst = false
+                waitingForCaret = true
+            }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        let text = "Can" + separator + "you" + separator + "check"
+        #expect(await target.update(text: text))
+        #expect(editor.keyboardSteps == ["C", "an", separator, "you", separator, "check"])
+        #expect(editor.text == text)
+        #expect(editor.selection == NSRange(location: 13, length: 0))
+        #expect(clock.ticks == 4)
+        #expect(!target.isSuspended)
+    }
+
+    @Test func wordGroupWaitStillRejectsEditsCaretMovementFocusLossAndCancellation() async throws {
+        for change in 0..<4 {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.useAcknowledgedWordGroups = true
+            editor.delayKeyboardSeparators = true
+            editor.finalPasteEnabled = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = {
+                editor.flushReplacement()
+                if change == 0 { editor.text = "Cat " } // Same length still cannot pass exact readback.
+                if change == 1 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 2 { editor.focused = false }
+                if change == 3 { target.cancel() }
+            }
+            #expect(await target.update(text: "Can you check") == false)
+            #expect(editor.keyboardSteps == ["C", "an", " "])
+            #expect(await target.finish(text: "Can you check?") == false)
+            #expect(editor.finalPastes.isEmpty)
+        }
+    }
+
+    @Test func punctuationTransformationCannotAuthorizeTheFollowingWord() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.finalPasteEnabled = true
+        editor.afterKeyboard = {
+            if editor.keyboardSteps.last == "," { editor.text = "Can." }
+        }
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "Can,you check") == false)
+        #expect(diagnostics.last == "keyboard_text_readback_changed")
+        #expect(editor.keyboardSteps == ["C", "an", ","])
+        #expect(await target.finish(text: "Can you check?") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func unacknowledgedSeparatorTimesOutWithoutRetryOrFollowingWord() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        #expect(await target.update(text: "Can you check") == false)
+        #expect(diagnostics.last == "keyboard_text_readback_timeout")
+        #expect(editor.keyboardSteps == ["C", "an", " "])
+        editor.flushReplacement() // A late ACK must not revive the suspended target.
+        #expect(await target.update(text: "Can you check") == false)
+        #expect(await target.finish(text: "Can you check?") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func finalCleanupWaitsForWordGroupAcknowledgmentAndPastesOnlyOnce() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        editor.finalPasteEnabled = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let preview = Task { @MainActor in await target.update(committedText: "Can", tail: " you check") }
+        while waiting == nil { await Task.yield() }
+        var finalStarted = false
+        let final = Task { @MainActor in
+            finalStarted = true
+            return await target.finish(text: "Can you check?")
+        }
+        while !finalStarted { await Task.yield() }
+        #expect(editor.keyboardSteps == ["C", "an", " "])
+        #expect(editor.finalPastes.isEmpty)
+        #expect(await target.update(text: "late preview") == false)
+        editor.delayKeyboardSeparators = false
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value)
+        #expect(await final.value)
+        #expect(editor.keyboardSteps == ["C", "an", " ", "you", " ", "check"])
+        #expect(editor.finalPastes == ["?"])
+        #expect(editor.text == "Can you check?")
+    }
+
     @Test func finalCleanupPastesChangedMiddleOnceAndPreservesContext() async throws {
         let editor = Editor()
         editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
         editor.finalPasteEnabled = true
         let target = try #require(LiveDictationTextTarget(access: editor.access))
         #expect(await target.update(committedText: "hello", tail: " old world"))

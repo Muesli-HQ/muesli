@@ -632,14 +632,10 @@ private final class AccessibilityTarget {
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
         }, transport: transport, keyboardPlan: { [self] text in
             guard let plan = LiveDictationKeyboardInput.makePlan(text: text) else { return nil }
-            // Keep the initial key separate for Codex's empty-line placeholder
-            // acknowledgment, then deliver bounded bursts without per-key waits.
-            var bursts: [[LiveDictationKeyboardInput.Step]] = []
-            if let first = plan.first { bursts.append([first]) }
-            for start in stride(from: 1, to: plan.count, by: 8) {
-                bursts.append(Array(plan[start..<min(start + 8, plan.count)]))
-            }
-            return bursts.map { burst in
+            // Each word group and separator must receive its own exact ACK
+            // before the next group is posted. Never cross a word boundary in
+            // a burst while the renderer may still be processing that boundary.
+            return LiveDictationKeyboardInput.acknowledgmentGroups(plan).map { burst in
                 LiveDictationTextTarget.KeyboardStep(text: burst.map(\.text).joined(), send: { validate, onFailure in
                     LiveDictationKeyboardInput.postBurst(burst, to: self.application.processIdentifier,
                                                         validateTarget: validate, onFailure: onFailure)

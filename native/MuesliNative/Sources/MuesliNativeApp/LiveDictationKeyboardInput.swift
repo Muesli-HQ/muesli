@@ -81,6 +81,33 @@ enum LiveDictationKeyboardInput {
         return steps
     }
 
+    /// Partition the preflighted plan into separately acknowledged groups.
+    /// Word separators can trigger editor-side processing; never post the next
+    /// word until the separator's exact text and caret have been read back.
+    /// The first grapheme stays separate for the empty-composer sentinel ACK.
+    /// Long words and scripts without spaces remain bounded, without splitting
+    /// a grapheme or altering the original text/keyboard layout mapping.
+    static func acknowledgmentGroups(_ steps: [Step]) -> [[Step]] {
+        guard let first = steps.first else { return [] }
+        var groups = [[first]]
+        var word: [Step] = []
+        func flushWord() {
+            if !word.isEmpty { groups.append(word); word.removeAll(keepingCapacity: true) }
+        }
+        for step in steps.dropFirst() {
+            let separator = step.text.contains { $0.isWhitespace || $0.isPunctuation }
+            if separator {
+                flushWord()
+                groups.append([step])
+            } else {
+                word.append(step)
+                if word.count == maximumBurstGraphemes { flushWord() }
+            }
+        }
+        flushWord()
+        return groups
+    }
+
     /// Creates and round-trips both events before any dispatch. A long grapheme
     /// the OS cannot represent in one event is rejected instead of splitting a
     /// surrogate pair, combining sequence, or joined emoji across updates.

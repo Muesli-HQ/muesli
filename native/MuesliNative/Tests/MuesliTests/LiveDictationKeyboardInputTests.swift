@@ -137,6 +137,29 @@ struct LiveDictationKeyboardInputTests {
         }
     }
 
+    @Test("word groups acknowledge separators before posting the following word")
+    func wordGroupBoundaries() throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: "Can you check?", translate: { _, _ in nil }))
+        let groups = LiveDictationKeyboardInput.acknowledgmentGroups(steps)
+        #expect(groups.map { $0.map(\.text).joined() } == ["C", "an", " ", "you", " ", "check", "?"])
+    }
+
+    @Test("grouping preserves exact Unicode, repeated spaces, and bounded long words",
+          arguments: ["", " ", "  can  you\u{00A0}check?", "extraordinarilylongword", "வணக்கம் தமிழ்!",
+                      "你好世界。下一句话", "e\u{301} 👩🏽‍💻🇮🇳, café", "can't—stop…now"])
+    func wordGroupConservation(text: String) throws {
+        let steps = try #require(LiveDictationKeyboardInput.makePlan(text: text, translate: { _, _ in nil }))
+        let groups = LiveDictationKeyboardInput.acknowledgmentGroups(steps)
+        #expect(groups.flatMap { $0 }.map(\.text).joined().utf16.elementsEqual(text.utf16))
+        if !text.isEmpty { #expect(groups.first?.count == 1) }
+        for group in groups {
+            #expect((1...LiveDictationKeyboardInput.maximumBurstGraphemes).contains(group.count))
+            if group.contains(where: { $0.text.contains { $0.isWhitespace || $0.isPunctuation } }) {
+                #expect(group.count == 1, "A separator must settle before further keyboard input")
+            }
+        }
+    }
+
     @Test("a burst precreates every pair, validates once, and preserves whole Unicode graphemes")
     func burstPreservesUnicodeAndCapturedProcess() throws {
         let text = "Aé e\u{301}👩🏽‍💻🇮🇳好!"
