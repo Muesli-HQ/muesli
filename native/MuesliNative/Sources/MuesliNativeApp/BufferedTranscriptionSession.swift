@@ -415,6 +415,33 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             guard candidates.count <= 1 else { throw AlignmentRecovery(reason: .ambiguousAnchor) }
             if let index = candidates.first { matchedIndex = index; break }
         }
+        if matchedIndex == nil, anchors.count >= 2, let following = state.followingAnchor {
+            // More context can expand or shorten an owned word's onset span
+            // without moving its end or the next word. Require the preceding
+            // lexical/timed context and the following seam; an end timestamp
+            // alone cannot own a repeat.
+            for length in stride(from: anchors.count, through: 2, by: -1) {
+                let suffix = Array(anchors.suffix(length))
+                let last = suffix[length - 1]
+                let preceding = suffix[length - 2]
+                let candidates = words.indices.filter { index in
+                    guard index + 1 >= length, index + 1 < words.count else { return false }
+                    let current = words[index]
+                    let next = words[index + 1]
+                    guard anchorIdentity(current.text) == anchorIdentity(last.text),
+                          abs(current.end - last.end) <= configuration.maximumTimestampDrift,
+                          current.start >= max(preceding.end, words[index - 1].end) - configuration.maximumTimestampDrift,
+                          anchorIdentity(next.text) == anchorIdentity(following.text),
+                          abs(next.start - following.start) <= configuration.maximumTimestampDrift else { return false }
+                    return zip(suffix.dropLast(), words[(index + 1 - length)..<index]).allSatisfy {
+                        anchorIdentity($0.text) == anchorIdentity($1.text)
+                            && abs($0.start - $1.start) <= configuration.maximumTimestampDrift
+                    }
+                }
+                guard candidates.count <= 1 else { throw AlignmentRecovery(reason: .ambiguousAnchor) }
+                if let index = candidates.first { matchedIndex = index; break }
+            }
+        }
         if matchedIndex == nil {
             // A permanently revised lexical anchor can still identify the same
             // audio seam. Require a unique ordered onset alignment and agreement

@@ -162,15 +162,15 @@ struct BufferedTranscriptionBackendIntegrationTests {
         }
     }
 
-    /// Tiny multilingual is intentionally exercised through the production
+    /// Whisper is intentionally exercised through the production
     /// adapter. Opt in only with an installed model and a public speech fixture;
     /// optional raw word diagnostics are restricted to this explicit smoke run.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_SMOKE"] == "1"
                    && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SPEECH_FIXTURE"] != nil))
-    func whisperTinyRealAudioProducesTimedProgressivePreviews() async throws {
-        let model = "tiny"
+    func whisperRealAudioProducesTimedProgressivePreviews() async throws {
+        let model = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_MODEL"] ?? "tiny"
         let plan = ManagedASRModelPlans.whisperKit(modelName: model)
-        try #require(plan.isComplete(), "A validated local Whisper Tiny installation is required; this test must not download or repair models")
+        try #require(plan.isComplete(), "A validated local Whisper installation is required; this test must not download or repair models")
         let fixture = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SPEECH_FIXTURE"])
         let fixtureURL = URL(fileURLWithPath: fixture)
         let samples = try AudioConverter().resampleAudioFile(fixtureURL)
@@ -195,13 +195,13 @@ struct BufferedTranscriptionBackendIntegrationTests {
                         #expect(!window.words.isEmpty)
                     }
                     #expect(window.words.allSatisfy { $0.start >= 0 && $0.end <= Double(seconds) + 0.25 })
-                    print("[buffered-smoke] model=whisper-tiny seconds=\(seconds) chars=\(window.text.count) words=\(window.words.count) max_end=\(window.words.map(\.end).max() ?? 0) decode_ms=\(Int(Date().timeIntervalSince(start) * 1000))")
+                    print("[buffered-smoke] model=whisper-\(model) seconds=\(seconds) chars=\(window.text.count) words=\(window.words.count) max_end=\(window.words.map(\.end).max() ?? 0) decode_ms=\(Int(Date().timeIntervalSince(start) * 1000))")
                 } catch let deferral as BufferedTranscriptionPreviewDeferral {
                     deferredPreviews += 1
                     lastDeferredPrefix = seconds
-                    print("[buffered-smoke] model=whisper-tiny seconds=\(seconds) deferred=\(deferral.rawValue)")
+                    print("[buffered-smoke] model=whisper-\(model) seconds=\(seconds) deferred=\(deferral.rawValue)")
                 } catch {
-                    Issue.record("Whisper Tiny production preview failed at \(seconds) seconds: \(error)")
+                    Issue.record("Whisper \(model) production preview failed at \(seconds) seconds: \(error)")
                     if verbose {
                         // Diagnose text/word alignment without replacing the
                         // production adapter under test or permitting downloads.
@@ -228,14 +228,51 @@ struct BufferedTranscriptionBackendIntegrationTests {
             }
             #expect(nonemptyPreviews > 0)
             #expect(lastValidPrefix > lastDeferredPrefix, "A later prefix must recover after a temporary alignment deferral")
-            print("[buffered-smoke] model=whisper-tiny deferred_prefixes=\(deferredPreviews)")
+            print("[buffered-smoke] model=whisper-\(model) deferred_prefixes=\(deferredPreviews)")
             diagnosticWhisper = nil
-            try await assertProgressivePreview(samples: samples, label: "whisper-tiny", requireEarlyCommit: false) {
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)") {
                 try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+            }
+            // An apparently successful roll can still lose the beginning if
+            // unstable timings misclassify already-observed speech as silence.
+            // This opt-in test uses the documented public 21.4-second fixture.
+            let previewWords = preview.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+            for phrase in ["before we go", "validate your findings", "help them out"] {
+                #expect(previewWords.contains(phrase), "The preview must retain speech on both sides of every audio-window boundary")
             }
             let final = try await transcriber.transcribe(wavURL: fixtureURL, expectedModel: model)
             #expect(!final.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            print("[buffered-smoke] model=whisper-tiny final_chars=\(final.text.count)")
+            print("[buffered-smoke] model=whisper-\(model) final_chars=\(final.text.count)")
+            await transcriber.shutdown()
+        } catch {
+            await transcriber.shutdown()
+            throw error
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_SMOKE"] == "1"
+                   && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"] != nil))
+    func whisperProgressesAcrossMultipleSpeechWindows() async throws {
+        let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"])
+        let model = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_MODEL"] ?? "tiny"
+        try #require(ManagedASRModelPlans.whisperKit(modelName: model).isComplete(),
+            "Requires an installed validated model; no downloads or repairs")
+        let converter = AudioConverter()
+        var samples: [Float] = []
+        for name in ["01-validation-request-21.4s.wav", "02-release-readiness-19.8s.wav", "03-diff-explanation-16.9s.wav"] {
+            samples += try converter.resampleAudioFile(URL(fileURLWithPath: directory).appendingPathComponent(name))
+            samples += Array(repeating: 0, count: 16_000)
+        }
+        let transcriber = WhisperKitTranscriber()
+        do {
+            try await transcriber.loadModel(modelName: model)
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak") {
+                try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+            }
+            let words = preview.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+            for phrase in ["before we go", "help them out", "cutting a release", "in that difference"] {
+                #expect(words.contains(phrase), "Every source recording must survive the rolling boundaries")
+            }
             await transcriber.shutdown()
         } catch {
             await transcriber.shutdown()
@@ -302,14 +339,23 @@ struct BufferedTranscriptionBackendIntegrationTests {
         var previousEnd = 0
         var committed = ""
         var committedBeforeRollover = false
+        var textAtEightSeconds = ""
+        var textAtFourteenSeconds = ""
         for end in stride(from: 32_000, through: samples.count, by: 16_000) {
             live.enqueue(Array(samples[previousEnd..<end]))
             previousEnd = end
             let update = try #require(await events.next(), "Preview failed: \(progressive.failure ?? "unknown")")
             #expect(update.committedText.utf16.starts(with: committed.utf16))
             committed = update.committedText
+            if end == 8 * 16_000 { textAtEightSeconds = update.text }
+            if end == 14 * 16_000 { textAtFourteenSeconds = update.text }
             if end < 240_000, !committed.isEmpty { committedBeforeRollover = true }
             print("[buffered-smoke] model=\(label) progressive_seconds=\(end / 16_000) committed=\(committed.count) draft=\(update.tail.count)")
+        }
+        if requireEarlyCommit {
+            #expect(!textAtEightSeconds.isEmpty)
+            #expect(textAtFourteenSeconds != textAtEightSeconds, "Live output must keep advancing past the reported five-second freeze")
+            #expect(progressive.lastText != textAtFourteenSeconds, "Live output must advance through the first window boundary before stop")
         }
         if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
         await live.finish()

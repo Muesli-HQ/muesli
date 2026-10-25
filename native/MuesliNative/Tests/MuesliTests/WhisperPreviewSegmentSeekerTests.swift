@@ -8,6 +8,67 @@ import WhisperKit
 struct WhisperPreviewSegmentSeekerTests {
     private typealias Seeker = WhisperPreviewSegmentSeeker
 
+    @Test("float16 alignment ignores poisoned physical row padding")
+    func paddedFloat16Alignment() throws {
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: 24 * MemoryLayout<Float16>.stride,
+                                                       alignment: MemoryLayout<Float16>.alignment)
+        let values = storage.bindMemory(to: Float16.self, capacity: 24)
+        values.initialize(repeating: 1000, count: 24)
+        let padded = try MLMultiArray(dataPointer: storage, shape: [3, 3], dataType: .float16,
+                                     strides: [8, 1], deallocator: { $0.deallocate() })
+        let logical: [[Float16]] = [[1, 1, 1], [5, 2, 1], [1, 5, 2]]
+        for row in 0..<3 {
+            for column in 0..<3 { padded[[NSNumber(value: row), NSNumber(value: column)]] = NSNumber(value: Float(logical[row][column])) }
+        }
+        let path = try Seeker.alignmentPath(padded, tokenCount: 3)
+        #expect(path.textIndices == [0, 1, 1, 2, 2])
+        #expect(path.timeIndices == [0, 0, 1, 1, 2])
+        #expect(path.cost == -15)
+        let cropped = try Seeker.cropAlignment(padded, sampleCount: 960)
+        let croppedPath = try Seeker.alignmentPath(cropped, tokenCount: 3)
+        #expect(croppedPath.textIndices == path.textIndices)
+        #expect(croppedPath.timeIndices == path.timeIndices)
+    }
+
+    @Test("IOSurface 750-column alignment matches logical contiguous rows")
+    func ioSurfaceAlignment() throws {
+        let padded = try MLMultiArray(shape: [41, 750], dataType: .float16, initialValue: Float16(0))
+        let contiguous = try MLMultiArray(shape: [41, 750], dataType: .float16)
+        for row in 0..<41 {
+            for column in 0..<750 {
+                let value = NSNumber(value: Float(row == column / 19 ? 1 : 0))
+                let index = [NSNumber(value: row), NSNumber(value: column)]
+                padded[index] = value
+                contiguous[index] = value
+            }
+        }
+        let a = try Seeker.alignmentPath(padded, tokenCount: 41)
+        let b = try Seeker.alignmentPath(contiguous, tokenCount: 41)
+        #expect(a.textIndices == b.textIndices)
+        #expect(a.timeIndices == b.timeIndices)
+        #expect(a.cost == b.cost)
+    }
+
+    @Test("DTW ties select an actual minimum and zero matrices stay bounded")
+    func tiesAndZeros() throws {
+        let weights = try MLMultiArray(shape: [3, 3], dataType: .float32)
+        let values: [Float] = [-1, 1, -1, -1, -1, -1, -1, -1, -1]
+        for index in values.indices { weights[index] = NSNumber(value: values[index]) }
+        #expect(try Seeker.alignmentPath(weights, tokenCount: 3).cost == 2)
+        for index in values.indices { weights[index] = 0 }
+        let zero = try Seeker.alignmentPath(weights, tokenCount: 3)
+        #expect(zero.cost == 0)
+        #expect(zero.textIndices.first == 0 && zero.timeIndices.first == 0)
+        #expect(zero.textIndices.last == 2 && zero.timeIndices.last == 2)
+        #expect(Set(zero.textIndices) == Set(0..<3))
+        #expect(Seeker.tokenSpans(zero).starts.count == 3)
+        #expect(Seeker.tokenSpans(zero).ends.count == 3)
+        #expect(throws: WhisperError.self) { try Seeker.alignmentPath(weights, tokenCount: 4) }
+        #expect(throws: WhisperError.self) { try Seeker.alignmentPath(weights, tokenCount: 0) }
+        weights[0] = NSNumber(value: Float.nan)
+        #expect(throws: BufferedTranscriptionPreviewDeferral.self) { try Seeker.alignmentPath(weights, tokenCount: 3) }
+    }
+
     @Test("short audio excludes padded attention and preserves dtype", arguments: [MLMultiArrayDataType.float16, .float32, .double])
     func cropsPaddedAudio(dataType: MLMultiArrayDataType) throws {
         let weights = try MLMultiArray(shape: [2, 1500], dataType: dataType)

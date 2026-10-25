@@ -419,6 +419,113 @@ struct BufferedTranscriptionSessionTests {
         #expect(await decoder.sampleCounts == [5, 6, 7, 8, 9, 10].map { $0 * 16_000 })
     }
 
+    @Test("owned onset may expand into a pause only with both neighboring anchors")
+    func ownedOnsetExpandsIntoPause() async {
+        let initial = Self.pauseExpansionWindow()
+        let expanded = Self.pauseExpansionWindow(expanded: true)
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([initial, initial, expanded, expanded])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 198_400)) // 12.4 seconds
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "net new code and")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let revised = await updates.next()
+        #expect(revised?.text == "net new code and analyzing if difference.")
+        #expect(revised?.committedText == "net new code and analyzing if")
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "net new code and analyzing if difference.")
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("owned onset may shorten with an unchanged end and following seam")
+    func ownedOnsetShortensWithinWord() async {
+        let first: [BufferedTranscriptionWord] = [
+            .init(text: "and", start: 0, end: 0.22),
+            .init(text: "analyzing", start: 0.22, end: 0.72),
+            .init(text: "if", start: 0.72, end: 1.26),
+            .init(text: "there's", start: 1.26, end: 1.44)
+        ]
+        // The observed 60 -> 61 second seam, relative to 55.6 seconds:
+        // "if" moves from 56.32 to 56.64; its end and "there's" stay fixed.
+        var shortened = first
+        shortened[2] = .init(text: "if", start: 1.04, end: 1.26)
+        shortened.append(.init(text: "difference.", start: 4, end: 4.38))
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(first), window(first), window(shortened), window(shortened)])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 54_400)) // 3.4 seconds
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "and analyzing if")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.text == "and analyzing if there's difference.")
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "and analyzing if there's difference.")
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("owned onset expansion cannot consume speech or lose its following anchor",
+          arguments: ["crossed_previous_word", "changed_following_word", "moved_following_word", "changed_owned_word", "moved_owned_end"])
+    func ownedOnsetExpansionRequiresContext(change: String) async {
+        let initial = Self.pauseExpansionWindow()
+        var words = Self.pauseExpansionWindow(expanded: true).words
+        switch change {
+        case "crossed_previous_word":
+            words[3] = .init(text: "and", start: 9.25, end: 10.22)
+        case "changed_following_word":
+            words[4] = .init(text: "not", start: 10.22, end: 10.72)
+        case "moved_following_word":
+            words[4] = .init(text: "analyzing", start: 10.60, end: 10.72)
+        case "moved_owned_end":
+            words[3] = .init(text: "and", start: 9.58, end: 10.60)
+        default:
+            words[3] = .init(text: "or", start: 9.58, end: 10.22)
+        }
+        let changed = BufferedTranscriptionWindow(text: words.map(\.text).joined(separator: " "), words: words)
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([initial, initial, changed, changed])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 198_400))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let accepted = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.text == accepted?.text)
+        session.cancel()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "net new code and")
+    }
+
+    private static func pauseExpansionWindow(expanded: Bool = false) -> BufferedTranscriptionWindow {
+        // Observed Turbo seam at 59 -> 60 seconds, expressed relative to the
+        // unchanged rolling PCM origin. Only "and" expands into the pause.
+        var words: [BufferedTranscriptionWord] = [
+            .init(text: "net", start: 8.82, end: 9.04),
+            .init(text: "new", start: 9.04, end: 9.16),
+            .init(text: "code", start: 9.16, end: 9.58),
+            .init(text: "and", start: expanded ? 9.58 : 10.14, end: expanded ? 10.22 : 10.28),
+            .init(text: "analyzing", start: expanded ? 10.22 : 10.28, end: expanded ? 10.72 : 10.80),
+            .init(text: "if", start: expanded ? 10.72 : 10.80, end: expanded ? 11.26 : 11.30)
+        ]
+        if expanded { words.append(.init(text: "difference.", start: 13.24, end: 14.38)) }
+        return .init(text: words.map(\.text).joined(separator: " "), words: words)
+    }
+
     @Test("owned token splits cannot move the seam into already committed speech", arguments: [true, false])
     func tokenSplitCannotRecoverAcrossWrongBoundary(hasDraft: Bool) async {
         let first: [BufferedTranscriptionWord] = [
