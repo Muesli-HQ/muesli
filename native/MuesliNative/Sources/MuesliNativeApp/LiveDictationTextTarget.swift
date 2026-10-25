@@ -97,6 +97,7 @@ final class LiveDictationTextTarget {
     private(set) var isPaused = false
     private var availabilityWaitUsed: TimeInterval = 0
     private var availabilityRevision = 0
+    private var lastPasteAcknowledgedAt: TimeInterval?
     private(set) var hasInsertedText = false
     /// Even an unsuccessful AX call may have reached another process. Callers
     /// must never retry by normal paste after this becomes true.
@@ -344,8 +345,7 @@ final class LiveDictationTextTarget {
                 && selected.text.utf16.elementsEqual("\n".utf16)
                 && selected.selection == NSRange(location: 0, length: 0)
                 ? Snapshot(text: chunk, selection: pasted.selection) : nil
-            guard access.select(range) else { return suspend("selection_write_failed") }
-            guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
+            guard await preparePasteSelection(selected) else { return false }
             canAcknowledgeEmptyLineSentinelRemoval = false
             var acknowledged = false
             let delivered = await paste(chunk, { [self] in
@@ -354,6 +354,7 @@ final class LiveDictationTextTarget {
                 guard let observed = await awaitReadback(pasted, stale: selected, stage: "live_paste",
                                                         alternate: sentinelRemoved) else { return false }
                 hasInsertedText = true
+                lastPasteAcknowledgedAt = readbackTiming.now()
                 expected = observed
                 ownedRange = NSRange(location: base, length: observed.selection.location - base)
                 acknowledged = true
@@ -421,8 +422,7 @@ final class LiveDictationTextTarget {
                 _ = validateCurrent()
             }
         }
-        guard access.select(editRange) else { return suspend("selection_write_failed") }
-        guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
+        guard await preparePasteSelection(selected) else { return false }
         canAcknowledgeEmptyLineSentinelRemoval = false
         var acknowledged = false
         let delivered = await paste(replacement, { [self] in
@@ -431,6 +431,7 @@ final class LiveDictationTextTarget {
             guard let observed = await awaitReadback(pasted, stale: selected, stage: "final_paste",
                                                     alternate: sentinelRemoved) else { return false }
             hasInsertedText = true
+            lastPasteAcknowledgedAt = readbackTiming.now()
             expected = observed
             ownedRange = NSRange(location: oldBase, length: text.utf16.count)
             acknowledged = true
@@ -452,6 +453,18 @@ final class LiveDictationTextTarget {
         }
         onDiagnostic("final_paste_acknowledged:characters=\(replacement.count)")
         return true
+    }
+
+    private func preparePasteSelection(_ selected: Snapshot) async -> Bool {
+        // Rewriting an already-correct selection creates an unacknowledgeable
+        // mutation: old and desired readback are identical. A delayed AX setter
+        // could then land after the paste and restore the pre-paste caret.
+        // Paste preflight still verifies this exact snapshot before dispatch.
+        let reused = selected == expected
+        onDiagnostic("paste_selection:\(reused ? "reused" : "written"):range=\(selected.selection.location):\(selected.selection.length)")
+        if reused { return true }
+        guard access.select(selected.selection) else { return suspend("selection_write_failed") }
+        return await awaitReadback(selected, stale: expected, stage: "selection") != nil
     }
 
     private func performKeyboardUpdate(plan: [KeyboardStep], prefixLength: Int) async -> Bool {
@@ -609,6 +622,7 @@ final class LiveDictationTextTarget {
             if mutationIsCurrent() {
                 if let observed = access.snapshot() {
                     if let required, observed != required {
+                        reportSnapshotMismatch(observed, expected: required, stage: "verification")
                         suspend("text_or_caret_changed")
                         return nil
                     }
@@ -678,9 +692,20 @@ final class LiveDictationTextTarget {
             pauseAvailability("snapshot_unavailable")
             return false
         }
-        guard snapshot == expected else { return suspend("text_or_caret_changed") }
+        guard snapshot == expected else {
+            reportSnapshotMismatch(snapshot, expected: expected, stage: "notification")
+            return suspend("text_or_caret_changed")
+        }
         resumeAvailability()
         return true
+    }
+
+    private func reportSnapshotMismatch(_ observed: Snapshot, expected: Snapshot, stage: String) {
+        let textMatches = observed.text.utf16.elementsEqual(expected.text.utf16)
+        let caretMatches = observed.selection == expected.selection
+        let sincePaste = lastPasteAcknowledgedAt.map { Int(max(0, readbackTiming.now() - $0) * 1000) } ?? -1
+        // Structural metadata only; never log the field or dictated text.
+        onDiagnostic("snapshot_mismatch:stage=\(stage),textMatches=\(textMatches),caretMatches=\(caretMatches),lengths=\(observed.text.utf16.count)/\(expected.text.utf16.count),ranges=\(observed.selection.location):\(observed.selection.length)/\(expected.selection.location):\(expected.selection.length),sincePasteAckMs=\(sincePaste)")
     }
 
     @discardableResult

@@ -18,6 +18,7 @@ struct LiveDictationTextTargetTests {
         var afterSelect: (() -> Void)?
         var afterReplacement: (() -> Void)?
         var delaySelection = false
+        var delayRedundantSelection = false
         var delayReplacement = false
         var pendingSelection: NSRange?
         var pendingReplacement: String?
@@ -97,7 +98,9 @@ struct LiveDictationTextTargetTests {
                       selections += 1
                       selectedRanges.append(range)
                       guard selectionSucceeds else { return false }
-                      if delaySelection { pendingSelection = range } else { selection = range }
+                      if delaySelection || (delayRedundantSelection && range == selection) {
+                          pendingSelection = range
+                      } else { selection = range }
                       afterSelect?()
                       return true
                   }, replaceSelection: { [self] replacement in
@@ -304,6 +307,74 @@ struct LiveDictationTextTargetTests {
         }
         #expect(await target.finish(text: "Draft."))
         #expect(editor.finalPastes == ["draft", "Draft."])
+    }
+
+    @Test(arguments: [false, true])
+    func appendPasteCannotQueueAnOldCaretAfterAcknowledgment(afterReturn: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.delayRedundantSelection = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !afterReturn { editor.afterFinalAcknowledgement = { editor.flushSelection() } }
+        for text in ["hello", "hello world", "hello world " + String(repeating: "more words ", count: 40)] {
+            #expect(await target.update(text: text))
+            editor.flushSelection() // A delayed AX setter may arrive after update returns.
+            target.textTargetDidChange()
+            #expect(editor.selection == NSRange(location: 7 + text.utf16.count, length: 0))
+            #expect(!target.isSuspended)
+        }
+        #expect(editor.selections == 0)
+        #expect(editor.pendingSelection == nil)
+        #expect(editor.finalPastes.count > 3) // Includes multiple acknowledged chunks.
+        let finalText = "hello world " + String(repeating: "more words ", count: 40) + "."
+        #expect(await target.finish(text: finalText))
+        editor.flushSelection()
+        #expect(editor.selections == 0)
+        #expect(editor.text == "Before " + finalText + " after")
+        #expect(editor.selection == NSRange(location: 7 + finalText.utf16.count, length: 0))
+    }
+
+    @Test func actualPasteRevisionStillWaitsForSelectionAndFinalCleanup() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "hello wrong"))
+        editor.delaySelection = true
+        clock.onWait = {
+            // No revision may be pasted while the original caret is still exposed.
+            #expect(editor.finalPastes == ["hello wrong"])
+            editor.flushSelection()
+        }
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.selectedRanges == [NSRange(location: 14, length: 4)])
+        #expect(editor.finalPastes == ["hello wrong", "orld"])
+        clock.onWait = { editor.flushSelection() }
+        #expect(await target.finish(text: "Hello world."))
+        #expect(editor.text == "Before Hello world. after")
+        #expect(editor.selections == 2)
+    }
+
+    @Test(arguments: [false, true])
+    func postPasteExternalChangeStillStopsAndReportsStructuralMismatch(changesText: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        #expect(await target.update(text: "private words"))
+        if changesText { editor.text += "secret" } else { editor.selection.location = 7 }
+        target.textTargetDidChange()
+        #expect(target.isSuspended)
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(await target.finish(text: "must not replace") == false)
+        #expect(editor.finalPastes == ["private words"])
+        #expect(diagnostics.contains { $0.contains("snapshot_mismatch:stage=notification,textMatches=\(!changesText),caretMatches=\(changesText)") && $0.contains("sincePasteAckMs=0") })
+        #expect(!diagnostics.contains { $0.contains("private words") || $0.contains("secret") })
     }
 
     @Test func codexLivePastePreservesSpacesAndOnlyReplacesChangedSuffix() async throws {
