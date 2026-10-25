@@ -41,7 +41,7 @@ enum LiveDictationFinalPaste {
 
     @MainActor
     static func perform(text: String, to pid: pid_t,
-                        validateTarget: @escaping () -> Bool,
+                        validateTarget: @escaping () async -> Bool,
                         acknowledge: @escaping () async -> Bool,
                         onDiagnostic: @escaping (String) -> Void) async -> Bool {
         await perform(text: text, to: pid, validateTarget: validateTarget,
@@ -50,7 +50,7 @@ enum LiveDictationFinalPaste {
 
     @MainActor
     static func perform(text: String, to pid: pid_t,
-                        validateTarget: @escaping () -> Bool,
+                        validateTarget: @escaping () async -> Bool,
                         acknowledge: @escaping () async -> Bool,
                         onDiagnostic: @escaping (String) -> Void,
                         access: Access) async -> Bool {
@@ -67,7 +67,7 @@ enum LiveDictationFinalPaste {
             onDiagnostic("final_paste_snapshot_incomplete")
             return false
         }
-        guard !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid), validateTarget(),
+        guard await validateTarget(), !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid),
               access.generation() == saved.generation else {
             onDiagnostic("final_paste_preflight_changed")
             return false
@@ -90,7 +90,7 @@ enum LiveDictationFinalPaste {
             onDiagnostic("final_paste_stage_failed")
             return false
         }
-        guard !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid), validateTarget(), access.owns(owner) else {
+        guard await validateTarget(), !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid), access.owns(owner) else {
             onDiagnostic("final_paste_dispatch_preflight_changed")
             return false
         }

@@ -9,6 +9,9 @@ struct LiveDictationTextTargetTests {
         var text: String
         var selection: NSRange
         var focused = true
+        var focusUnavailable = false
+        var snapshotUnavailable = false
+        var afterPasteDispatch: (() -> Void)?
         var selectionSucceeds = true
         var replacementSucceeds = true
         var corruptReadback = false
@@ -80,14 +83,15 @@ struct LiveDictationTextTargetTests {
         var access: LiveDictationTextTarget.Access {
             let paste: LiveDictationTextTarget.Access.Paste? = finalPasteEnabled ? { [self] text, validate, acknowledge, _ in
                 beforeFinalPaste?()
-                guard validate(), finalPasteSucceeds else { return false }
+                guard await validate(), finalPasteSucceeds else { return false }
                 finalPastes.append(text)
                 if delayPaste { pendingReplacement = text } else { applyReplacement(text) }
+                afterPasteDispatch?()
                 let acknowledged = await acknowledge()
                 afterFinalAcknowledgement?()
                 return acknowledged
             } : nil
-            return .init(snapshot: { [self] in .init(text: text, selection: selection) },
+            return .init(snapshot: { [self] in snapshotUnavailable ? nil : .init(text: text, selection: selection) },
                   isFocused: { [self] in focused },
                   select: { [self] range in
                       selections += 1
@@ -141,8 +145,165 @@ struct LiveDictationTextTargetTests {
                               return true
                           })
                       }
-                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, paste: paste)
+                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, paste: paste,
+                    focusStatus: { [self] in
+                        if !focused { return .departed("focus_changed") }
+                        return focusUnavailable ? .unavailable("test_ax_unavailable") : .focused
+                    })
         }
+    }
+
+    @Test(arguments: [false, true])
+    func temporaryAccessibilityPausesWithoutWritingThenVerifiesOriginalSnapshot(snapshotFailure: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        editor.focusUnavailable = !snapshotFailure
+        editor.snapshotUnavailable = snapshotFailure
+        target.focusTargetDidChange()
+        #expect(target.isPaused)
+        #expect(!target.isSuspended)
+        clock.onWait = {
+            #expect(editor.selections == 0)
+            #expect(editor.finalPastes.isEmpty)
+            editor.focusUnavailable = false
+            editor.snapshotUnavailable = false
+        }
+        #expect(await target.update(committedText: "hello", tail: " world"))
+        #expect(editor.finalPastes == ["hello world"])
+        #expect(!target.isPaused)
+        #expect(diagnostics.contains("accessibility_resumed"))
+        #expect(await target.finish(text: "Hello world."))
+        #expect(editor.text == "Before Hello world. after")
+    }
+
+    @Test func unavailableBeforeWriteDefersAndNextPreviewContinuesWithoutRecapture() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.focusUnavailable = true
+        #expect(await target.update(committedText: "hello", tail: " old"))
+        #expect(target.isPaused)
+        #expect(!target.isSuspended)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        editor.focusUnavailable = false
+        #expect(await target.update(committedText: "hello", tail: " latest"))
+        #expect(editor.finalPastes == ["hello latest"])
+        #expect(!target.isPaused)
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func accessibilityRecoveryNeverReanchorsAfterEditCaretFocusOrCancellation(change: Int) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        editor.focusUnavailable = true
+        clock.onWait = {
+            editor.focusUnavailable = false
+            if change == 0 { editor.text += "user edit" }
+            if change == 1 { editor.selection = NSRange(location: 2, length: 0) }
+            if change == 2 { target.focusTargetDidDepart() } // Known departure remains fatal even after return.
+            if change == 3 { target.cancel() }
+        }
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(await target.finish(text: "must not clean up") == false)
+    }
+
+    @Test(arguments: [false, true])
+    func accessibilityLossBeforePasteOrDuringAckWaitsWithoutResending(afterDispatch: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        if afterDispatch {
+            editor.afterPasteDispatch = { editor.focusUnavailable = true; editor.snapshotUnavailable = true }
+        } else {
+            editor.beforeFinalPaste = { editor.focusUnavailable = true }
+        }
+        clock.onWait = {
+            #expect(editor.finalPastes.count == (afterDispatch ? 1 : 0))
+            editor.focusUnavailable = false
+            editor.snapshotUnavailable = false
+        }
+        #expect(await target.update(text: "one exact paste"))
+        #expect(editor.finalPastes == ["one exact paste"])
+        #expect(!target.isSuspended)
+        #expect(!target.isPaused)
+    }
+
+    @Test func persistentUnknownAfterDispatchStopsWithoutRetryOrFinalFallback() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.afterPasteDispatch = { editor.snapshotUnavailable = true }
+        #expect(await target.update(text: "uncertain delivery") == false)
+        #expect(target.isSuspended)
+        #expect(editor.finalPastes.count == 1)
+        editor.snapshotUnavailable = false
+        #expect(await target.finish(text: "late cleanup") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func accessibilityBudgetIsSharedAcrossChunks() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.025
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.afterPasteDispatch = { editor.focusUnavailable = true }
+        clock.onWait = { editor.focusUnavailable = false }
+        #expect(await target.update(text: String(repeating: "word ", count: 200)) == false)
+        #expect(clock.ticks <= 3)
+        #expect(editor.finalPastes.count <= 4)
+        #expect(target.isSuspended)
+    }
+
+    @Test func unavailableFinalWithoutPasteNeverClaimsDelivery() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.02
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.focusUnavailable = true
+        #expect(await target.finish(text: "not delivered") == false)
+        #expect(editor.selections == 0)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func finalCleanupWaitsForAccessibilityAndStillChecksExactSnapshot() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "draft"))
+        editor.focusUnavailable = true
+        clock.onWait = {
+            #expect(editor.finalPastes == ["draft"])
+            editor.focusUnavailable = false
+        }
+        #expect(await target.finish(text: "Draft."))
+        #expect(editor.finalPastes == ["draft", "Draft."])
     }
 
     @Test func codexLivePastePreservesSpacesAndOnlyReplacesChangedSuffix() async throws {

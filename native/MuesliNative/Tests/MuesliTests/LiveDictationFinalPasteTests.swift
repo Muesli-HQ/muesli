@@ -211,6 +211,57 @@ struct LiveDictationFinalPasteTests {
         #expect(fake.items == (mode == 2 ? FakeClipboard.newer : FakeClipboard.original))
     }
 
+    @Test("async target validation rechecks every dispatch guard after resuming",
+          arguments: [false, true], ["layout", "process", "cancel", "clipboard", "focus"])
+    func changesDuringValidation(afterStage: Bool, change: String) async {
+        let fake = FakeClipboard()
+        let started = AsyncStream<Void>.makeStream()
+        var continuation: CheckedContinuation<Void, Never>?
+        var validations = 0
+        var focused = true
+        let suspendedValidation = afterStage ? 2 : 1
+        let operation = Task { @MainActor in
+            await Paste.perform(text: "next group", to: 42, validateTarget: {
+                validations += 1
+                if validations == suspendedValidation {
+                    await withCheckedContinuation {
+                        continuation = $0
+                        started.continuation.yield()
+                    }
+                }
+                // Other guards deliberately change while this still returns true:
+                // a successful async focus check cannot authorize a stale layout,
+                // process, clipboard generation, or cancelled operation.
+                return focused
+            }, acknowledge: {
+                Issue.record("an invalidated preflight must never dispatch or await ACK")
+                return true
+            }, onDiagnostic: { fake.diagnostics.append($0) }, access: fake.access())
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(validations == suspendedValidation)
+        #expect(fake.stages == (afterStage ? 1 : 0))
+        #expect(fake.posts.isEmpty)
+        #expect(fake.restores == 0)
+        switch change {
+        case "layout": fake.layoutValid = false
+        case "process": fake.targetValid = false
+        case "cancel": operation.cancel()
+        case "clipboard": fake.externalCopy()
+        default: focused = false
+        }
+        continuation?.resume()
+        #expect(!(await operation.value))
+        #expect(fake.posts.isEmpty)
+        #expect(fake.stages == (afterStage ? 1 : 0))
+        #expect(fake.restores == (afterStage && change != "clipboard" ? 1 : 0))
+        #expect(fake.items == (change == "clipboard" ? FakeClipboard.newer : FakeClipboard.original))
+        #expect(fake.ownership == nil)
+        #expect(fake.diagnostics.contains(afterStage
+            ? "final_paste_dispatch_preflight_changed" : "final_paste_preflight_changed"))
+    }
+
     @Test("empty text and controls cannot stage or submit", arguments: ["", "a\nb", "\t", "\r", "\u{85}", "\u{2028}", "\u{2029}"])
     func invalidText(text: String) async {
         let fake = FakeClipboard()

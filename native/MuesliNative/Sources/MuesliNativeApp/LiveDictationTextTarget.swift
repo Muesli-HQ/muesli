@@ -30,6 +30,12 @@ final class LiveDictationTextTarget {
         bundleIdentifier == "com.openai.codex"
     }
 
+    enum FocusStatus: Equatable {
+        case focused
+        case unavailable(String)
+        case departed(String)
+    }
+
     struct KeyboardStep {
         let text: String
         /// Dispatch must revalidate immediately before posting both events.
@@ -38,9 +44,9 @@ final class LiveDictationTextTarget {
 
     /// The transport is selected before any write and never changed on failure.
     struct Access {
-        typealias Paste = (String, @escaping () -> Bool, @escaping () async -> Bool, @escaping (String) -> Void) async -> Bool
+        typealias Paste = (String, @escaping () async -> Bool, @escaping () async -> Bool, @escaping (String) -> Void) async -> Bool
         let snapshot: () -> Snapshot?
-        let isFocused: () -> Bool
+        let focusStatus: () -> FocusStatus
         let select: (NSRange) -> Bool
         let replaceSelection: (String) -> Bool
         let transport: Transport
@@ -53,9 +59,9 @@ final class LiveDictationTextTarget {
              transport: Transport = .axSelectedText,
              keyboardPlan: ((String) -> [KeyboardStep]?)? = nil,
              allowsEmptyLineSentinelRemoval: Bool = false,
-             paste: Paste? = nil) {
+             paste: Paste? = nil, focusStatus: (() -> FocusStatus)? = nil) {
             self.snapshot = snapshot
-            self.isFocused = isFocused
+            self.focusStatus = focusStatus ?? { isFocused() ? .focused : .departed("focus_changed") }
             self.select = select
             self.replaceSelection = replaceSelection
             self.transport = transport
@@ -67,6 +73,7 @@ final class LiveDictationTextTarget {
 
     struct ReadbackTiming {
         var timeout: TimeInterval = 0.5
+        var availabilityTimeout: TimeInterval = 2.0
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: () async -> Void = { try? await Task.sleep(for: .milliseconds(10)) }
     }
@@ -87,6 +94,9 @@ final class LiveDictationTextTarget {
     private var nativeTarget: AccessibilityTarget?
     private let onDiagnostic: (String) -> Void
     private(set) var isSuspended = false
+    private(set) var isPaused = false
+    private var availabilityWaitUsed: TimeInterval = 0
+    private var availabilityRevision = 0
     private(set) var hasInsertedText = false
     /// Even an unsuccessful AX call may have reached another process. Callers
     /// must never retry by normal paste after this becomes true.
@@ -97,7 +107,7 @@ final class LiveDictationTextTarget {
     init?(access: Access, onDiagnostic: @escaping (String) -> Void = { _ in },
           readbackTiming: ReadbackTiming = .init()) {
         Self.activeTarget?.cancel()
-        guard access.isFocused(), let snapshot = access.snapshot(),
+        guard access.focusStatus() == .focused, let snapshot = access.snapshot(),
               Self.isValid(snapshot.selection, in: snapshot.text) else { return nil }
         self.access = access
         self.onDiagnostic = onDiagnostic
@@ -191,6 +201,7 @@ final class LiveDictationTextTarget {
         guard !isClosed, !isSuspended, !Task.isCancelled else { return false }
         if !operationInProgress {
             operationInProgress = true
+            availabilityWaitUsed = 0
             return true
         }
         return await withCheckedContinuation { operationWaiters.append($0) }
@@ -198,6 +209,7 @@ final class LiveDictationTextTarget {
 
     private func releaseOperation() {
         if !isClosed, !operationWaiters.isEmpty {
+            availabilityWaitUsed = 0
             operationWaiters.removeFirst().resume(returning: true)
         } else {
             operationInProgress = false
@@ -206,7 +218,7 @@ final class LiveDictationTextTarget {
 
     private func performUpdate(text: String, frozenPrefixLength: Int = 0,
                                maximumRewrittenGraphemes: Int? = nil) async -> Bool {
-        guard validateCurrent() else { return false }
+        guard await waitForCurrent() else { return isPaused && !isClosed && !isFinishing }
         // Empty provisional hypotheses never erase existing or previously emitted text.
         if text.isEmpty { return true }
         let usesKeyboard = access.transport == .targetedKeyboard
@@ -284,8 +296,8 @@ final class LiveDictationTextTarget {
         guard access.select(editRange) else { return suspend("selection_write_failed") }
         guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
         // Revalidate immediately before the second write, even after its ACK.
-        guard mutationIsCurrent(), access.snapshot() == selected else {
-            return suspend("selection_readback_changed")
+        guard await waitForSnapshot(matching: selected) != nil else {
+            return isClosed ? false : suspend("selection_verification_unavailable")
         }
         guard access.replaceSelection(replacement) else { return suspend("text_write_failed") }
         let next = Snapshot(text: nextText, selection: nextCaret)
@@ -324,7 +336,7 @@ final class LiveDictationTextTarget {
         let base = ownedRange.location
         var range = editRange
         for chunk in chunks {
-            guard validateCurrent() else { return false }
+            guard await waitForCurrent() else { return isPaused && !isClosed && !isFinishing }
             let selected = Snapshot(text: expected.text, selection: range)
             let pasted = Snapshot(text: (expected.text as NSString).replacingCharacters(in: range, with: chunk),
                 selection: NSRange(location: range.location + chunk.utf16.count, length: 0))
@@ -337,7 +349,7 @@ final class LiveDictationTextTarget {
             canAcknowledgeEmptyLineSentinelRemoval = false
             var acknowledged = false
             let delivered = await paste(chunk, { [self] in
-                mutationIsCurrent() && access.snapshot() == selected
+                await waitForSnapshot(matching: selected) != nil
             }, { [self] in
                 guard let observed = await awaitReadback(pasted, stale: selected, stage: "live_paste",
                                                         alternate: sentinelRemoved) else { return false }
@@ -353,7 +365,7 @@ final class LiveDictationTextTarget {
             }
             // Restore of the clipboard can suspend after ACK. Recheck ownership
             // even for the final chunk before reporting this preview as delivered.
-            guard validateCurrent() else { return false }
+            guard await waitForCurrent() else { return isPaused && !isClosed && !isFinishing }
             onDiagnostic("live_paste_acknowledged:characters=\(chunk.count)")
             range = expected.selection
         }
@@ -364,7 +376,7 @@ final class LiveDictationTextTarget {
     /// need not disappear. Select only the differing middle and paste it once.
     /// This is chosen at capture time, never a retry after an uncertain write.
     private func performFinalPaste(text: String, paste: Access.Paste) async -> Bool {
-        guard validateCurrent() else { return false }
+        guard await waitForCurrent() else { return false }
         if text.isEmpty { return true }
         guard LiveDictationKeyboardInput.isSupported(text) else {
             return suspend("final_paste_text_unsupported")
@@ -414,7 +426,7 @@ final class LiveDictationTextTarget {
         canAcknowledgeEmptyLineSentinelRemoval = false
         var acknowledged = false
         let delivered = await paste(replacement, { [self] in
-            mutationIsCurrent() && access.snapshot() == selected
+            await waitForSnapshot(matching: selected) != nil
         }, { [self] in
             guard let observed = await awaitReadback(pasted, stale: selected, stage: "final_paste",
                                                     alternate: sentinelRemoved) else { return false }
@@ -428,7 +440,7 @@ final class LiveDictationTextTarget {
             if isClosed || isSuspended { return false }
             return suspend("final_paste_failed")
         }
-        guard validateCurrent() else { return false }
+        guard await waitForCurrent() else { return false }
         // A retained suffix leaves the paste caret in the middle; move it to
         // the end only while the exact pasted snapshot still belongs to us.
         let complete = Snapshot(text: expected.text,
@@ -450,8 +462,8 @@ final class LiveDictationTextTarget {
         guard access.select(editRange) else { return suspend("selection_write_failed") }
         guard await awaitReadback(current, stale: expected, stage: "selection") != nil else { return false }
         for step in plan {
-            guard mutationIsCurrent(), access.snapshot() == current else {
-                return suspend("keyboard_target_changed")
+            guard await waitForSnapshot(matching: current) != nil else {
+                return isClosed ? false : suspend("keyboard_target_unavailable")
             }
             let nextText = (current.text as NSString).replacingCharacters(in: current.selection, with: step.text)
             let next = Snapshot(text: nextText,
@@ -515,16 +527,18 @@ final class LiveDictationTextTarget {
     /// Polling never retries a mutation, and no queued operation can run meanwhile.
     private func awaitReadback(_ desired: Snapshot, stale: Snapshot, stage: String,
                                alternate: Snapshot? = nil, intermediates: [Snapshot] = []) async -> Snapshot? {
-        let deadline = readbackTiming.now() + readbackTiming.timeout
+        var deadline = readbackTiming.now() + readbackTiming.timeout
         var reportedStates = Set<String>()
         while true {
-            guard mutationIsCurrent() else { return nil }
-            guard let observed = access.snapshot() else {
-                suspend("\(stage)_readback_unavailable")
+            let before = readbackTiming.now()
+            let revision = availabilityRevision
+            guard let observed = await waitForSnapshot() else {
+                if !isClosed { suspend("\(stage)_availability_timeout") }
                 return nil
             }
-            if observed == desired { return observed }
-            if let alternate, observed == alternate { return observed }
+            if revision != availabilityRevision { deadline += readbackTiming.now() - before }
+            if observed == desired { resumeAvailability(); return observed }
+            if let alternate, observed == alternate { resumeAvailability(); return observed }
             // AX value and selection are separate reads and may be refreshed by
             // the editor in either order. Only the exact allowed components are
             // eligible to settle; an intermediate snapshot never authorizes the
@@ -568,8 +582,56 @@ final class LiveDictationTextTarget {
     private func mutationIsCurrent() -> Bool {
         guard !isClosed, !isSuspended, Self.activeTarget === self else { return false }
         guard !Task.isCancelled else { return suspend("cancelled") }
-        guard access.isFocused() else { return suspend("focus_changed") }
-        return true
+        switch access.focusStatus() {
+        case .focused: return true
+        case .unavailable(let reason): pauseAvailability(reason); return false
+        case .departed(let reason): return suspend(reason)
+        }
+    }
+
+    private func pauseAvailability(_ reason: String) {
+        availabilityRevision += 1
+        if !isPaused { onDiagnostic("accessibility_paused:\(reason)") }
+        isPaused = true
+    }
+
+    private func resumeAvailability() {
+        if isPaused { onDiagnostic("accessibility_resumed") }
+        isPaused = false
+    }
+
+    /// No mutation is retried here. An unknown focus/snapshot is read again
+    /// within one cumulative operation budget. Every successful verification
+    /// still requires the captured field and, when supplied, the exact snapshot.
+    private func waitForSnapshot(matching required: Snapshot? = nil) async -> Snapshot? {
+        while !isClosed {
+            let started = readbackTiming.now()
+            if mutationIsCurrent() {
+                if let observed = access.snapshot() {
+                    if let required, observed != required {
+                        suspend("text_or_caret_changed")
+                        return nil
+                    }
+                    if required != nil { resumeAvailability() }
+                    return observed
+                }
+                pauseAvailability("snapshot_unavailable")
+            }
+            guard !isClosed else { return nil }
+            availabilityWaitUsed += max(0, readbackTiming.now() - started)
+            guard availabilityWaitUsed < readbackTiming.availabilityTimeout else {
+                onDiagnostic("accessibility_wait_exhausted")
+                return nil
+            }
+            let waitStarted = readbackTiming.now()
+            await readbackTiming.wait()
+            availabilityWaitUsed += max(0, readbackTiming.now() - waitStarted)
+        }
+        return nil
+    }
+
+    private func waitForCurrent() async -> Bool {
+        await waitForSnapshot(matching: expected) != nil
     }
 
     /// Cancellation leaves already inserted text in place and rejects late work.
@@ -598,10 +660,7 @@ final class LiveDictationTextTarget {
     /// as a focus departure. An actual departure still permanently revokes us.
     func focusTargetDidChange() {
         guard !isClosed else { return }
-        guard access.isFocused() else {
-            _ = suspend("focus_changed")
-            return
-        }
+        guard mutationIsCurrent() else { return }
         textTargetDidChange()
     }
 
@@ -615,7 +674,12 @@ final class LiveDictationTextTarget {
     @discardableResult
     private func validateCurrent() -> Bool {
         guard mutationIsCurrent() else { return false }
-        guard access.snapshot() == expected else { return suspend("text_or_caret_changed") }
+        guard let snapshot = access.snapshot() else {
+            pauseAvailability("snapshot_unavailable")
+            return false
+        }
+        guard snapshot == expected else { return suspend("text_or_caret_changed") }
+        resumeAvailability()
         return true
     }
 
@@ -660,6 +724,7 @@ private final class AccessibilityTarget {
         self.element = element
         transport = LiveDictationTextTarget.transport(for: application.bundleIdentifier)
         appElement = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
     }
 
     isolated deinit {
@@ -696,12 +761,7 @@ private final class AccessibilityTarget {
                   let range = DictationContextCapture.selectedTextRange(element),
                   range.location >= 0, range.length >= 0 else { return nil }
             return .init(text: text, selection: NSRange(location: range.location, length: range.length))
-        }, isFocused: { [self] in
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
-                  !application.isTerminated, Self.supportsReplacement(element, transport: transport),
-                  let current = DictationContextCapture.focusedUIElement(for: application) else { return false }
-            return CFEqual(current, element)
-        }, select: { [self] selection in
+        }, isFocused: { [self] in focusStatus() == .focused }, select: { [self] selection in
             var range = CFRange(location: selection.location, length: selection.length)
             guard let value = AXValueCreate(.cfRange, &range) else { return false }
             return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
@@ -723,7 +783,52 @@ private final class AccessibilityTarget {
                 await LiveDictationFinalPaste.perform(text: text, to: application.processIdentifier,
                     validateTarget: validate, acknowledge: acknowledge,
                     onDiagnostic: diagnostic)
-            } : nil)
+            } : nil, focusStatus: { [self] in focusStatus() })
+    }
+
+    private func focusStatus() -> LiveDictationTextTarget.FocusStatus {
+        if application.isTerminated { return .departed("focus_application_terminated") }
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
+            return .unavailable("frontmost_application_unavailable")
+        }
+        guard frontmost.processIdentifier == application.processIdentifier else {
+            return .departed("focus_application_changed")
+        }
+        var focused: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focused)
+        guard result == .success else { return Self.readFailure(result, attribute: "focused_element") }
+        guard let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return .unavailable("focused_element_unavailable")
+        }
+        guard CFEqual(focused, element) else { return .departed("focus_field_changed") }
+        // Capability reads are distinct from a confirmed field change. A failed
+        // AX request is not evidence that the user moved focus.
+        for attribute in [kAXRoleAttribute, kAXSubroleAttribute] {
+            var value: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+            if attribute == kAXSubroleAttribute, status == .noValue || status == .attributeUnsupported { continue }
+            guard status == .success else { return Self.readFailure(status, attribute: "capability") }
+            guard let string = value as? String else { return .unavailable("capability_value_unavailable") }
+            let supported = attribute == kAXRoleAttribute
+                ? [kAXTextFieldRole, kAXTextAreaRole].contains(string)
+                : string.isEmpty || string == kAXSearchFieldSubrole
+            guard supported else { return .departed("focus_target_unsupported") }
+        }
+        var attributes = [kAXSelectedTextRangeAttribute]
+        if transport == .axSelectedText { attributes.append(kAXSelectedTextAttribute) }
+        for attribute in attributes {
+            var writable = DarwinBoolean(false)
+            let status = AXUIElementIsAttributeSettable(element, attribute as CFString, &writable)
+            guard status == .success else { return Self.readFailure(status, attribute: "writability") }
+            guard writable.boolValue else { return .departed("focus_target_read_only") }
+        }
+        return .focused
+    }
+
+    private static func readFailure(_ error: AXError, attribute: String) -> LiveDictationTextTarget.FocusStatus {
+        if error == .invalidUIElement { return .departed("focus_target_invalid") }
+        if error == .apiDisabled { return .departed("accessibility_permission_lost") }
+        return .unavailable("\(attribute)_error_\(error.rawValue)")
     }
 
     func observeChanges(onFocusChange: @escaping () -> Void, onTextChange: @escaping () -> Void,
