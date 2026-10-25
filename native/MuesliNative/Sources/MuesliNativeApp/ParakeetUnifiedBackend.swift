@@ -22,18 +22,20 @@ actor ParakeetUnifiedTranscriber {
         }
     }
 
-    /// Downloads models (if needed) and initializes the unified ASR manager.
+    /// Initializes the ASR manager; localOnly disables downloads and cache repair.
     func loadModels(
+        localOnly: Bool = false,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         if asrManager != nil { return }
         let generation = loadGeneration
 
-        fputs("[parakeet-unified] downloading/loading models...\n", stderr)
+        fputs("[parakeet-unified] loading models local_only=\(localOnly)...\n", stderr)
         let plan = ManagedASRModelPlans.parakeetUnified()
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
+            allowDownload: !localOnly,
             progress: progress,
             progressSnapshot: progressSnapshot
         ) { modelDirectory in
