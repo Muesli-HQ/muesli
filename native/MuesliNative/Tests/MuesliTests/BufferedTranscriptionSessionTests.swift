@@ -663,6 +663,36 @@ struct BufferedTranscriptionSessionTests {
         assertMonotonicCommittedPrefixes(output.values)
     }
 
+    @Test("Whisper deferral preserves the small displayed draft and final flush restores every word")
+    func smoothedDeferralAndFinalFlush() async throws {
+        let output = BufferedPreviewOutput()
+        var configuration = BufferedTranscriptionSession.Configuration()
+        configuration.smoothWhisperPreviews = true
+        let session = BufferedTranscriptionSession(configuration: configuration, decode: { samples in
+            if samples.count == 3 * 16_000 { throw BufferedTranscriptionPreviewDeferral.invalidWordTimings }
+            return try .aligned(text: "one two three four five", words: (0..<5).map {
+                .init(text: ["one", "two", "three", "four", "five"][$0],
+                      start: Double($0) * 0.2, end: Double($0 + 1) * 0.2)
+            })
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        defer { session.cancel() }
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 2 * 16_000))
+        let first = try #require(await updates.next())
+        #expect(first.committedText == "")
+        #expect(first.text == "one two")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let deferred = try #require(await updates.next())
+        #expect(deferred.text == first.text, "Deferral must not expose the hidden raw tail")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.text == "one two three four five")
+        #expect(session.diagnostics.receivedSamples == 4 * 16_000)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
     @Test("permanent preview deferral is bounded at thirty seconds and fails only once")
     func previewDeferralRecoveryLimit() async {
         let output = BufferedPreviewOutput()

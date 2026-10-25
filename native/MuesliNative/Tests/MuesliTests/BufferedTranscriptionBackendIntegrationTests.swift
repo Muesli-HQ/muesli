@@ -230,7 +230,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
             #expect(lastValidPrefix > lastDeferredPrefix, "A later prefix must recover after a temporary alignment deferral")
             print("[buffered-smoke] model=whisper-\(model) deferred_prefixes=\(deferredPreviews)")
             diagnosticWhisper = nil
-            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)") {
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)", smoothWhisperPreviews: true) {
                 try await transcriber.transcribePreview(samples: $0, expectedModel: model)
             }
             // An apparently successful roll can still lose the beginning if
@@ -266,7 +266,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
         let transcriber = WhisperKitTranscriber()
         do {
             try await transcriber.loadModel(modelName: model)
-            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak") {
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak", smoothWhisperPreviews: true) {
                 try await transcriber.transcribePreview(samples: $0, expectedModel: model)
             }
             let words = preview.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
@@ -296,7 +296,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
         do {
             try await transcriber.loadModel(modelName: model)
             let preview = try await assertProgressivePreview(samples: samples, label: "whisper-tiny-\(language.rawValue)",
-                requireEarlyCommit: false, knownTinyTamilOwnershipInstability: true) {
+                requireEarlyCommit: false, knownTinyTamilOwnershipInstability: true, smoothWhisperPreviews: true) {
                 try await transcriber.transcribePreview(samples: $0, language: language, expectedModel: model)
             }
             let final = try await transcriber.transcribe(wavURL: fixtureURL, language: language, expectedModel: model)
@@ -319,13 +319,21 @@ struct BufferedTranscriptionBackendIntegrationTests {
     private func assertProgressivePreview(
         samples: [Float], label: String, requireEarlyCommit: Bool = true,
         knownTinyTamilOwnershipInstability: Bool = false,
+        smoothWhisperPreviews: Bool = false, output: BufferedSmokeOutput? = nil,
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
     ) async throws -> String {
         try #require(samples.count > 15 * 16_000, "The speech fixture must exceed one rolling window")
-        let progressive = BufferedSmokeOutput()
-        let live = BufferedTranscriptionSession(decode: { chunk in
+        let progressive = output ?? BufferedSmokeOutput()
+        let recording = BufferedSmokeReplay()
+        var configuration = BufferedTranscriptionSession.Configuration()
+        configuration.smoothWhisperPreviews = smoothWhisperPreviews
+        let live = BufferedTranscriptionSession(configuration: configuration, decode: { chunk in
             progressive.recordDecode(sampleCount: chunk.count)
-            let window = try await decode(chunk)
+            let result: Result<BufferedTranscriptionWindow, Error>
+            do { result = .success(try await decode(chunk)) }
+            catch { result = .failure(error) }
+            if smoothWhisperPreviews { recording.record(sampleCount: chunk.count, result: result) }
+            let window = try result.get()
             let duration = Double(chunk.count) / 16_000
             #expect(window.words.allSatisfy { $0.start >= 0 && $0.end <= duration + 0.25 })
             if ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1" {
@@ -376,6 +384,22 @@ struct BufferedTranscriptionBackendIntegrationTests {
         let windows = progressive.decodeSampleCounts
         #expect(zip(windows, windows.dropFirst()).contains { $0.1 < $0.0 }, "The decoder should advance to a shorter rolling window")
         print("[buffered-smoke] model=\(label) received_samples=\(live.diagnostics.receivedSamples) decodes=\(live.diagnostics.decodeCount) final_chars=\(progressive.lastTextCount)")
+        if smoothWhisperPreviews, progressive.failure == nil {
+            // Decode once, replay precisely the same model hypotheses without
+            // smoothing. Presentation must not affect PCM windows or ownership.
+            let baseline = BufferedSmokeOutput()
+            let baselineFinal = try await assertProgressivePreview(
+                samples: samples, label: label + "-baseline", requireEarlyCommit: requireEarlyCommit,
+                output: baseline, decode: { try recording.next(sampleCount: $0.count) })
+            #expect(recording.remaining == 0)
+            #expect(progressive.decodeSampleCounts == baseline.decodeSampleCounts)
+            #expect(progressive.updates.map(\.committedText) == baseline.updates.map(\.committedText))
+            #expect(progressive.lastText == baselineFinal, "Final flush must preserve every raw word")
+            let smoothCost = progressive.liveRewriteCost
+            let baselineCost = baseline.liveRewriteCost
+            #expect(smoothCost <= baselineCost, "Smoothing must reduce speculative replacement on the public fixture")
+            print("[buffered-smoothing] model=\(label) baseline_rewritten=\(baselineCost) smoothed_rewritten=\(smoothCost) updates=\(progressive.updates.count)")
+        }
         return progressive.lastText
     }
 }
@@ -386,12 +410,23 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     private var textCount = 0
     private var text = ""
     private var sampleCounts: [Int] = []
+    private var history: [BufferedTranscriptionUpdate] = []
     let stream: AsyncStream<BufferedTranscriptionUpdate>
     private let continuation: AsyncStream<BufferedTranscriptionUpdate>.Continuation
     init() {
         let pair = AsyncStream<BufferedTranscriptionUpdate>.makeStream()
         stream = pair.stream
         continuation = pair.continuation
+    }
+    var updates: [BufferedTranscriptionUpdate] { lock.withLock { history } }
+    /// Match live cursor suffix replacement; exclude the authoritative final
+    /// flush because it is separately applied by the final cleanup path.
+    var liveRewriteCost: Int {
+        let values = updates.dropLast()
+        return zip(values, values.dropFirst()).reduce(0) { total, pair in
+            let shared = zip(pair.0.text, pair.1.text).prefix { String($0.0).utf16.elementsEqual(String($0.1).utf16) }.count
+            return total + pair.0.text.count - shared
+        }
     }
     var failure: String? { lock.withLock { error } }
     var lastTextCount: Int { lock.withLock { textCount } }
@@ -400,6 +435,7 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     func recordDecode(sampleCount: Int) { lock.withLock { sampleCounts.append(sampleCount) } }
     func receive(_ update: BufferedTranscriptionUpdate) {
         lock.withLock {
+            history.append(update)
             textCount = update.text.count
             text = update.text
         }
@@ -408,5 +444,25 @@ private final class BufferedSmokeOutput: @unchecked Sendable {
     func fail(_ failure: Error) {
         lock.withLock { error = String(describing: failure) }
         continuation.finish()
+    }
+}
+
+/// Model outcomes are replayed in decode order, including expected deferrals.
+/// The lock supports the engine's asynchronous decoder without actor reordering.
+private final class BufferedSmokeReplay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [(Int, Result<BufferedTranscriptionWindow, Error>)] = []
+    private var index = 0
+    var remaining: Int { lock.withLock { values.count - index } }
+    func record(sampleCount: Int, result: Result<BufferedTranscriptionWindow, Error>) {
+        lock.withLock { values.append((sampleCount, result)) }
+    }
+    func next(sampleCount: Int) throws -> BufferedTranscriptionWindow {
+        try lock.withLock {
+            let value = try #require(index < values.count ? values[index] : nil)
+            index += 1
+            #expect(value.0 == sampleCount, "Presentation must not change audio ownership")
+            return try value.1.get()
+        }
     }
 }

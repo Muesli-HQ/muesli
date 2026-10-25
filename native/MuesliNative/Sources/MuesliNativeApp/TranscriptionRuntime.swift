@@ -145,7 +145,9 @@ actor TranscriptionCoordinator {
         if backend.backend == "whisper" {
             let transcriber = whisperTranscriber
             let expectedModel = backend.model
-            return BufferedTranscriptionSession(decode: { samples in
+            var configuration = BufferedTranscriptionSession.Configuration()
+            configuration.smoothWhisperPreviews = true
+            return BufferedTranscriptionSession(configuration: configuration, decode: { samples in
                 try await transcriber.transcribePreview(
                     samples: samples, language: whisperLanguage, expectedModel: expectedModel
                 )

@@ -79,6 +79,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var maximumTimestampDrift: Double = 0.25
         /// Only suppress an entirely silent window. Quiet speech is not trimmed.
         var silenceRMS: Float = 0.0001
+        /// Presentation only; never changes word ownership or PCM trimming.
+        var smoothWhisperPreviews = false
     }
 
     enum Failure: Error, LocalizedError {
@@ -117,6 +119,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var committedAnchors: [BufferedTranscriptionWord] = []
         var previousTail: [BufferedTranscriptionWord] = []
         var lastPublishedTail = ""
+        var lastPresentedTail = ""
+        var presentation = WhisperPreviewPresentation()
         var recovering = false
         var recoveryCandidate: [BufferedTranscriptionWord]?
         var followingAnchor: BufferedTranscriptionWord?
@@ -382,7 +386,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             guard !state.closed else { return }
         }
         state.revision += 1
-        onUpdate(.init(committedText: state.committedText, tail: tail, revision: state.revision))
+        let visibleTail = configuration.smoothWhisperPreviews
+            ? state.presentation.present(committedText: state.committedText, tail: tail,
+                                         words: tailWords, final: snapshot.final) : tail
+        state.lastPresentedTail = visibleTail
+        onUpdate(.init(committedText: state.committedText, tail: visibleTail, revision: state.revision))
         if snapshot.final { close() }
     }
 
@@ -509,7 +517,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Every accepted attempt has a revision, including deferred observations.
         // Consumers keep their visible prefix/draft and continue accepting audio.
         state.revision += 1
-        onUpdate(.init(committedText: state.committedText, tail: state.lastPublishedTail, revision: state.revision))
+        onUpdate(.init(committedText: state.committedText, tail: state.lastPresentedTail, revision: state.revision))
     }
 
     private func anchorIdentity(_ text: String) -> String {
