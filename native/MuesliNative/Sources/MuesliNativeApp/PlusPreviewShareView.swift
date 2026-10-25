@@ -53,13 +53,7 @@ struct PlusPreviewShareView: View {
                 }.disabled(busy && code == nil)
             }
             if let sharedURL {
-                Label("Shared copy created", systemImage: "checkmark.circle")
-                Text("Invitation delivery is tracked in Manage access.").foregroundStyle(.secondary)
-                Link("Manage access", destination: sharedURL)
-                Button("Copy link") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(sharedURL.absoluteString, forType: .string)
-                }
+                SharingSuccessView(url: sharedURL)
             } else {
                 Text(
                     "A copy will leave this Mac. Only invited people who sign in can read it. Your local meeting stays unchanged."
@@ -140,7 +134,7 @@ struct PlusPreviewShareView: View {
                     if busy { ProgressView().controlSize(.small) }
                 }
             }
-        }.padding(24).frame(width: 620, height: 680)
+        }.padding(24).frame(width: 620, height: sharedURL == nil ? 680 : 260)
             .onDisappear { connectionTask?.cancel() }
     }
     private func connect() {
@@ -231,12 +225,70 @@ struct PlusPreviewShareView: View {
                     throw PlusPreviewClient.Failure(status: 0, message: "Check Shared notes to confirm the result.")
                 }
                 sharedURL = url
+                NSWorkspace.shared.open(url)
             } catch {
                 message =
                     error.localizedDescription
                     + " Check Shared notes before retrying; an interrupted request may have completed."
             }
         }
+    }
+}
+
+private struct SharingSuccessView: View {
+    let url: URL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Color(hex: 0x15803D), in: Circle())
+                    .scaleEffect(appeared ? 1 : 0.7)
+                    .opacity(appeared ? 1 : 0)
+                    .accessibilityHidden(true)
+                Text("Shared").font(.title.bold())
+            }
+            HStack(spacing: 12) {
+                Button("Open note") { NSWorkspace.shared.open(url) }
+                    .buttonStyle(SharingPrimaryButtonStyle())
+                Button(copied ? "Copied" : "Copy link") {
+                    NSPasteboard.general.clearContents()
+                    copied = NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                }
+                .buttonStyle(SharingSecondaryButtonStyle())
+                Button("Manage access") {
+                    var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                    components?.fragment = "permissions"
+                    if let destination = components?.url { NSWorkspace.shared.open(destination) }
+                }
+                .buttonStyle(SharingSecondaryButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.65)) {
+                appeared = true
+            }
+        }
+    }
+}
+
+private struct SharingSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.primary.opacity(configuration.isPressed ? 0.18 : 0.1),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.3)))
     }
 }
 
