@@ -92,6 +92,7 @@ struct PlusPreviewShareView: View {
                 .frame(minHeight: 120, maxHeight: .infinity)
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Include transcript", isOn: $includeTranscript)
+                    Text("Invite people").font(.callout.bold())
                     SharingRecipientField(input: $recipients)
                     Text("Audio and attachments are never included.").font(.caption).foregroundStyle(.secondary)
                     Toggle(
@@ -108,13 +109,13 @@ struct PlusPreviewShareView: View {
                 }
                 .disabled(busy || attempted)
                 if let account {
-                    Text("Connected as \(account)").font(.caption)
+                    Text("Sharing from: \(account)").font(.caption)
                 }
                 if let code { Text("Connection code: \(code)").font(.headline.monospaced()) }
                 if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
                 HStack {
                     if account == nil {
-                        Button("Sign in to share") { connect() }
+                        Button("Sign in with your account") { connect() }
                             .buttonStyle(SharingPrimaryButtonStyle())
                             .help("Sign in to Muesli Plus to check sharing access. Nothing is uploaded yet.")
                             .disabled(busy)
