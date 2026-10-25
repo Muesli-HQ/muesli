@@ -854,7 +854,8 @@ struct MeetingDetailView: View {
                     title: meeting.title,
                     summary: Self.usesManualNotes(for: meeting, citation: nil) ? meeting.manualNotes : meeting.formattedNotes,
                     transcript: meeting.rawTranscript,
-                    disabled: isEditingNotes || isEditingTranscript || meeting.status == .recording || meeting.status == .processing
+                    disabled: isEditingNotes || isEditingTranscript || meeting.status == .recording || meeting.status == .processing,
+                    reconcile: { try await controller.reconcilePreviouslySharedMeetings() }
                 ).id("\(meeting.id)-\(meeting.startTime)")
 
             }

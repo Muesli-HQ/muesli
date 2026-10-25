@@ -14,6 +14,7 @@ struct MeetingSharingControl: View {
     let summary: String
     let transcript: String
     let disabled: Bool
+    let reconcile: () async throws -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var receipt: MeetingSharingReceipt?
     @State private var showUpload = false
@@ -21,6 +22,7 @@ struct MeetingSharingControl: View {
     @State private var refreshing = false
     @State private var status = ""
     @State private var copied = false
+    @State private var reconciling = true
 
     private var storageKey: String { "plus-preview.share." + meetingKey }
 
@@ -38,7 +40,7 @@ struct MeetingSharingControl: View {
         }
         .buttonStyle(.plain)
         .opacity(disabled ? 0.45 : 1)
-        .disabled(disabled)
+        .disabled(disabled || reconciling)
         .help(receipt.map { "Shared with " + $0.recipients.joined(separator: ", ") } ?? "Share this meeting")
         .sheet(isPresented: $showUpload) {
             PlusPreviewShareView(title: title, summary: summary, transcript: transcript) { url, emails, expiry in
@@ -85,6 +87,12 @@ struct MeetingSharingControl: View {
             .task { await refresh() }
         }
         .task(id: meetingKey) {
+            reconciling = true
+            defer { reconciling = false }
+            do { try await reconcile() } catch {
+                status = "Could not check earlier shares. Try again when connected."
+            }
+            guard !Task.isCancelled else { return }
             receipt = UserDefaults.standard.data(forKey: storageKey)
                 .flatMap { try? JSONDecoder().decode(MeetingSharingReceipt.self, from: $0) }
             status = ""

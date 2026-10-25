@@ -1653,6 +1653,14 @@ public final class MuesliController: NSObject {
 
     var timeTurnerRecapDatabaseURL: URL { dictationStore.resolvedDatabaseURL }
 
+    func reconcilePreviouslySharedMeetings() async throws {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let meetings = try await Task.detached(priority: .utility) {
+            try DictationStore(databaseURL: databaseURL).recentMeetings()
+        }.value
+        try await MeetingSharingReconciliation.reconcile(meetings: meetings)
+    }
+
     func meeting(id: Int64) -> MeetingRecord? {
         if let row = appState.meetingRows.first(where: { $0.id == id }) {
             return row
