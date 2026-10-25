@@ -22,7 +22,7 @@ struct PlusPreviewShareView: View {
     private var summary: String { note.summary }
     private var transcript: String { note.transcript }
     @State private var previewTranscript = false
-    @State private var recipients = ""
+    @State private var recipients = SharingRecipientInput()
     @State private var includeTranscript = false
     @State private var accepted = false
     @State private var busy = false
@@ -39,19 +39,8 @@ struct PlusPreviewShareView: View {
     init(title: String, summary: String, transcript: String) {
         _note = State(initialValue: NoteSnapshot(title: title, summary: summary, transcript: transcript))
     }
-    private var emails: [String] {
-        Array(
-            Set(
-                recipients.components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
-        ).sorted()
-    }
-    private var validRecipients: Bool {
-        !emails.isEmpty && emails.count <= 10
-            && emails.allSatisfy {
-                $0.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil && $0.count <= 254
-            }
-    }
+    private var emails: [String] { recipients.emails }
+    private var validRecipients: Bool { recipients.isReady }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -109,7 +98,7 @@ struct PlusPreviewShareView: View {
                 .frame(minHeight: 120, maxHeight: .infinity)
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Include transcript", isOn: $includeTranscript)
-                    TextField("Invite by email (comma separated)", text: $recipients)
+                    SharingRecipientField(input: $recipients)
                     Text("Audio and attachments are never included.").font(.caption).foregroundStyle(.secondary)
                     Toggle(
                         "I accept the sharing test terms and confirm this is fictional, non-confidential test content.",
