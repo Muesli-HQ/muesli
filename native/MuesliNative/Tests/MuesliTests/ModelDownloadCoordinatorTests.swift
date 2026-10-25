@@ -190,6 +190,27 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
 
 @Suite("ModelDownloadCoordinator", .serialized)
 struct ModelDownloadCoordinatorTests {
+    @Test("namespace changes reuse verified model bytes without a request")
+    func renamedRepositoryReusesCache() async throws {
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            return ModelDownloadTestURLProtocol.Response(data: Data("test".utf8), tracker: tracker)
+        }
+        let coordinator = makeCoordinator()
+        for owner in ["phequals", "Muesli-HQ"] {
+            let file = ModelDownloadFile(relativePath: "model.gguf",
+                remoteURL: URL(string: "https://huggingface.co/\(owner)/model/resolve/pin/model.gguf")!,
+                expectedByteCount: 4, sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+            try await coordinator.download(ModelDownloadManifest(id: "\(owner)/model", version: "pin", files: [file]), to: root)
+        }
+        #expect(tracker.requestCount == 1)
+        #expect(try Data(contentsOf: root.appendingPathComponent("model.gguf")) == Data("test".utf8))
+    }
+
+
     @Test("manifest totals known file sizes")
     func manifestTotalsKnownFileSizes() throws {
         let manifest = ModelDownloadManifest(

@@ -306,7 +306,7 @@ private actor Qwen3PostProcessorManager {
                 formattedInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
             case .s1Mini:
                 formattedInput = Qwen3PostProcessorConfig.formatS1MiniInput(text)
-            case .muesliTrainedV12LFM, .muesliTrainedV12Qwen:
+            case .muesliTrainedV12LFM, .muesliTrainedV12Qwen, .muesliTrainedV12Qwen08:
                 formattedInput = MuesliCleanupV2Prompt.ggufRequest(text, appContext: appContext, format: inputFormat)
             }
             if inputFormat.isTrainedV12 {
@@ -369,7 +369,12 @@ private actor Qwen3PostProcessorManager {
 
     private func loadBot() throws -> LLM {
         if let bot { return bot }
-        let descriptor: ManagedCleanupModel? = inputFormat == .muesliTrainedV12LFM ? .lfm : (inputFormat == .muesliTrainedV12Qwen ? .qwen : nil)
+        let descriptor: ManagedCleanupModel? = switch inputFormat {
+        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12Qwen: .qwen
+        case .muesliTrainedV12Qwen08: .qwen08
+        default: nil
+        }
         try descriptor?.validate(modelURL: modelURL)
         guard let loaded = LLM(
             from: modelURL,

@@ -6,6 +6,133 @@ import MLX
 
 @Suite
 struct MuesliCleanupV2Tests {
+    @Test func namespaceMigrationPreservesModelsAndCaches() throws {
+        for option in [BackendOption.cohereTranscribe] + BackendOption.bodhanFamily {
+            let legacy = option.model.replacingOccurrences(of: "Muesli-HQ/", with: "phequals/")
+            #expect(BackendOption.resolve(backend: option.backend, model: legacy) == option)
+            let json = try JSONSerialization.data(withJSONObject: ["stt_backend": option.backend, "stt_model": legacy,
+                "meeting_transcription_backend": option.backend, "meeting_transcription_model": legacy])
+            let config = try JSONDecoder().decode(AppConfig.self, from: json)
+            #expect(config.sttModel == option.model)
+            #expect(config.meetingTranscriptionModel == option.model)
+        }
+        for model in BodhanModel.allCases {
+            #expect(model.cacheDirectory.lastPathComponent == String(model.rawValue.split(separator: "/").last!))
+            #expect(model.repository.hasPrefix("Muesli-HQ/"))
+        }
+        #expect(CohereTranscribeModelStore.cacheDirectory().lastPathComponent == "cohere-transcribe-coreml-mixed-precision")
+        #expect(PostProcessorOption.finetunedV3.cacheDirectory.lastPathComponent == "postproc-qwen35-postproc-v3")
+        #expect(PostProcessorOption.finetunedV3.downloadURL.path.contains("/Muesli-HQ/"))
+    }
+
+    @Test func renamedNativeModelsLoad() async throws {
+        guard #available(macOS 15, *), let kind = ProcessInfo.processInfo.environment["MUESLI_HF_LOAD_KIND"] else { return }
+        if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] {
+            GPU.metallib = URL(fileURLWithPath: path)
+        }
+        if kind == "cohere" {
+            let transcriber = CohereTranscribeTranscriber()
+            try await transcriber.loadModels()
+            await transcriber.shutdown()
+        } else if let option = (PostProcessorOption.all + [.legacyV2]).first(where: { $0.id == kind }),
+                  let path = ProcessInfo.processInfo.environment["MUESLI_HF_LOAD_FILE"] {
+            let processor = Qwen3PostProcessor(modelURL: URL(fileURLWithPath: path), systemPrompt: PostProcessorOption.defaultSystemPrompt, inputFormat: option.inputFormat)
+            try await processor.prepare()
+            let config = Qwen3PostProcessor.Configuration(modelURL: URL(fileURLWithPath: path), systemPrompt: PostProcessorOption.defaultSystemPrompt, inputFormat: option.inputFormat)
+            let output = try await processor.process("Hello world.", configuration: config)
+            #expect(!output.isEmpty)
+            print("NAMESPACE OUTPUT \(kind): \(output)")
+            await processor.shutdown()
+        } else if let model = BodhanModel.allCases.first(where: { $0.rawValue.hasSuffix("/" + kind) }) {
+            Memory.cacheLimit = 256 * 1024 * 1024
+            let transcriber = BodhanTranscriber()
+            try await transcriber.prepare(modelID: model.rawValue)
+            await transcriber.shutdown()
+        } else {
+            Issue.record("Unknown namespace validation model")
+        }
+        print("NAMESPACE LOAD PASSED \(kind)")
+    }
+
+    @Test func qwenLightV4Contract() {
+        let option = PostProcessorOption.finetunedV4
+        #expect(PostProcessorOption.defaultOption == .finetunedV3)
+        #expect(option.managedModel?.modelByteCount == 529_296_832)
+        #expect(option.managedModel?.revision == "0e6b7446a64b170881bfe1af4b3ba892d18ecf3a")
+        #expect(option.managedModel?.files.first?.sha256 == "3e3eabc91542e66f672230b7361917f5fa3a1e06ace61e8157c7a34d121abf8a")
+        #expect(!option.supportsQuil)
+        #expect(option.effectiveSystemPrompt(configuredSystemPrompt: "custom") == PostProcessorOption.defaultSystemPrompt)
+        let expected = "<|im_start|>user\n" + PostProcessorOption.defaultSystemPrompt + "\n\n<APP-CONTEXT>\nApp: Mail\n</APP-CONTEXT>\n\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        #expect(MuesliCleanupV2Prompt.ggufRequest("hello", appContext: "App: Mail", format: option.inputFormat) == expected)
+    }
+
+    @Test func qwenLightV4Golden() async throws {
+        guard #available(macOS 15, *),
+              let modelPath = ProcessInfo.processInfo.environment["MUESLI_QWEN08_VERIFY_FILE"],
+              let root = ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"] else { return }
+        struct Row: Decodable {
+            let id: String
+            let input_text: String
+            let pred_text: String?
+            let context: Context?
+            struct Context: Decodable {
+                let application: String
+                let focused_field: String?
+                let visible_screen_context: String?
+                var formatted: String {
+                    var parts = ["App: " + application]
+                    if let field = focused_field, !field.isEmpty { parts.append("Document context: " + field) }
+                    if let screen = visible_screen_context, !screen.isEmpty { parts.append("OCR screen text: " + screen) }
+                    return parts.joined(separator: "\n")
+                }
+            }
+        }
+        func rows(_ path: String) throws -> [Row] {
+            try String(contentsOfFile: root + "/" + path).split(separator: "\n").map { try JSONDecoder().decode(Row.self, from: Data($0.utf8)) }
+        }
+        let modelURL = URL(fileURLWithPath: modelPath)
+        try ManagedCleanupModel.qwen08.validate(modelURL: modelURL)
+        let config = Qwen3PostProcessor.Configuration(modelURL: modelURL, systemPrompt: "ignored", inputFormat: .muesliTrainedV12Qwen08)
+        let processor = Qwen3PostProcessor(modelURL: modelURL, systemPrompt: "ignored", inputFormat: .muesliTrainedV12Qwen08)
+        try await processor.prepare()
+        _ = try await processor.process("Hello world.", configuration: config)
+        let references = Dictionary(uniqueKeysWithValues: try rows("models/gemma4/eval/results/challengers/qwen08ggufq4km_held.jsonl").map { ($0.id, $0.pred_text ?? "") })
+        var times: [Double] = []
+        for row in try rows("common/data/context_authored_v1/heldout.jsonl").prefix(10) {
+            let start = Date()
+            let result = try await processor.process(row.input_text, appContext: row.context?.formatted, configuration: config)
+            times.append(Date().timeIntervalSince(start))
+            print("QWEN08 GOLDEN \(row.id) expected=\(references[row.id] ?? "") actual=\(result)")
+            #expect(result == references[row.id])
+        }
+        print("QWEN08 median_seconds=\((times.sorted()[4] + times.sorted()[5]) / 2)")
+        var smokeTimes: [Double] = []
+        let smokes = [
+            ("thanks ill send it tomorrow", "App: Slack"),
+            ("thanks for the update new paragraph ill send the report tomorrow", "App: Mail\nDocument context: Reply body"),
+            ("update src slash auth dot swift", "App: Codex"),
+            ("lets meet tuesday no wait wednesday", "App: Slack"),
+            ("muesli download", "App: Safari\nDocument context: Search"),
+            ("put this in bullet points first check latency second check formatting third compare both", "App: Notes"),
+            ("""
+            Please send the updated project report to Maya before Thursday afternoon. The first section should explain why the release date moved and which customer requests are still waiting for review. The second section should include the testing results from the laptop and desktop machines, with separate notes for cold starts and warmed up sessions. We also need to check that the cleanup model preserves names, file paths, numbered lists, and short search queries. If a recording contains a correction, keep the corrected version rather than both alternatives. Please ask Ravi to review the installation instructions and confirm that existing downloads are reused after the repository name changes. Do not remove the older model until we have completed the comparison on real dictations. For the final section, describe the remaining performance work and list any examples where the output changed the meaning of the original recording. Send the draft to the team first so everyone can add comments before it goes to customers. After the review, save the approved document in the shared project folder and let me know which follow up tasks still need an owner. We can discuss those tasks in our meeting on Friday morning. The final reminder is to keep the rollback option available.
+            """, "App: Notes")
+        ]
+        for (input, context) in smokes {
+            let start = Date()
+            let output = try await processor.process(input, appContext: context, configuration: config)
+            smokeTimes.append(Date().timeIntervalSince(start))
+            #expect(!output.isEmpty)
+            #expect(!output.contains("APP-CONTEXT"))
+            #expect(!output.contains(MuesliCleanupV2Prompt.systemPrompt))
+            print("QWEN08 SMOKE seconds=\(smokeTimes.last!) input=\(input) output=\(output)")
+        }
+        print("QWEN08 short_smoke_median=\((smokeTimes.prefix(6).sorted()[2] + smokeTimes.prefix(6).sorted()[3]) / 2)")
+
+        await processor.shutdown()
+    }
+
+
     @Test func truncatedOutputPreservesEntireTranscript() {
         let input = "First send the report. Then email the customer. Finally archive the results."
         #expect(MuesliCleanupV2Prompt.guardedOutput("First send the report.", input: input, generationCompleted: false) == input)
