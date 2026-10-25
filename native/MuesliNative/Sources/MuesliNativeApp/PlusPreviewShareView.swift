@@ -11,9 +11,17 @@ struct PlusPreviewShareView: View {
                 && Bundle.main.object(forInfoDictionaryKey: "MuesliPlusPreviewEnabled") as? Bool == true)
     }
     @Environment(\.dismiss) private var dismiss
-    @State private var title: String
-    @State private var summary: String
-    @State private var transcript: String
+    private struct NoteSnapshot {
+        let title: String
+        let summary: String
+        let transcript: String
+    }
+    // Capture the saved note once when the sheet opens. The preview never edits or reserializes it.
+    @State private var note: NoteSnapshot
+    private var title: String { note.title }
+    private var summary: String { note.summary }
+    private var transcript: String { note.transcript }
+    @State private var previewTranscript = false
     @State private var recipients = ""
     @State private var includeTranscript = false
     @State private var accepted = false
@@ -29,9 +37,7 @@ struct PlusPreviewShareView: View {
     @State private var requestID = UUID().uuidString
 
     init(title: String, summary: String, transcript: String) {
-        _title = State(initialValue: title)
-        _summary = State(initialValue: summary)
-        _transcript = State(initialValue: transcript)
+        _note = State(initialValue: NoteSnapshot(title: title, summary: summary, transcript: transcript))
     }
     private var emails: [String] {
         Array(
@@ -47,7 +53,7 @@ struct PlusPreviewShareView: View {
             }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Share meeting").font(.title2.bold())
                 Spacer()
@@ -70,26 +76,54 @@ struct PlusPreviewShareView: View {
                     "A copy will leave this Mac. Only invited people who sign in can read it. Your local meeting stays unchanged."
                 )
                 .font(.callout).foregroundStyle(.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        TextField("Meeting title", text: $title)
-                        Text("Notes").font(.headline)
-                        TextEditor(text: $summary).frame(minHeight: 150)
-                        Toggle("Include transcript", isOn: $includeTranscript)
-                        if includeTranscript { TextEditor(text: $transcript).frame(minHeight: 120) }
-                        TextField("Invite by email (comma separated)", text: $recipients)
-                        Text("Audio and attachments are never included.").font(.caption).foregroundStyle(.secondary)
-                        Toggle(
-                            "I accept the sharing test terms and confirm this is fictional, non-confidential test content.",
-                            isOn: $accepted)
-                        Link(
-                            "Sharing test terms", destination: URL(string: "https://notes.muesli.works/sharing-terms")!)
-                        Text(
-                            "Test copies expire after seven days. Revoking access cannot erase copies a recipient already saved."
-                        )
-                        .font(.caption).foregroundStyle(.secondary)
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 8) {
+                    if includeTranscript {
+                        Picker("Preview", selection: $previewTranscript) {
+                            Text("Notes").tag(false)
+                            Text("Transcript").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
                     }
-                }.disabled(busy || attempted)
+                    Group {
+                        if includeTranscript && previewTranscript {
+                            ScrollView {
+                                Text(transcript)
+                                    .font(MuesliTheme.reading())
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(16)
+                            }
+                        } else {
+                            MeetingNotesView(markdown: summary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MuesliTheme.backgroundBase)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .frame(minHeight: 120, maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Include transcript", isOn: $includeTranscript)
+                    TextField("Invite by email (comma separated)", text: $recipients)
+                    Text("Audio and attachments are never included.").font(.caption).foregroundStyle(.secondary)
+                    Toggle(
+                        "I accept the sharing test terms and confirm this is fictional, non-confidential test content.",
+                        isOn: $accepted
+                    )
+                    .font(.caption)
+                    Link("Sharing test terms", destination: URL(string: "https://notes.muesli.works/sharing-terms")!)
+                        .font(.caption)
+                    Text(
+                        "Test copies expire after seven days. Revoking access cannot erase copies a recipient already saved."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+                .disabled(busy || attempted)
                 if let account {
                     Text("Connected as \(account)").font(.caption)
                 }
@@ -97,12 +131,15 @@ struct PlusPreviewShareView: View {
                 if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
                 HStack {
                     if account == nil {
-                        Button("Connect account") { connect() }.disabled(busy)
+                        Button("Sign in to share") { connect() }
+                            .buttonStyle(SharingPrimaryButtonStyle())
+                            .help("Sign in to Muesli Plus to check sharing access. Nothing is uploaded yet.")
+                            .disabled(busy)
                     } else {
                         Button("Disconnect") { disconnect() }.disabled(busy)
                         Spacer()
                         Button("Upload and invite") { upload() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(SharingPrimaryButtonStyle())
                             .disabled(
                                 busy || attempted || !accepted || !validRecipients
                                     || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -214,6 +251,20 @@ struct PlusPreviewShareView: View {
     }
 }
 
+private struct SharingPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(
+                Color(hex: 0x2563EB).opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4),
+                in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 private enum PlusPreviewClient {
     struct Failure: LocalizedError {
         let status: Int
@@ -254,7 +305,8 @@ private enum PlusPreviewClient {
     }
     private static var query: [String: Any] {
         [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "com.muesli.plus.preview") + ".sharing",
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "com.muesli.plus.preview") + ".sharing",
             kSecAttrAccount as String: "device",
         ]
     }
