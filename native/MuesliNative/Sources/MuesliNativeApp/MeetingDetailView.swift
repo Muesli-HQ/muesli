@@ -120,6 +120,7 @@ struct MeetingDetailView: View {
     @State private var summaryErrorMessage: String?
     @State private var retranscriptionErrorMessage: String?
     @State private var pendingRetranscriptionBackend: BackendOption?
+    @State private var showPlusPreviewShare = false
     @State private var showDeleteConfirmation = false
     @State private var transcriptResummaryPromptMeetingID: Int64?
     @State private var transcriptEditOriginalTranscript: String?
@@ -848,6 +849,17 @@ struct MeetingDetailView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             recordingRecoveryHeaderAction(for: meeting)
             resumeChooserIfAvailable(for: meeting)
+            if PlusPreviewShareView.enabled {
+                Button { showPlusPreviewShare = true } label: {
+                    Label("Share", systemImage: "person.crop.circle.badge.plus")
+                }
+                .disabled(isEditingNotes || isEditingTranscript || meeting.status == .recording || meeting.status == .processing)
+                .sheet(isPresented: $showPlusPreviewShare) {
+                    PlusPreviewShareView(title: meeting.title,
+                        summary: Self.usesManualNotes(for: meeting, citation: nil) ? meeting.manualNotes : meeting.formattedNotes,
+                        transcript: meeting.rawTranscript)
+                }
+            }
             exportMenu(for: meeting)
 
             if isSummarizing {
