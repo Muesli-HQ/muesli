@@ -19,6 +19,13 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
+PLUS_PREVIEW_ENABLED=false
+if [[ "${MUESLI_PLUS_PREVIEW:-0}" == "1" ]]; then
+  case "$BUNDLE_ID" in
+    com.muesli.plus.preview|com.muesli.dev.c) PLUS_PREVIEW_ENABLED=true ;;
+    *) echo "Plus Preview is only supported in its isolated bundle or dev lane C." >&2; exit 2 ;;
+  esac
+fi
 DEFAULT_APP_VERSION="0.8.6"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
@@ -388,6 +395,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   </array>
   <key>CFBundleIconFile</key>
   <string>muesli.icns</string>
+  <key>MuesliPlusPreviewEnabled</key>
+  <$PLUS_PREVIEW_ENABLED/>
   <key>MuesliSupportDirectoryName</key>
   <string>$APP_SUPPORT_DIR_NAME</string>
   <key>MuesliTelemetryDeckAppID</key>

@@ -2,9 +2,14 @@ import AppKit
 import Security
 import SwiftUI
 
-/// Available only in the separate preview bundle. Opening this sheet performs no network work.
+/// Available in the preview bundle or an explicitly opted-in DevC build. Opening performs no network work.
 struct PlusPreviewShareView: View {
-    static var enabled: Bool { Bundle.main.bundleIdentifier == "com.muesli.plus.preview" }
+    static var enabled: Bool {
+        let identifier = Bundle.main.bundleIdentifier
+        return identifier == "com.muesli.plus.preview"
+            || (identifier == "com.muesli.dev.c"
+                && Bundle.main.object(forInfoDictionaryKey: "MuesliPlusPreviewEnabled") as? Bool == true)
+    }
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @State private var summary: String
@@ -249,7 +254,7 @@ private enum PlusPreviewClient {
     }
     private static var query: [String: Any] {
         [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.muesli.plus.preview.sharing",
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "com.muesli.plus.preview") + ".sharing",
             kSecAttrAccount as String: "device",
         ]
     }
