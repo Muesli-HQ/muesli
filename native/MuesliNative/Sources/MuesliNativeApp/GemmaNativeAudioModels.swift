@@ -141,7 +141,7 @@ struct GemmaPreparationPlan: Equatable, Sendable {
         }
         add(dictation, audio: true, text: false, required: true)
         add(cleanup, audio: false, text: true, required: false)
-        add(quill, audio: quill == dictation, text: true, required: requireQuill)
+        add(quill, audio: true, text: true, required: requireQuill)
         entries = result
     }
     /// Optional feature failures do not prevent ordinary dictation. Each feature

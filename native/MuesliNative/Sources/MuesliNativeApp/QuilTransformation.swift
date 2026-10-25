@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 enum QuilTransformationError: LocalizedError, Equatable {
     case noTextTarget
@@ -137,10 +138,17 @@ enum QuilTransformationOutput {
 }
 
 enum QuilModelPolicy {
-    static func usesDirectAudio(dictation: BackendOption, backend: TranscriptCleanupBackendOption, model: String) -> Bool {
+    static func requiresLongAudioFallback(frameCount: Int64, sampleRate: Double) -> Bool {
+        Double(frameCount) > sampleRate * 30
+    }
+
+    static func requiresLongAudioFallback(wavURL: URL) throws -> Bool {
+        let file = try AVAudioFile(forReading: wavURL)
+        return requiresLongAudioFallback(frameCount: file.length, sampleRate: file.processingFormat.sampleRate)
+    }
+
+    static func usesDirectAudio(backend: TranscriptCleanupBackendOption, model: String) -> Bool {
         backend == .gemma4LiteRT
-            && dictation.backend == BackendOption.gemma4E2BLiteRT.backend
-            && dictation.model == model
             && Gemma4LiteRTModel.generalPurpose.contains { $0.repoID == model }
     }
 

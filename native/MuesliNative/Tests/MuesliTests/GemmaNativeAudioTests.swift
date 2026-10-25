@@ -514,7 +514,7 @@ struct GemmaNativeAudioTests {
         var failed: [Gemma4LiteRTModel] = []
         try await plan.prepare(using: { entry in
             attempted.append(entry.model)
-            if !entry.audio { throw Failure.invalidArtifact }
+            if entry.model != .e2b { throw Failure.invalidArtifact }
         }, optionalFailure: { entry, _ in failed.append(entry.model) })
         #expect(attempted == [.e2b, .muesliCleanupV2, .e4b])
         #expect(failed == [.muesliCleanupV2, .e4b])
@@ -553,7 +553,7 @@ struct GemmaNativeAudioTests {
         let ordinary = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: .e4b)
         let quill = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: .e4b, requireQuill: true)
         #expect(ordinary.key != quill.key)
-        #expect(quill.entries[0].required && !quill.entries[0].audio)
+        #expect(quill.entries[0].required && quill.entries[0].audio)
         var attempted = false
         do {
             try await quill.prepare(optionalModelAvailable: { _ in false }, using: { _ in

@@ -1484,6 +1484,40 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.isComplete())
     }
 
+    @Test("local-only ASR loading never repairs a failed legacy cache")
+    func localOnlyLoadPreservesFailedCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "local-only", repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model"),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        var calls = 0
+        await #expect(throws: CocoaError.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+            }
+        }
+        #expect(calls == 0)
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        let modelURL = plan.cacheDirectory.appendingPathComponent("model.bin")
+        try Data("legacy".utf8).write(to: modelURL)
+        enum LoadFailure: Error { case invalidModel }
+        await #expect(throws: LoadFailure.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+                throw LoadFailure.invalidModel
+            }
+        }
+        #expect(calls == 1)
+        #expect(try Data(contentsOf: modelURL) == Data("legacy".utf8))
+        #expect(plan.requiresRuntimeValidation())
+        let loaded = try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { $0 }
+        #expect(loaded == plan.cacheDirectory)
+    }
+
     @Test("cancelled legacy validation preserves the offline cache")
     func cancelledLegacyValidationPreservesCache() async throws {
         let root = try makeTemporaryDirectory()
