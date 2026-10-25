@@ -320,12 +320,13 @@ struct BufferedTranscriptionBackendIntegrationTests {
         samples: [Float], label: String, requireEarlyCommit: Bool = true,
         knownTinyTamilOwnershipInstability: Bool = false,
         smoothWhisperPreviews: Bool = false, output: BufferedSmokeOutput? = nil,
+        windowConfiguration: BufferedTranscriptionSession.Configuration? = nil,
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
     ) async throws -> String {
         try #require(samples.count > 15 * 16_000, "The speech fixture must exceed one rolling window")
         let progressive = output ?? BufferedSmokeOutput()
         let recording = BufferedSmokeReplay()
-        var configuration = BufferedTranscriptionSession.Configuration()
+        var configuration = windowConfiguration ?? (smoothWhisperPreviews ? .whisperPreview : .init())
         configuration.smoothWhisperPreviews = smoothWhisperPreviews
         let live = BufferedTranscriptionSession(configuration: configuration, decode: { chunk in
             progressive.recordDecode(sampleCount: chunk.count)
@@ -366,7 +367,9 @@ struct BufferedTranscriptionBackendIntegrationTests {
             #expect(progressive.lastText != textAtFourteenSeconds, "Live output must advance through the first window boundary before stop")
         }
         if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
-        await live.finish()
+        let finishStart = ProcessInfo.processInfo.systemUptime
+        let completedTranscript = await live.finishTranscript()
+        print("[buffered-finish] model=\(label) elapsed_ms=\(Int((ProcessInfo.processInfo.systemUptime - finishStart) * 1000)) complete=\(completedTranscript != nil)")
         if knownTinyTamilOwnershipInstability, progressive.failure == "ownershipUnresolved" {
             // Track the actual model limitation explicitly. Do not classify
             // timestamp validation, overrun, cursor or arbitrary errors as known.
@@ -376,6 +379,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
             }
         } else {
             #expect(progressive.failure == nil)
+            #expect(completedTranscript == progressive.lastText)
         }
         if requireEarlyCommit { #expect(committedBeforeRollover) }
         #expect(progressive.lastTextCount > 0)
@@ -390,7 +394,8 @@ struct BufferedTranscriptionBackendIntegrationTests {
             let baseline = BufferedSmokeOutput()
             let baselineFinal = try await assertProgressivePreview(
                 samples: samples, label: label + "-baseline", requireEarlyCommit: requireEarlyCommit,
-                output: baseline, decode: { try recording.next(sampleCount: $0.count) })
+                output: baseline, windowConfiguration: configuration,
+                decode: { try recording.next(sampleCount: $0.count) })
             #expect(recording.remaining == 0)
             #expect(progressive.decodeSampleCounts == baseline.decodeSampleCounts)
             #expect(progressive.updates.map(\.committedText) == baseline.updates.map(\.committedText))

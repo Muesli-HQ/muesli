@@ -55,7 +55,7 @@ struct BufferedTranscriptionUpdate: Sendable, Equatable {
     }
 }
 
-/// A preview session only: the retained recording remains the final authority.
+/// A buffered session: the retained recording remains available for recovery.
 /// Audio capture never waits for inference. There is one decoder in flight and
 /// new arrivals coalesce into the next snapshot. Audio-time ownership, rather
 /// than matching strings, preserves deliberately repeated words at rollovers.
@@ -65,6 +65,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let decodeCount: Int
         let revision: UInt64
         let closed: Bool
+        let finishing: Bool
     }
 
     struct Configuration: Sendable {
@@ -81,6 +82,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var silenceRMS: Float = 0.0001
         /// Presentation only; never changes word ownership or PCM trimming.
         var smoothWhisperPreviews = false
+
+        static var whisperPreview: Self {
+            var configuration = Self()
+            configuration.smoothWhisperPreviews = true
+            configuration.updateSamples = 8_000
+            return configuration
+        }
     }
 
     enum Failure: Error, LocalizedError {
@@ -130,6 +138,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var running = false
         var finishing = false
         var closed = false
+        var completedTranscript: String?
         var waiters: [CheckedContinuation<Void, Never>] = []
     }
     private struct Snapshot {
@@ -151,7 +160,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     var diagnostics: Diagnostics {
         synchronized {
             Diagnostics(receivedSamples: state.receivedSamples, decodeCount: state.decodeCount,
-                        revision: state.revision, closed: state.closed)
+                        revision: state.revision, closed: state.closed, finishing: state.finishing)
         }
     }
 
@@ -193,7 +202,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     }
 
     func cancel() {
-        synchronized { close() }
+        synchronized {
+            state.completedTranscript = nil
+            close()
+        }
     }
 
     /// Closes capture and drains all accepted samples. Failures use onFailure;
@@ -206,6 +218,19 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 state.waiters.append(continuation)
                 startIfNeeded()
             }
+        }
+    }
+
+    /// Returns raw ASR text only after a validated final decode owns every
+    /// accepted sample. Presentation smoothing never truncates this result.
+    /// Callers still apply their normal final text cleanup; nil requires the
+    /// retained-recording recovery path. Cancelling this wait cancels the session.
+    func finishTranscript() async -> String? {
+        await withTaskCancellationHandler {
+            await finish()
+            return synchronized { Task.isCancelled ? nil : state.completedTranscript }
+        } onCancel: {
+            self.cancel()
         }
     }
 
@@ -253,6 +278,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             do {
                 let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
                 let result: BufferedTranscriptionWindow
+                var decodeMilliseconds: Int?
                 if rms <= Double(configuration.silenceRMS) {
                     result = BufferedTranscriptionWindow(text: "", words: [])
                 } else {
@@ -262,19 +288,36 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                         return true
                     }
                     guard canDecode else { return }
+                    let started = ProcessInfo.processInfo.systemUptime
                     result = try await decode(snapshot.audio)
+                    decodeMilliseconds = Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1_000)
                 }
                 try synchronized {
                     guard !state.closed else { return }
+                    // Stop may arrive during inference. If this exact window
+                    // covers all accepted audio, its result can own the final
+                    // tail without decoding identical PCM a second time.
+                    // Newer arrivals still require their own decode.
+                    let acceptedSnapshot = state.finishing
+                        && snapshot.offset + snapshot.audio.count == state.receivedSamples
+                        ? Snapshot(audio: snapshot.audio, offset: snapshot.offset, final: true) : snapshot
+                    if acceptedSnapshot.final && !snapshot.final {
+                        onDiagnostic("finish_reused_inflight_decode:samples=\(snapshot.audio.count)")
+                        guard !state.closed else { return }
+                    }
+                    if let decodeMilliseconds {
+                        onDiagnostic("decode_completed:samples=\(snapshot.audio.count):elapsed_ms=\(decodeMilliseconds):final=\(acceptedSnapshot.final)")
+                        guard !state.closed else { return }
+                    }
                     // accept can update anchors before discovering that a roll
                     // cannot advance. Recovery must restore the entire proposal,
                     // including PCM, before deferring this observation.
                     let checkpoint = state
                     do {
-                        try accept(result, snapshot: snapshot)
+                        try accept(result, snapshot: acceptedSnapshot)
                     } catch let recovery as AlignmentRecovery {
                         state = checkpoint
-                        deferAlignment(recovery, snapshot: snapshot)
+                        deferAlignment(recovery, snapshot: acceptedSnapshot)
                     }
                 }
             } catch let deferral as BufferedTranscriptionPreviewDeferral {
@@ -391,7 +434,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                                          words: tailWords, final: snapshot.final) : tail
         state.lastPresentedTail = visibleTail
         onUpdate(.init(committedText: state.committedText, tail: visibleTail, revision: state.revision))
-        if snapshot.final { close() }
+        if snapshot.final, !state.closed {
+            guard state.lastDecodedEnd == state.receivedSamples else { throw Failure.cannotAdvance }
+            state.completedTranscript = state.committedText + tail
+            close()
+        }
     }
 
     /// Locate already-owned words using ordered, timed anchors, not textual
@@ -570,6 +617,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Publish failure before releasing finish waiters so a caller cannot
         // mistake a failed drain for a successfully completed preview.
         state.closed = true
+        state.completedTranscript = nil
         // A failure handler may reentrantly cancel. Keep these continuations
         // out of close() until that handler has completely delivered failure.
         let waiters = state.waiters

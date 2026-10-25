@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("Whisper preview cadence and window preserve context and recovery budgets")
+    func whisperConfiguration() {
+        let configuration = BufferedTranscriptionSession.Configuration.whisperPreview
+        #expect(configuration.minimumSamples == 32_000)
+        #expect(configuration.updateSamples == 8_000)
+        #expect(configuration.windowSamples == 240_000)
+        #expect(configuration.rightContextSamples == 48_000)
+        #expect(configuration.leftContextSamples == 16_000)
+        #expect(configuration.maximumRecoveryWindowSamples == 480_000)
+        #expect(configuration.maximumBufferedSamples == 720_000)
+        #expect(configuration.smoothWhisperPreviews)
+        let standard = BufferedTranscriptionSession.Configuration()
+        #expect(standard.updateSamples == 16_000)
+        #expect(standard.windowSamples == 240_000)
+        #expect(!standard.smoothWhisperPreviews)
+    }
+
     @Test("finish flushes short audio and preserves revisable punctuation")
     func shortFinal() async {
         let output = BufferedPreviewOutput()
@@ -12,15 +29,18 @@ struct BufferedTranscriptionSessionTests {
                 .init(text: "Hello,", start: 0, end: 0.2),
                 .init(text: "café!", start: 0.3, end: 0.8)
             ])
-        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
         session.enqueue(Array(repeating: 0.2, count: 16_000))
         await session.finish()
+        #expect(await session.finishTranscript() == "Hello, café!")
+        #expect(await session.finishTranscript() == "Hello, café!")
         #expect(output.values.last?.text == "Hello, café!")
         #expect(output.failures == 0)
         #expect(session.diagnostics.receivedSamples == 16_000)
         #expect(session.diagnostics.decodeCount == 1)
         #expect(session.diagnostics.revision == 1)
         #expect(session.diagnostics.closed)
+        #expect(output.diagnostics.contains { $0.hasPrefix("decode_completed:samples=16000:elapsed_ms=") && $0.hasSuffix(":final=true") })
     }
 
     @Test("continuous audio rolls over using times without deleting repeated words", arguments: ["go", "café", "привет", "مرحبا", "你好"])
@@ -45,8 +65,8 @@ struct BufferedTranscriptionSessionTests {
             return try .aligned(text: words.map(\.text).joined(separator: separator), words: words)
         }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
         session.enqueue((0..<(30 * 16_000)).map(Float.init))
-        await session.finish()
         let separator = word == "你好" ? "" : " "
+        #expect(await session.finishTranscript() == Array(repeating: word, count: 30).joined(separator: separator))
         #expect(output.values.last?.text == Array(repeating: word, count: 30).joined(separator: separator))
         #expect(output.values.count > 3)
         #expect(output.values.map(\.revision) == (1...output.values.count).map(UInt64.init))
@@ -70,6 +90,46 @@ struct BufferedTranscriptionSessionTests {
         #expect(output.values.last?.text == "hello")
     }
 
+    @Test("stop promotes an in-flight full window but never one missing newer audio", arguments: [false, true])
+    func stopDuringDecode(additionalAudio: Bool) async {
+        let decoder = BufferedHeldDecoder()
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { samples in
+            _ = try await decoder.decode(samples)
+            let words: [BufferedTranscriptionWord] = samples.count > 32_000
+                ? [.init(text: "hello", start: 0, end: 0.5), .init(text: "later", start: 2.1, end: 2.5)]
+                : [.init(text: "hello", start: 0, end: 0.5)]
+            return try .aligned(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var started = decoder.started.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        #expect(await started.next() == 32_000)
+        if additionalAudio { session.enqueue(Array(repeating: 0.2, count: 16_000)) }
+        let completion = Task { await session.finishTranscript() }
+        // Release the decoder only after finish has closed audio admission.
+        // The deadline bounds a broken test without assuming executor ordering.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !session.diagnostics.finishing, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(session.diagnostics.finishing)
+        #expect(output.values.isEmpty)
+        session.enqueue(Array(repeating: 0.2, count: 16_000)) // Capture is closed.
+        await decoder.release()
+        #expect(await completion.value == (additionalAudio ? "hello later" : "hello"))
+        #expect(await decoder.callCount == (additionalAudio ? 2 : 1))
+        #expect(session.diagnostics.receivedSamples == (additionalAudio ? 48_000 : 32_000))
+        #expect(output.values.count == (additionalAudio ? 2 : 1))
+        #expect(output.values.last?.committedText == (additionalAudio ? "hello later" : "hello"))
+        #expect(output.values.last?.tail == "")
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.contains("finish_reused_inflight_decode:samples=32000") == !additionalAudio)
+        if additionalAudio {
+            #expect(await started.next() == 48_000)
+            #expect(output.diagnostics.contains { $0.hasPrefix("decode_completed:samples=32000:") && $0.hasSuffix(":final=false") })
+        } else {
+            #expect(output.diagnostics.contains { $0.hasPrefix("decode_completed:samples=32000:") && $0.hasSuffix(":final=true") })
+        }
+    }
+
     @Test("cancel releases finish and rejects in-flight completion and future audio")
     func cancellation() async {
         let decoder = BufferedHeldDecoder()
@@ -82,6 +142,7 @@ struct BufferedTranscriptionSessionTests {
         _ = await calls.next()
         session.cancel()
         await session.finish()
+        #expect(await session.finishTranscript() == nil)
         session.enqueue(Array(repeating: 0.2, count: 32_000))
         await decoder.release()
         _ = await completions.next()
@@ -98,7 +159,7 @@ struct BufferedTranscriptionSessionTests {
             return .init(text: "", words: [])
         }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
         session.enqueue(Array(repeating: 0.2, count: 720_001))
-        await session.finish()
+        #expect(await session.finishTranscript() == nil)
         #expect(output.failures == 1)
         #expect(output.values.isEmpty)
     }
@@ -109,19 +170,90 @@ struct BufferedTranscriptionSessionTests {
         let session = BufferedTranscriptionSession(decode: { _ in .init(text: "unaccounted words", words: []) },
                                                   onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
         session.enqueue(Array(repeating: 0.2, count: 16_000))
-        await session.finish()
+        #expect(await session.finishTranscript() == nil)
         #expect(output.failures == 1)
         let silent = BufferedTranscriptionSession(decode: { _ in
             Issue.record("Silence must not reach hallucination-prone decoder")
             return .init(text: "", words: [])
         }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
         silent.enqueue(Array(repeating: 0, count: 16_000))
-        await silent.finish()
+        #expect(await silent.finishTranscript() == "")
         #expect(output.values.last?.text == "")
         #expect(silent.diagnostics.receivedSamples == 16_000)
         #expect(silent.diagnostics.decodeCount == 0)
         #expect(silent.diagnostics.revision == 1)
         #expect(silent.diagnostics.closed)
+    }
+
+    @Test("completion cannot reuse a valid preview after final decoding fails", arguments: [0, 1, 2])
+    func failedCompletionNeverReturnsPartial(mode: Int) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            if samples.count == 32_000 {
+                return .init(text: "draft", words: [.init(text: "draft", start: 0, end: 0.5)])
+            }
+            switch mode {
+            case 0: throw BufferedTranscriptionSession.Failure.invalidTimings
+            case 1: throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
+            default: return .init(text: "missing timing", words: [])
+            }
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        #expect(await updates.next()?.text == "draft")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await session.finishTranscript() == nil)
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.failures == 1)
+        #expect(output.values.last?.text == "draft")
+    }
+
+    @Test("cancelling completion returns without waiting for noncancellable inference")
+    func cancelledCompletionWait() async {
+        let decoder = BufferedHeldDecoder()
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var started = decoder.started.stream.makeAsyncIterator()
+        var completed = decoder.completed.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let completion = Task { await session.finishTranscript() }
+        #expect(await started.next() == 16_000)
+        completion.cancel()
+        #expect(await completion.value == nil)
+        #expect(session.diagnostics.closed)
+        await decoder.release()
+        _ = await completed.next()
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.values.isEmpty)
+        #expect(output.failures == 0)
+    }
+
+    @Test("cancellation in the final callback cannot publish a successful completion")
+    func finalCallbackCancellation() async {
+        let output = BufferedPreviewOutput()
+        let cancellation = BufferedReentrantCancellation()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "complete", words: [.init(text: "complete", start: 0, end: 0.5)])
+        }, onUpdate: {
+            output.update($0)
+            cancellation.cancel()
+        }, onFailure: { output.fail($0) })
+        cancellation.set(session)
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.values.last?.text == "complete")
+        #expect(output.failures == 0)
+    }
+
+    @Test("a session with no accepted audio has no completed transcript")
+    func emptyCompletion() async {
+        let session = BufferedTranscriptionSession(decode: { _ in
+            Issue.record("empty capture must not decode")
+            return .init(text: "", words: [])
+        }, onUpdate: { _ in Issue.record("empty capture must not emit a final hypothesis") },
+        onFailure: { _ in Issue.record("empty capture is not a decoder error") })
+        #expect(await session.finishTranscript() == nil)
     }
 
     @Test("word alignment rejects missing text instead of silently dropping it")
@@ -247,7 +379,7 @@ struct BufferedTranscriptionSessionTests {
         #expect(deferred?.committedText == committed?.committedText)
         #expect(!session.diagnostics.closed)
         #expect(output.failures == 0)
-        await session.finish() // No new audio can resolve the ambiguous occurrence.
+        #expect(await session.finishTranscript() == nil) // No new audio can resolve the ambiguous occurrence.
         #expect(output.failures == 1)
         #expect(output.values.last == deferred)
     }
@@ -686,7 +818,7 @@ struct BufferedTranscriptionSessionTests {
         #expect(deferred.text == first.text, "Deferral must not expose the hidden raw tail")
         session.enqueue(Array(repeating: 0.2, count: 16_000))
         _ = await updates.next()
-        await session.finish()
+        #expect(await session.finishTranscript() == "one two three four five")
         #expect(output.failures == 0)
         #expect(output.values.last?.text == "one two three four five")
         #expect(session.diagnostics.receivedSamples == 4 * 16_000)

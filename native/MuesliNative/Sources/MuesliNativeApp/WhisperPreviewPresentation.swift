@@ -7,7 +7,6 @@ struct WhisperPreviewPresentation {
     private var previousWordEnds: Set<Int> = []
     private var visible = ""
     private var visibleWordEnds: Set<Int> = []
-    private var heldSmallAddition = false
 
     mutating func present(committedText: String, tail: String,
                           words: [BufferedTranscriptionWord], final: Bool) -> String {
@@ -28,11 +27,18 @@ struct WhisperPreviewPresentation {
         if final {
             visible = full
             visibleWordEnds = fullEnds
-            heldSmallAddition = false
             return tail
         }
 
-        let stableEnd = max(0, agreed - committedCount)
+        let canKeepVisible = compatible && full.utf16.starts(with: visible.utf16)
+        // A rejected intervening hypothesis must not stall a later exact
+        // continuation of the displayed text. Reobserving that entire prefix
+        // confirms its complete words for presentation only. New speculative
+        // text still starts at that boundary and obeys the same draft limits.
+        let reobservedVisibleEnd = canKeepVisible
+            ? fullEnds.filter { $0 <= visible.utf16.count && visibleWordEnds.contains($0) }.max() ?? committedCount
+            : committedCount
+        let stableEnd = max(0, max(agreed, reobservedVisibleEnd) - committedCount)
         var desiredEnd = stableEnd
         var draftWords = 0
         for end in ends where end > stableEnd {
@@ -48,11 +54,9 @@ struct WhisperPreviewPresentation {
             draftWords += 1
         }
         let proposed = committedText + Self.slice(tail, from: 0, to: desiredEnd)
-        let canKeepVisible = compatible && full.utf16.starts(with: visible.utf16)
         if canKeepVisible, visible.utf16.starts(with: proposed.utf16) {
             // A commitment transfer or grouping boundary is not a reason to
             // erase text that still exactly matches the current hypothesis.
-            heldSmallAddition = false
             return Self.suffix(visible, after: committedCount)
         }
 
@@ -62,19 +66,9 @@ struct WhisperPreviewPresentation {
         let largeRevision = changedWords > 2 || rewritten > 24
         let confirmedReplacement = agreed >= min(visible.utf16.count, proposed.utf16.count)
         if compatible, largeRevision, !confirmedReplacement {
-            heldSmallAddition = false
             return Self.suffix(visible, after: committedCount)
         }
 
-        let extendsVisible = proposed.utf16.starts(with: visible.utf16)
-        let addedWords = fullEnds.filter { $0 > visible.utf16.count && $0 <= proposed.utf16.count }.count
-        if compatible, extendsVisible, !proposed.utf16.elementsEqual(visible.utf16), addedWords < 2,
-           agreed < proposed.utf16.count,
-           !heldSmallAddition {
-            heldSmallAddition = true
-            return Self.suffix(visible, after: committedCount)
-        }
-        heldSmallAddition = false
         visible = proposed
         visibleWordEnds = fullEnds.filter { $0 <= proposed.utf16.count }
         return Self.suffix(proposed, after: committedCount)

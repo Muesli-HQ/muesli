@@ -11411,7 +11411,10 @@ public final class MuesliController: NSObject {
                 },
                 onDiagnostic: { [weak self] event in
                     Task { @MainActor [weak self] in
-                        guard let self, self.bufferedDictationContext?.id == id else { return }
+                        guard let self else { return }
+                        let drainingCurrentSession = self.finalizingBufferedTarget != nil
+                            && previewTrace != nil && self.currentDictationLatencyTrace?.id == previewTrace?.id
+                        guard self.bufferedDictationContext?.id == id || drainingCurrentSession else { return }
                         self.markDictationLatency("buffered_\(event)", trace: previewTrace)
                     }
                 }
@@ -12013,12 +12016,13 @@ public final class MuesliController: NSObject {
         if let diagnostics = liveContext?.session.diagnostics {
             markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
         }
-        // The retained WAV is authoritative. Cancel provisional inference before
-        // entering the existing final ASR + cleanup pipeline; its backend gate
-        // drains any in-flight call before final decoding can start.
-        liveContext?.session.cancel()
+        // Healthy Whisper streams finish their remaining audio. Keep the WAV
+        // for incomplete streams; both paths run full-transcript cleanup.
+        let finishWhisperStream = liveContext?.backend.backend == "whisper"
+        if !finishWhisperStream { liveContext?.session.cancel() }
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
+            liveContext?.session.cancel()
             liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
@@ -12032,6 +12036,7 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
+            liveContext?.session.cancel()
             liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
@@ -12086,6 +12091,7 @@ public final class MuesliController: NSObject {
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
+                liveContext?.session.cancel()
                 try? FileManager.default.removeItem(at: wavURL)
                 if !isTestMode {
                     self.clearInFlightDictationTranscription(id: transcriptionTaskID)
@@ -12146,6 +12152,14 @@ public final class MuesliController: NSObject {
                         bodhanMeasurement = result.bodhanMeasurement
                     }
                 } else {
+                    let completedWhisperTranscript: String?
+                    if finishWhisperStream, let liveContext {
+                        completedWhisperTranscript = await BufferedDictationFinalization.transcript(from: liveContext.session)
+                        try Task.checkCancellation()
+                        self.markDictationLatency("buffered_final_asr:\(completedWhisperTranscript == nil ? "recording_fallback" : "stream_complete")", trace: completionLatencyTrace)
+                    } else {
+                        completedWhisperTranscript = nil
+                    }
                     let ppOption = self.runtimePostProcessorOption()
                     await self.configureTranscriptCleanupForRuntime(option: ppOption)
                     let result = try await self.transcriptionCoordinator.transcribeDictation(
@@ -12161,7 +12175,11 @@ public final class MuesliController: NSObject {
                         enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                         customWords: self.serializedCustomWords(),
                         appContext: promptContext,
-                        timingRequestID: completionLatencyTrace?.id.uuidString
+                        timingRequestID: completionLatencyTrace?.id.uuidString,
+                        completedWhisperTranscript: completedWhisperTranscript,
+                        onStage: { [weak self] stage in
+                            await self?.markDictationLatency("final_pipeline:\(stage)", trace: completionLatencyTrace)
+                        }
                     )
                     rawText = result.text
                     completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,
