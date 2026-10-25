@@ -404,6 +404,7 @@ public final class MuesliController: NSObject {
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
+    private let presetCycleHotkeyMonitor = HotkeyMonitor()
     private var isCapturingShortcut = false
     private let computerUseRecorder = RouteAwareDictationRecorder()
     private let quilRecorder = RouteAwareDictationRecorder()
@@ -838,6 +839,12 @@ public final class MuesliController: NSObject {
         }
         meetingRecordingHotkeyMonitor.onCancel = { [weak self] in
             DispatchQueue.main.async { self?.stopMeetingRecording() }
+        }
+        presetCycleHotkeyMonitor.onStart = { [weak self] in
+            DispatchQueue.main.async { self?.cycleTranscriptCleanupPreset() }
+        }
+        presetCycleHotkeyMonitor.onToggleStart = { [weak self] in
+            DispatchQueue.main.async { self?.cycleTranscriptCleanupPreset() }
         }
 
         reconcilePendingPushToTalkEnableIfReady()
@@ -3425,6 +3432,7 @@ public final class MuesliController: NSObject {
             return
         }
         updateConfig { $0.enablePostProcessor = enabled }
+        startPresetCycleHotkeyMonitorIfNeeded()
         preloadExperimentalTranscriptionFeatures()
     }
 
@@ -3627,7 +3635,12 @@ public final class MuesliController: NSObject {
             $0.activeTranscriptCleanupPromptId = preset.id
             $0.postProcessorSystemPrompt = preset.prompt
         }
-        preloadExperimentalTranscriptionFeatures()
+        if !config.enablePostProcessor {
+            setPostProcessorEnabled(true)
+        } else {
+            startPresetCycleHotkeyMonitorIfNeeded()
+            preloadExperimentalTranscriptionFeatures()
+        }
     }
 
     func createTranscriptCleanupPrompt(name: String, prompt: String) {
@@ -3640,7 +3653,11 @@ public final class MuesliController: NSObject {
             $0.activeTranscriptCleanupPromptId = preset.id
             $0.postProcessorSystemPrompt = preset.prompt
         }
-        preloadExperimentalTranscriptionFeatures()
+        if !config.enablePostProcessor {
+            setPostProcessorEnabled(true)
+        } else {
+            preloadExperimentalTranscriptionFeatures()
+        }
     }
 
     func updateTranscriptCleanupPrompt(id: String, name: String, prompt: String) {
@@ -4651,7 +4668,9 @@ public final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected dictation hotkey: \(result.message ?? "invalid")\n", stderr)
@@ -4712,7 +4731,9 @@ public final class MuesliController: NSObject {
             dictationHotkey: config.dictationHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected computer use hotkey because it matches dictation hotkey\n", stderr)
@@ -4735,7 +4756,9 @@ public final class MuesliController: NSObject {
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                presetCycleHotkey: config.presetCycleHotkey,
+                isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
             )
             guard resolution.result.didUpdate else {
                 fputs("[hotkeys] rejected computer use enable because it overlaps another shortcut\n", stderr)
@@ -4785,7 +4808,9 @@ public final class MuesliController: NSObject {
             hotkey,
             dictationHotkey: config.dictationHotkey,
             computerUseHotkey: config.computerUseHotkey,
-            isComputerUseEnabled: config.enableComputerUseHotkey
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected meeting recording hotkey due to conflict\n", stderr)
@@ -4807,7 +4832,9 @@ public final class MuesliController: NSObject {
                 config.meetingRecordingHotkey,
                 dictationHotkey: config.dictationHotkey,
                 computerUseHotkey: config.computerUseHotkey,
-                isComputerUseEnabled: config.enableComputerUseHotkey
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                presetCycleHotkey: config.presetCycleHotkey,
+                isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
             )
             guard result.didUpdate else { return result }
             updateConfig { $0.enableMeetingRecordingHotkey = true }
@@ -4820,6 +4847,77 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func updatePresetCycleHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
+        }
+        let result = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            hotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            quilHotkey: config.quilHotkey,
+            isQuilEnabled: config.enableQuilMode
+        )
+        guard result.didUpdate else {
+            fputs("[hotkeys] rejected preset cycle hotkey due to conflict\n", stderr)
+            return result
+        }
+        updateConfig { $0.presetCycleHotkey = hotkey }
+        presetCycleHotkeyMonitor.configure(hotkey)
+        return result
+    }
+
+    @discardableResult
+    func updatePresetCycleHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled {
+            if config.enableQuilMode,
+               ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.quilHotkey) {
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
+            }
+            let result = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+                config.presetCycleHotkey,
+                dictationHotkey: config.dictationHotkey,
+                computerUseHotkey: config.computerUseHotkey,
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                meetingRecordingHotkey: config.meetingRecordingHotkey,
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                quilHotkey: config.quilHotkey,
+                isQuilEnabled: config.enableQuilMode
+            )
+            guard result.didUpdate else { return result }
+            updateConfig { $0.enablePresetCyclingHotkey = true }
+            startPresetCycleHotkeyMonitorIfNeeded()
+            return result
+        } else {
+            updateConfig { $0.enablePresetCyclingHotkey = false }
+            presetCycleHotkeyMonitor.stop()
+            return .updated
+        }
+    }
+
+    var cleanupModelUsesFixedPrompt: Bool {
+        selectedPostProcessorBackend == .local
+            && PostProcessorOption.resolve(id: config.activePostProcessorId).inputFormat == .s1Mini
+    }
+
+    func cycleTranscriptCleanupPreset() {
+        guard !isCapturingShortcut, config.enablePostProcessor, config.enablePresetCyclingHotkey else { return }
+        guard !cleanupModelUsesFixedPrompt else {
+            fputs("[presets] preset cycle ignored: active cleanup model uses fixed prompt\n", stderr)
+            return
+        }
+        let presets = TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts)
+        guard !presets.isEmpty else { return }
+        let currentIndex = presets.firstIndex(where: { $0.id == config.activeTranscriptCleanupPromptId }) ?? -1
+        let nextIndex = (currentIndex + 1) % presets.count
+        let nextPreset = presets[nextIndex]
+        selectTranscriptCleanupPrompt(id: nextPreset.id)
+        indicator.showPresetNotification(nextPreset.name)
+    }
+
     @discardableResult
     func updateQuilHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         let result = ShortcutHotkeyPolicy.validateQuilHotkey(
@@ -4828,7 +4926,9 @@ public final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            presetCycleHotkey: config.presetCycleHotkey,
+            isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
         )
         guard result.didUpdate else { return result }
         updateConfig { $0.quilHotkey = hotkey }
@@ -4847,7 +4947,9 @@ public final class MuesliController: NSObject {
                 computerUseHotkey: config.computerUseHotkey,
                 isComputerUseEnabled: config.enableComputerUseHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                presetCycleHotkey: config.presetCycleHotkey,
+                isPresetCyclingEnabled: config.enablePostProcessor && config.enablePresetCyclingHotkey
             )
             guard result.didUpdate else { return result }
             validationResult = result
@@ -4884,6 +4986,8 @@ public final class MuesliController: NSObject {
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
+            config.presetCycleHotkey = .presetCycleDefault
+            config.enablePresetCyclingHotkey = true
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -4894,6 +4998,7 @@ public final class MuesliController: NSObject {
         quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
+        startPresetCycleHotkeyMonitorIfNeeded()
     }
 
     // MARK: - Onboarding
@@ -5083,7 +5188,7 @@ public final class MuesliController: NSObject {
 
     /// Recorder owns a temporary pause, never changes feature enablement/config.
     func beginShortcutCapture() -> Bool {
-        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, presetCycleHotkeyMonitor]
         guard !isCapturingShortcut, dictationState == .idle,
               !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
               !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
@@ -5097,7 +5202,7 @@ public final class MuesliController: NSObject {
     func endShortcutCapture() {
         guard isCapturingShortcut else { return }
         isCapturingShortcut = false
-        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, presetCycleHotkeyMonitor]
             .forEach { $0.resumeAfterShortcutCapture() }
     }
 
@@ -5109,7 +5214,7 @@ public final class MuesliController: NSObject {
     /// chord, and a registered chord would intercept Muesli's own paste.
     func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
         let candidate = Self.hotkey(for: chord)
-        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
+        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey, config.presetCycleHotkey]
             .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
     }
 
@@ -9315,6 +9420,25 @@ public final class MuesliController: NSObject {
     private func startIndependentDictationFeatureHotkeyMonitorsIfNeeded() {
         startComputerUseHotkeyMonitorIfNeeded()
         startQuilHotkeyMonitorIfNeeded()
+        startPresetCycleHotkeyMonitorIfNeeded()
+    }
+
+    private func startPresetCycleHotkeyMonitorIfNeeded() {
+        guard config.enablePostProcessor, config.enablePresetCyclingHotkey else {
+            presetCycleHotkeyMonitor.stop()
+            return
+        }
+        let conflicts = ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.dictationHotkey)
+            || (config.enableComputerUseHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.computerUseHotkey))
+            || (config.enableMeetingRecordingHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.meetingRecordingHotkey))
+            || (config.enableQuilMode && ShortcutHotkeyPolicy.hotkeysConflict(config.presetCycleHotkey, config.quilHotkey))
+        guard !conflicts else {
+            presetCycleHotkeyMonitor.stop()
+            fputs("[presets] preset cycle hotkey disabled because of hotkey conflict\n", stderr)
+            return
+        }
+        presetCycleHotkeyMonitor.configure(config.presetCycleHotkey)
+        presetCycleHotkeyMonitor.start()
     }
 
     private func startComputerUseHotkeyMonitorIfNeeded(
