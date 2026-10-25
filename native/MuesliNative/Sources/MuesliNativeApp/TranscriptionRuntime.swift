@@ -344,7 +344,7 @@ actor TranscriptionCoordinator {
             throw ParakeetUnifiedTranscriber.TranscriberError.notLoaded
         }
         try Task.checkCancellation()
-        try await parakeetUnifiedTranscriber.loadModels()
+        try await parakeetUnifiedTranscriber.loadModels(localOnly: true)
         try Task.checkCancellation()
         let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
         try Task.checkCancellation()
