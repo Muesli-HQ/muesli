@@ -40,6 +40,7 @@ struct LiveDictationTextTargetTests {
         var finalPastes: [String] = []
         var beforeFinalPaste: (() -> Void)?
         var finalPasteSucceeds = true
+        var delayPaste = false
         var afterFinalAcknowledgement: (() -> Void)?
 
         init(_ text: String = "Before  after", selection: NSRange = NSRange(location: 7, length: 0)) {
@@ -77,11 +78,11 @@ struct LiveDictationTextTargetTests {
         }
 
         var access: LiveDictationTextTarget.Access {
-            let paste: LiveDictationTextTarget.Access.FinalPaste? = finalPasteEnabled ? { [self] text, validate, acknowledge, _ in
+            let paste: LiveDictationTextTarget.Access.Paste? = finalPasteEnabled ? { [self] text, validate, acknowledge, _ in
                 beforeFinalPaste?()
                 guard validate(), finalPasteSucceeds else { return false }
                 finalPastes.append(text)
-                applyReplacement(text)
+                if delayPaste { pendingReplacement = text } else { applyReplacement(text) }
                 let acknowledged = await acknowledge()
                 afterFinalAcknowledgement?()
                 return acknowledged
@@ -140,8 +141,151 @@ struct LiveDictationTextTargetTests {
                               return true
                           })
                       }
-                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, finalPaste: paste)
+                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, paste: paste)
         }
+    }
+
+    @Test func codexLivePastePreservesSpacesAndOnlyReplacesChangedSuffix() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "This works", tail: " but this"))
+        #expect(await target.update(committedText: "This works", tail: " but this also works"))
+        #expect(editor.finalPastes == ["This works but this", " also works"])
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(editor.text == "Before This works but this also works after")
+        #expect(await target.finish(text: "This works, but this also works."))
+        #expect(editor.finalPastes.count == 3)
+        #expect(editor.text == "Before This works, but this also works. after")
+    }
+
+    @Test func livePasteChunksPreserveUnicodeAndSurroundingDocument() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        let text = String(repeating: "வணக்கம் 👩🏽‍💻 e\u{301}  ", count: 30) + "done"
+        #expect(await target.update(text: text))
+        #expect(editor.finalPastes.count > 2)
+        #expect(editor.finalPastes.allSatisfy { !$0.isEmpty && $0.utf16.count <= 128 })
+        #expect(editor.finalPastes.joined().utf16.elementsEqual(text.utf16))
+        #expect(editor.text.utf16.elementsEqual(("Before " + text + " after").utf16))
+        #expect(editor.selection == NSRange(location: 7 + text.utf16.count, length: 0))
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func livePastePreservesEmptyComposerSentinelContract() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "This time"))
+        #expect(await target.update(text: "This time it works"))
+        #expect(editor.text == "This time it works")
+        #expect(editor.finalPastes == ["This time", " it works"])
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func livePasteStillDefersLargeDraftRewritesAndProtectsFrozenWords() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        let draft = String(repeating: "a", count: 90)
+        #expect(await target.update(committedText: "hello", tail: " " + draft))
+        let writes = editor.finalPastes.count
+        #expect(await target.update(committedText: "hello", tail: " replacement"))
+        #expect(editor.finalPastes.count == writes)
+        #expect(editor.text == "Before hello " + draft + " after")
+        #expect(await target.update(committedText: "different", tail: " words") == false)
+        #expect(editor.finalPastes.count == writes)
+        #expect(await target.finish(text: "must not overwrite") == false)
+    }
+
+    @Test func oversizedLivePasteGraphemeRejectsBeforeSelectionOrClipboardWrite() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "prefix " + "a" + String(repeating: "\u{301}", count: 128)) == false)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func livePasteFailedLaterChunkNeverRetriesOrFallsBack() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.beforeFinalPaste = {
+            if editor.finalPastes.count == 1 { editor.finalPasteSucceeds = false }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: String(repeating: "word ", count: 60)) == false)
+        #expect(editor.finalPastes.count == 1)
+        #expect(editor.text == "Before " + editor.finalPastes[0] + " after")
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(await target.finish(text: "late cleanup") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func livePasteRejectsChangedReadbackWithoutAnotherChunkOrFinalFallback() async throws {
+        for change in 0..<5 {
+            let editor = Editor()
+            editor.transport = .targetedPaste
+            editor.finalPasteEnabled = true
+            editor.delayPaste = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = {
+                if change == 4 { return } // A missing ACK must time out, not repeat the paste.
+                editor.flushReplacement()
+                if change == 0 { editor.text += "user edit" }
+                if change == 1 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 2 { editor.focused = false }
+                if change == 3 { target.cancel() }
+            }
+            #expect(await target.update(text: String(repeating: "word ", count: 60)) == false)
+            #expect(editor.finalPastes.count == 1)
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(await target.finish(text: "late cleanup") == false)
+        }
+    }
+
+    @Test func livePasteFinalWaitsForPendingChunkAndPerformsCleanupOnce() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.delayPaste = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let text = String(repeating: "word ", count: 60) + "done"
+        let preview = Task { @MainActor in await target.update(text: text) }
+        while waiting == nil { await Task.yield() }
+        var finalStarted = false
+        let final = Task { @MainActor in
+            finalStarted = true
+            return await target.finish(text: text + ".")
+        }
+        while !finalStarted { await Task.yield() }
+        #expect(editor.finalPastes.count == 1)
+        #expect(await target.update(text: "late preview") == false)
+        editor.delayPaste = false
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value)
+        #expect(await final.value)
+        #expect(editor.finalPastes.dropLast().joined() == text)
+        #expect(editor.finalPastes.last == ".")
+        #expect(editor.text == "Before " + text + ". after")
+        #expect(editor.keyboardSteps.isEmpty)
     }
 
     @Test(arguments: [" ", ",", "\u{00A0}"])
@@ -1106,7 +1250,7 @@ struct LiveDictationTextTargetTests {
 
 
     @Test func transportPolicyOnlyOptsExactCodexBundleIntoKeyboard() {
-        #expect(LiveDictationTextTarget.transport(for: "com.openai.codex") == .targetedKeyboard)
+        #expect(LiveDictationTextTarget.transport(for: "com.openai.codex") == .targetedPaste)
         for id in [nil, "com.openai.codex.beta", "com.openai.chat", "com.apple.TextEdit"] as [String?] {
             #expect(LiveDictationTextTarget.transport(for: id) == .axSelectedText)
         }

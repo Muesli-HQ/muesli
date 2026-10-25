@@ -1,7 +1,8 @@
 import AppKit
 
-/// A single final replacement, after the target has selected and acknowledged
-/// its owned range. Clipboard ownership never substitutes for target readback.
+/// A guarded plain-text replacement used by bounded live updates and final
+/// cleanup, after the target has selected and acknowledged its owned range.
+/// Clipboard ownership never substitutes for target readback.
 enum LiveDictationFinalPaste {
     struct Flavor: Sendable, Equatable {
         let type: String

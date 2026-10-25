@@ -64,6 +64,85 @@ struct LiveDictationFinalPasteTests {
         #expect(fake.restores == 0)
     }
 
+    @Test("serialized live replacements restore all clipboard flavors between acknowledged operations")
+    func serializedAcknowledgedOperations() async {
+        let fake = FakeClipboard()
+        let texts = ["first", " second", " café 👩🏽‍💻"]
+        let acknowledgements = AsyncStream<Int>.makeStream()
+        var permits: [Int: CheckedContinuation<Bool, Never>] = [:]
+        var snapshots: [Paste.Snapshot] = []
+        var access = fake.access()
+        access.snapshot = {
+            let snapshot = Paste.Snapshot(generation: fake.generation, items: fake.items)
+            snapshots.append(snapshot)
+            return snapshot
+        }
+        let operation = Task { @MainActor in
+            var results: [Bool] = []
+            for (index, text) in texts.enumerated() {
+                results.append(await fake.perform(text: text, access: access) {
+                    await withCheckedContinuation { continuation in
+                        permits[index] = continuation
+                        acknowledgements.continuation.yield(index)
+                    }
+                })
+            }
+            return results
+        }
+        var iterator = acknowledgements.stream.makeAsyncIterator()
+        for index in texts.indices {
+            #expect(await iterator.next() == index)
+            // The payload stays available until this exact operation is ACKed.
+            // The caller must not overlap another stage while awaiting that ACK.
+            await Task.yield()
+            #expect(fake.stages == index + 1)
+            #expect(fake.posts.count == (index + 1) * 2)
+            #expect(fake.restores == index)
+            #expect(fake.items.first?.first?.data == Data(texts[index].utf8))
+            #expect(snapshots.count == index + 1)
+            #expect(snapshots.last?.items == FakeClipboard.original)
+            permits.removeValue(forKey: index)?.resume(returning: true)
+        }
+        #expect(await operation.value == [true, true, true])
+        #expect(snapshots.map(\.generation) == [1, 3, 5])
+        #expect(fake.restores == texts.count)
+        #expect(fake.items == FakeClipboard.original)
+        #expect(fake.ownership == nil)
+        #expect(fake.posts.map(\.pid) == Array(repeating: 42, count: 6))
+        #expect(fake.posts.map(\.type) == [.keyDown, .keyUp, .keyDown, .keyUp, .keyDown, .keyUp])
+    }
+
+    @Test("a copy between live replacements becomes the next operation's restoration baseline")
+    func externalCopyBetweenOperations() async {
+        let fake = FakeClipboard()
+        #expect(await fake.perform(text: "first"))
+        #expect(fake.items == FakeClipboard.original)
+        fake.externalCopy()
+        let copiedGeneration = fake.generation
+        var snapshots: [Paste.Snapshot] = []
+        var access = fake.access()
+        access.snapshot = {
+            let saved = Paste.Snapshot(generation: fake.generation, items: fake.items)
+            snapshots.append(saved)
+            return saved
+        }
+        for (index, text) in [" next", " last"].enumerated() {
+            let acknowledged = await fake.perform(text: text, access: access) {
+                #expect(fake.restores == index + 1)
+                #expect(fake.items.first?.first?.data == Data(text.utf8))
+                return true
+            }
+            #expect(acknowledged)
+            #expect(fake.items == FakeClipboard.newer)
+            #expect(fake.ownership == nil)
+        }
+        #expect(snapshots.map(\.items) == [FakeClipboard.newer, FakeClipboard.newer])
+        #expect(snapshots.map(\.generation) == [copiedGeneration, copiedGeneration + 2])
+        #expect(fake.stages == 3)
+        #expect(fake.restores == 3)
+        #expect(fake.posts.count == 6)
+    }
+
     @Test("unacknowledged dispatch retains payload for a delayed consumer")
     func failedAcknowledgement() async {
         let fake = FakeClipboard()

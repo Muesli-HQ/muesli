@@ -2,8 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Owns one revisable range for one hands-free session. Never writes AXValue,
-/// or types deletion keystrokes. Codex final cleanup uses one leased paste;
-/// live drafts use targeted keyboard bursts. Unsupported editors must
+/// or types deletion keystrokes. Codex uses bounded, acknowledged plain-text
+/// pastes for live drafts and one leased paste for final cleanup. Unsupported editors must
 /// use the caller's preview/history path instead of an unverified replacement.
 @MainActor
 final class LiveDictationTextTarget {
@@ -19,10 +19,11 @@ final class LiveDictationTextTarget {
     enum Transport: String {
         case axSelectedText
         case targetedKeyboard
+        case targetedPaste
     }
 
     static func transport(for bundleIdentifier: String?) -> Transport {
-        bundleIdentifier == "com.openai.codex" ? .targetedKeyboard : .axSelectedText
+        bundleIdentifier == "com.openai.codex" ? .targetedPaste : .axSelectedText
     }
 
     static func allowsEmptyLineSentinelRemoval(for bundleIdentifier: String?) -> Bool {
@@ -37,7 +38,7 @@ final class LiveDictationTextTarget {
 
     /// The transport is selected before any write and never changed on failure.
     struct Access {
-        typealias FinalPaste = (String, @escaping () -> Bool, @escaping () async -> Bool, @escaping (String) -> Void) async -> Bool
+        typealias Paste = (String, @escaping () -> Bool, @escaping () async -> Bool, @escaping (String) -> Void) async -> Bool
         let snapshot: () -> Snapshot?
         let isFocused: () -> Bool
         let select: (NSRange) -> Bool
@@ -45,14 +46,14 @@ final class LiveDictationTextTarget {
         let transport: Transport
         let keyboardPlan: ((String) -> [KeyboardStep]?)?
         let allowsEmptyLineSentinelRemoval: Bool
-        let finalPaste: FinalPaste?
+        let paste: Paste?
 
         init(snapshot: @escaping () -> Snapshot?, isFocused: @escaping () -> Bool,
              select: @escaping (NSRange) -> Bool, replaceSelection: @escaping (String) -> Bool,
              transport: Transport = .axSelectedText,
              keyboardPlan: ((String) -> [KeyboardStep]?)? = nil,
              allowsEmptyLineSentinelRemoval: Bool = false,
-             finalPaste: FinalPaste? = nil) {
+             paste: Paste? = nil) {
             self.snapshot = snapshot
             self.isFocused = isFocused
             self.select = select
@@ -60,7 +61,7 @@ final class LiveDictationTextTarget {
             self.transport = transport
             self.keyboardPlan = keyboardPlan
             self.allowsEmptyLineSentinelRemoval = allowsEmptyLineSentinelRemoval
-            self.finalPaste = finalPaste
+            self.paste = paste
         }
     }
 
@@ -103,7 +104,7 @@ final class LiveDictationTextTarget {
         self.readbackTiming = readbackTiming
         expected = snapshot
         ownedRange = snapshot.selection
-        canAcknowledgeEmptyLineSentinelRemoval = access.transport == .targetedKeyboard
+        canAcknowledgeEmptyLineSentinelRemoval = access.transport != .axSelectedText
             && access.allowsEmptyLineSentinelRemoval
             && snapshot.text.utf16.elementsEqual("\n".utf16)
             && snapshot.selection == NSRange(location: 0, length: 0)
@@ -177,7 +178,7 @@ final class LiveDictationTextTarget {
         guard await acquireOperation() else { return false }
         defer { releaseOperation() }
         let delivered: Bool
-        if let paste = access.finalPaste {
+        if let paste = access.paste {
             delivered = await performFinalPaste(text: text, paste: paste)
         } else {
             delivered = await performUpdate(text: text)
@@ -209,7 +210,9 @@ final class LiveDictationTextTarget {
         // Empty provisional hypotheses never erase existing or previously emitted text.
         if text.isEmpty { return true }
         let usesKeyboard = access.transport == .targetedKeyboard
-        guard !usesKeyboard || LiveDictationKeyboardInput.isSupported(text) else {
+        let usesPaste = access.transport == .targetedPaste
+        let usesEvents = usesKeyboard || usesPaste
+        guard !usesEvents || LiveDictationKeyboardInput.isSupported(text) else {
             return suspend("keyboard_text_unsupported")
         }
         let nextText = (expected.text as NSString).replacingCharacters(in: ownedRange, with: text)
@@ -222,12 +225,12 @@ final class LiveDictationTextTarget {
               previous[prefixCount].utf16.elementsEqual(proposed[prefixCount].utf16) {
             prefixCount += 1
         }
-        // Keyboard shortening retypes one retained grapheme instead of sending
-        // Delete. A live preview must never retype a frozen committed grapheme.
-        if usesKeyboard, prefixCount == proposed.count { prefixCount -= 1 }
+        // Event delivery replaces one retained grapheme instead of sending
+        // Delete or pasting empty text. Never replace a frozen committed grapheme.
+        if usesEvents, prefixCount == proposed.count { prefixCount -= 1 }
         let prefixLength = proposed.prefix(prefixCount).reduce(0) { $0 + $1.utf16.count }
         if prefixLength < frozenPrefixLength {
-            if maximumRewrittenGraphemes != nil, usesKeyboard,
+            if maximumRewrittenGraphemes != nil, usesEvents,
                text.utf16.count == frozenPrefixLength,
                text.utf16.elementsEqual(frozenCommittedText.utf16) {
                 onDiagnostic("preview_deferred_committed_boundary")
@@ -242,6 +245,13 @@ final class LiveDictationTextTarget {
         let editRange = NSRange(location: ownedRange.location + prefixLength,
                                 length: ownedRange.length - prefixLength)
         let replacement = proposed.dropFirst(prefixCount).joined()
+        let pasteChunks: [String]?
+        if usesPaste {
+            guard access.paste != nil, let chunks = Self.livePasteChunks(replacement), !chunks.isEmpty else {
+                return suspend("live_paste_unsupported")
+            }
+            pasteChunks = chunks
+        } else { pasteChunks = nil }
         let keyboardPlan: [KeyboardStep]?
         if usesKeyboard {
             // Plan only the changed suffix, so an agreed prefix never splits a
@@ -264,6 +274,9 @@ final class LiveDictationTextTarget {
                 _ = validateCurrent()
             }
         }
+        if let pasteChunks, let paste = access.paste {
+            return await performLivePasteUpdate(chunks: pasteChunks, editRange: editRange, paste: paste)
+        }
         if let keyboardPlan {
             return await performKeyboardUpdate(plan: keyboardPlan, prefixLength: prefixLength)
         }
@@ -283,10 +296,74 @@ final class LiveDictationTextTarget {
         return true
     }
 
+    /// Small payloads avoid handing a whole dictation to the host's large-paste
+    /// handling. Keep exact UTF-16 and grapheme boundaries; never retry uncertain
+    /// clipboard delivery through keystrokes or a different transport.
+    static func livePasteChunks(_ text: String) -> [String]? {
+        let maximumUnits = 128
+        var chunks: [String] = []
+        var chunk = ""
+        var count = 0
+        for character in text {
+            let value = String(character)
+            let units = value.utf16.count
+            guard units <= maximumUnits else { return nil }
+            if count + units > maximumUnits {
+                chunks.append(chunk)
+                chunk = ""
+                count = 0
+            }
+            chunk += value
+            count += units
+        }
+        if !chunk.isEmpty { chunks.append(chunk) }
+        return chunks
+    }
+
+    private func performLivePasteUpdate(chunks: [String], editRange: NSRange, paste: Access.Paste) async -> Bool {
+        let base = ownedRange.location
+        var range = editRange
+        for chunk in chunks {
+            guard validateCurrent() else { return false }
+            let selected = Snapshot(text: expected.text, selection: range)
+            let pasted = Snapshot(text: (expected.text as NSString).replacingCharacters(in: range, with: chunk),
+                selection: NSRange(location: range.location + chunk.utf16.count, length: 0))
+            let sentinelRemoved: Snapshot? = canAcknowledgeEmptyLineSentinelRemoval
+                && selected.text.utf16.elementsEqual("\n".utf16)
+                && selected.selection == NSRange(location: 0, length: 0)
+                ? Snapshot(text: chunk, selection: pasted.selection) : nil
+            guard access.select(range) else { return suspend("selection_write_failed") }
+            guard await awaitReadback(selected, stale: expected, stage: "selection") != nil else { return false }
+            canAcknowledgeEmptyLineSentinelRemoval = false
+            var acknowledged = false
+            let delivered = await paste(chunk, { [self] in
+                mutationIsCurrent() && access.snapshot() == selected
+            }, { [self] in
+                guard let observed = await awaitReadback(pasted, stale: selected, stage: "live_paste",
+                                                        alternate: sentinelRemoved) else { return false }
+                hasInsertedText = true
+                expected = observed
+                ownedRange = NSRange(location: base, length: observed.selection.location - base)
+                acknowledged = true
+                return true
+            }, { [self] event in onDiagnostic("live_paste:\(event)") })
+            guard delivered, acknowledged else {
+                if isClosed || isSuspended { return false }
+                return suspend("live_paste_failed")
+            }
+            // Restore of the clipboard can suspend after ACK. Recheck ownership
+            // even for the final chunk before reporting this preview as delivered.
+            guard validateCurrent() else { return false }
+            onDiagnostic("live_paste_acknowledged:characters=\(chunk.count)")
+            range = expected.selection
+        }
+        return true
+    }
+
     /// Cleanup can change earlier words, but unchanged leading/trailing text
     /// need not disappear. Select only the differing middle and paste it once.
     /// This is chosen at capture time, never a retry after an uncertain write.
-    private func performFinalPaste(text: String, paste: Access.FinalPaste) async -> Bool {
+    private func performFinalPaste(text: String, paste: Access.Paste) async -> Bool {
         guard validateCurrent() else { return false }
         if text.isEmpty { return true }
         guard LiveDictationKeyboardInput.isSupported(text) else {
@@ -606,7 +683,7 @@ private final class AccessibilityTarget {
               let subrole = optionalSubrole(element),
               subrole.isEmpty || subrole == kAXSearchFieldSubrole,
               settable(element, kAXSelectedTextRangeAttribute),
-              (transport == .targetedKeyboard || settable(element, kAXSelectedTextAttribute)),
+              (transport != .axSelectedText || settable(element, kAXSelectedTextAttribute)),
               string(element, kAXValueAttribute) != nil else { return false }
         // Rich editors which do not expose a string value and a writable selected
         // text range are unsupported. We never reconstruct surrounding formatting.
@@ -642,7 +719,7 @@ private final class AccessibilityTarget {
                 })
             }
         }, allowsEmptyLineSentinelRemoval: LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(
-            for: application.bundleIdentifier), finalPaste: transport == .targetedKeyboard ? { [self] text, validate, acknowledge, diagnostic in
+            for: application.bundleIdentifier), paste: transport != .axSelectedText ? { [self] text, validate, acknowledge, diagnostic in
                 await LiveDictationFinalPaste.perform(text: text, to: application.processIdentifier,
                     validateTarget: validate, acknowledge: acknowledge,
                     onDiagnostic: diagnostic)
