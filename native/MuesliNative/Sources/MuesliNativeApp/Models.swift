@@ -1991,8 +1991,8 @@ struct HotkeyConfig: Codable, Equatable {
     )
     static let presetCycleDefault = HotkeyConfig(
         keyCode: UInt16.max,
-        label: "⌃⌥P",
-        combinationModifiers: UInt(NSEvent.ModifierFlags([.control, .option]).rawValue),
+        label: "⌃P",
+        combinationModifiers: UInt(NSEvent.ModifierFlags.control.rawValue),
         combinationKeyCode: 35
     )
 

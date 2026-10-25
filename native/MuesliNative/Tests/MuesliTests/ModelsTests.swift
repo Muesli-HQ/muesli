@@ -1738,81 +1738,92 @@ struct AppConfigTests {
         #expect(decoded.presetCycleHotkey == config.presetCycleHotkey)
     }
 
-    @Test("preset cycle hotkey policy validation and conflict rejection")
-    func presetCycleHotkeyPolicyValidationAndConflict() {
+    @Test("all default shortcuts are mutually non-overlapping and policy rejects conflicts across all functions")
+    func shortcutDefaultsAndPolicyConflictRejection() {
+        let dictation = HotkeyConfig.default
+        let computerUse = HotkeyConfig.computerUseDefault
+        let quil = HotkeyConfig.quilDefault
+        let meetingRecording = HotkeyConfig.meetingRecordingDefault
         let presetCycle = HotkeyConfig.presetCycleDefault
-        #expect(ShortcutHotkeyPolicy.allowsCombination(presetCycle, action: .presetCycle))
-        #expect(!ShortcutHotkeyPolicy.allowsCombination(HotkeyConfig.default, action: .presetCycle))
 
-        // Preset cycling rejects conflict with dictation
-        let dictationConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
-            .default,
-            dictationHotkey: .default,
-            computerUseHotkey: .computerUseDefault,
+        // Verify default preset cycling shortcut is a single modifier plus key (⌃P)
+        #expect(presetCycle.label == "⌃P")
+        #expect(ShortcutHotkeyPolicy.allowsCombination(presetCycle, action: .presetCycle))
+        #expect(!ShortcutHotkeyPolicy.allowsCombination(dictation, action: .presetCycle))
+
+        // 1. Verify all default shortcuts across the app are pairwise non-overlapping
+        let defaults: [(name: String, hotkey: HotkeyConfig)] = [
+            ("Dictation", dictation),
+            ("Computer Use", computerUse),
+            ("Quill", quil),
+            ("Meeting Recording", meetingRecording),
+            ("Cycle Presets", presetCycle)
+        ]
+        for i in 0..<defaults.count {
+            for j in (i + 1)..<defaults.count {
+                let first = defaults[i]
+                let second = defaults[j]
+                #expect(
+                    !ShortcutHotkeyPolicy.hotkeysConflict(first.hotkey, second.hotkey),
+                    "Default for \(first.name) should not conflict with \(second.name)"
+                )
+            }
+        }
+
+        // 2. Generic conflict rejection: assigning an active shortcut to any function is rejected with conflict notification
+        let presetVsDictation = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
+            dictation,
+            dictationHotkey: dictation,
+            computerUseHotkey: computerUse,
             isComputerUseEnabled: false
         )
-        #expect(!dictationConflict.didUpdate)
+        #expect(presetVsDictation == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Dictation", hotkey: dictation)))
 
-        // Preset cycling rejects conflict with Quill when Quill is enabled
-        let quilConflict = ShortcutHotkeyPolicy.validatePresetCycleHotkey(
-            .quilDefault,
-            dictationHotkey: .default,
-            computerUseHotkey: .computerUseDefault,
-            isComputerUseEnabled: false,
-            quilHotkey: .quilDefault,
-            isQuilEnabled: true
-        )
-        #expect(!quilConflict.didUpdate)
-
-        // Dictation rejects conflict with preset cycling when preset cycling is enabled
         let dictationVsPreset = ShortcutHotkeyPolicy.validateDictationHotkey(
             presetCycle,
-            computerUseHotkey: .computerUseDefault,
+            computerUseHotkey: computerUse,
             isComputerUseEnabled: false,
             presetCycleHotkey: presetCycle,
             isPresetCyclingEnabled: true
         )
-        #expect(!dictationVsPreset.didUpdate)
+        #expect(dictationVsPreset == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Cycle Presets", hotkey: presetCycle)))
 
-        // Computer Use rejects conflict with preset cycling when preset cycling is enabled
         let cuaVsPreset = ShortcutHotkeyPolicy.validateComputerUseHotkey(
             presetCycle,
-            dictationHotkey: .default,
+            dictationHotkey: dictation,
             isComputerUseEnabled: false,
             presetCycleHotkey: presetCycle,
             isPresetCyclingEnabled: true
         )
-        #expect(!cuaVsPreset.didUpdate)
+        #expect(cuaVsPreset == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Cycle Presets", hotkey: presetCycle)))
 
-        // Quill rejects conflict with preset cycling when preset cycling is enabled
         let quilVsPreset = ShortcutHotkeyPolicy.validateQuilHotkey(
             presetCycle,
-            dictationHotkey: .default,
-            computerUseHotkey: .computerUseDefault,
+            dictationHotkey: dictation,
+            computerUseHotkey: computerUse,
             isComputerUseEnabled: false,
-            meetingRecordingHotkey: .meetingRecordingDefault,
+            meetingRecordingHotkey: meetingRecording,
             isMeetingRecordingEnabled: false,
             presetCycleHotkey: presetCycle,
             isPresetCyclingEnabled: true
         )
-        #expect(!quilVsPreset.didUpdate)
+        #expect(quilVsPreset == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Cycle Presets", hotkey: presetCycle)))
 
-        // Meeting recording rejects conflict with preset cycling when preset cycling is enabled
-        let meetingConflictResult = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+        let meetingVsPreset = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             presetCycle,
-            dictationHotkey: .default,
-            computerUseHotkey: .computerUseDefault,
+            dictationHotkey: dictation,
+            computerUseHotkey: computerUse,
             isComputerUseEnabled: false,
             presetCycleHotkey: presetCycle,
             isPresetCyclingEnabled: true
         )
-        #expect(!meetingConflictResult.didUpdate)
+        #expect(meetingVsPreset == .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Cycle Presets", hotkey: presetCycle)))
 
-        // When preset cycling is disabled, shortcuts are allowed
+        // 3. When the feature is disabled, the shortcut assignment is allowed
         let meetingAllowed = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             presetCycle,
-            dictationHotkey: .default,
-            computerUseHotkey: .computerUseDefault,
+            dictationHotkey: dictation,
+            computerUseHotkey: computerUse,
             isComputerUseEnabled: false,
             presetCycleHotkey: presetCycle,
             isPresetCyclingEnabled: false
