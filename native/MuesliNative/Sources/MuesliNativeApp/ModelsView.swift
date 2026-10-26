@@ -692,7 +692,7 @@ struct ModelsView: View {
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(displayedPostProcessorOptions) { option in
+                ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
@@ -710,7 +710,7 @@ struct ModelsView: View {
             ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
-            ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
+            ForEach(PostProcessorOption.all.filter(\.supportsQuil)) { option in
                 postProcModelCard(option, forQuill: true)
             }
         }
@@ -760,7 +760,6 @@ struct ModelsView: View {
     }
 
     private func postProcModelCard(_ option: PostProcessorOption, forQuill: Bool = false) -> some View {
-        let isRetired = PostProcessorOption.retired.contains(option)
         let isDownloaded = downloadedPostProcModels.contains(option.id)
         let isActive = isDownloaded && (forQuill
             ? appState.config.quilBackend == TranscriptCleanupBackendOption.local.backend && appState.config.quilModel == option.id
@@ -774,7 +773,7 @@ struct ModelsView: View {
                 brandLogo(option.logoResourceName)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
-                        Text(isRetired ? "Retired Cleanup Lite" : option.label)
+                        Text(option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -783,7 +782,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text(isRetired ? "This older model is no longer used. Remove it to free disk space." : forQuill ? "A local model for rewriting selected text and generating text at the cursor. Shares its download with cleanup." : option.description)
+                    Text(forQuill ? "A local model for rewriting selected text and generating text at the cursor. Shares its download with cleanup." : option.description)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -831,7 +830,7 @@ struct ModelsView: View {
                     .background(MuesliTheme.surfacePrimary)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
-                    if !isActive && !isRetired {
+                    if !isActive {
                         Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
@@ -1728,13 +1727,7 @@ struct ModelsView: View {
 
     private func checkDownloadedPostProcModels() {
         downloadedPostProcModels = PostProcessorOption.downloadedIDs
-            .union(PostProcessorOption.retired.filter(\.isDownloaded).map(\.id))
         controller.refreshCleanupAvailability()
-    }
-
-    /// Cached retired artifacts remain visible solely for storage removal.
-    private var displayedPostProcessorOptions: [PostProcessorOption] {
-        PostProcessorOption.all + PostProcessorOption.removableRetired(downloadedIDs: downloadedPostProcModels)
     }
 
     // MARK: - Actions

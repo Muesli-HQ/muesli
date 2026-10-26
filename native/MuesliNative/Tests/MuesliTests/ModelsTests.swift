@@ -669,17 +669,6 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
-    @Test("retired files are removable without becoming selectable")
-    func retiredFilesRemainRemovable() {
-        let ids = Set(PostProcessorOption.retired.map(\.id))
-        #expect(PostProcessorOption.removableRetired(downloadedIDs: ids) == PostProcessorOption.retired)
-        #expect(PostProcessorOption.removableRetired(downloadedIDs: []).isEmpty)
-        for option in PostProcessorOption.retired {
-            #expect(!PostProcessorOption.all.contains(option))
-            #expect(PostProcessorOption.runtimeOption(id: option.id, downloadedIDs: ids, hasDevOverride: false) == nil)
-        }
-    }
-
     @Test("retired Lite selections migrate without exposing old downloads")
     func retiredLiteMigration() throws {
         for old in [PostProcessorOption.legacyV2, .finetunedV3] {

@@ -1637,13 +1637,6 @@ struct PostProcessorOption: Identifiable, Equatable {
         filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
     static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
-    /// Retired artifacts are exposed only for storage removal, never selection.
-    static let retired: [PostProcessorOption] = [.legacyV2, .finetunedV3]
-
-    static func removableRetired(downloadedIDs: Set<String>) -> [PostProcessorOption] {
-        retired.filter { downloadedIDs.contains($0.id) }
-    }
-
     static let defaultOption: PostProcessorOption = .finetunedV4
     static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
 
