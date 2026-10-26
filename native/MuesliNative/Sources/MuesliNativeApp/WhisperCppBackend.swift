@@ -133,11 +133,37 @@ actor WhisperKitTranscriber {
             }
             previousStart = word.start
         }
+        let aligned: BufferedTranscriptionWindow
         do {
-            return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+            aligned = try BufferedTranscriptionWindow.aligned(text: text, words: words)
         } catch {
             throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
         }
+        // A public pause/resume fixture produced three or more lexical words
+        // aligned to the same zero-duration point, poisoning an otherwise stable
+        // prefix. This narrow preview-quality check is not a speech detector or
+        // a general hallucination rule: isolated/pairs of quantized zero words
+        // remain valid, as does arbitrarily short positive-duration speech.
+        var collapsedTime: Double?
+        var collapsedLexicalCount = 0
+        for word in aligned.words {
+            // Separate punctuation has no independent lexical duration. It must
+            // neither trigger this guard nor conceal a collapsed lexical run.
+            guard word.text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) else { continue }
+            guard word.start == word.end else {
+                collapsedTime = nil
+                collapsedLexicalCount = 0
+                continue
+            }
+            collapsedLexicalCount = collapsedTime == word.start ? collapsedLexicalCount + 1 : 1
+            collapsedTime = word.start
+            if collapsedLexicalCount >= 3 {
+                // Keep every token and the PCM pending for a later hypothesis;
+                // never filter words or fabricate replacement timestamps.
+                throw BufferedTranscriptionPreviewDeferral.collapsedWordTimings
+            }
+        }
+        return aligned
     }
 
     /// Build WhisperKit decode options for the loaded model.

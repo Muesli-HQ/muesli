@@ -222,6 +222,61 @@ struct BufferedTranscriptionSessionTests {
         assertMonotonicCommittedPrefixes(output.values)
     }
 
+    @Test("surrounding punctuation and spaces do not change an owned word's identity", arguments: ["- Hey,", "— « Hey, »", "... Hey,"])
+    func adornedOwnedAnchorKeepsExactTimedOccurrence(adorned: String) async {
+        func window(_ first: String) -> BufferedTranscriptionWindow {
+            let words: [BufferedTranscriptionWord] = [
+                .init(text: first, start: 2.7, end: 3.68),
+                .init(text: "before", start: 3.68, end: 4.32),
+                .init(text: "Hey,", start: 5.2, end: 5.6)
+            ]
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(adorned), window(adorned), window("Hey,")])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 6 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == adorned)
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == adorned + " before")
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == adorned + " before Hey,")
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("internal punctuation and punctuation-only tokens remain distinct anchor identities", arguments: [false, true])
+    func anchorIdentityPreservesInternalPunctuation(punctuationOnly: Bool) async {
+        let original = punctuationOnly ? "-" : "can't"
+        let revised = punctuationOnly ? "," : "cant"
+        func window(_ first: String) -> BufferedTranscriptionWindow {
+            let words: [BufferedTranscriptionWord] = [
+                .init(text: first, start: 2.7, end: 3.68),
+                .init(text: "before", start: 3.68, end: 4.32)
+            ]
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(original), window(original), window(revised)])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 6 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == stable?.committedText)
+        #expect(output.diagnostics.contains { $0.contains("changed_anchor_waiting") })
+        await session.finish()
+        #expect(output.failures == 1)
+    }
+
     @Test("uniform jitter on dense repeated words fails rather than choosing the wrong occurrence", arguments: [-0.2, 0.2])
     func ambiguousRepeatedAnchors(shift: Double) async {
         func window(_ shift: Double) -> BufferedTranscriptionWindow {
@@ -327,6 +382,137 @@ struct BufferedTranscriptionSessionTests {
         await session.finish()
         #expect(output.failures == 0)
         #expect(output.values.last?.text == "Done. Next")
+    }
+
+    @Test("a pause rollover retires owned words whose onset left the retained PCM", arguments: [12.1, 15.1])
+    func pauseRolloverRetiresStraddlingAnchor(resumeAt: Double) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let events: [(String, Double, Double)] = [("go", 0.1, 0.5), ("go", resumeAt, resumeAt + 0.4), ("again", 16.1, 16.5)]
+            let words: [BufferedTranscriptionWord] = events.compactMap { text, start, finish in
+                guard start >= base, finish <= end else { return nil }
+                // An already-owned word can acquire a trailing-silence duration.
+                // At 15s this creates an anchor at 0.1–14.8s, then crops to 11s.
+                let revisedEnd = start == 0.1 && samples.count == 240_000 ? 14.8 : finish
+                return .init(text: text, start: start - base, end: revisedEnd - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(2 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        for second in 3...24 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            guard await updates.next() != nil else { break }
+        }
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.text == "go go again")
+        #expect(!output.diagnostics.contains { $0.contains("missing_anchor") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("five minutes of pauses and repeated resumed words retain every occurrence")
+    func fiveMinutePauseResumeKeepsRepeatedSpeech() async {
+        let output = BufferedPreviewOutput()
+        let events: [(String, Double, Double)] = (0..<7).flatMap { cycle in
+            let base = Double(cycle * 50)
+            return [("go", base + 0.1, base + 0.5), ("go", base + 15.1, base + 15.5),
+                    ("again.", base + 16.1, base + 16.5)]
+        }
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            var words: [BufferedTranscriptionWord] = events.compactMap { text, start, finish in
+                guard start >= base, finish <= end else { return nil }
+                return .init(text: text, start: start - base, end: finish - base)
+            }
+            if samples.count == 240_000, let last = words.last,
+               last.end + 5 < Double(samples.count) / 16_000 {
+                // The final owned token's onset stays fixed while its duration
+                // absorbs a long pause, reproducing the same seam repeatedly.
+                words[words.count - 1] = .init(text: last.text, start: last.start, end: 14.8)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(2 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        var lastSecond = 2
+        for second in 3...330 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            guard await updates.next() != nil else { break }
+            lastSecond = second
+        }
+        await session.finish()
+        #expect(lastSecond == 330)
+        #expect(output.failures == 0)
+        #expect(output.values.last?.text == events.map { $0.0 }.joined(separator: " "))
+        #expect(!output.diagnostics.contains { $0.contains("missing_anchor") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("rollover preserves preceding context for an owned onset expanding across a pause")
+    func rolloverRetainsPrecedingAnchorForPauseExpansion() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let shifted = base > 0
+            // Public-fixture seam: last owned "prior" at 11.82–11.92 becomes
+            // "prior" at 11.46–11.92; next "to" at 11.92–12.16 remains exact.
+            // Cropping to 10.82 clips preceding "complete" at 10.72–11.52;
+            // retaining its onset lets the existing two-sided rule prove this seam.
+            let events: [(String, Double, Double)] = [
+                ("we", 10.14, 10.44), ("should", 10.44, 10.72),
+                ("complete", max(10.72, base > 10.72 ? base + 0.24 : 10.72), shifted ? 11.46 : 11.52),
+                ("prior", shifted ? 11.46 : 11.82, 11.92),
+                ("to", 11.92, 12.16), ("cutting", 12.16, 12.46),
+                ("a", 12.46, 12.62), ("release.", 12.62, 13.22)
+            ]
+            let words: [BufferedTranscriptionWord] = events.compactMap { text, start, end in
+                guard start >= base, end <= base + Double(samples.count) / 16_000 else { return nil }
+                return .init(text: text, start: start - base, end: end - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(15 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "we should complete prior")
+        session.enqueue(((15 * 16_000)..<(16 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "we should complete prior to cutting a release.")
+        #expect(!output.diagnostics.contains { $0.contains("changed_boundary") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("preceding-anchor context cannot pin a rolling window at its origin")
+    func precedingAnchorRetentionFallsBackForLongSpan() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let events: [(String, Double, Double)] = [
+                ("long", 0.2, 10.8), ("word", 11.0, 11.5), ("resumed", 12.5, 13.0)
+            ]
+            let words: [BufferedTranscriptionWord] = events.compactMap { text, start, finish in
+                guard start >= base, finish <= end else { return nil }
+                return .init(text: text, start: start - base, end: finish - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(15 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "long word")
+        session.enqueue(((15 * 16_000)..<(16 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "long word resumed")
+        #expect(!output.diagnostics.contains { $0.contains("no_roll_progress") })
     }
 
     @Test("a permanently substituted anchor needs two fresh observations and keeps frozen text")
@@ -440,6 +626,113 @@ struct BufferedTranscriptionSessionTests {
         #expect(output.failures == 0)
         #expect(output.values.last?.committedText == "net new code and analyzing if difference.")
         #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("a pause may move between adjacent owned words while the surrounding seam stays fixed")
+    func adjacentOwnedWordsRedistributePause() async {
+        let initial: [BufferedTranscriptionWord] = [
+            .init(text: "environment", start: 1, end: 3.26),
+            .init(text: "just", start: 3.26, end: 3.38),
+            .init(text: "in", start: 3.38, end: 4.08),
+            .init(text: "our", start: 4.08, end: 4.32),
+            .init(text: "review", start: 5.1, end: 5.3)
+        ]
+        var revised = initial
+        revised[0] = .init(text: "environment", start: 1, end: 1.94)
+        revised[1] = .init(text: "just", start: 1.94, end: 3.38)
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(initial), window(initial), window(revised)])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 86_400)) // 5.4 seconds
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "environment just")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "environment just in our")
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "environment just in our review")
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("pause redistribution still requires current adjacency and both surrounding anchors",
+          arguments: ["overlapping_previous", "moved_previous", "changed_previous", "changed_following", "inserted_repeat", "split_owned_word"])
+    func redistributedPauseRequiresUnchangedSurroundingSeam(change: String) async {
+        let initial: [BufferedTranscriptionWord] = [
+            .init(text: "environment", start: 1, end: 3.26),
+            .init(text: change == "split_owned_word" ? "cannot" : "just", start: 3.26, end: 3.38),
+            .init(text: "in", start: 3.38, end: 4.08),
+            .init(text: "our", start: 4.08, end: 4.32)
+        ]
+        var revised = initial
+        revised[0] = .init(text: change == "changed_previous" ? "code" : "environment",
+                           start: change == "moved_previous" ? 0.6 : 1,
+                           end: change == "overlapping_previous" ? 2.4 : 1.94)
+        revised[1] = .init(text: "just", start: 1.94, end: 3.38)
+        if change == "changed_following" { revised[2] = .init(text: "and", start: 3.38, end: 4.08) }
+        if change == "inserted_repeat" || change == "split_owned_word" {
+            revised[1] = .init(text: change == "split_owned_word" ? "can" : "just", start: 1.94, end: 3.0)
+            revised.insert(.init(text: change == "split_owned_word" ? "not" : "just", start: 3.0, end: 3.38), at: 2)
+        }
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(initial), window(initial), window(revised)])
+        let session = BufferedTranscriptionSession(decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 86_400))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == stable?.committedText)
+        #expect(output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        session.cancel()
+    }
+
+    @Test("Whisper collapsed timing retries cannot poison the committed prefix")
+    func collapsedWhisperPreviewRetainsDraftAndRecovers() async {
+        let clean: [BufferedTranscriptionWord] = [
+            .init(text: "Diff", start: 2.98, end: 3.68),
+            .init(text: "means", start: 3.68, end: 4.16),
+            .init(text: "comparing", start: 5.86, end: 6.42)
+        ]
+        let poison: [BufferedTranscriptionWord] = [
+            .init(text: "What", start: 2.6, end: 3.44),
+            .init(text: "is", start: 3.44, end: 3.44),
+            .init(text: "the", start: 3.44, end: 3.44),
+            .init(text: "difference?", start: 3.44, end: 3.44),
+            .init(text: "Diff", start: 3.44, end: 3.62),
+            .init(text: "means", start: 3.62, end: 3.94),
+            .init(text: "comparing", start: 3.94, end: 6.42)
+        ]
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let words = (8...10).contains(samples.count / 16_000) ? poison : clean
+            return try WhisperKitTranscriber.previewWindow(text: words.map(\.text).joined(separator: " "),
+                words: words, sampleCount: samples.count)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 7 * 16_000))
+        #expect(await updates.next()?.text == "Diff means comparing")
+        for _ in 8...12 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next()?.text == "Diff means comparing")
+        }
+        await session.finish()
+        #expect(output.failures == 0)
+        #expect(output.values.last?.committedText == "Diff means comparing")
+        #expect(output.diagnostics.filter { $0 == "preview_deferred:collapsed_word_timings" }.count == 3)
+        #expect(session.diagnostics.receivedSamples == 12 * 16_000)
         assertMonotonicCommittedPrefixes(output.values)
     }
 
@@ -620,7 +913,7 @@ struct BufferedTranscriptionSessionTests {
     }
 
     @Test("recoverable preview errors preserve text and queued PCM until fresh evidence arrives",
-          arguments: [BufferedTranscriptionPreviewDeferral.missingWordTimings, .textAlignmentMismatch, .invalidWordTimings])
+          arguments: [BufferedTranscriptionPreviewDeferral.missingWordTimings, .textAlignmentMismatch, .invalidWordTimings, .collapsedWordTimings])
     func previewDeferralRecoversWithPendingAudio(reason: BufferedTranscriptionPreviewDeferral) async {
         let output = BufferedPreviewOutput()
         let decoder = BufferedDeferralOracle(reason: reason, rejectFrom: 7, recoverAt: 9, holdAt: 7 * 16_000)

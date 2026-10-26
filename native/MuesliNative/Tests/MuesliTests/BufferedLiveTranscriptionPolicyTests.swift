@@ -83,6 +83,43 @@ struct BufferedLiveTranscriptionPolicyTests {
         }
     }
 
+    @Test("Whisper defers lexical runs collapsed onto one timestamp", arguments: [3, 6, 10])
+    func whisperPreviewDefersCollapsedLexicalRun(zeroWords: Int) {
+        var words: [BufferedTranscriptionWord] = [.init(text: "What", start: 2.6, end: 3.44)]
+        let spellings = ["is", "the", "difference?"]
+        for index in 0..<zeroWords {
+            words.append(.init(text: spellings[index % spellings.count], start: 3.44, end: 3.44))
+            // Punctuation has no independent acoustic support and cannot hide
+            // a collapsed lexical run merely by becoming a separate token.
+            if index == 1 { words.append(.init(text: ",", start: 3.44, end: 3.44)) }
+        }
+        words += [.init(text: "Diff", start: 3.44, end: 3.62),
+                  .init(text: "means", start: 3.62, end: 3.94)]
+        #expect(throws: BufferedTranscriptionPreviewDeferral.collapsedWordTimings) {
+            try WhisperKitTranscriber.previewWindow(text: words.map(\.text).joined(separator: " "),
+                words: words, sampleCount: 8 * 16_000)
+        }
+    }
+
+    @Test("Whisper preserves isolated zero words, pairs, distinct times, and short positive multilingual timing")
+    func whisperPreviewAcceptsNoncollapsedQuantizedWords() throws {
+        let variants: [[BufferedTranscriptionWord]] = [
+            [.init(text: "and", start: 0.1, end: 0.1), .init(text: "then", start: 0.1, end: 0.4)],
+            [.init(text: "is", start: 0.1, end: 0.1), .init(text: "the", start: 0.1, end: 0.1), .init(text: "difference", start: 0.1, end: 0.5)],
+            [.init(text: "one", start: 0.1, end: 0.1), .init(text: "two", start: 0.2, end: 0.2), .init(text: "three", start: 0.3, end: 0.3)],
+            [.init(text: "வணக்கம்", start: 0.1, end: 0.1), .init(text: "உலகம்", start: 0.1, end: 0.12), .init(text: "இன்று", start: 0.12, end: 0.14)],
+            [.init(text: "fast", start: 0.1, end: 0.12), .init(text: "spoken", start: 0.12, end: 0.14), .init(text: "words", start: 0.14, end: 0.16)],
+            [.init(text: "-", start: 0.1, end: 0.1), .init(text: ",", start: 0.1, end: 0.1), .init(text: "!", start: 0.1, end: 0.1)]
+        ]
+        for words in variants {
+            let text = words.map(\.text).joined(separator: " ")
+            let window = try WhisperKitTranscriber.previewWindow(text: text, words: words, sampleCount: 16_000)
+            #expect(window.text == text)
+            #expect(window.words.map(\.start) == words.map(\.start))
+            #expect(window.words.map(\.end) == words.map(\.end))
+        }
+    }
+
     @Test("All four batch Parakeet models and catalog Whisper models support buffered previews")
     func supportedModels() {
         let supported = [BackendOption.parakeetMultilingual, .parakeetEnglish, .parakeetRedux, .parakeetUnified]

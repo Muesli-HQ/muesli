@@ -6,6 +6,7 @@ enum BufferedTranscriptionPreviewDeferral: String, Error, Sendable {
     case missingWordTimings = "missing_word_timings"
     case textAlignmentMismatch = "text_alignment_mismatch"
     case invalidWordTimings = "invalid_word_timings"
+    case collapsedWordTimings = "collapsed_word_timings"
 }
 
 /// Word times are relative to the start of the PCM supplied to the decoder.
@@ -331,6 +332,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // windows now freeze agreed prefixes instead of rewriting whole sentences.
         let commitCount = snapshot.final ? words.count : rolls ? matureCount : min(matureCount, agreementCount)
         var retainFrom = base + duration
+        var retainsLexicalAnchor = false
         if commitCount > 0 {
             let committed = Array(words.prefix(commitCount))
             let last = committed[committed.count - 1]
@@ -340,6 +342,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             // including when a long word starts before the usual left context.
             retainFrom = min(state.ownedUntil, next?.start ?? state.ownedUntil,
                              last.start)
+            retainsLexicalAnchor = true
             state.committedText += join(committed, after: state.committedText)
             state.committedAnchors = Array((state.committedAnchors + committed).suffix(4))
             if rolls, (next?.start ?? matureUntil) >= matureUntil,
@@ -348,9 +351,16 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 // anchor. Retain its right context and own only the silent lead.
                 state.ownedUntil = matureUntil
                 retainFrom = matureUntil
+                retainsLexicalAnchor = false
             }
         } else if rolls {
-            if words.isEmpty || (words.first?.start ?? base) >= matureUntil {
+            let hasSilentLead = state.committedAnchors.last.map {
+                $0.end + Double(configuration.leftContextSamples) / 16_000
+                    + configuration.maximumTimestampDrift < matureUntil
+            } ?? true
+            // A next word at the maturity cutoff is not itself evidence of a
+            // long pause. Preserve nearby owned onsets and their timing margin.
+            if words.isEmpty || ((words.first?.start ?? base) >= matureUntil && hasSilentLead) {
                 // There is no unowned speech in this leading span. Its old anchors
                 // may leave the retained PCM; the absolute time boundary then owns it.
                 state.ownedUntil = max(state.ownedUntil, matureUntil)
@@ -360,6 +370,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 // straddles the maturity cutoff. Previously owned audio still
                 // provides safe progress; no additional commitment is required.
                 retainFrom = min(state.ownedUntil, words.first?.start ?? state.ownedUntil, lastOwned.start)
+                retainsLexicalAnchor = true
             } else {
                 throw AlignmentRecovery(reason: .noRollProgress)
             }
@@ -372,12 +383,25 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.followingAnchor = tailWords.first
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         if rolls {
+            if retainsLexicalAnchor, let preceding = state.committedAnchors.dropLast().last {
+                // An owned onset can move into a preceding pause after cropping.
+                // Keep its predecessor so the existing two-sided boundary check
+                // still has evidence. Long words/gaps must not pin the window:
+                // retain this extra context only when a full update can advance.
+                let contextualStart = min(retainFrom, preceding.start)
+                let contextualDiscard = Int(contextualStart * 16_000) - configuration.leftContextSamples - state.offset
+                if contextualDiscard >= configuration.updateSamples { retainFrom = contextualStart }
+            }
             let discard = Int(retainFrom * 16_000) - configuration.leftContextSamples - state.offset
             guard discard > 0, discard <= state.audio.count else { throw AlignmentRecovery(reason: .noRollProgress) }
             state.audio.removeFirst(discard)
             state.offset += discard
             let newBase = Double(state.offset) / 16_000
-            state.committedAnchors.removeAll { $0.end < newBase }
+            // The matcher needs an anchor's complete onset in retained PCM.
+            // An owned word's end can extend through a pause and straddle this
+            // crop even though its onset is gone. Keeping that ineligible anchor
+            // would block the existing absolute-time ownership path forever.
+            state.committedAnchors.removeAll { $0.start < newBase }
         }
         if state.recovering {
             state.recovering = false
@@ -431,14 +455,16 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             for length in stride(from: anchors.count, through: 2, by: -1) {
                 let suffix = Array(anchors.suffix(length))
                 let last = suffix[length - 1]
-                let preceding = suffix[length - 2]
                 let candidates = words.indices.filter { index in
                     guard index + 1 >= length, index + 1 < words.count else { return false }
                     let current = words[index]
                     let next = words[index + 1]
                     guard anchorIdentity(current.text) == anchorIdentity(last.text),
                           abs(current.end - last.end) <= configuration.maximumTimestampDrift,
-                          current.start >= max(preceding.end, words[index - 1].end) - configuration.maximumTimestampDrift,
+                          // A pause may move from the preceding word's end to
+                          // this onset. Check their current adjacency; the fixed
+                          // outer onsets/end and lexical neighbors prove the seam.
+                          current.start >= words[index - 1].end - configuration.maximumTimestampDrift,
                           anchorIdentity(next.text) == anchorIdentity(following.text),
                           abs(next.start - following.start) <= configuration.maximumTimestampDrift else { return false }
                     return zip(suffix.dropLast(), words[(index + 1 - length)..<index]).allSatisfy {
@@ -506,7 +532,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.previousTail = [] // Fresh two-hypothesis agreement after recovery.
         state.recovering = true
         state.recoveryCandidate = recovery.candidate
-        onDiagnostic("ownership_recovery:\(recovery.reason.rawValue):samples=\(snapshot.audio.count)")
+        let eligibleAnchors = state.committedAnchors.filter { $0.start >= Double(snapshot.offset) / 16_000 }.count
+        onDiagnostic("ownership_recovery:\(recovery.reason.rawValue):samples=\(snapshot.audio.count):originSamples=\(snapshot.offset):anchorCount=\(state.committedAnchors.count):eligibleAnchorCount=\(eligibleAnchors)")
         guard !state.closed else { return }
         if snapshot.final || snapshot.audio.count >= recoveryWindowLimit {
             onDiagnostic("ownership_recovery_exhausted:\(snapshot.final ? "final" : "window_limit")")
@@ -524,7 +551,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Already committed punctuation/case cannot be rewritten. Ignore those
         // differences only when finding its timed occurrence in a fresh decode.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lexical = trimmed.trimmingCharacters(in: .punctuationCharacters).lowercased()
+        // Adornment may alternate punctuation and spaces ("- Hey,").
+        // Trim their union at the edges only; internal punctuation stays lexical.
+        let lexical = trimmed.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines)).lowercased()
         return lexical.isEmpty ? trimmed : lexical
     }
 

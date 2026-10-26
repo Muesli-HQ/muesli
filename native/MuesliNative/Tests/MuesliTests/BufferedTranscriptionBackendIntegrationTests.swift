@@ -280,6 +280,90 @@ struct BufferedTranscriptionBackendIntegrationTests {
         }
     }
 
+    /// Public speech delivered at microphone speed, including pauses longer than
+    /// a normal preview window. This exercises the engine independently of any
+    /// editor viewport; it never accesses the clipboard or the user's composer.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_LONG_PAUSES"] == "1"
+                   && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"] != nil))
+    func whisperSustainsFiveMinutesWithLongPauses() async throws {
+        let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"])
+        let model = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_MODEL"] ?? "large-v3-v20240930_626MB"
+        try #require(ManagedASRModelPlans.whisperKit(modelName: model).isComplete(), "Requires an installed model; no downloads")
+        let converter = AudioConverter()
+        let names = ["01-validation-request-21.4s.wav", "02-release-readiness-19.8s.wav", "03-diff-explanation-16.9s.wav"]
+        let recordings = try names.map { try converter.resampleAudioFile(URL(fileURLWithPath: directory).appendingPathComponent($0)) }
+        var samples: [Float] = []
+        var speechRanges: [Range<Int>] = []
+        for _ in 0..<4 {
+            for (index, recording) in recordings.enumerated() {
+                let start = samples.count
+                samples += recording
+                speechRanges.append(start..<samples.count)
+                samples += Array(repeating: 0, count: [2, 8, 18][index] * 16_000)
+            }
+        }
+        try #require(samples.count >= 300 * 16_000)
+        let output = BufferedSmokeOutput()
+        var configuration = BufferedTranscriptionSession.Configuration()
+        configuration.smoothWhisperPreviews = true
+        let transcriber = WhisperKitTranscriber()
+        try await transcriber.loadModel(modelName: model)
+        let verbose = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1"
+        let session = BufferedTranscriptionSession(configuration: configuration, decode: { chunk in
+            output.recordDecode(sampleCount: chunk.count)
+            let window = try await transcriber.transcribePreview(samples: chunk, expectedModel: model)
+            if verbose { print("[long-pause] samples=\(chunk.count) words=\(window.words)") }
+            return window
+        }, onUpdate: { output.receive($0) }, onFailure: { output.fail($0) },
+        onDiagnostic: { print("[long-pause] diagnostic=\($0)") })
+        do {
+            let clock = ContinuousClock()
+            let start = clock.now
+            var priorText = ""
+            var lastChangedAt = 0
+            var checkedUpdates = 0
+            var committed = ""
+            for offset in stride(from: 0, to: samples.count, by: 1_600) {
+                try await clock.sleep(until: start.advanced(by: .milliseconds(offset / 16)))
+                try #require(output.failure == nil, "Streaming failed: \(output.failure ?? "unknown")")
+                let end = min(offset + 1_600, samples.count)
+                session.enqueue(Array(samples[offset..<end]))
+                let updates = output.updates
+                for update in updates.dropFirst(checkedUpdates) {
+                    #expect(update.committedText.utf16.starts(with: committed.utf16))
+                    committed = update.committedText
+                }
+                checkedUpdates = updates.count
+                let text = output.lastText
+                if text != priorText { lastChangedAt = end; priorText = text }
+                if let speech = speechRanges.first(where: { $0.contains(offset) }),
+                   end - max(lastChangedAt, speech.lowerBound) > 12 * 16_000 {
+                    Issue.record("No visible progress for 12 seconds of resumed speech at audio second \(end / 16_000)")
+                    throw BufferedTranscriptionSession.Failure.ownershipUnresolved
+                }
+                if offset % (10 * 16_000) == 0 {
+                    print("[long-pause] audio_s=\(offset / 16_000) text_chars=\(text.count) revisions=\(updates.count)")
+                }
+            }
+            await session.finish()
+            #expect(output.failure == nil)
+            #expect(session.diagnostics.receivedSamples == samples.count)
+            if verbose { print("[long-pause] final_text=\(output.lastText)") }
+            let words = output.lastText.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+            for phrase in ["before we go", "help them out", "cutting a release", "in that difference"] {
+                #expect(words.components(separatedBy: phrase).count - 1 == 4,
+                        "Each of the four source repetitions must survive: \(phrase)")
+            }
+            #expect(!words.contains("thank you"), "The public sources contain no thank-you phrase")
+            print("[long-pause] complete audio_s=\(Double(samples.count) / 16_000) decodes=\(session.diagnostics.decodeCount) characters=\(output.lastTextCount)")
+            await transcriber.shutdown()
+        } catch {
+            session.cancel()
+            await transcriber.shutdown()
+            throw error
+        }
+    }
+
     /// Separate opt-in for neutral Tamil text synthesized locally with macOS
     /// Vani. This is not a private recording or an exact-translation benchmark.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_TAMIL_FIXTURE"] != nil),
