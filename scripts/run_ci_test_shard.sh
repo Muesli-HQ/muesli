@@ -85,6 +85,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      QwenMLXDownloadTests
       GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
       GemmaMTPEvaluationTests

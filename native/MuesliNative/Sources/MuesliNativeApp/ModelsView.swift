@@ -1649,7 +1649,11 @@ struct ModelsView: View {
         }
         try Task.checkCancellation()
         do {
-            try validateGGUFHeader(at: option.modelURL)
+            if option.modelURL.pathExtension == "gguf" {
+                try validateGGUFHeader(at: option.modelURL)
+            } else {
+                try option.managedModel?.validate(modelURL: option.modelURL)
+            }
         } catch {
             try? FileManager.default.removeItem(at: option.modelURL)
             throw error

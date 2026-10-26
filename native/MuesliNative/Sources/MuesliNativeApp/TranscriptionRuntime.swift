@@ -960,6 +960,17 @@ actor TranscriptionCoordinator {
     }
     #endif
 
+    /// Required, visible preparation. Unlike optional startup preload, failures
+    /// propagate to the recording gate so it never announces a failed load as ready.
+    func prepareLocalCleanupForRecording(option: PostProcessorOption, config: AppConfig) async throws {
+        guard #available(macOS 15, *) else { return }
+        try Task.checkCancellation()
+        await configurePostProcessor(backend: .local, option: option,
+                                     systemPrompt: config.postProcessorSystemPrompt, config: config)
+        try await qwen3PostProcessor.prepare()
+        try Task.checkCancellation()
+    }
+
     func preloadPostProcessorIfNeeded(
         enabled: Bool,
         transcriptionBackend: BackendOption? = nil

@@ -126,10 +126,12 @@ struct GemmaPreparationPlan: Equatable, Sendable {
     let entries: [Entry]
     /// A local non-Gemma ASR dependency used by Quill, prepared by the coordinator.
     let additionalPreparationKey: String?
-    var isEmpty: Bool { entries.isEmpty && additionalPreparationKey == nil }
-    var key: String { (additionalPreparationKey.map { $0 + "|" } ?? "") + entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false, additionalPreparationKey: String? = nil) {
+    let localCleanupKey: String?
+    var isEmpty: Bool { entries.isEmpty && additionalPreparationKey == nil && localCleanupKey == nil }
+    var key: String { (localCleanupKey.map { "cleanup:\($0)|" } ?? "") + (additionalPreparationKey.map { $0 + "|" } ?? "") + entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false, additionalPreparationKey: String? = nil, localCleanupKey: String? = nil) {
         self.additionalPreparationKey = additionalPreparationKey
+        self.localCleanupKey = localCleanupKey
         var result: [Entry] = []
         func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool, required: Bool) {
             guard let model else { return }

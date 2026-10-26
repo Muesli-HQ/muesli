@@ -3510,15 +3510,14 @@ public final class MuesliController: NSObject {
     }
 
     func preloadExperimentalTranscriptionFeatures() {
+        nativeRecordingGate.invalidate()
+        indicator.hideLoading()
         let ppOption = runtimePostProcessorOption()
-        let enabled = canRunTranscriptCleanup(option: ppOption)
         Task { [weak self] in
             guard let self else { return }
             await self.configureTranscriptCleanupForRuntime(option: ppOption)
-            await self.transcriptionCoordinator.preloadPostProcessorIfNeeded(
-                enabled: enabled,
-                transcriptionBackend: self.selectedBackend
-            )
+            guard !self.isInteractiveAudioActivityInProgress, !self.isMeetingRecording() else { return }
+            _ = self.ensureNativeModelsReady()
         }
     }
 
@@ -3538,10 +3537,7 @@ public final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = .local
         appState.activePostProcessor = option
         guard config.enablePostProcessor else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            await self.configureTranscriptCleanupForRuntime(option: option)
-        }
+        preloadExperimentalTranscriptionFeatures()
     }
 
     func selectPostProcessorBackend(_ option: TranscriptCleanupBackendOption) {
@@ -10892,8 +10888,14 @@ public final class MuesliController: NSObject {
         // Hosted dictation readiness says nothing about the local ASR Quill uses.
         let localASRKey = forQuill && !directQuill && selectedBackend.backend != "gemma4-litert"
             ? "quill-asr:\(selectedBackend.backend):\(selectedBackend.model):\(config.resolvedAppleSpeechLanguage)" : nil
+        let localCleanup = !forQuill && config.enablePostProcessor && selectedPostProcessorBackend == .local
+            ? PostProcessorOption.resolve(id: config.activePostProcessorId) : nil
+        let cleanupKey = localCleanup.flatMap { option in
+            option.isCompatible(with: selectedBackend)
+                ? option.id + ":" + option.effectiveSystemPrompt(configuredSystemPrompt: config.postProcessorSystemPrompt) : nil
+        }
         return GemmaPreparationPlan(dictation: dictation, cleanup: cleanup, quill: quill,
-            requireQuill: forQuill, additionalPreparationKey: localASRKey)
+            requireQuill: forQuill, additionalPreparationKey: localASRKey, localCleanupKey: cleanupKey)
     }
 
     /// No audio session is armed or started when this returns false.
@@ -10903,12 +10905,25 @@ public final class MuesliController: NSObject {
         if plan.isEmpty { indicator.hideLoading() }
         let localBackend = selectedBackend
         let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
+        let cleanupOption = PostProcessorOption.resolve(id: config.activePostProcessorId)
+        let cleanupConfig = config
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
             guard let self else { throw CancellationError() }
             if plan.additionalPreparationKey != nil {
                 try await self.transcriptionCoordinator.preloadRequired(
                     backend: localBackend, enablePostProcessor: false, includeMeetingHelpers: false,
                     appleSpeechLanguage: appleSpeechLanguage)
+                try Task.checkCancellation()
+            }
+            if plan.localCleanupKey != nil {
+                guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else { throw CancellationError() }
+                let message = "Preparing \(cleanupOption.label)… Mic off"
+                if self.dictationState == .idle && !self.isMeetingRecording() {
+                    self.indicator.showLoading(message)
+                    self.statusBarController?.setStatus(message)
+                }
+                try await self.transcriptionCoordinator.prepareLocalCleanupForRecording(
+                    option: cleanupOption, config: cleanupConfig)
                 try Task.checkCancellation()
             }
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in

@@ -11,6 +11,7 @@ struct ManagedCleanupModel: Sendable {
 
     var modelFilename: String { files[0].relativePath }
     var sizeLabel: String { "~" + ByteCountFormatter.string(fromByteCount: modelByteCount, countStyle: .file) }
+    var downloadSizeLabel: String { "~" + ByteCountFormatter.string(fromByteCount: files.compactMap(\.expectedByteCount).reduce(0, +), countStyle: .file) }
 
     init(_ repoID: String, _ revision: String, _ artifacts: [(String, Int64, String)]) {
         precondition(!artifacts.isEmpty, "A cleanup release must include its model artifact first.")

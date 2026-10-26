@@ -54,12 +54,12 @@ struct MuesliCleanupV2Tests {
         print("NAMESPACE LOAD PASSED \(kind)")
     }
 
-    @Test func qwenLightV4Contract() {
+    @Test func qwenLiteV4Contract() {
         let option = PostProcessorOption.finetunedV4
-        #expect(PostProcessorOption.defaultOption == .finetunedV3)
-        #expect(option.managedModel?.modelByteCount == 529_296_832)
-        #expect(option.managedModel?.revision == "0e6b7446a64b170881bfe1af4b3ba892d18ecf3a")
-        #expect(option.managedModel?.files.first?.sha256 == "3e3eabc91542e66f672230b7361917f5fa3a1e06ace61e8157c7a34d121abf8a")
+        #expect(PostProcessorOption.defaultOption == .finetunedV4)
+        #expect(option.managedModel?.modelByteCount == 799_973_748)
+        #expect(option.managedModel?.revision == "edd597f9cfd41c0422565758eae6aff3afa2b9d2")
+        #expect(option.managedModel?.files.first?.sha256 == "9bb3f251da42cd5806f25bda751e232e204ef2104d9fc590a28b051de7fe2602")
         #expect(!option.supportsQuil)
         #expect(option.effectiveSystemPrompt(configuredSystemPrompt: "custom") == PostProcessorOption.defaultSystemPrompt)
         let expected = "<|im_start|>user\n" + PostProcessorOption.defaultSystemPrompt + "\n\n<APP-CONTEXT>\nApp: Mail\n</APP-CONTEXT>\n\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -206,7 +206,7 @@ struct MuesliCleanupV2Tests {
         #expect(!Gemma4LiteRTModel.generalPurpose.contains(model))
         #expect(!BackendOption.all.contains { $0.model == model.repoID })
         #expect(!ComputerUseLocalPlanner.models.contains { $0.id.contains(model.repoID) })
-        #expect(PostProcessorOption.defaultOption.id == "qwen35-postproc-v3")
+        #expect(PostProcessorOption.defaultOption.id == "qwen35-postproc-v4")
         let url = Gemma4LiteRTModelStore.resolvedModelURL(for: model, environment: [Gemma4LiteRTModelStore.modelPathEnvVar: "/tmp/wrong-model"])
         #expect(url.lastPathComponent == model.filename)
     }
@@ -381,7 +381,7 @@ struct ManagedCleanupV12Tests {
         #expect(MuesliCleanupV2Prompt.ggufRequest("hello", appContext: nil, format: .muesliTrainedV12Qwen) == "<|im_start|>user\n" + user + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
         #expect(MuesliCleanupV2Prompt.guardedOutput("", input: "hello") == "hello")
         #expect(MuesliCleanupV2Prompt.guardedOutput(String(repeating: "x", count: 16), input: "hello") == "hello")
-        #expect(PostProcessorOption.defaultOption == .finetunedV3)
+        #expect(PostProcessorOption.defaultOption == .finetunedV4)
         #expect(!PostProcessorOption.lfmV12.supportsQuil)
     }
 
@@ -430,10 +430,12 @@ struct ManagedCleanupV12Tests {
         let inputs = Array(try rows("common/data/context_authored_v1/heldout.jsonl").prefix(10))
         for (option, name) in [(PostProcessorOption.lfmV12, "lfm25gguf"), (.qwenV12, "qwen35gguf_q4km")]
             where ProcessInfo.processInfo.environment["MUESLI_V12_GEMMA_ONLY"] != "1" {
-            let descriptor = try #require(option.managedModel)
+            // Keep the archived GGUF baseline independent of the production MLX catalog.
+            let descriptor: ManagedCleanupModel = option == .lfmV12 ? .lfm : .qwen
+            let baselineURL = option.cacheDirectory.appendingPathComponent(descriptor.modelFilename)
             try await MuesliCore.ModelDownloadCoordinator.shared.download(descriptor.manifest(id: option.id), to: option.cacheDirectory)
-            let processor = Qwen3PostProcessor(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
-            let config = Qwen3PostProcessor.Configuration(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let processor = Qwen3PostProcessor(modelURL: baselineURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let config = Qwen3PostProcessor.Configuration(modelURL: baselineURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
             try await processor.prepare()
             _ = try await processor.process("Hello world.", configuration: config)
             let expected = Dictionary(uniqueKeysWithValues: try rows("models/gemma4/eval/results/challengers/\(name)_held.jsonl").map { ($0.id, $0.pred_text ?? "") })
