@@ -48,6 +48,19 @@ struct BufferedDictationPreviewDeliveryTests {
         #expect(delivered.allSatisfy { $0.tail.isEmpty })
     }
 
+    @Test func soundCuesNeverReachTheCursorAcrossCommitBoundaries() async {
+        var delivered: [String] = []
+        let delivery = BufferedDictationPreviewDelivery(deliver: {
+            delivered.append($0.text)
+            return true
+        })
+        for (index, text) in ["Hello *cric", "Hello *crickets*", "Hello *crickets* world"].enumerated() {
+            delivery.offer(.init(committedText: text, tail: " [cheers]", revision: UInt64(index + 1)))
+            await delivery.waitUntilIdle()
+        }
+        #expect(delivered == ["Hello", "Hello", "Hello world"])
+    }
+
     @Test func slowEditorReceivesOnlyCurrentAndNewestPreview() async {
         let editor = Editor()
         var completed: [UInt64] = []

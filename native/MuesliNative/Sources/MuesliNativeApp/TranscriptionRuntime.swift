@@ -1084,7 +1084,7 @@ actor TranscriptionCoordinator {
             ) ?? removeFillersWithLogging(result)
             TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
                                                 detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
-            let final = applyCustomWords(result, customWords: customWords)
+            let final = removeArtifacts(applyCustomWords(result, customWords: customWords))
             TranscriptCleanupDebugLogger.append(
                 status: "dictation_final", cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId, asrBackend: backend.backend,

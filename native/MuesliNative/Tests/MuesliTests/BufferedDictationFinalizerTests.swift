@@ -140,6 +140,16 @@ struct BufferedDictationFinalizerTests {
         #expect(empty.text.isEmpty)
     }
 
+    @Test(arguments: [BackendOption.parakeetMultilingual, .parakeetEnglish, .parakeetRedux,
+                      .parakeetUnified, .whisperLargeTurbo, .whisperTiny])
+    func sharedFinalCleanupRemovesSoundCuesWithoutAI(backend: BackendOption) async {
+        let result = await TranscriptionCoordinator().finalizeDictationTranscript(
+            .init(text: "Cheers to you. *crickets* [applause]", segments: []),
+            backend: backend, enablePostProcessor: false
+        )
+        #expect(result.text == "Cheers to you.")
+    }
+
     @Test func recordingCoverageUsesActualMono16kFrames() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

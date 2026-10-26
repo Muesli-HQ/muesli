@@ -1185,7 +1185,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     private func receiveEnginePartial(_ text: String, expectedRevision: UInt64) {
-        let filteredText = TranscriptionEngineArtifactsFilter.apply(text)
+        let filteredText = TranscriptionEngineArtifactsFilter.applyToPartialText(text)
         let tail: String? = state.withLock { s in
             guard !s.isStopped, !s.isSuspended, !s.didFail,
                   (engine.partialDeliveryMode == .asynchronous

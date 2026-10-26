@@ -24,7 +24,7 @@ final class BufferedDictationPreviewDelivery {
         // Recognition retains its hypothesis for agreement/alignment, but the
         // destination only receives committed groups. Never revise a visible
         // draft while the user is speaking; final cleanup is a separate write.
-        pending = BufferedTranscriptionUpdate(committedText: update.committedText,
+        pending = BufferedTranscriptionUpdate(committedText: TranscriptionEngineArtifactsFilter.applyToCommittedText(update.committedText),
                                               tail: "", revision: update.revision)
         guard worker == nil else { return }
         worker = Task { @MainActor in
