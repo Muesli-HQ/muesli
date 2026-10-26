@@ -14,6 +14,92 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("Idle feedback uses the selected notch and retains its message",
+          arguments: [NotchStatus.loading, .warning, .success, .cursor])
+    @MainActor
+    func statusRouting(kind: NotchStatus) throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        let message = "Preparing the selected model"
+        switch kind {
+        case .loading: indicator.showLoading(message)
+        case .warning: indicator.showWarning(message)
+        case .success: indicator.showSuccess(message)
+        case .cursor: indicator.showComputerUseCursor(at: .zero, label: message)
+        }
+        #expect(notch.isVisible)
+        #expect(notch.status == kind)
+        #expect(notch.statusMessage == message)
+        #expect(notch.expandedPanelFrame != nil)
+        indicator.setState(.recording, config: config)
+        #expect(notch.status == nil)
+        indicator.hideLoading()
+        indicator.hideComputerUseCursor()
+        #expect(notch.isVisible)
+    }
+
+    @Test("Late loading completion cannot hide a success notice")
+    @MainActor
+    func loadingCompletionPreservesNotice() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        indicator.showSuccess("Ready")
+        indicator.hideLoading()
+        indicator.refreshIcon()
+        #expect(notch.status == .success)
+        #expect(notch.statusMessage == "Ready")
+    }
+
+    @Test("Feedback falls back to the pill on displays without a notch")
+    @MainActor
+    func statusFallback() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = NotchIndicatorController(resolveGeometry: { _ in nil })
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+        indicator.hideLoading()
+        indicator.showSuccess("Done")
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+    }
+
+    @Test("Notice dismissal cannot hide a newer recording")
+    @MainActor
+    func statusDeadline() async throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .warning, message: "Notice", duration: 0.05))
+        #expect(notch.show(on: screen, title: "Recording", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: false, active: true, icon: NSImage(), accent: .red))
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(notch.isVisible)
+        #expect(notch.status == nil)
+    }
+
     @Test("Dismissing transcript restores instructions and preference changes allow reopening")
     @MainActor
     func transcriptRestoresInstruction() throws {
