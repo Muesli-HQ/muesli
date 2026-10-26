@@ -110,7 +110,7 @@ final class BodhanCoreML {
         let runtime = model == nil ? Self.decoderRuntime : "mlx"
         selectedDecoderRuntime = runtime
         guard ["fp16", "int8"].contains(precision), precision != "int8" || runtime == "mlx" else {
-            throw NSError(domain: "BodhanASR", code: 13, userInfo: [NSLocalizedDescriptionKey: "INT8 requires the MLX decoder runtime."])
+            throw NSError(domain: "BodhanASR", code: 13, userInfo: [NSLocalizedDescriptionKey: "Bodhan Lite requires the MLX decoder runtime."])
         }
         let selectedEncoderAsset = model.map { $0.isInt8 ? "variants/int8/encoder" : "coreml/encoder" } ?? ProcessInfo.processInfo.environment["MUESLI_BODHAN_ENCODER_ASSET"].map { "coreml/" + $0 }
             ?? (precision == "int8" ? "experiments/coreml-int8/encoder" : "coreml/encoder")

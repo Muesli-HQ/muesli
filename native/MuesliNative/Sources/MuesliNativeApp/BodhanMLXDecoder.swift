@@ -28,7 +28,7 @@ final class BodhanMLXDecoder {
             let q = config?["quantization"] as? [String: Any]
             guard q?["bits"] as? Int == 8, q?["group_size"] as? Int == 64,
                   q?["mode"] as? String == "affine" else {
-                throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Unsupported Bodhan INT8 quantization configuration."])
+                throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Unsupported Bodhan Lite quantization configuration."])
             }
             var projections: [(String, Int, Int)] = [("lm_head", 7152, 1024)]
             for i in 0..<24 {
@@ -46,7 +46,7 @@ final class BodhanMLXDecoder {
                       w[prefix + ".scales"]?.shape == [output, input / 64],
                       w[prefix + ".biases"]?.shape == [output, input / 64],
                       w[prefix + ".bias"]?.shape == [output] else {
-                    throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "Incompatible Bodhan INT8 projection: \(prefix)."])
+                    throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "Incompatible Bodhan Lite projection: \(prefix)."])
                 }
             }
         }

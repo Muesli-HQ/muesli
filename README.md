@@ -139,7 +139,7 @@ Choose and download models in the **Models** tab. English defaults to Parakeet U
 | Cohere Transcribe 2B | Multilingual transcription | 3.8 GB |
 | SenseVoice Small | Multilingual transcription | 240 MB |
 | Qwen3 ASR | Multilingual transcription | 1.3 GB |
-| Bodhan Core / Flex | Indic languages and English; FP16 or INT8; macOS 15+ | 2.46 GB / 1.27 GB weights |
+| Bodhan Core / Flex | Indic languages and English; Pro or Lite; macOS 15+ | 2.46 GB / 1.27 GB weights |
 | Whisper | Tiny and Small in English or multilingual variants, Medium English, Large Turbo Multilingual | 153 MB–1.5 GB |
 | Gemma 4 E2B / E4B | On-device dictation, cleanup, Quill and Computer Use; macOS 15+ | 3.6 GB / 5.2 GB |
 | Muesli Cleanup Light | Fine-tuned Qwen 3.5 0.8B for everyday transcript cleanup | 505 MB |
@@ -230,7 +230,7 @@ Muesli has been possible because of the generosity of companies such as:
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)
 - [Bodhan AI Core](https://huggingface.co/bodhan-ai/indic-transcribe-core) and [Flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) — multilingual Indic/English ASR; community [Core](https://huggingface.co/phequals/indic-transcribe-core-coreml) and [Flex](https://huggingface.co/phequals/indic-transcribe-flex-coreml) CoreML/MLX conversions
-- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon inference for Gemma and the FP16/INT8 Bodhan hybrid runtimes
+- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon inference for Gemma and the Bodhan Pro/Lite hybrid runtimes
 - [MLX Swift LM](https://github.com/ml-explore/mlx-swift-lm) — Gemma language-model inference and speculative decoding in native Swift
 - [Hugging Face Swift Transformers](https://github.com/huggingface/swift-transformers) — native Swift tokenization for the MLX models
 - [LLM.swift](https://github.com/obra/LLM.swift) and [llama.cpp](https://github.com/ggml-org/llama.cpp) — local GGUF inference for LFM and Qwen cleanup
