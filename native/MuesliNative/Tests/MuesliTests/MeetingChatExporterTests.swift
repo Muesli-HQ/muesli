@@ -13,7 +13,11 @@ struct MeetingChatExporterTests {
             originalAnswer: "Launch Friday [[S1]]", editableDraft: "Edited Friday [[S1]]", citations: [citation], provider: "test", model: "test")
     }
     private func session() -> MeetingChatSession { .init(id: UUID(), title: "Launch", scope: .init(), createdAt: Date(), updatedAt: Date(), contextStartOrdinal: 0) }
-    @Test func copyAndMarkdownRetainReferencesAndLabelEditedDrafts() {
+    @Test func copyContainsOnlyAnswerWithReadableReferences() {
+        #expect(MeetingChatExporter.answerText(turn: turn()) == "Launch Friday [1]")
+        #expect(MeetingChatExporter.answerText(turn: turn(), useEditedDraft: true) == "Edited Friday [1]")
+    }
+    @Test func markdownRetainsReferencesAndLabelsEditedDrafts() {
         let original = MeetingChatExporter.markdown(turn: turn(), session: session(), useEditedDraft: false)
         #expect(original.contains("Launch Friday [1]"))
         #expect(original.contains("Written notes"))

@@ -15,12 +15,60 @@ struct MeetingChatNavigationTests {
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Friday", scope: .init())
         return (controller, store, try #require(evidence.passages.first { $0.kind == .transcript }?.citation))
     }
+    @Test func openingMeetingComposerDoesNotPersistEmptyChat() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        await controller.showMeetingChat(meetingID: citation.meetingID)?.value
+        let chat = controller.meetingChatCoordinator
+        #expect(chat.selectedSessionID == nil)
+        #expect(try chat.store.sessions().isEmpty)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
+
+    @Test func browsingMeetingsPreservesDraftAndEstablishedScope() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        chat.prepareMeetingDraft(id: citation.meetingID)
+        chat.composerDraft = "An unfinished question"
+        let identity = chat.composerUndoIdentity
+        chat.prepareMeetingDraft(id: 999)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+        #expect(chat.composerDraft == "An unfinished question")
+        #expect(chat.composerUndoIdentity == identity)
+        await chat.createChat(scope: chat.scope)
+        chat.prepareMeetingDraft(id: 999)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
+
+    @Test func indexNavigationPreservesConversationDraftAndScope() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        await chat.createChat(scope: .init(selection: .meetings([citation.meetingID])))
+        let sessionID = try #require(chat.selectedSessionID)
+        chat.composerDraft = "An unfinished follow-up"
+        let undoIdentity = chat.composerUndoIdentity
+
+        controller.showMeetingChatIndex()
+        #expect(controller.appState.selectedTab == .meetingChat)
+        #expect(chat.selectedSessionID == nil)
+        #expect(chat.turns.isEmpty)
+        #expect(chat.sessions.contains { $0.id == sessionID })
+        chat.composerDraft = "An unfinished new question"
+        controller.showMeetingChatIndex()
+        #expect(chat.composerDraft == "An unfinished new question")
+
+        chat.selectChat(id: sessionID)
+        #expect(chat.composerDraft == "An unfinished follow-up")
+        #expect(chat.composerUndoIdentity == undoIdentity)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
+
     @Test func entryUsesSingleMeetingScopeAndReturnPreservesComposer() async throws {
         let (controller, _, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
         let chat = controller.meetingChatCoordinator
         #expect(controller.appState.selectedTab == .meetingChat)
         #expect(chat.scope.selection == .meetings([citation.meetingID]))
+        if chat.selectedSessionID == nil { await chat.createChat(scope: chat.scope) }
         chat.composerDraft = "Follow-up draft"
         let sessionID = try #require(chat.selectedSessionID)
         controller.showMeetingChatSource(.init(citation: citation, sessionID: sessionID))
@@ -41,6 +89,7 @@ struct MeetingChatNavigationTests {
         let (controller, store, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
         let chat = controller.meetingChatCoordinator
+        if chat.selectedSessionID == nil { await chat.createChat(scope: chat.scope) }
         let sessionID = try #require(chat.selectedSessionID)
         let secondID = try store.insertMeeting(title: "Planning", calendarEventID: nil, startTime: Date(), endTime: Date(),
             rawTranscript: "Planning context", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
@@ -58,6 +107,7 @@ struct MeetingChatNavigationTests {
         let (controller, _, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
         let chat = controller.meetingChatCoordinator
+        await chat.createChat(scope: chat.scope)
         let oldID = try #require(chat.selectedSessionID)
         await chat.setScope(.init(selection: .meetings([])))
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
@@ -85,7 +135,8 @@ struct MeetingChatNavigationTests {
         let (controller, _, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
         let coordinator = controller.meetingChatCoordinator
-        let sessionID = coordinator.selectedSessionID!
+        await coordinator.createChat(scope: coordinator.scope)
+        let sessionID = try #require(coordinator.selectedSessionID)
         let turn = try coordinator.store.beginTurn(sessionID: sessionID, question: "When?", scope: coordinator.scope, provider: "test", model: "test")
         let dependency = MeetingChatDependency(meetingID: citation.meetingID, revision: citation.revision)
         try coordinator.store.attachEvidence(turnID: turn.id, dependencies: [dependency])
@@ -119,7 +170,8 @@ struct MeetingChatNavigationTests {
         let (controller, _, citation) = try controllerFixture()
         await controller.showMeetingChat(meetingID: citation.meetingID)?.value
         let coordinator = controller.meetingChatCoordinator
-        let session = coordinator.selectedSessionID!
+        await coordinator.createChat(scope: coordinator.scope)
+        let session = try #require(coordinator.selectedSessionID)
         let anchor = UUID()
         coordinator.scrollAnchors[session] = anchor
         controller.showMeetingChatSource(.init(citation: citation, sessionID: session))

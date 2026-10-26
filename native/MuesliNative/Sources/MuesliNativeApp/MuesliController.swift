@@ -5753,6 +5753,11 @@ public final class MuesliController: NSObject {
         appState.meetingsNavigationState = .document(id)
     }
 
+    func showMeetingChatIndex() {
+        showMeetingChat()
+        meetingChatCoordinator.showIndex()
+    }
+
     @discardableResult
     func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
         appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
@@ -5768,7 +5773,8 @@ public final class MuesliController: NSObject {
                 coordinator.selectChat(id: session.id)
                 return nil
             }
-            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+            coordinator.startDraft(scope: .init(selection: .meetings([id])))
+            return nil
         }
         return nil
     }

@@ -249,7 +249,35 @@ final class MeetingChatCoordinator {
     var scrollAnchors: [UUID: UUID] = [:]
     private(set) var sourceMutationVersion: Int64 = 0
     private(set) var sourceChoices: [MeetingChatSourceChoice] = []
-    var scope: MeetingChatScope { sessions.first { $0.id == selectedSessionID }?.scope ?? .init() }
+    private var draftScope = MeetingChatScope()
+    var scope: MeetingChatScope { sessions.first { $0.id == selectedSessionID }?.scope ?? draftScope }
+
+    /// Return to the index without discarding per-conversation drafts or stopping a response.
+    func showIndex() {
+        selectionVersion = UUID()
+        selectedSessionID = nil
+        turns = []
+        errorMessage = nil
+        reload()
+    }
+
+    /// Opening a composer is not a persisted conversation. The first send registers it.
+    func startDraft(scope: MeetingChatScope = .init()) {
+        guard !isBusy, !isUpdatingChat else { return }
+        selectionVersion = UUID()
+        selectedSessionID = nil
+        turns = []
+        draftScope = scope
+        composerDraft = ""
+        untitledComposerUndoIdentity = UUID()
+        errorMessage = nil
+    }
+
+    /// Browsing notes may seed an unused draft, never retarget an existing conversation.
+    func prepareMeetingDraft(id: Int64) {
+        guard selectedSessionID == nil, composerDraft.isEmpty, !isBusy, !isUpdatingChat else { return }
+        draftScope = .init(selection: .meetings([id]))
+    }
     var isBusy: Bool { activeRequestID != nil }
     private(set) var isUpdatingChat = false
 
