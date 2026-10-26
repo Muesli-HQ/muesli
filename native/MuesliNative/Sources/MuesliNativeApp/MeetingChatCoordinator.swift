@@ -258,7 +258,6 @@ final class MeetingChatCoordinator {
         selectedSessionID = nil
         turns = []
         errorMessage = nil
-        reload()
     }
 
     /// Opening a composer is not a persisted conversation. The first send registers it.

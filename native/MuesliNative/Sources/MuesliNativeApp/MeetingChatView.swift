@@ -151,7 +151,8 @@ struct MeetingChatView: View {
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
         }
         .task(id: embeddedMeetingID) {
-            coordinator.reload()
+            // The shared coordinator refreshes history on mutations and source
+            // changes; browsing notes must not synchronously reload it again.
             if let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
             await coordinator.refreshChoices()
         }
@@ -316,7 +317,9 @@ struct MeetingChatView: View {
                     MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
                                               focusRequest: composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0; if $0 && isEmbedded { expanded = true } }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
-                        .onAppear { if isEmbedded && expanded { focusComposer() } }
+                        // New chat can replace the entire layout. Focus the newly
+                        // mounted editor rather than only the one being removed.
+                        .onAppear { focusComposer() }
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
                 }
@@ -715,17 +718,17 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
         if context.coordinator.lastFocusRequest != focusRequest {
             context.coordinator.lastFocusRequest = focusRequest
-            editor.window?.makeFirstResponder(editor)
+            editor.requestComposerFocus()
         }
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MeetingChatComposerEditor
         var isUpdating = false
-        var lastFocusRequest: UUID
+        var lastFocusRequest: UUID?
         var undoIdentity: UUID
         init(_ parent: MeetingChatComposerEditor) {
             self.parent = parent
-            lastFocusRequest = parent.focusRequest
+            lastFocusRequest = nil
             undoIdentity = parent.undoIdentity
         }
         func textDidChange(_ notification: Notification) {
@@ -739,6 +742,19 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         }
     }
     final class Editor: NSTextView {
+        private var pendingFocus = false
+        func requestComposerFocus() {
+            pendingFocus = true
+            applyPendingFocus()
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyPendingFocus()
+        }
+        private func applyPendingFocus() {
+            guard pendingFocus, let window else { return }
+            if window.makeFirstResponder(self) { pendingFocus = false }
+        }
         var onKey: ((Key) -> Bool)?
         var onFocus: ((Bool) -> Void)?
         override func becomeFirstResponder() -> Bool {
