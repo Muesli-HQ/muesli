@@ -37,6 +37,8 @@ struct LiveDictationTextTargetTests {
         var beforeKeyboardValidation: (() -> Void)?
         var allowsEmptyLineSentinelRemoval = false
         var removesInitialNewline = false
+        var placeholderEvidence = LiveDictationTextTarget.PlaceholderEvidence()
+        var removesInitialPlaceholder = false
         var keyboardBurstSize = 1
         var useAcknowledgedWordGroups = false
         var delayKeyboardSeparators = false
@@ -65,6 +67,10 @@ struct LiveDictationTextTargetTests {
         private func applyReplacement(_ replacement: String) {
             var nextText = (text as NSString).replacingCharacters(in: selection, with: replacement)
             if removesInitialNewline, text.utf16.elementsEqual("\n".utf16),
+               selection == NSRange(location: 0, length: 0) {
+                nextText = replacement
+            }
+            if removesInitialPlaceholder, placeholderEvidence.value == text,
                selection == NSRange(location: 0, length: 0) {
                 nextText = replacement
             }
@@ -152,7 +158,7 @@ struct LiveDictationTextTargetTests {
                     focusStatus: { [self] in
                         if !focused { return .departed("focus_changed") }
                         return focusUnavailable ? .unavailable("test_ax_unavailable") : .focused
-                    })
+                    }, placeholderEvidence: { [self] in placeholderEvidence })
         }
     }
 
@@ -419,6 +425,90 @@ struct LiveDictationTextTargetTests {
         #expect(editor.text == "This time it works")
         #expect(editor.finalPastes == ["This time", " it works"])
         #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func verifiedEmptyPlaceholderSupportsLiveUpdatesAndFinalCleanup(finalOnly: Bool) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        editor.removesInitialPlaceholder = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !finalOnly {
+            #expect(await target.update(text: "Okay, I"))
+            #expect(await target.update(text: "Okay, I am speaking"))
+        }
+        #expect(await target.finish(text: "Okay, I am speaking."))
+        #expect(editor.text == "Okay, I am speaking.")
+        #expect(editor.selection == NSRange(location: editor.text.utf16.count, length: 0))
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(!target.isSuspended)
+    }
+
+    @Test(arguments: [0, 1, 2, 3, 4, 5])
+    func unprovenPlaceholderRemovalStillFailsClosed(reason: Int) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = reason != 0
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        editor.removesInitialPlaceholder = true
+        if reason == 1 { editor.placeholderEvidence.characterCount = nil }
+        if reason == 2 { editor.placeholderEvidence.characterCount = 16 }
+        if reason == 3 { editor.placeholderEvidence.characterCount = 0.25 }
+        if reason == 4 { editor.placeholderEvidence.value = "Different placeholder" }
+        if reason == 5 { editor.selection = NSRange(location: 1, length: 0) }
+        // Simulate removal even for inconsistent evidence; no accepted alternate
+        // may be inferred merely because the resulting text looks like ours.
+        editor.afterPasteDispatch = { editor.text = "Okay, I"; editor.selection = NSRange(location: 7, length: 0) }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I") == false)
+        #expect(target.isSuspended)
+        #expect(await target.finish(text: "Never overwrite this") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func placeholderEvidenceMustStillHoldAtFirstDispatch(unknown: Bool) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.beforeFinalPaste = { editor.placeholderEvidence.characterCount = unknown ? nil : 16 }
+        #expect(await target.update(text: "Okay, I") == false)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(editor.text == "Message Codex...")
+        #expect(target.isSuspended)
+    }
+
+    @Test func realTextEqualToPlaceholderIsPreserved() async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 16)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I"))
+        #expect(editor.text == "Okay, IMessage Codex...")
+        #expect(await target.finish(text: "Okay, I."))
+        #expect(editor.text == "Okay, I.Message Codex...")
+    }
+
+    @Test func placeholderRemovalPermissionIsConsumedByFirstPaste() async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I")) // host retained the initial value
+        editor.afterPasteDispatch = { editor.text = "Okay, I continue" }
+        #expect(await target.update(text: "Okay, I continue") == false)
+        #expect(target.isSuspended)
     }
 
     @Test func livePasteStillDefersLargeDraftRewritesAndProtectsFrozenWords() async throws {

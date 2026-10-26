@@ -16,6 +16,16 @@ final class LiveDictationTextTarget {
         }
     }
 
+    struct PlaceholderEvidence {
+        var value: String? = nil
+        var characterCount: Double? = nil
+
+        func confirmsEmptyValue(_ text: String) -> Bool {
+            guard !text.isEmpty, let value, characterCount == 0 else { return false }
+            return value.utf16.elementsEqual(text.utf16)
+        }
+    }
+
     enum Transport: String {
         case axSelectedText
         case targetedKeyboard
@@ -53,13 +63,15 @@ final class LiveDictationTextTarget {
         let keyboardPlan: ((String) -> [KeyboardStep]?)?
         let allowsEmptyLineSentinelRemoval: Bool
         let paste: Paste?
+        let placeholderEvidence: () -> PlaceholderEvidence
 
         init(snapshot: @escaping () -> Snapshot?, isFocused: @escaping () -> Bool,
              select: @escaping (NSRange) -> Bool, replaceSelection: @escaping (String) -> Bool,
              transport: Transport = .axSelectedText,
              keyboardPlan: ((String) -> [KeyboardStep]?)? = nil,
              allowsEmptyLineSentinelRemoval: Bool = false,
-             paste: Paste? = nil, focusStatus: (() -> FocusStatus)? = nil) {
+             paste: Paste? = nil, focusStatus: (() -> FocusStatus)? = nil,
+             placeholderEvidence: @escaping () -> PlaceholderEvidence = { .init() }) {
             self.snapshot = snapshot
             self.focusStatus = focusStatus ?? { isFocused() ? .focused : .departed("focus_changed") }
             self.select = select
@@ -68,6 +80,7 @@ final class LiveDictationTextTarget {
             self.keyboardPlan = keyboardPlan
             self.allowsEmptyLineSentinelRemoval = allowsEmptyLineSentinelRemoval
             self.paste = paste
+            self.placeholderEvidence = placeholderEvidence
         }
     }
 
@@ -90,6 +103,7 @@ final class LiveDictationTextTarget {
     private var isMutating = false
     private var pendingTextValidation = false
     private var canAcknowledgeEmptyLineSentinelRemoval = false
+    private var initialEmptyPlaceholderValue: String?
     private var frozenCommittedText = ""
     private var nativeTarget: AccessibilityTarget?
     private let onDiagnostic: (String) -> Void
@@ -119,6 +133,13 @@ final class LiveDictationTextTarget {
             && access.allowsEmptyLineSentinelRemoval
             && snapshot.text.utf16.elementsEqual("\n".utf16)
             && snapshot.selection == NSRange(location: 0, length: 0)
+        if access.transport == .targetedPaste, access.allowsEmptyLineSentinelRemoval,
+           snapshot.selection == NSRange(location: 0, length: 0) {
+            let evidence = access.placeholderEvidence()
+            let matches = evidence.confirmsEmptyValue(snapshot.text)
+            if matches { initialEmptyPlaceholderValue = snapshot.text }
+            onDiagnostic("capture_placeholder:value_length=\(snapshot.text.utf16.count):placeholder_length=\(evidence.value?.utf16.count ?? -1):character_count=\(evidence.characterCount.map(String.init(describing:)) ?? "unavailable"):verified_empty=\(matches)")
+        }
         Self.activeTarget = self
     }
 
@@ -341,18 +362,22 @@ final class LiveDictationTextTarget {
             let selected = Snapshot(text: expected.text, selection: range)
             let pasted = Snapshot(text: (expected.text as NSString).replacingCharacters(in: range, with: chunk),
                 selection: NSRange(location: range.location + chunk.utf16.count, length: 0))
-            let sentinelRemoved: Snapshot? = canAcknowledgeEmptyLineSentinelRemoval
-                && selected.text.utf16.elementsEqual("\n".utf16)
+            let removesPlaceholder = isCapturedEmptyPlaceholder(selected)
+            let sentinelRemoved: Snapshot? = (removesPlaceholder || (canAcknowledgeEmptyLineSentinelRemoval
+                && selected.text.utf16.elementsEqual("\n".utf16)))
                 && selected.selection == NSRange(location: 0, length: 0)
                 ? Snapshot(text: chunk, selection: pasted.selection) : nil
             guard await preparePasteSelection(selected) else { return false }
             canAcknowledgeEmptyLineSentinelRemoval = false
+            initialEmptyPlaceholderValue = nil
             var acknowledged = false
             let delivered = await paste(chunk, { [self] in
-                await waitForSnapshot(matching: selected) != nil
+                guard await waitForSnapshot(matching: selected) != nil else { return false }
+                return !removesPlaceholder || verifyEmptyPlaceholder(selected.text)
             }, { [self] in
                 guard let observed = await awaitReadback(pasted, stale: selected, stage: "live_paste",
                                                         alternate: sentinelRemoved) else { return false }
+                if removesPlaceholder, observed == sentinelRemoved { onDiagnostic("live_paste_empty_placeholder_removed") }
                 hasInsertedText = true
                 lastPasteAcknowledgedAt = readbackTiming.now()
                 expected = observed
@@ -408,8 +433,9 @@ final class LiveDictationTextTarget {
         let nextText = (expected.text as NSString).replacingCharacters(in: editRange, with: replacement)
         let pasted = Snapshot(text: nextText,
             selection: NSRange(location: editRange.location + replacement.utf16.count, length: 0))
-        let sentinelRemoved: Snapshot? = canAcknowledgeEmptyLineSentinelRemoval
-            && selected.text.utf16.elementsEqual("\n".utf16)
+        let removesPlaceholder = isCapturedEmptyPlaceholder(selected)
+        let sentinelRemoved: Snapshot? = (removesPlaceholder || (canAcknowledgeEmptyLineSentinelRemoval
+            && selected.text.utf16.elementsEqual("\n".utf16)))
             && selected.selection == NSRange(location: 0, length: 0)
             ? Snapshot(text: replacement, selection: pasted.selection) : nil
         let oldBase = ownedRange.location
@@ -424,12 +450,15 @@ final class LiveDictationTextTarget {
         }
         guard await preparePasteSelection(selected) else { return false }
         canAcknowledgeEmptyLineSentinelRemoval = false
+        initialEmptyPlaceholderValue = nil
         var acknowledged = false
         let delivered = await paste(replacement, { [self] in
-            await waitForSnapshot(matching: selected) != nil
+            guard await waitForSnapshot(matching: selected) != nil else { return false }
+            return !removesPlaceholder || verifyEmptyPlaceholder(selected.text)
         }, { [self] in
             guard let observed = await awaitReadback(pasted, stale: selected, stage: "final_paste",
                                                     alternate: sentinelRemoved) else { return false }
+            if removesPlaceholder, observed == sentinelRemoved { onDiagnostic("final_paste_empty_placeholder_removed") }
             hasInsertedText = true
             lastPasteAcknowledgedAt = readbackTiming.now()
             expected = observed
@@ -452,6 +481,19 @@ final class LiveDictationTextTarget {
             expected = complete
         }
         onDiagnostic("final_paste_acknowledged:characters=\(replacement.count)")
+        return true
+    }
+
+    private func isCapturedEmptyPlaceholder(_ selected: Snapshot) -> Bool {
+        guard let initialEmptyPlaceholderValue,
+              selected.selection == NSRange(location: 0, length: 0) else { return false }
+        return selected.text.utf16.elementsEqual(initialEmptyPlaceholderValue.utf16)
+    }
+
+    private func verifyEmptyPlaceholder(_ text: String) -> Bool {
+        guard access.placeholderEvidence().confirmsEmptyValue(text) else {
+            return suspend("placeholder_evidence_changed")
+        }
         return true
     }
 
@@ -808,7 +850,18 @@ private final class AccessibilityTarget {
                 await LiveDictationFinalPaste.perform(text: text, to: application.processIdentifier,
                     validateTarget: validate, acknowledge: acknowledge,
                     onDiagnostic: diagnostic)
-            } : nil, focusStatus: { [self] in focusStatus() })
+            } : nil, focusStatus: { [self] in focusStatus() }, placeholderEvidence: { [self] in
+                let placeholder = Self.string(element, kAXPlaceholderValueAttribute)
+                var raw: CFTypeRef?
+                let result = AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &raw)
+                // CFBoolean/strings and failed reads are not evidence of an
+                // empty editor. Do not round fractional counts to zero.
+                guard result == .success, let raw, CFGetTypeID(raw) == CFNumberGetTypeID(),
+                      let number = raw as? NSNumber else {
+                    return .init(value: placeholder)
+                }
+                return .init(value: placeholder, characterCount: number.doubleValue)
+            })
     }
 
     private func focusStatus() -> LiveDictationTextTarget.FocusStatus {
