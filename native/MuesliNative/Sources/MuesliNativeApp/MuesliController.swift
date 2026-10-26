@@ -836,9 +836,10 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.onToggleStop = { [weak self] in
             DispatchQueue.main.async { self?.toggleMeetingRecording() }
         }
-        meetingRecordingHotkeyMonitor.onCancel = { [weak self] in
-            DispatchQueue.main.async { self?.stopMeetingRecording() }
-        }
+        // onCancel means an abandoned shortcut gesture, never a request to end the
+        // meeting, so it is deliberately left unset. Meetings stop through the
+        // shortcut, the menu bar, the indicator, or the signal-loss warning.
+        meetingRecordingHotkeyMonitor.escapeCancelsToggleSession = false
 
         reconcilePendingPushToTalkEnableIfReady()
 

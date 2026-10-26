@@ -3308,8 +3308,121 @@ struct HotkeyMonitorTests {
         monitor.handleRegisteredHotKeyPressForTests()
         scheduler.advance(by: 0.06)
         monitor.handleRegisteredHotKeyReleaseForTests()
-        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: []))
         #expect(events == ["toggle-start", "toggle-stop", "toggle-start", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @MainActor
+    private func makeMeetingStyleChordMonitor(
+        _ scheduler: ManualHotkeyScheduler,
+        events: @escaping (String) -> Void
+    ) -> HotkeyMonitor {
+        let monitor = scheduler.makeMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        monitor.doubleTapEnabled = false
+        monitor.escapeCancelsToggleSession = false
+        monitor.onToggleStart = { events("toggle-start") }
+        monitor.onToggleStop = { events("toggle-stop") }
+        monitor.onCancel = { events("cancel") }
+        return monitor
+    }
+
+    @Test("Escape passes through an established toggle when the monitor opts out")
+    @MainActor
+    func escapeKeepsOptedOutToggleSession() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        // The next full press still ends the session.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("opt-out leaves Escape on a pending first press unchanged")
+    @MainActor
+    func optOutKeepsPendingFirstPressEscape() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+
+        // The monitor still reports the abandoned gesture through onCancel; the
+        // meeting controller leaves onCancel unset, so it is silent there.
+        #expect(events == ["cancel"])
+        #expect(!monitor.isToggleRecording)
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("Escape cancels a pending second press but keeps the opted-out toggle")
+    @MainActor
+    func escapeCancelsPendingStopPressButKeepsToggle() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        // Start pressing the chord to stop, then back out with Escape before the hold fires.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start", "toggle-stop"])
+    }
+
+    @Test("Escape leaves the toggle-start chord held without stopping the toggle")
+    @MainActor
+    func escapeKeepsHeldToggleStartChordActive() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        scheduler.advance(by: 1)
+        #expect(events == ["toggle-start"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
         #expect(!monitor.isToggleRecording)
     }
 
