@@ -41,6 +41,7 @@ struct ModelsView: View {
     @State private var selectedBodhanCoreModel: String
     @State private var selectedBodhanFlexModel: String
     @State private var showExperimental: Bool
+    @State private var showUnavailableDownloads = false
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
     @State private var isDownloadingLiveCaptionModel = false
@@ -101,6 +102,7 @@ struct ModelsView: View {
                     .featureTourTarget(.modelLibrary)
 
                     selectedCategoryContent
+                    unavailableDownloadsSection
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
             .padding(.top, MuesliTheme.pageTop)
@@ -178,6 +180,33 @@ struct ModelsView: View {
 
     }
 
+    @ViewBuilder
+    private var unavailableDownloadsSection: some View {
+        let options = BackendOption.incompatibleDownloadedOptions(downloadedModels)
+        if !options.isEmpty {
+            DisclosureGroup("Unavailable downloads", isExpanded: $showUnavailableDownloads) {
+                VStack(spacing: MuesliTheme.spacing12) {
+                    ForEach(options, id: \.model) { option in
+                        HStack {
+                            Text(option.label)
+                            Spacer()
+                            Button("Delete", role: .destructive) {
+                                modelToDelete = option
+                            }
+                            .disabled(!controller.canModifyModelFiles)
+                        }
+                    }
+                }
+                .padding(.top, MuesliTheme.spacing12)
+            }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(MuesliTheme.spacing16)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        }
+    }
+
     private var modelsCategorySelection: Binding<ModelsCategory> {
         Binding(
             get: { appState.selectedModelsCategory },
@@ -196,7 +225,7 @@ struct ModelsView: View {
     private var selectedCategoryContent: some View {
         switch appState.selectedModelsCategory {
         case .dictation:
-            ForEach(BackendOption.systemManaged, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.systemManaged), id: \.model) { option in
                 let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
                     ? .appleSpeechCard
                     : nil
@@ -215,7 +244,7 @@ struct ModelsView: View {
                 defaultBadge: "Recommended: Unified",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
-                options: BackendOption.parakeetFamily
+                options: BackendOption.compatibleOptions(BackendOption.parakeetFamily)
             )
             .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
             .featureTourTarget(.parakeetFamilyCard)
@@ -226,10 +255,12 @@ struct ModelsView: View {
                 defaultBadge: "Default: Small",
                 logo: "openai-logo",
                 selection: $selectedWhisperModel,
-                options: BackendOption.whisperFamily
+                options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
             )
 
-            modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            if BackendOption.cohereTranscribe.isCompatible() {
+                modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            }
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
@@ -333,7 +364,7 @@ struct ModelsView: View {
                 )
             }
 
-            ForEach(BackendOption.streaming, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.streaming), id: \.model) { option in
                 if let liveCaptionBackend = MeetingLiveCaptionBackend(rawValue: option.backend) {
                     modelCard(
                         option: option,
@@ -591,7 +622,7 @@ struct ModelsView: View {
 
             if showExperimental {
                 VStack(spacing: MuesliTheme.spacing12) {
-                    ForEach(BackendOption.experimental, id: \.model) { option in
+                    ForEach(BackendOption.compatibleOptions(BackendOption.experimental), id: \.model) { option in
                         if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
                             modelCard(
                                 option: option,
@@ -620,7 +651,7 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
-        let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
+        let variants = BackendOption.compatibleOptions(BackendOption.bodhanFamily).filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
         if let selected = variants.first(where: { $0.model == selection.wrappedValue }) ?? variants.first {
             modelCard(option: selected, logo: "bodhan-logo",
                          title: isCore ? "Bodhan Core" : "Bodhan Flex",
@@ -657,7 +688,7 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
-                ForEach(Gemma4LiteRTModel.allCases) { model in
+                ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                     gemmaCleanupModelCard(model)
                 }
 
@@ -676,7 +707,7 @@ struct ModelsView: View {
             Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
-            ForEach(Gemma4LiteRTModel.allCases) { model in
+            ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
             ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
@@ -704,7 +735,7 @@ struct ModelsView: View {
 
         return modelCard(
             option: option,
-            logo: "google-logo",
+            logo: model.isCleanupOnly ? "muesli_app_icon" : "google-logo",
             isActive: isDownloaded
                 && (forQuill
                     ? appState.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend && appState.config.quilModel == model.repoID
@@ -716,7 +747,7 @@ struct ModelsView: View {
                     controller.selectGemma4PostProcessor(model)
                 }
             },
-            description: forQuill
+            description: model.isCleanupOnly ? option.description : forQuill
                 ? "An experimental local model for rewriting and generating text with Quill. Shares its download with dictation and cleanup."
                 : "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
             activeLabel: forQuill ? "Quill Selected" : "Cleanup Active",
@@ -759,7 +790,7 @@ struct ModelsView: View {
                 Spacer()
 
                 if isActive {
-                    Text(forQuill ? "Quill Selected" : "Active")
+                    Text(forQuill ? "Quill Selected" : "Cleanup Active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -800,7 +831,7 @@ struct ModelsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button(forQuill ? "Use for Quill" : "Set Active") {
+                        Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
@@ -920,6 +951,12 @@ struct ModelsView: View {
             Text(selectedOption.description)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
+
+            if selectedOption == .parakeetRedux {
+                Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
 
             if selectedOption.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -1350,7 +1387,7 @@ struct ModelsView: View {
                             ForEach(BackendOption.bodhanFamily.filter {
                                 BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
                             }, id: \.model) { variant in
-                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                Text(BodhanModel(rawValue: variant.model)?.tierName ?? "Pro")
                                     .tag(variant.model)
                             }
                         }
@@ -1597,7 +1634,7 @@ struct ModelsView: View {
     }
 
     private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws {
-        let manifest = ModelDownloadManifest(
+        let manifest = option.managedModel?.manifest(id: option.id) ?? ModelDownloadManifest(
             id: option.id,
             version: "main",
             files: [ModelDownloadFile(relativePath: option.filename, remoteURL: option.downloadURL)],
@@ -1919,9 +1956,9 @@ struct ModelsView: View {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
-            let fallback = downloadedModels
-                .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
+            let fallback = BackendOption.compatibleOptions().first {
+                $0 != option && downloadedModels.contains($0.model)
+            } ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]
@@ -1988,13 +2025,11 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
-            let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
+            let version = FluidAudioModel.version(for: option.model)
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
                 ifLoadedVersion: version
             )
-            let plan = version == .v2
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: version)
             try plan.delete(fileManager: fm)
         case "parakeet-unified":
             await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
@@ -2016,7 +2051,7 @@ struct ModelsView: View {
 
     private func checkDownloadedModels() {
         let fm = FileManager.default
-        for option in BackendOption.all {
+        for option in BackendOption.all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(BackendOption.gemma4LiteRT) {
             if isModelDownloaded(option, fm: fm) {
                 downloadedModels.insert(option.model)
             }
@@ -2058,9 +2093,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
-            let plan = option.model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: option.model))
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)

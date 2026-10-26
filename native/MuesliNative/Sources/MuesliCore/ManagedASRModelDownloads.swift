@@ -242,6 +242,19 @@ public enum ManagedASRModelPlans {
         )
     }
 
+    public static func parakeetRedux(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
+        fluidAudioPlan(
+            modelID: "FluidInference/parakeet-redux-coreml",
+            repository: "FluidInference/parakeet-redux-coreml",
+            directoryName: "parakeet-redux",
+            required: [
+                "Preprocessor.mlmodelc", "Encoder.mlmodelc", "Decoder.mlmodelc",
+                "JointDecisionv3.mlmodelc", "parakeet_vocab.json",
+            ],
+            modelsRoot: modelsRoot
+        )
+    }
+
     /// Parakeet Unified 0.6B (FastConformer-RNNT), English-focused offline batch
     /// path: int8 full-attention encoder + decoder + joint + vocabulary.
     public static func parakeetUnified(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
@@ -438,8 +451,11 @@ public enum ManagedASRModelDownloader {
     /// real runtime. A legacy cache that cannot load is removed and downloaded
     /// once from scratch; a successful legacy load is promoted to a strict,
     /// size-aware managed installation without requiring network access.
+    /// With allowDownload false, only load existing artifacts: no repair, deletion,
+    /// manifest lookup or completion-marker writes are performed.
     public static func loadValidated<T>(
         _ plan: ManagedASRModelPlan,
+        allowDownload: Bool = true,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil,
         resolver: HuggingFaceModelManifestResolver = .shared,
@@ -447,6 +463,12 @@ public enum ManagedASRModelDownloader {
         coordinator: ModelDownloadCoordinator = .shared,
         load: (URL) async throws -> T
     ) async throws -> T {
+        // Display-only consumers must never repair, delete or download artifacts.
+        if !allowDownload {
+            try Task.checkCancellation()
+            guard plan.isAvailableLocally() else { throw CocoaError(.fileNoSuchFile) }
+            return try await load(plan.cacheDirectory)
+        }
         let requiresRuntimeValidation = plan.requiresRuntimeValidation()
         let directory = try await downloadIfNeeded(
             plan,

@@ -13,7 +13,8 @@ enum BodhanModel: String, CaseIterable, Sendable {
     var isCore: Bool { self == .core || self == .coreInt8 }
     var repository: String { isCore ? Self.core.rawValue : Self.flex.rawValue }
     var revision: String { isCore ? "65a3980ce14b240c3de15ce50c3d12986c413a33" : "226cf58626c3718fd9c2849e7ad6f522ecc432d6" }
-    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + (isInt8 ? " INT8" : " FP16") }
+    var tierName: String { isInt8 ? "Lite" : "Pro" }
+    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + " " + tierName }
     var mixedScript: Bool { !isCore }
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/\(rawValue.split(separator: "/").last!)")

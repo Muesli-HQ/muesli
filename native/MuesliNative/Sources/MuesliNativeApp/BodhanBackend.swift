@@ -193,7 +193,9 @@ actor BodhanTranscriber {
     init(runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
         try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
         try Task.checkCancellation()
-        progress?(0.9, "Preparing " + selected.name + "...")
+        let loading = ModelDownloadProgress.preparing(modelID: selected.rawValue, message: "Loading " + selected.name + "…")
+        progress?(0.9, loading.message)
+        progressSnapshot?(loading)
         return try BodhanCoreML(root: selected.directory, model: selected)
     }) {
         self.runtimeLoader = runtimeLoader

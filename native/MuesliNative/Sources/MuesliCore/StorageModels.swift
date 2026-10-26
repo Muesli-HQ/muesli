@@ -30,6 +30,7 @@ public enum MeetingSource: String, Codable, Sendable {
     case meeting
     case iOS = "ios"
     case audioImport = "audio_import"
+    case granolaImport = "granola_import"
 }
 
 public enum RecordOriginFilter: String, Codable, CaseIterable, Hashable, Sendable {
@@ -450,6 +451,12 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             followUpToRecordName: try c.decodeIfPresent(String.self, forKey: .followUpToRecordName),
             visualContext: try c.decodeIfPresent(String.self, forKey: .visualContext)
         )
+    }
+
+    /// A summary-less import edits, copies and exports its original manual notes.
+    public var usesImportedManualNotes: Bool {
+        source == .granolaImport
+            && formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     public var notesState: MeetingNotesState {

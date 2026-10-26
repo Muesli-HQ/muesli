@@ -6,6 +6,11 @@ enum MeetingDocumentMode: Hashable {
     case transcript
 }
 
+enum MeetingNotesSource {
+    case summary
+    case manual
+}
+
 private enum RecordingContentMode: Hashable {
     case notes
     case live
@@ -96,6 +101,7 @@ struct MeetingDetailView: View {
     @State private var editableTitle: String
     @State private var editableNotes: String
     @State private var editingNotesCitation: MeetingChatCitation?
+    @State private var editingNotesSource: MeetingNotesSource?
     @State private var editableTranscript: String
     @State private var editableManualNotes: String
     @State private var loadedMeetingID: Int64?
@@ -278,6 +284,8 @@ struct MeetingDetailView: View {
     private func header(_ meeting: MeetingRecord) -> some View {
         if usesCompactQuickNotes {
             compactQuickNotesHeader(meeting)
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState)
+                .padding(.horizontal, 20)
         } else {
             standardHeader(meeting)
         }
@@ -312,10 +320,7 @@ struct MeetingDetailView: View {
 
             threadBreadcrumb
 
-            if let savedRecordingPath = meeting.savedRecordingPath,
-               FileManager.default.fileExists(atPath: savedRecordingPath) {
-                MeetingRecordingPlayerView(recordingPath: savedRecordingPath)
-            }
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState)
 
             activeMeetingAudioWarningBanner(for: meeting)
 
@@ -367,10 +372,12 @@ struct MeetingDetailView: View {
                     HStack(spacing: 6) {
                         metadataItem(
                             systemImage: "calendar",
-                            text: MeetingBrowserLogic.formatStartTime(meeting.startTime)
+                            text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime)
                         )
-                        metadataDivider
-                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        if meeting.source != .granolaImport {
+                            metadataDivider
+                            metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        }
                     }
                     .lineLimit(1)
                 }
@@ -468,13 +475,15 @@ struct MeetingDetailView: View {
             )
 
             HStack(spacing: MuesliTheme.spacing8) {
-                metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
-                metadataDivider
-                metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                metadataItem(systemImage: "calendar", text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                if meeting.source != .granolaImport {
+                    metadataDivider
+                    metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                }
                 metadataDivider
                 metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
                 if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
-                    SyncOriginBadge(label: label)
+                    SyncOriginBadge(label: label, help: SyncOriginDisplay.help(forMeetingSource: meeting.source))
                 }
             }
         }
@@ -714,6 +723,21 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
+                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
+                    DisclosureGroup("Original manual notes from Granola") {
+                        MeetingNotesView(markdown: meeting.manualNotes)
+                            .frame(height: 200)
+                    }
+                }
+                if meeting.source == .granolaImport, documentMode == .notes, meeting.formattedNotes.isEmpty {
+                    Text("No summary was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if meeting.source == .granolaImport, documentMode == .transcript, meeting.rawTranscript.isEmpty {
+                    Text("No transcript was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
                         highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
@@ -845,9 +869,10 @@ struct MeetingDetailView: View {
         if isEditingNotes {
             notesSaveTask?.cancel()
             notesSaveTask = nil
-            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, controller: controller)
+            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, source: editingNotesSource, controller: controller)
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
         } else if isEditingTranscript {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
@@ -872,6 +897,7 @@ struct MeetingDetailView: View {
         } else {
             documentMode = .notes
             editingNotesCitation = citationTarget(for: meeting)?.citation
+            editingNotesSource = Self.notesSource(for: meeting, citation: editingNotesCitation)
             editableNotes = Self.notesContent(for: meeting, citation: editingNotesCitation)
             isEditingNotes = true
         }
@@ -1760,7 +1786,7 @@ struct MeetingDetailView: View {
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
-        meeting.notesState != .structuredNotes
+        meeting.source != .granolaImport && meeting.notesState != .structuredNotes
     }
 
     private func hasPendingTemplateChange(for meeting: MeetingRecord) -> Bool {
@@ -1797,6 +1823,7 @@ struct MeetingDetailView: View {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
@@ -1807,38 +1834,51 @@ struct MeetingDetailView: View {
         for meeting: MeetingRecord,
         notes: String,
         citation: MeetingChatCitation? = nil,
+        source: MeetingNotesSource? = nil,
         controller: MuesliController
     ) {
-        if usesManualNotes(for: meeting, citation: citation) {
+        if (source ?? notesSource(for: meeting, citation: citation)) == .manual {
             controller.updateMeetingManualNotes(id: meeting.id, notes: notes)
         } else {
             controller.updateMeetingNotes(id: meeting.id, notes: notes)
         }
     }
 
+    /// Capture this on entering the editor; autosave can change the fallback predicate.
+    static func notesSource(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> MeetingNotesSource {
+        usesManualNotes(for: meeting, citation: citation) ? .manual : .summary
+    }
+
     private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
-        meeting.status == .noteOnly || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
+        meeting.status == .noteOnly || meeting.usesImportedManualNotes
+            || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
     }
 
     /// The notes action exports the same source the detail view displays. Other
     /// export modes retain their normal transcript/full-meeting composition.
     static func notesExportOverride(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String? {
-        usesManualNotes(for: meeting, citation: citation) ? meeting.manualNotes : nil
+        if usesManualNotes(for: meeting, citation: citation) { return meeting.manualNotes }
+        return meeting.source == .granolaImport ? meeting.formattedNotes : nil
     }
 
     static func notesCopyContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
     }
 
-    private static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
+    static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
         if meeting.status == .noteOnly || meeting.status == .recording || meeting.status == .processing || meeting.status == .failed {
             return .notes
+        }
+        if meeting.source == .granolaImport {
+            return !meeting.manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .notes : .transcript
         }
         return meeting.notesState == .structuredNotes
             ? MeetingDocumentMode.notes
@@ -1865,8 +1905,9 @@ struct MeetingDetailView: View {
         notesSaveTask?.cancel()
         let notes = editableNotes
         let citation = editingNotesCitation
+        let source = editingNotesSource
         let c = controller
-        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, controller: c) }
+        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, source: source, controller: c) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
@@ -2009,6 +2050,7 @@ struct MeetingDetailView: View {
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
             isEditingTranscript = false
             showFolderPopover = false
             showNewFolderPrompt = false
@@ -2064,7 +2106,7 @@ private extension View {
     }
 }
 
-private struct MarqueeTitleTextField: View {
+struct MarqueeTitleTextField: View {
     @Binding var text: String
     var titleSize: CGFloat = 30
     let onSubmit: () -> Void
@@ -2080,35 +2122,40 @@ private struct MarqueeTitleTextField: View {
     private var titleFont: Font { .system(size: titleSize, weight: .bold) }
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            TextField("Meeting Title", text: $text)
-                .font(titleFont)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .textFieldStyle(.plain)
-                .lineLimit(1)
-                .opacity(shouldShowMarquee ? 0 : 1)
-                .focused($isTitleFocused)
-                .onSubmit(onSubmit)
-                .onChange(of: text) { _, _ in
-                    onTextChange()
-                    restartMarqueeIfNeeded()
-                }
-                .onChange(of: isTitleFocused) { _, _ in
-                    restartMarqueeIfNeeded()
-                }
+        // The row's size comes from the clear base. The full-width marquee text lives in an
+        // overlay: inside the row it made a title wider than the pane widen the whole page.
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+            .overlay(alignment: .leading) {
+                ZStack(alignment: .leading) {
+                    TextField("Meeting Title", text: $text)
+                        .font(titleFont)
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1)
+                        .opacity(shouldShowMarquee ? 0 : 1)
+                        .focused($isTitleFocused)
+                        .onSubmit(onSubmit)
+                        .onChange(of: text) { _, _ in
+                            onTextChange()
+                            restartMarqueeIfNeeded()
+                        }
+                        .onChange(of: isTitleFocused) { _, _ in
+                            restartMarqueeIfNeeded()
+                        }
 
-            Text(text.isEmpty ? "Meeting Title" : text)
-                .font(titleFont)
-                .fontWeight(.bold)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .offset(x: marqueeOffset)
-                .opacity(shouldShowMarquee ? 1 : 0)
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-        .clipped()
+                    Text(text.isEmpty ? "Meeting Title" : text)
+                        .font(titleFont)
+                        .fontWeight(.bold)
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .offset(x: marqueeOffset)
+                        .opacity(shouldShowMarquee ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
+            }
+            .clipped()
         .contentShape(Rectangle())
         .background(
             GeometryReader { proxy in
@@ -2273,6 +2320,10 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }
         if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        // In-room speakers from microphone diarization; unnumbered when not attributable.
+        if label.range(of: #"^Local speaker(\s+\d+)?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
         return false

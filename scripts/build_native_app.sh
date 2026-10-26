@@ -207,6 +207,7 @@ if [[ "$USE_XCODE_BUILD" != "1" ]]; then
   # ship as dylibs instead of frameworks.
   for dylib in "$BIN_DIR"/*.dylib; do
     [[ -f "$dylib" ]] || continue
+    [[ "$(basename "$dylib")" == libCLiteRTLM_mac.dylib ]] && continue
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
     cp -RL "$dylib" "$target"
     thin_macho_to_bundle_arch "$target"
@@ -352,6 +353,8 @@ if [[ -d "$ROOT/assets/audio" ]]; then
   ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
 
+rm -f "$STAGED_APP_DIR/Contents/Frameworks/libCLiteRTLM_mac.dylib" "$STAGED_APP_DIR/Contents/MacOS/libCLiteRTLM_mac.dylib"
+
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -404,6 +407,17 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Gemma's reference-tested FP32 encoder policy is process-wide in MLX. Bodhan
+# uses FP16 activations; retain its regression checks when updating this policy.
+/usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$STAGED_APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MLX_ENABLE_TF32 string 0' "$STAGED_APP_DIR/Contents/Info.plist"
+if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
+  # Legacy name is still read by Gemma4LiteRTLogging for saved diagnostic tooling.
+  /usr/bin/plutil -insert LSEnvironment.MUESLI_GEMMA4_LITERT_PROFILE_PATH -string "$HOME/Library/Application Support/$APP_SUPPORT_DIR_NAME/gemma-native-audio-profile.log" "$STAGED_APP_DIR/Contents/Info.plist"
+fi
+# Gemma MTP defaults on in the shared Swift policy; no lane-specific activation flags.
+
+bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
 
 # Replace existing app (no prompt — that's what this script is for)
 if [[ -d "$APP_DIR" ]]; then

@@ -320,6 +320,12 @@ public final class DictationStore {
         }
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meeting_folders_parent ON meeting_folders(parent_id)", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_folder ON meetings(folder_id)", nil, nil, nil)
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_meetings_live_chronological
+                ON meetings(julianday(start_time) DESC, id DESC) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_meetings_folder_chronological
+                ON meetings(folder_id, julianday(start_time) DESC, id DESC) WHERE deleted_at IS NULL;
+            """, db: db)
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL", nil, nil, nil) != SQLITE_OK {
             let msg = String(cString: sqlite3_errmsg(db))
             if !msg.localizedCaseInsensitiveContains("duplicate column") {
@@ -343,10 +349,31 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
+        try MeetingVideoStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
+        try renameLegacyGranolaImportFolder(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
+    }
+
+    private func renameLegacyGranolaImportFolder(db: OpaquePointer?) throws {
+        guard !(try localMigrationCompleted("granola_short_folder_name_v1", db: db)) else { return }
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { try? exec("ROLLBACK", db: db) } }
+        try exec("""
+            UPDATE meeting_folders SET name = 'Granola'
+            WHERE name = 'Imported from Granola' AND parent_id IS NULL
+              AND EXISTS (SELECT 1 FROM meetings
+                          WHERE folder_id = meeting_folders.id AND source = 'granola_import')
+              AND NOT EXISTS (SELECT 1 FROM local_migrations
+                              WHERE identifier = 'granola_short_folder_name_v1');
+            INSERT OR IGNORE INTO local_migrations (identifier, completed_at)
+            VALUES ('granola_short_folder_name_v1', strftime('%s', 'now'));
+            """, db: db)
+        try exec("COMMIT", db: db)
+        committed = true
     }
 
     private func migrateInsightsCache(db: OpaquePointer?) throws {
@@ -915,8 +942,8 @@ public final class DictationStore {
 
         var sql: String
         if folderID != nil {
-            // Recursive CTE collects the selected folder and all descendants
-            // without needing one placeholder per folder.
+            // Each descendant contributes at most `limit` candidates via the folder/date
+            // index. The final merge sorts only those candidates, not the folder's history.
             sql = """
                 WITH RECURSIVE folder_tree(id) AS (
                     SELECT id FROM meeting_folders WHERE id = ?
@@ -925,11 +952,19 @@ public final class DictationStore {
                     JOIN folder_tree ft ON mf.parent_id = ft.id
                 )
                 SELECT \(Self.meetingColumns) FROM meetings
-                WHERE folder_id IN (SELECT id FROM folder_tree) AND deleted_at IS NULL\(originCondition)
-                ORDER BY id DESC
+                WHERE id IN (
+                    SELECT candidate.id FROM folder_tree f
+                    JOIN meetings candidate ON candidate.id IN (
+                        SELECT id FROM meetings
+                        WHERE folder_id = f.id AND deleted_at IS NULL\(originCondition)
+                        ORDER BY julianday(start_time) DESC, id DESC
+                        LIMIT ?
+                    )
+                )
+                ORDER BY julianday(start_time) DESC, id DESC
                 """
         } else {
-            sql = "SELECT \(Self.meetingColumns) FROM meetings WHERE deleted_at IS NULL\(originCondition) ORDER BY id DESC"
+            sql = "SELECT \(Self.meetingColumns) FROM meetings WHERE deleted_at IS NULL\(originCondition) ORDER BY julianday(start_time) DESC, id DESC"
         }
         if limit != nil { sql += " LIMIT ?" }
 
@@ -941,6 +976,8 @@ public final class DictationStore {
         var bindIndex: Int32 = 1
         if let folderID {
             sqlite3_bind_int64(statement, bindIndex, folderID)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, Int64(limit ?? -1))
             bindIndex += 1
         }
         if let limit {
@@ -1177,15 +1214,16 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        folderID: Int64? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?))
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1225,6 +1263,12 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 22)
         }
         bindOptionalText(visualContext, at: 23, statement: statement)
+        // The destination may have been deleted while an audio import was running.
+        if let folderID {
+            sqlite3_bind_int64(statement, 24, folderID)
+        } else {
+            sqlite3_bind_null(statement, 24)
+        }
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -2977,21 +3021,31 @@ public final class DictationStore {
     public func updateMeetingManualNotes(id: Int64, manualNotes: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        let sql = "UPDATE meetings SET manual_notes = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { try? exec("ROLLBACK", db: db) } }
+        guard let meeting = try meeting(id: id, db: db) else {
+            throw DictationStoreError.meetingNotFound(id: id)
+        }
+        let wordCount = Self.countWords(in: meeting.rawTranscript) + Self.countWords(in: manualNotes)
+        let sql = "UPDATE meetings SET manual_notes = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (manualNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 3, id)
+        sqlite3_bind_int64(statement, 2, Int64(wordCount))
+        sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 4, id)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        try exec("COMMIT", db: db)
+        committed = true
     }
 
     public func updateMeetingStatus(id: Int64, status: MeetingStatus) throws {
@@ -5746,5 +5800,106 @@ public final class DictationStore {
             cursor = previous
         }
         return (current, longest)
+    }
+}
+
+extension DictationStore {
+    /// The import folder, meetings and local provenance are committed together.
+    /// The folder is created only when a new meeting is inserted. Existing records, including
+    /// tombstones and records received through sync, are left untouched on repeat import.
+    public func importGranola(_ records: [GranolaImportRecord]) throws -> GranolaImportReport {
+        guard records.count <= GranolaImport.maximumMeetings else {
+            throw GranolaImportError.invalid("Import up to 10,000 meetings at a time.")
+        }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        var committed = false
+        defer { if !committed { try? exec("ROLLBACK", db: db) } }
+        try exec("""
+            CREATE TABLE IF NOT EXISTS meeting_imports (
+                meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                workspace_name TEXT NOT NULL,
+                owner_email TEXT NOT NULL,
+                imported_at REAL NOT NULL,
+                PRIMARY KEY (provider, document_id)
+            )
+            """, db: db)
+        func prepare(_ sql: String) throws -> OpaquePointer? {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            return statement
+        }
+        func text(_ value: String, _ index: Int32, _ statement: OpaquePointer?) {
+            sqlite3_bind_text(statement, index, value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        }
+        var destinationFolderID: Int64?
+        func importFolder() throws -> Int64 {
+            if let destinationFolderID { return destinationFolderID }
+            let find = try prepare("SELECT id FROM meeting_folders WHERE name = ? AND parent_id IS NULL ORDER BY id LIMIT 1")
+            defer { sqlite3_finalize(find) }
+            text("Granola", 1, find)
+            let step = sqlite3_step(find)
+            if step == SQLITE_ROW {
+                let id = sqlite3_column_int64(find, 0)
+                destinationFolderID = id
+                return id
+            }
+            guard step == SQLITE_DONE else { throw lastError(db) }
+            let create = try prepare("INSERT INTO meeting_folders (name, parent_id) VALUES (?, NULL)")
+            defer { sqlite3_finalize(create) }
+            text("Granola", 1, create)
+            guard sqlite3_step(create) == SQLITE_DONE else { throw lastError(db) }
+            let id = sqlite3_last_insert_rowid(db)
+            destinationFolderID = id
+            return id
+        }
+        let exists = try prepare("""
+            SELECT 1 FROM meetings WHERE cloud_record_name = ?
+            UNION ALL SELECT 1 FROM meeting_imports WHERE provider = 'granola' AND document_id = ? LIMIT 1
+            """)
+        defer { sqlite3_finalize(exists) }
+        let insert = try prepare("""
+            INSERT INTO meetings (title, start_time, end_time, duration_seconds, raw_transcript,
+                formatted_notes, manual_notes, word_count, source, folder_id, meeting_status,
+                updated_at, sync_dirty, cloud_record_name)
+            VALUES (?, ?, NULL, 0, ?, ?, ?, ?, 'granola_import', ?, 'completed', ?, 1, ?)
+            """)
+        defer { sqlite3_finalize(insert) }
+        let provenance = try prepare("""
+            INSERT INTO meeting_imports (meeting_id, provider, document_id, workspace_name, owner_email, imported_at)
+            VALUES (?, 'granola', ?, ?, ?, ?)
+            """)
+        defer { sqlite3_finalize(provenance) }
+        var imported = 0, skipped = 0
+        for record in records {
+            sqlite3_reset(exists); sqlite3_clear_bindings(exists)
+            text(record.syncIdentity, 1, exists); text(record.id, 2, exists)
+            let step = sqlite3_step(exists)
+            if step == SQLITE_ROW { skipped += 1; continue }
+            guard step == SQLITE_DONE else { throw lastError(db) }
+            sqlite3_reset(insert); sqlite3_clear_bindings(insert)
+            text(record.title, 1, insert); text(formatISODate(record.createdAt), 2, insert)
+            text(record.transcript, 3, insert); text(record.summary, 4, insert); text(record.notes, 5, insert)
+            sqlite3_bind_int64(insert, 6, Int64(Self.countWords(in: record.transcript) + Self.countWords(in: record.notes)))
+            sqlite3_bind_int64(insert, 7, try importFolder())
+            sqlite3_bind_double(insert, 8, Date().timeIntervalSince1970)
+            text(record.syncIdentity, 9, insert)
+            guard sqlite3_step(insert) == SQLITE_DONE else { throw lastError(db) }
+            let meetingID = sqlite3_last_insert_rowid(db)
+            sqlite3_reset(provenance); sqlite3_clear_bindings(provenance)
+            sqlite3_bind_int64(provenance, 1, meetingID)
+            text(record.id, 2, provenance); text(record.workspace, 3, provenance); text(record.ownerEmail, 4, provenance)
+            sqlite3_bind_double(provenance, 5, Date().timeIntervalSince1970)
+            guard sqlite3_step(provenance) == SQLITE_DONE else { throw lastError(db) }
+            imported += 1
+        }
+        // Finalize the existence cursor before committing when the last record was a duplicate.
+        sqlite3_reset(exists)
+        try exec("COMMIT", db: db)
+        committed = true
+        return GranolaImportReport(imported: imported, skipped: skipped)
     }
 }
