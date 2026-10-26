@@ -257,6 +257,7 @@ final class NotchIndicatorController {
     private var requiresReview = false
     private(set) var outcome: NotchOutcome?
     private(set) var status: NotchStatus?
+    private(set) var statusDismissAt: Date?
     var statusMessage: String? { status == nil ? nil : instruction }
     private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
 
@@ -290,11 +291,13 @@ final class NotchIndicatorController {
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
-              toolResults: [NotchToolResult] = []) -> Bool {
+              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
+        let continuesStatus = status != nil && self.status == status && isVisible
         requiresReview = false
-        status = nil
-        outcome = nil
+        self.status = status
+        statusDismissAt = nil
+        outcome = status == .warning ? .needsInput : (status == .success ? .success : nil)
         dismissActivity?.cancel()
         dismissActivity = nil
         let now = Date()
@@ -346,6 +349,7 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             self.panel = panel
         }
+        if status != nil && !continuesStatus { expanded = true }
         render()
         panel?.orderFrontRegardless()
         logPresentation("show")
@@ -372,6 +376,7 @@ final class NotchIndicatorController {
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
         status = nil
+        statusDismissAt = nil
         outcome = nil
         requiresReview = false
         instructionPanel?.orderOut(nil)
@@ -394,8 +399,10 @@ final class NotchIndicatorController {
     func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
         guard outcome != nil || status != nil else { return false }
         guard let screen else { return true }
+        let resolved = resolveGeometry(screen)
+        if status != nil && resolved == nil { return false }
         screenBounds = screen.visibleFrame
-        geometry = resolveGeometry(screen) ?? NotchIndicatorGeometry(
+        geometry = resolved ?? NotchIndicatorGeometry(
             cutout: CGRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.maxY - 32,
                            width: 0, height: 32), wingWidth: 110)
         render()
@@ -407,7 +414,9 @@ final class NotchIndicatorController {
     func showStatus(on screen: NSScreen, kind: NotchStatus, message: String,
                     duration: TimeInterval? = nil) -> Bool {
         if duration == nil, status == kind, instruction == message, isVisible {
-            return refreshOutcomePlacement(on: screen)
+            if refreshOutcomePlacement(on: screen) { return true }
+            hide()
+            return false
         }
         let title: String
         let color: NSColor
@@ -420,12 +429,9 @@ final class NotchIndicatorController {
         guard show(on: screen, title: title, detail: message, recording: false,
                    paused: false, meeting: false, handsFree: false, active: true,
                    icon: NSImage(systemSymbolName: "waveform", accessibilityDescription: nil) ?? NSImage(),
-                   accent: color, instruction: message) else { return false }
-        status = kind
-        outcome = kind == .warning ? .needsInput : (kind == .success ? .success : nil)
-        expanded = true
-        render()
+                   accent: color, instruction: message, status: kind) else { return false }
         if let duration {
+            statusDismissAt = Date().addingTimeInterval(duration)
             let work = DispatchWorkItem { [weak self] in self?.hide() }
             dismissActivity = work
             DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
@@ -460,6 +466,11 @@ final class NotchIndicatorController {
         return true
     }
 
+    func toggleInstructionExpansion() {
+        expanded.toggle()
+        render()
+    }
+
     private func render() {
         guard let geometry, let panel else { return }
         let frame = geometry.frame()
@@ -473,11 +484,7 @@ final class NotchIndicatorController {
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
             hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
-            onToggleInstruction: { [weak self] in
-                guard let self else { return }
-                self.expanded.toggle()
-                self.render()
-            },
+            onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
             onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {

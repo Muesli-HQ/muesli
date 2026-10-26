@@ -257,6 +257,7 @@ final class FloatingIndicatorController: NSObject {
     private var deferredLoadingMessage: String?
     private var isComputerUseCursorMode = false
     private var computerUseCursorReturnFrame: NSRect?
+    private var computerUseCursorPoint = CGPoint.zero
 
     private enum WaveformAnimationMode {
         case level
@@ -287,9 +288,27 @@ final class FloatingIndicatorController: NSObject {
         guard let config = lastLoadedConfig, config.indicatorAnchor == .notch else { return }
         // Status messages and terminal results belong to presentation, not the idle recorder.
         // Moving it must not replay idle or restart its dismissal deadline.
-        if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return }
+        if refreshNotchFeedbackPlacement() { return }
         guard !isShowingLoading, !isComputerUseCursorMode else { return }
         setState(state, config: config)
+    }
+
+    /// Transfer ordinary statuses to the pill when the target display loses its notch.
+    @discardableResult
+    func refreshNotchFeedbackPlacement() -> Bool {
+        if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return true }
+        guard let kind = notchIndicator.status, let message = notchIndicator.statusMessage else { return false }
+        let duration = notchIndicator.statusDismissAt.map { max(0, $0.timeIntervalSinceNow) }
+        notchIndicator.hide()
+        switch kind {
+        case .loading:
+            isShowingLoading = false
+            showLoading(message)
+        case .cursor: showComputerUseCursor(at: computerUseCursorPoint, label: message)
+        case .warning: showWarning(message, duration: duration ?? 0)
+        case .success: showSuccess(message, duration: duration ?? 0)
+        }
+        return true
     }
 
     var onStopToggleDictation: (() -> Void)?
@@ -962,6 +981,7 @@ final class FloatingIndicatorController: NSObject {
         // and Stop control for the entire run. A simultaneous cursor bubble
         // requires a separate panel; switching this one would hide Stop.
         guard state == .idle, !isComputerUseCancellationAvailable else { return }
+        computerUseCursorPoint = quartzPoint
         if showNotchStatus(.cursor, message: rawLabel ?? "Computer use") { return }
         notchIndicator.hide()
         hideShortcutPillChrome()
@@ -1050,7 +1070,7 @@ final class FloatingIndicatorController: NSObject {
         let config = configStore.load()
         micIconView?.image = Self.idleIndicatorIcon(config: config)
         if config.indicatorAnchor == .notch, !isShowingLoading, !isComputerUseCursorMode {
-            if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return }
+            if refreshNotchFeedbackPlacement() { return }
             setState(state, config: config)
         }
     }
@@ -1173,7 +1193,7 @@ final class FloatingIndicatorController: NSObject {
             return
         }
         // Repeated progress callbacks must not animate or reposition the panel.
-        if isShowingLoading, textLabel?.stringValue == message { return }
+        if isShowingLoading, panel?.isVisible == true, textLabel?.stringValue == message { return }
         notchIndicator.hide()
         hideShortcutPillChrome()
         let config = configStore.load()

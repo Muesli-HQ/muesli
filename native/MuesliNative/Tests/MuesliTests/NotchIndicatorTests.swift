@@ -45,6 +45,68 @@ struct NotchIndicatorTests {
         #expect(notch.isVisible)
     }
 
+    @Test("Changing progress preserves collapsed disclosure", arguments: [NotchStatus.loading, .cursor])
+    @MainActor
+    func progressPreservesDisclosure(kind: NotchStatus) throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: kind, message: "10%"))
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame == nil)
+        #expect(notch.showStatus(on: screen, kind: kind, message: "20%"))
+        #expect(notch.expandedPanelFrame == nil)
+        #expect(notch.statusMessage == "20%")
+        #expect(notch.showStatus(on: screen, kind: .success, message: "Done", duration: 1))
+        #expect(notch.expandedPanelFrame != nil)
+    }
+
+    @Test("Existing statuses transfer to the pill when notch geometry disappears",
+          arguments: [NotchStatus.loading, .cursor, .warning, .success])
+    @MainActor
+    func statusDisplayFallback(kind: NotchStatus) throws {
+        _ = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        switch kind {
+        case .loading: indicator.showLoading("Preparing")
+        case .cursor: indicator.showComputerUseCursor(at: .zero, label: "Click")
+        case .warning: indicator.showWarning("Notice")
+        case .success: indicator.showSuccess("Done")
+        }
+        #expect(notch.isVisible)
+        supported = false
+        #expect(indicator.refreshNotchFeedbackPlacement())
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+    }
+
+    @Test("Identical loading update rejects unsupported notch geometry")
+    @MainActor
+    func repeatedProgressFallback() throws {
+        let screen = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        supported = false
+        #expect(!notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        #expect(!notch.isVisible)
+    }
+
     @Test("Late loading completion cannot hide a success notice")
     @MainActor
     func loadingCompletionPreservesNotice() throws {
