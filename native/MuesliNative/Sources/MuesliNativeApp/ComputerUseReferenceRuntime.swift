@@ -277,6 +277,21 @@ final class ComputerUseReferenceRuntime {
             guard let key = Self.key(args) else { return false }
             return pending == nil && frame?.key == key
         }
+        @MainActor func requiresVerification(tool: String, arguments: [String: Any]) -> Bool {
+            if tool == "finish" { return pending != nil }
+            return ComputerUseReferenceRuntime.mutationTools.contains(tool)
+                && ComputerUseReferenceDriver.isBrowserTool(tool) && !mayMutate(arguments)
+        }
+        @MainActor mutating func prepareForMutation(tool: String, arguments: [String: Any]) {
+            guard ComputerUseReferenceRuntime.mutationTools.contains(tool) else { return }
+            if ComputerUseReferenceDriver.isBrowserTool(tool) {
+                willMutate(arguments)
+            } else {
+                // Native input can stale the browser pixels, but cannot verify
+                // a pending browser action—even when that input is refused.
+                frame = nil
+            }
+        }
         mutating func willMutate(_ args: [String: Any]) {
             pending = Self.key(args)
             frame = nil
@@ -581,7 +596,7 @@ final class ComputerUseReferenceRuntime {
                 return finish(.failed, "Invalid reference tool call", kind: "failed")
             }
             let browserMutation = Self.mutationTools.contains(call.name) && ComputerUseReferenceDriver.isBrowserTool(call.name)
-            if browserMutation && !visuals.mayMutate(arguments) || (call.name == "finish" && visuals.pending != nil) {
+            if visuals.requiresVerification(tool: call.name, arguments: arguments) {
                 let message = "Visual verification required before another action or completion. Inspect the affected target_id/tab_id with get_browser_state and include_screenshot=true. If capture is unavailable, report the limitation; never activate Chrome or repeat an uncertain submission."
                 historyEntries.append(HistoryEntry(call: "Blocked \(call.name)", observation: message, staleSnapshot: nil))
                 append("backend", message, step: step)
@@ -600,8 +615,10 @@ final class ComputerUseReferenceRuntime {
             }
             onStatus("trycua: \(call.name)")
             if Self.mutationTools.contains(call.name) { attemptedMutation = true }
-            if browserMutation { visuals.willMutate(arguments); plannerImage.clear() }
-            else if Self.mutationTools.contains(call.name) { visuals = BrowserVisualState(); plannerImage.clear() }
+            if Self.mutationTools.contains(call.name) {
+                visuals.prepareForMutation(tool: call.name, arguments: arguments)
+                plannerImage.clear()
+            }
             let response = try await driver.callInBackground(name: call.name,
                 arguments: ComputerUseReferenceDriver.scopedArguments(arguments, session: session),
                 timeout: max(0.001, deadline.timeIntervalSinceNow))

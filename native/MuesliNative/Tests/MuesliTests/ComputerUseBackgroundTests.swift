@@ -5,6 +5,45 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Native mutations cannot erase outstanding browser verification or permit premature completion")
+    func nativeMutationPreservesBrowserVerification() {
+        typealias Runtime = ComputerUseReferenceRuntime
+        let affected: [String: Any] = ["target_id": "chrome", "tab_id": "a", "include_screenshot": true]
+        let other: [String: Any] = ["target_id": "chrome", "tab_id": "b", "include_screenshot": true]
+        let nativeTools = Runtime.mutationTools.filter { !ComputerUseReferenceDriver.isBrowserTool($0) }
+        for tool in nativeTools {
+            for refused in [false, true] {
+                var state = Runtime.BrowserVisualState()
+                var image = Runtime.PlannerImageState()
+                state.inspected(affected, image: "before", success: true)
+                #expect(!state.requiresVerification(tool: "browser_click", arguments: affected))
+                state.prepareForMutation(tool: "browser_click", arguments: affected)
+                // Exhaust the automatic read allowance without a screenshot.
+                for _ in 0..<4 { state.inspected(affected, image: nil, success: false) }
+                state.prepareForMutation(tool: tool, arguments: ["window_id": 7])
+                image.observeNative(tool: tool, arguments: ["window_id": 7], response: ["result": [
+                    "isError": refused, "content": [["type": "image", "data": "native"]]
+                ]])
+                #expect(state.frame == nil)
+                #expect(state.pending == "chrome/a")
+                #expect(state.requiresVerification(tool: "finish", arguments: [:]))
+                #expect(state.requiresVerification(tool: "browser_click", arguments: affected))
+                #expect(!state.requiresVerification(tool: "fail", arguments: [:]))
+                #expect(!state.requiresVerification(tool: "get_browser_state", arguments: affected))
+                state.inspected(other, image: "wrong-tab", success: true)
+                #expect(state.requiresVerification(tool: "finish", arguments: [:]))
+                state.inspected(affected, image: "failed-read", success: false)
+                #expect(state.requiresVerification(tool: "finish", arguments: [:]))
+                state.inspected(affected, image: "verified", success: true)
+                #expect(!state.requiresVerification(tool: "finish", arguments: [:]))
+                #expect(!state.requiresVerification(tool: "browser_click", arguments: affected))
+                state.prepareForMutation(tool: tool, arguments: [:])
+                #expect(state.frame == nil && state.pending == nil)
+                #expect(state.requiresVerification(tool: "browser_click", arguments: affected))
+            }
+        }
+    }
+
     @Test("Native and browser planner images retain accurate provenance and independent verification")
     func mixedPlannerImages() {
         typealias Runtime = ComputerUseReferenceRuntime

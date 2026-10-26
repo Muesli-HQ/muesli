@@ -43,6 +43,38 @@ struct ReadableComputerUseTraceTests {
         #expect(rows[0].outcome == "No result recorded")
         #expect(Set(rows.flatMap(\.events).map(\.id)) == Set(events.map(\.id)))
     }
+    @Test func groupsReadsWithVisualEvidenceAndPreservesBoundaries() {
+        func read(_ tab: String, step: Int, failed: Bool = false) -> [ComputerUseTraceEvent] {
+            [call("get_browser_state", "{\"target_id\":\"t\",\"tab_id\":\"\(tab)\"}", step: step),
+             result(failed ? #"{"status":"failed"}"# : #"{"status":"ok"}"#, step: step),
+             .init(kind: "visual_evidence", title: "trycua", body: "Screenshot for \(tab)", step: step)]
+        }
+        // Automatic verification repeats a step; ordinary planner reads do not.
+        let grouped = read("a", step: 1) + read("a", step: 1) + read("a", step: 2)
+        let otherTab = read("b", step: 3)
+        let failed = read("b", step: 4, failed: true)
+        let action = [call("browser_click", #"{"target_id":"t","tab_id":"b"}"#, step: 6),
+                      result(#"{"status":"ok"}"#, step: 6)]
+        let events = grouped + otherTab + failed + read("b", step: 5) + action + read("b", step: 7)
+        let rows = ComputerUseTraceFormatter.readableRows(events)
+        #expect(rows.count == 6)
+        #expect(rows[0].title == "Inspected page ×3")
+        #expect(rows[0].events == grouped)
+        #expect(rows[1].events == otherTab)
+        #expect(rows[2].outcome.hasPrefix("Error"))
+        #expect(rows[4].events == action)
+        #expect(rows.flatMap(\.events) == events)
+    }
+    @Test func orphanedVisualEvidenceStaysVisible() {
+        let orphan = ComputerUseTraceEvent(kind: "visual_evidence", title: "trycua", body: "Unmatched", step: 9)
+        let events = [call("get_browser_state", "{}", step: 1), result(#"{"status":"ok"}"#, step: 1),
+                      orphan, call("get_browser_state", "{}", step: 2),
+                      ComputerUseTraceEvent(kind: "visual_evidence", title: "trycua", body: "Missing result", step: 2)]
+        let rows = ComputerUseTraceFormatter.readableRows(events)
+        #expect(rows.count == 4)
+        #expect(rows[1].events == [orphan])
+        #expect(rows.flatMap(\.events) == events)
+    }
     @Test("Latest successful run has compact rows and complete evidence",
           .enabled(if: ProcessInfo.processInfo.environment["MUESLI_READABLE_TRACE_FIXTURE"] != nil))
     func savedRun() throws {
