@@ -39,6 +39,20 @@ struct MeetingChatNavigationTests {
         #expect(chat.scope.selection == .meetings([citation.meetingID]))
     }
 
+    @Test func changingUnsentScopePreservesDraftAndUndoHistory() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        chat.startDraft()
+        chat.composerDraft = "Keep my question while I choose context"
+        let identity = chat.composerUndoIdentity
+        let id = await chat.setScope(.init(selection: .meetings([citation.meetingID])))
+        #expect(id != nil)
+        #expect(chat.selectedSessionID == id)
+        #expect(chat.composerDraft == "Keep my question while I choose context")
+        #expect(chat.composerUndoIdentity == identity)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
+
     @Test func indexNavigationPreservesConversationDraftAndScope() async throws {
         let (controller, _, citation) = try controllerFixture()
         let chat = controller.meetingChatCoordinator

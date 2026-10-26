@@ -325,7 +325,11 @@ final class MeetingChatCoordinator {
     func selectChat(id: UUID) { selectionVersion = UUID(); selectedSessionID = id; errorMessage = nil; reload() }
     @discardableResult
     func setScope(_ newScope: MeetingChatScope) async -> UUID? {
-        if selectedSessionID == nil { return await createChat(scope: newScope) }
+        if selectedSessionID == nil {
+            guard let id = await createChat(scope: newScope) else { return nil }
+            adoptUntitledComposerDraft(sessionID: id)
+            return id
+        }
         guard let id = selectedSessionID, !isUpdatingChat else { return nil }
         isUpdatingChat = true
         defer { isUpdatingChat = false }
@@ -394,23 +398,14 @@ final class MeetingChatCoordinator {
     }
     func applyPreparedPrompt(_ prompt: MeetingChatPreparedPrompt) async -> Bool {
         let editVersion = composerEditVersion
-        let originalTarget = selectedSessionID
         let target: UUID?
         if prompt.scope != scope {
             guard let id = await setScope(prompt.scope) else { return false }
             target = id
         } else { target = selectedSessionID }
         guard selectedSessionID == target else { return false }
-        guard composerEditVersion == editVersion else {
-            // Scope setup may register the previously untitled composer. Carry
-            // edits into that session rather than leaving them in the nil slot.
-            if originalTarget == nil, let target {
-                composerDrafts[target] = composerDrafts[nil]
-                composerDrafts[nil] = nil
-                transferUntitledComposerUndoIdentity(to: target)
-            }
-            return false
-        }
+        // setScope already transfers any edits made during registration.
+        guard composerEditVersion == editVersion else { return false }
         composerDraft = prompt.text
         return true
     }
