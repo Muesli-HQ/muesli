@@ -18,12 +18,11 @@ struct BufferedTranscriptionWord: Sendable, Equatable {
 struct BufferedTranscriptionWindow: Sendable {
     let text: String
     let words: [BufferedTranscriptionWord]
-    var segmentEnds: [Double] = []
 
     /// Preserve the decoder's punctuation, whitespace and scripts when splitting
     /// the result into timed words. Missing/unmatched timing is a preview failure,
     /// never permission to drop text during a window rollover.
-    static func aligned(text: String, words: [BufferedTranscriptionWord], segmentEnds: [Double] = []) throws -> Self {
+    static func aligned(text: String, words: [BufferedTranscriptionWord]) throws -> Self {
         var cursor = text.startIndex
         var aligned: [BufferedTranscriptionWord] = []
         for word in words {
@@ -39,7 +38,7 @@ struct BufferedTranscriptionWindow: Sendable {
         guard text[cursor...].allSatisfy({ $0.isWhitespace }) else {
             throw BufferedTranscriptionSession.Failure.invalidTimings
         }
-        return Self(text: text, words: aligned, segmentEnds: segmentEnds)
+        return Self(text: text, words: aligned)
     }
 }
 
@@ -56,7 +55,7 @@ struct BufferedTranscriptionUpdate: Sendable, Equatable {
     }
 }
 
-/// A buffered session: the retained recording remains available for recovery.
+/// A preview session only: the retained recording remains the final authority.
 /// Audio capture never waits for inference. There is one decoder in flight and
 /// new arrivals coalesce into the next snapshot. Audio-time ownership, rather
 /// than matching strings, preserves deliberately repeated words at rollovers.
@@ -66,7 +65,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let decodeCount: Int
         let revision: UInt64
         let closed: Bool
-        let finishing: Bool
     }
 
     struct Configuration: Sendable {
@@ -83,15 +81,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var silenceRMS: Float = 0.0001
         /// Presentation only; never changes word ownership or PCM trimming.
         var smoothWhisperPreviews = false
-        var usesWhisperLocalAgreement = false
-
-        static var whisperPreview: Self {
-            var configuration = Self()
-            configuration.smoothWhisperPreviews = true
-            configuration.usesWhisperLocalAgreement = true
-            configuration.updateSamples = 8_000
-            return configuration
-        }
     }
 
     enum Failure: Error, LocalizedError {
@@ -119,7 +108,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private struct AlignmentRecovery: Error {
         let reason: RecoveryReason
         var candidate: [BufferedTranscriptionWord]? = nil
-        var candidateCount: Int? = nil
     }
 
     private struct State {
@@ -142,9 +130,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var running = false
         var finishing = false
         var closed = false
-        var completedTranscript: String?
-        var whisperOwnedWords: [BufferedTranscriptionWord] = []
-        var whisperAwaitingTrim = false
         var waiters: [CheckedContinuation<Void, Never>] = []
     }
     private struct Snapshot {
@@ -166,7 +151,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     var diagnostics: Diagnostics {
         synchronized {
             Diagnostics(receivedSamples: state.receivedSamples, decodeCount: state.decodeCount,
-                        revision: state.revision, closed: state.closed, finishing: state.finishing)
+                        revision: state.revision, closed: state.closed)
         }
     }
 
@@ -208,10 +193,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     }
 
     func cancel() {
-        synchronized {
-            state.completedTranscript = nil
-            close()
-        }
+        synchronized { close() }
     }
 
     /// Closes capture and drains all accepted samples. Failures use onFailure;
@@ -224,19 +206,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 state.waiters.append(continuation)
                 startIfNeeded()
             }
-        }
-    }
-
-    /// Returns raw ASR text only after a validated final decode owns every
-    /// accepted sample. Presentation smoothing never truncates this result.
-    /// Callers still apply their normal final text cleanup; nil requires the
-    /// retained-recording recovery path. Cancelling this wait cancels the session.
-    func finishTranscript() async -> String? {
-        await withTaskCancellationHandler {
-            await finish()
-            return synchronized { Task.isCancelled ? nil : state.completedTranscript }
-        } onCancel: {
-            self.cancel()
         }
     }
 
@@ -265,8 +234,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             }
             let limit = state.recovering ? recoveryWindowLimit : configuration.windowSamples
             let count = min(state.audio.count, limit)
-            if state.recovering && state.offset + count <= state.lastDecodedEnd
-                && !(state.finishing && state.whisperAwaitingTrim) {
+            if state.recovering && state.offset + count <= state.lastDecodedEnd {
                 if state.finishing {
                     onDiagnostic("ownership_recovery_exhausted:finish_without_new_audio")
                     if !state.closed { fail(Failure.ownershipUnresolved) }
@@ -285,7 +253,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             do {
                 let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
                 let result: BufferedTranscriptionWindow
-                var decodeMilliseconds: Int?
                 if rms <= Double(configuration.silenceRMS) {
                     result = BufferedTranscriptionWindow(text: "", words: [])
                 } else {
@@ -295,36 +262,19 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                         return true
                     }
                     guard canDecode else { return }
-                    let started = ProcessInfo.processInfo.systemUptime
                     result = try await decode(snapshot.audio)
-                    decodeMilliseconds = Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1_000)
                 }
                 try synchronized {
                     guard !state.closed else { return }
-                    // Stop may arrive during inference. If this exact window
-                    // covers all accepted audio, its result can own the final
-                    // tail without decoding identical PCM a second time.
-                    // Newer arrivals still require their own decode.
-                    let acceptedSnapshot = state.finishing
-                        && snapshot.offset + snapshot.audio.count == state.receivedSamples
-                        ? Snapshot(audio: snapshot.audio, offset: snapshot.offset, final: true) : snapshot
-                    if acceptedSnapshot.final && !snapshot.final {
-                        onDiagnostic("finish_reused_inflight_decode:samples=\(snapshot.audio.count)")
-                        guard !state.closed else { return }
-                    }
-                    if let decodeMilliseconds {
-                        onDiagnostic("decode_completed:samples=\(snapshot.audio.count):elapsed_ms=\(decodeMilliseconds):final=\(acceptedSnapshot.final)")
-                        guard !state.closed else { return }
-                    }
                     // accept can update anchors before discovering that a roll
                     // cannot advance. Recovery must restore the entire proposal,
                     // including PCM, before deferring this observation.
                     let checkpoint = state
                     do {
-                        try accept(result, snapshot: acceptedSnapshot)
+                        try accept(result, snapshot: snapshot)
                     } catch let recovery as AlignmentRecovery {
                         state = checkpoint
-                        deferAlignment(recovery, snapshot: acceptedSnapshot)
+                        deferAlignment(recovery, snapshot: snapshot)
                     }
                 }
             } catch let deferral as BufferedTranscriptionPreviewDeferral {
@@ -341,8 +291,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     }
 
     private func accept(_ result: BufferedTranscriptionWindow, snapshot: Snapshot) throws {
-        let result = try BufferedTranscriptionWindow.aligned(text: result.text, words: result.words,
-                                                            segmentEnds: result.segmentEnds)
+        let result = try BufferedTranscriptionWindow.aligned(text: result.text, words: result.words)
         let duration = Double(snapshot.audio.count) / 16_000
         var previousStart = -Double.infinity
         for word in result.words {
@@ -353,10 +302,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
         guard result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !result.words.isEmpty else {
             throw Failure.invalidTimings
-        }
-        if configuration.usesWhisperLocalAgreement {
-            try acceptWhisper(result, snapshot: snapshot)
-            return
         }
         let rolls = snapshot.audio.count >= configuration.windowSamples && !snapshot.final
         if result.words.isEmpty && (!state.committedAnchors.isEmpty || !state.lastPublishedTail.isEmpty) {
@@ -446,179 +391,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                                          words: tailWords, final: snapshot.final) : tail
         state.lastPresentedTail = visibleTail
         onUpdate(.init(committedText: state.committedText, tail: visibleTail, revision: state.revision))
-        if snapshot.final, !state.closed {
-            guard state.lastDecodedEnd == state.receivedSamples else { throw Failure.cannotAdvance }
-            state.completedTranscript = state.committedText + tail
-            close()
-        }
-    }
-
-    /// LocalAgreement is inspired by HypothesisBuffer in
-    /// https://github.com/ufal/whisper_streaming/blob/main/whisper_online.py.
-    /// See also Argmax's text-only word-prefix agreement helper:
-    /// https://github.com/argmaxinc/WhisperKit/blob/main/Sources/WhisperKit/Utilities/TranscriptionUtilities.swift.
-    /// Text agreement confirms words; timestamps only choose a safe PCM trim.
-    /// Unlike the reference's first matching overlap n-gram, ambiguous repeated
-    /// contexts never authorize removing words. This is a bounded adaptation,
-    /// not the reference implementation or a replacement for final cleanup.
-    private func acceptWhisper(_ result: BufferedTranscriptionWindow, snapshot: Snapshot) throws {
-        let base = Double(snapshot.offset) / 16_000
-        let end = base + Double(snapshot.audio.count) / 16_000
-        let words = result.words.map {
-            BufferedTranscriptionWord(text: $0.text, start: base + $0.start, end: base + $0.end)
-        }
-        if words.isEmpty && (!state.whisperOwnedWords.isEmpty || !state.lastPublishedTail.isEmpty) {
-            throw AlignmentRecovery(reason: .emptyHypothesis)
-        }
-        let ownedCount = try whisperOwnedBoundary(in: words)
-        guard !state.closed else { return }
-        let fresh = Array(words.dropFirst(ownedCount))
-        var agreed = 0
-        if snapshot.offset + snapshot.audio.count > state.lastDecodedEnd {
-            for (previous, current) in zip(state.previousTail, fresh) {
-                guard previous.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.elementsEqual(
-                    current.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16) else { break }
-                agreed += 1
-            }
-        }
-        // Argmax's eager example keeps the last two agreed words as lookback:
-        // https://github.com/argmaxinc/WhisperKit/blob/main/Sources/ArgmaxCLI/TranscribeCLI.swift.
-        // Decoder edge spellings can agree twice before a growing window fixes
-        // them (e.g. DIF -> Diff). Keep these visible but revisable; final flush
-        // still owns the complete tail after a verified seam.
-        let commitCount = snapshot.final ? fresh.count : max(0, agreed - 2)
-        state.committedText += join(fresh.prefix(commitCount), after: state.committedText)
-        state.whisperOwnedWords = Array(words.prefix(ownedCount + commitCount))
-        let tailWords = Array(fresh.dropFirst(commitCount))
-        let tail = join(tailWords, after: state.committedText)
-        state.previousTail = tailWords
-        state.followingAnchor = tailWords.first
-        state.lastPublishedTail = tail
-        state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
-
-        var trimmed = false
-        if !snapshot.final, snapshot.audio.count >= configuration.windowSamples {
-            // Preserve at least five complete owned words as lexical context.
-            // Every word before a cut must end before it, and every retained
-            // word must start after it; segment timestamps alone cannot prove this.
-            let owned = state.whisperOwnedWords.count
-            if owned > 5 {
-                let segmentEnds = result.segmentEnds.filter { $0.isFinite && $0 > 0 && base + $0 < end }.map { base + $0 }
-                var gaps: [(cut: Double, removed: Int, segment: Bool)] = []
-                var maximumEnd = -Double.infinity
-                for index in 1...(owned - 5) {
-                    maximumEnd = max(maximumEnd, words[index - 1].end)
-                    let nextStart = words[index].start
-                    guard maximumEnd <= nextStart,
-                          nextStart <= end - Double(configuration.rightContextSamples) / 16_000 else { continue }
-                    let segment = segmentEnds.filter { $0 >= maximumEnd && $0 <= nextStart }.max()
-                    // A confirmed word gap also permits bounded progress in a
-                    // long sentence with no decoder segment boundary or VAD.
-                    let cut = segment ?? maximumEnd
-                    if Int(cut * 16_000) > state.offset {
-                        gaps.append((cut, index, segment != nil))
-                    }
-                }
-                if let chosen = gaps.last(where: { $0.segment }) ?? gaps.last {
-                    let discard = Int(chosen.cut * 16_000) - state.offset
-                    state.audio.removeFirst(discard)
-                    state.offset += discard
-                    state.whisperOwnedWords.removeFirst(chosen.removed)
-                    state.previousTail = [] // A new PCM origin needs fresh agreement.
-                    trimmed = true
-                    onDiagnostic("local_agreement_trim:origin=\(state.offset):retained_words=\(state.whisperOwnedWords.count):segment=\(chosen.segment)")
-                    guard !state.closed else { return }
-                }
-            } else if words.isEmpty, state.committedText.isEmpty,
-                      snapshot.audio.allSatisfy({ abs($0) <= configuration.silenceRMS }) {
-                // Only genuinely silent PCM may advance without a text boundary.
-                let discard = snapshot.audio.count - configuration.rightContextSamples
-                state.audio.removeFirst(discard)
-                state.offset += discard
-                trimmed = true
-            }
-        }
-        // No forced full-window commitment. Keep newly agreed text and all PCM
-        // while the decode grows; never retry the same capped endpoint as a
-        // second observation or roll back visible progress for lack of a trim.
-        let needsGrowth = !snapshot.final && !trimmed && snapshot.audio.count >= configuration.windowSamples
-        state.recovering = needsGrowth
-        state.whisperAwaitingTrim = needsGrowth
-        state.recoveryCandidate = nil
-        if needsGrowth {
-            onDiagnostic("local_agreement_waiting_for_trim:origin=\(state.offset):owned_words=\(state.whisperOwnedWords.count):samples=\(snapshot.audio.count)")
-            guard !state.closed else { return }
-            if snapshot.audio.count >= recoveryWindowLimit { fail(Failure.ownershipUnresolved); return }
-        }
-        state.revision += 1
-        let visible = configuration.smoothWhisperPreviews
-            ? state.presentation.present(committedText: state.committedText, tail: tail, words: tailWords, final: snapshot.final) : tail
-        state.lastPresentedTail = visible
-        onUpdate(.init(committedText: state.committedText, tail: visible, revision: state.revision))
-        if snapshot.final, !state.closed {
-            guard state.lastDecodedEnd == state.receivedSamples else { throw Failure.cannotAdvance }
-            state.completedTranscript = state.committedText + tail
-            close()
-        }
-    }
-
-    /// Mapping owned text does not confirm new text. Normalize only this seam,
-    /// allowing frozen punctuation/case and token splits such as cannot/can not.
-    /// Same-origin prefix mapping preserves ordinal occurrences of repeated words.
-    private func whisperOwnedBoundary(in words: [BufferedTranscriptionWord]) throws -> Int {
-        let owned = state.whisperOwnedWords
-        guard !owned.isEmpty else { return 0 }
-        let keys = words.map { whisperLexicalKey($0.text) }
-        let ownedKey = owned.map { whisperLexicalKey($0.text) }.joined()
-        if ownedKey.isEmpty {
-            guard words.count >= owned.count,
-                  zip(owned, words).allSatisfy({ $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                      .utf16.elementsEqual($1.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16) }) else {
-                throw AlignmentRecovery(reason: .missingAnchor)
-            }
-            return owned.count
-        }
-        func matchingEnd(start: Int, key: String) -> Int? {
-            guard !key.isEmpty else { return nil }
-            var accumulated = ""
-            for index in start..<keys.count {
-                accumulated += keys[index]
-                if accumulated.utf16.count >= key.utf16.count {
-                    guard accumulated.utf16.elementsEqual(key.utf16) else { return nil }
-                    var end = index + 1
-                    while end < keys.count && keys[end].isEmpty { end += 1 }
-                    return end
-                }
-            }
-            return nil
-        }
-        if let end = matchingEnd(start: 0, key: ownedKey) { return end }
-        // Older committed words may be revised without invalidating a unique
-        // retained seam. Require both left context and the preceding draft's
-        // first lexical word. Never pick the nearest/first repeated occurrence.
-        for length in stride(from: min(5, owned.count), through: min(2, owned.count), by: -1) {
-            let key = owned.suffix(length).map { whisperLexicalKey($0.text) }.joined()
-            guard !key.isEmpty else { continue }
-            let candidates = Set(words.indices.compactMap { matchingEnd(start: $0, key: key) })
-            if candidates.count > 1 {
-                throw AlignmentRecovery(reason: .ambiguousAnchor, candidateCount: candidates.count)
-            }
-            guard let end = candidates.first else { continue }
-            if let following = state.followingAnchor, !whisperLexicalKey(following.text).isEmpty {
-                guard matchingEnd(start: end, key: whisperLexicalKey(following.text)) != nil else {
-                    throw AlignmentRecovery(reason: .changedBoundary)
-                }
-            }
-            onDiagnostic("local_agreement_seam_rebased:origin=\(state.offset):context_words=\(length):candidate_count=1")
-            return end
-        }
-        throw AlignmentRecovery(reason: .missingAnchor)
-    }
-
-    private func whisperLexicalKey(_ text: String) -> String {
-        String(text.lowercased().unicodeScalars.filter {
-            !CharacterSet.whitespacesAndNewlines.contains($0) && !CharacterSet.punctuationCharacters.contains($0)
-        })
+        if snapshot.final { close() }
     }
 
     /// Locate already-owned words using ordered, timed anchors, not textual
@@ -732,12 +505,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         state.previousTail = [] // Fresh two-hypothesis agreement after recovery.
         state.recovering = true
-        state.whisperAwaitingTrim = false
         state.recoveryCandidate = recovery.candidate
-        if configuration.usesWhisperLocalAgreement {
-            onDiagnostic("local_agreement_deferred:\(recovery.reason.rawValue):origin=\(state.offset):owned_words=\(state.whisperOwnedWords.count):candidate_count=\(recovery.candidateCount ?? 0)")
-            guard !state.closed else { return }
-        }
         onDiagnostic("ownership_recovery:\(recovery.reason.rawValue):samples=\(snapshot.audio.count)")
         guard !state.closed else { return }
         if snapshot.final || snapshot.audio.count >= recoveryWindowLimit {
@@ -802,7 +570,6 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Publish failure before releasing finish waiters so a caller cannot
         // mistake a failed drain for a successfully completed preview.
         state.closed = true
-        state.completedTranscript = nil
         // A failure handler may reentrantly cancel. Keep these continuations
         // out of close() until that handler has completely delivered failure.
         let waiters = state.waiters

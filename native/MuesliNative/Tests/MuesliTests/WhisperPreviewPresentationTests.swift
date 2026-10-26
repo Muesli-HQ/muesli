@@ -12,67 +12,14 @@ struct WhisperPreviewPresentationTests {
         #expect(show(&presentation, next) == "one two three four five six seven eight")
     }
 
-    @Test("a single bounded draft word appears on its first observation")
+    @Test("a single added word waits at most one more observation")
     func smallGroups() {
         var presentation = WhisperPreviewPresentation()
-        #expect(show(&presentation, words(["one"])) == "one")
         #expect(show(&presentation, words(["one", "two"])) == "one two")
         let three = words(["one", "two", "three"])
+        #expect(show(&presentation, three) == "one two")
         #expect(show(&presentation, three) == "one two three")
         #expect(show(&presentation, words(["one", "two", "three", "four", "five"])) == "one two three four five")
-    }
-
-    @Test("continued speech presents each new word without extra decode cycles or sentence resets")
-    func longSpeakingSequence() {
-        var presentation = WhisperPreviewPresentation()
-        let sequence = (1...120).map { "word\($0)" }
-        var previous = ""
-        for count in 1...sequence.count {
-            let prefix = Array(sequence.prefix(count))
-            let current = show(&presentation, words(prefix))
-            #expect(current == prefix.joined(separator: " "))
-            #expect(current.utf16.starts(with: previous.utf16))
-            #expect(current.count - previous.count <= 8)
-            previous = current
-        }
-    }
-
-    @Test("matching displayed prefix resumes bounded additions after a rejected large revision")
-    func continuationAfterRejectedRevision() {
-        var presentation = WhisperPreviewPresentation()
-        let original = ["these", "are", "the", "already", "displayed", "words"]
-        _ = show(&presentation, words(original))
-        let visible = show(&presentation, words(original))
-        #expect(show(&presentation, words(["a", "conflicting", "sentence", "should", "wait"])) == visible)
-        let continuation = original + ["now", "continue", "with", "more", "speech"]
-        let resumed = show(&presentation, words(continuation))
-        #expect(resumed == (original + ["now", "continue"]).joined(separator: " "))
-        #expect(resumed.utf16.starts(with: visible.utf16))
-        #expect(resumed.count - visible.count <= 24)
-    }
-
-    @Test("returning to visible text does not bypass the draft grapheme limit")
-    func recoveredContinuationIsBounded() {
-        var presentation = WhisperPreviewPresentation()
-        let original = ["these", "are", "the", "already", "displayed", "words"]
-        _ = show(&presentation, words(original))
-        let visible = show(&presentation, words(original))
-        #expect(show(&presentation, words(["a", "conflicting", "sentence"])) == visible)
-        let family = "👨‍👩‍👧‍👦"
-        let longWord = String(repeating: family, count: 30)
-        let resumed = show(&presentation, words(original + [longWord, "later"]))
-        #expect(resumed == visible + " " + String(repeating: family, count: 23))
-        #expect(resumed.count - visible.count == 24)
-    }
-
-    @Test("an unconfirmed large revision cannot replace the sentence prefix to reveal its tail")
-    func largeRevisionCannotAppendAcrossConflict() {
-        var presentation = WhisperPreviewPresentation()
-        let original = ["these", "are", "the", "already", "displayed", "words"]
-        _ = show(&presentation, words(original))
-        let visible = show(&presentation, words(original))
-        #expect(show(&presentation, words(["a", "different", "sentence", "and", "new", "tail"])) == visible)
-        #expect(show(&presentation, words(["another", "changed", "sentence", "and", "more", "tail"])) == visible)
     }
 
     @Test("raw commitment transfers do not retract or duplicate displayed words")

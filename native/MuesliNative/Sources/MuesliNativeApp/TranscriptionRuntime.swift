@@ -145,7 +145,8 @@ actor TranscriptionCoordinator {
         if backend.backend == "whisper" {
             let transcriber = whisperTranscriber
             let expectedModel = backend.model
-            let configuration = BufferedTranscriptionSession.Configuration.whisperPreview
+            var configuration = BufferedTranscriptionSession.Configuration()
+            configuration.smoothWhisperPreviews = true
             return BufferedTranscriptionSession(configuration: configuration, decode: { samples in
                 try await transcriber.transcribePreview(
                     samples: samples, language: whisperLanguage, expectedModel: expectedModel
@@ -999,9 +1000,7 @@ actor TranscriptionCoordinator {
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil,
-        timingRequestID: String? = nil,
-        completedWhisperTranscript: String? = nil,
-        onStage: (@Sendable (String) async -> Void)? = nil
+        timingRequestID: String? = nil
     ) async throws -> SpeechTranscriptionResult {
         try await TranscriptCleanupDebugLogger.$requestID.withValue(timingRequestID ?? UUID().uuidString) {
             let totalStart = ProcessInfo.processInfo.systemUptime
@@ -1027,27 +1026,18 @@ actor TranscriptionCoordinator {
                     TranscriptCleanupDebugLogger.timing("asr_failed", since: asrStart, detail: backend.backend)
                 }
             }
-            try Task.checkCancellation()
-            let initialResult: SpeechTranscriptionResult
-            if backend.backend == "whisper", let completedWhisperTranscript {
-                initialResult = SpeechTranscriptionResult(text: completedWhisperTranscript, segments: [])
-            } else {
-                initialResult = try await route(
-                    url: url,
-                    backend: backend,
-                    cohereLanguage: cohereLanguage,
-                    bodhanLanguage: bodhanLanguage,
-                    bodhanOutputMode: bodhanOutputMode,
-                    whisperLanguage: whisperLanguage,
-                    qwen3AsrLanguage: qwen3AsrLanguage,
-                    parakeetLanguage: parakeetLanguage,
-                    appleSpeechLanguage: appleSpeechLanguage
-                )
-            }
-            try Task.checkCancellation()
-            var result = initialResult
+            var result = try await route(
+                url: url,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage,
+                bodhanOutputMode: bodhanOutputMode,
+                whisperLanguage: whisperLanguage,
+                qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage,
+                appleSpeechLanguage: appleSpeechLanguage
+            )
             asrSucceeded = true
-            await onStage?("asr_completed")
             TranscriptCleanupDebugLogger.timing("asr_completed", since: asrStart, detail: backend.backend)
             // WBCS describes the original Bodhan transcription of spoken words.
             // Cleanup and custom-word replacement can change displayed text, so
@@ -1070,8 +1060,6 @@ actor TranscriptionCoordinator {
                 postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             ) ?? removeFillersWithLogging(result)
-            try Task.checkCancellation()
-            await onStage?("cleanup_completed")
             TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
                                                 detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
             let final = applyCustomWords(result, customWords: customWords)

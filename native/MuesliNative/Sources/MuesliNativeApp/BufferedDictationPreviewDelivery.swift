@@ -1,23 +1,5 @@
 import Foundation
 
-enum BufferedDictationFinalization {
-    /// A stalled stream retains the full-recording fallback. Cancellation closes
-    /// the session, so late inference cannot publish a successful final result.
-    static func transcript(from session: BufferedTranscriptionSession,
-                           timeout: Duration = .seconds(6)) async -> String? {
-        await withTaskGroup(of: String?.self) { group in
-            group.addTask { await session.finishTranscript() }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-            let result = await group.next() ?? nil
-            group.cancelAll()
-            return Task.isCancelled ? nil : result
-        }
-    }
-}
-
 /// A slow editor must not replay an unbounded queue of obsolete hypotheses.
 /// Finish closes admission and drops pending previews; an already-started write
 /// is allowed to finish its readback before the target's final replacement.
