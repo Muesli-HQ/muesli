@@ -19,11 +19,80 @@ final class LiveDictationTextTarget {
     struct PlaceholderEvidence {
         var value: String? = nil
         var characterCount: Double? = nil
+        var structurallyVerifiedRawValue: String? = nil
+        var structuralStatus = "not_checked"
 
         func confirmsEmptyValue(_ text: String) -> Bool {
-            guard !text.isEmpty, let value, characterCount == 0 else { return false }
-            return value.utf16.elementsEqual(text.utf16)
+            guard !text.isEmpty else { return false }
+            return structurallyVerifiedRawValue?.utf16.elementsEqual(text.utf16) == true
+                || (characterCount == 0 && value?.utf16.elementsEqual(text.utf16) == true)
         }
+
+        var source: String {
+            structurallyVerifiedRawValue != nil ? "codex_structure" : "placeholder_attribute"
+        }
+    }
+
+    /// Codex 26.1016.62342 (21477)'s editor applies this decoration only when
+    /// doc.childCount == 1, firstChild is a paragraph, and its content.size == 0.
+    /// These are Codex-specific semantics, not a generic meaning of the CSS class.
+    /// AX may flatten that paragraph; absent structure is unsupported. The hint's
+    /// spelling never grants ownership of real text.
+    struct PlaceholderNode {
+        var role: String
+        var classes: [String] = []
+        var text: String? = nil
+        var children: [PlaceholderNode] = []
+        var complete = true
+    }
+
+    static let placeholderMaximumNodes = 16
+    static let placeholderMaximumDepth = 5
+
+    static func generatedPlaceholderEvidence(rawValue: String, root: PlaceholderNode?) -> PlaceholderEvidence {
+        func rejected(_ reason: String) -> PlaceholderEvidence { .init(structuralStatus: reason) }
+        guard let root else { return rejected("tree_unavailable") }
+        guard root.complete else { return rejected("incomplete_tree") }
+        guard ["AXTextArea", "AXTextField"].contains(root.role), root.classes.contains("ProseMirror") else {
+            return rejected("missing_root_class")
+        }
+        guard root.children.count == 1 else { return rejected("unexpected_shape") }
+        let paragraph = root.children[0]
+        guard ["AXGroup", "AXParagraph"].contains(paragraph.role), paragraph.classes.contains("placeholder") else {
+            return rejected("no_placeholder")
+        }
+        var count = 1
+        var failure: String?
+        var leaves: [String] = []
+        func visit(_ node: PlaceholderNode, depth: Int) {
+            guard failure == nil else { return }
+            count += 1
+            guard count <= placeholderMaximumNodes else { failure = "node_limit"; return }
+            guard depth <= placeholderMaximumDepth else { failure = "depth_limit"; return }
+            guard node.complete else { failure = "incomplete_tree"; return }
+            if depth > 1 && node.classes.contains("placeholder") { failure = "unexpected_shape"; return }
+            if ["AXStaticText", "AXLineBreak"].contains(node.role) {
+                guard node.children.isEmpty, let text = node.text else { failure = "incomplete_leaf"; return }
+                leaves.append(text)
+            } else {
+                guard ["AXGroup", "AXParagraph"].contains(node.role), !node.children.isEmpty,
+                      depth == 1 || (node.role == "AXGroup" && node.classes.isEmpty && node.children.count == 1) else {
+                    failure = "unexpected_shape"; return
+                }
+                for child in node.children { visit(child, depth: depth + 1) }
+            }
+        }
+        visit(paragraph, depth: 1)
+        if let failure { return rejected(failure) }
+        let nonNewlineLeaves = leaves.filter { !$0.trimmingCharacters(in: CharacterSet(charactersIn: "\n")).isEmpty }
+        guard nonNewlineLeaves.count == 1 else { return rejected("unexpected_text") }
+        let hint = nonNewlineLeaves[0]
+        guard !hint.contains("\n"), !hint.contains("\r"), !hint.isEmpty,
+              leaves.joined().trimmingCharacters(in: CharacterSet(charactersIn: "\n")).utf16.elementsEqual(hint.utf16),
+              rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\n")).utf16.elementsEqual(hint.utf16) else {
+            return rejected("value_mismatch")
+        }
+        return .init(structurallyVerifiedRawValue: rawValue, structuralStatus: "verified")
     }
 
     enum Transport: String {
@@ -138,7 +207,7 @@ final class LiveDictationTextTarget {
             let evidence = access.placeholderEvidence()
             let matches = evidence.confirmsEmptyValue(snapshot.text)
             if matches { initialEmptyPlaceholderValue = snapshot.text }
-            onDiagnostic("capture_placeholder:value_length=\(snapshot.text.utf16.count):placeholder_length=\(evidence.value?.utf16.count ?? -1):character_count=\(evidence.characterCount.map(String.init(describing:)) ?? "unavailable"):verified_empty=\(matches)")
+            onDiagnostic("capture_placeholder:value_length=\(snapshot.text.utf16.count):placeholder_length=\(evidence.value?.utf16.count ?? -1):character_count=\(evidence.characterCount.map(String.init(describing:)) ?? "unavailable"):verified_empty=\(matches):source=\(evidence.source):structure=\(evidence.structuralStatus)")
         }
         Self.activeTarget = self
     }
@@ -373,7 +442,7 @@ final class LiveDictationTextTarget {
             var acknowledged = false
             let delivered = await paste(chunk, { [self] in
                 guard await waitForSnapshot(matching: selected) != nil else { return false }
-                return !removesPlaceholder || verifyEmptyPlaceholder(selected.text)
+                return !removesPlaceholder || verifyEmptyPlaceholder(selected)
             }, { [self] in
                 guard let observed = await awaitReadback(pasted, stale: selected, stage: "live_paste",
                                                         alternate: sentinelRemoved) else { return false }
@@ -454,7 +523,7 @@ final class LiveDictationTextTarget {
         var acknowledged = false
         let delivered = await paste(replacement, { [self] in
             guard await waitForSnapshot(matching: selected) != nil else { return false }
-            return !removesPlaceholder || verifyEmptyPlaceholder(selected.text)
+            return !removesPlaceholder || verifyEmptyPlaceholder(selected)
         }, { [self] in
             guard let observed = await awaitReadback(pasted, stale: selected, stage: "final_paste",
                                                     alternate: sentinelRemoved) else { return false }
@@ -490,11 +559,17 @@ final class LiveDictationTextTarget {
         return selected.text.utf16.elementsEqual(initialEmptyPlaceholderValue.utf16)
     }
 
-    private func verifyEmptyPlaceholder(_ text: String) -> Bool {
-        guard access.placeholderEvidence().confirmsEmptyValue(text) else {
+    private func verifyEmptyPlaceholder(_ selected: Snapshot) -> Bool {
+        let evidence = access.placeholderEvidence()
+        guard evidence.confirmsEmptyValue(selected.text) else {
+            onDiagnostic("placeholder_preflight:source=\(evidence.source):structure=\(evidence.structuralStatus)")
             return suspend("placeholder_evidence_changed")
         }
-        return true
+        // Structural IPC can take time. Check the same selection and focus again
+        // synchronously after it, without an await before the paste validator returns.
+        guard mutationIsCurrent(), let observed = access.snapshot() else { return false }
+        guard observed == selected else { return suspend("placeholder_target_changed") }
+        return mutationIsCurrent()
     }
 
     private func preparePasteSelection(_ selected: Snapshot) async -> Bool {
@@ -852,16 +927,79 @@ private final class AccessibilityTarget {
                     onDiagnostic: diagnostic)
             } : nil, focusStatus: { [self] in focusStatus() }, placeholderEvidence: { [self] in
                 let placeholder = Self.string(element, kAXPlaceholderValueAttribute)
+                var evidence = generatedPlaceholderEvidence()
+                evidence.value = placeholder
                 var raw: CFTypeRef?
                 let result = AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &raw)
                 // CFBoolean/strings and failed reads are not evidence of an
                 // empty editor. Do not round fractional counts to zero.
                 guard result == .success, let raw, CFGetTypeID(raw) == CFNumberGetTypeID(),
                       let number = raw as? NSNumber else {
-                    return .init(value: placeholder)
+                    return evidence
                 }
-                return .init(value: placeholder, characterCount: number.doubleValue)
+                evidence.characterCount = number.doubleValue
+                return evidence
             })
+    }
+
+    private func generatedPlaceholderEvidence() -> LiveDictationTextTarget.PlaceholderEvidence {
+        guard application.bundleIdentifier == "com.openai.codex", transport == .targetedPaste else { return .init() }
+        // This reader runs only at eligible capture and first-paste validation.
+        // A provider timeout can overrun the deadline by one IPC (250 ms), never
+        // by the whole subtree. No partial or unsupported read proves emptiness.
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.25
+        var failure: String?
+        var visited: [AXUIElement] = []
+        func attribute(_ node: AXUIElement, _ name: String) -> CFTypeRef? {
+            guard failure == nil else { return nil }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { failure = "time_limit"; return nil }
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(node, name as CFString, &value) == .success, let value else {
+                failure = name == "AXChildren" ? "children_unavailable" : "attribute_unavailable"
+                return nil
+            }
+            return value
+        }
+        func read(_ node: AXUIElement, depth: Int) -> LiveDictationTextTarget.PlaceholderNode? {
+            guard depth <= LiveDictationTextTarget.placeholderMaximumDepth else { failure = "depth_limit"; return nil }
+            guard visited.count < LiveDictationTextTarget.placeholderMaximumNodes else { failure = "node_limit"; return nil }
+            guard !visited.contains(where: { CFEqual($0, node) }) else { failure = "tree_cycle"; return nil }
+            visited.append(node)
+            AXUIElementSetMessagingTimeout(node, 0.25)
+            guard let role = attribute(node, "AXRole") as? String,
+                  let classes = attribute(node, "AXDOMClassList") as? [String] else { return nil }
+            if depth == 0 && !classes.contains("ProseMirror") { failure = "missing_root_class"; return nil }
+            if depth == 1 && !classes.contains("placeholder") { failure = "no_placeholder"; return nil }
+            guard let rawChildren = attribute(node, "AXChildren") as? [AnyObject] else {
+                if failure == nil { failure = "children_unavailable" }; return nil
+            }
+            if depth == 0 && rawChildren.count != 1 { failure = "unexpected_shape"; return nil }
+            guard rawChildren.count <= LiveDictationTextTarget.placeholderMaximumNodes - visited.count else {
+                failure = "node_limit"; return nil
+            }
+            var children: [AXUIElement] = []
+            for rawChild in rawChildren {
+                guard ProcessInfo.processInfo.systemUptime < deadline else { failure = "time_limit"; return nil }
+                guard CFGetTypeID(rawChild) == AXUIElementGetTypeID() else { failure = "invalid_child"; return nil }
+                children.append(rawChild as! AXUIElement)
+            }
+            var text: String?
+            if ["AXStaticText", "AXLineBreak"].contains(role) {
+                guard let value = attribute(node, "AXValue") as? String else { return nil }
+                text = value
+            }
+            var descendants: [LiveDictationTextTarget.PlaceholderNode] = []
+            for child in children {
+                guard let descendant = read(child, depth: depth + 1) else { return nil }
+                descendants.append(descendant)
+            }
+            return .init(role: role, classes: classes, text: text, children: descendants)
+        }
+        guard let raw = attribute(element, "AXValue") as? String, let root = read(element, depth: 0),
+              ProcessInfo.processInfo.systemUptime < deadline else {
+            return .init(structuralStatus: failure ?? "incomplete_tree")
+        }
+        return LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: root)
     }
 
     private func focusStatus() -> LiveDictationTextTarget.FocusStatus {

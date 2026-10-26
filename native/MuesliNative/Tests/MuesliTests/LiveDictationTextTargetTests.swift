@@ -39,6 +39,7 @@ struct LiveDictationTextTargetTests {
         var removesInitialNewline = false
         var placeholderEvidence = LiveDictationTextTarget.PlaceholderEvidence()
         var removesInitialPlaceholder = false
+        var onPlaceholderEvidence: (() -> Void)?
         var keyboardBurstSize = 1
         var useAcknowledgedWordGroups = false
         var delayKeyboardSeparators = false
@@ -70,7 +71,8 @@ struct LiveDictationTextTargetTests {
                selection == NSRange(location: 0, length: 0) {
                 nextText = replacement
             }
-            if removesInitialPlaceholder, placeholderEvidence.value == text,
+            if removesInitialPlaceholder,
+               placeholderEvidence.value == text || placeholderEvidence.structurallyVerifiedRawValue == text,
                selection == NSRange(location: 0, length: 0) {
                 nextText = replacement
             }
@@ -158,7 +160,11 @@ struct LiveDictationTextTargetTests {
                     focusStatus: { [self] in
                         if !focused { return .departed("focus_changed") }
                         return focusUnavailable ? .unavailable("test_ax_unavailable") : .focused
-                    }, placeholderEvidence: { [self] in placeholderEvidence })
+                    }, placeholderEvidence: { [self] in
+                        let evidence = placeholderEvidence
+                        onPlaceholderEvidence?()
+                        return evidence
+                    })
         }
     }
 
@@ -425,6 +431,118 @@ struct LiveDictationTextTargetTests {
         #expect(editor.text == "This time it works")
         #expect(editor.finalPastes == ["This time", " it works"])
         #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    private static func placeholderTree() -> LiveDictationTextTarget.PlaceholderNode {
+        .init(role: "AXTextArea", classes: ["ProseMirror"], children: [
+            .init(role: "AXGroup", classes: ["placeholder"], children: [
+                .init(role: "AXStaticText", text: "Work with Codex"),
+                .init(role: "AXStaticText", text: "\n")
+            ])
+        ])
+    }
+
+    @Test func codexGeneratedPlaceholderRequiresExactCompleteStructure() {
+        let raw = "Work with Codex\n"
+        let evidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: Self.placeholderTree())
+        #expect(raw.utf16.count == 16)
+        #expect(evidence.confirmsEmptyValue(raw))
+        #expect(evidence.value == nil)
+        #expect(evidence.characterCount == nil)
+        #expect(evidence.source == "codex_structure")
+        #expect(evidence.structuralStatus == "verified")
+        #expect(!evidence.confirmsEmptyValue("Work with Codex"))
+        #expect(!LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: nil).confirmsEmptyValue(raw))
+    }
+
+    @Test(arguments: Array(0...12))
+    func codexPlaceholderRejectsRealMixedOrIncompleteContent(reason: Int) {
+        var tree = Self.placeholderTree()
+        var raw = "Work with Codex\n"
+        switch reason {
+        case 0: tree.classes = ["NotProseMirror"]
+        case 1: tree.children[0].classes = [] // Literally typed same hint.
+        case 2: tree.children[0].classes = ["placeholder-other"]
+        case 3: tree.children.append(.init(role: "AXStaticText", text: "Actual text"))
+        case 4: tree.children[0].children.append(.init(role: "AXImage", text: "Attachment"))
+        case 5: tree.children[0].children.append(.init(role: "AXStaticText", text: "Actual text"))
+        case 6: tree.children[0].children[0].complete = false // Failed/unsupported read.
+        case 7: tree.children[0].children[0].text = nil
+        case 8: tree.children[0].children[0].children = [.init(role: "AXStaticText", text: "Hidden")]
+        case 9: raw = " Work with Codex\n" // Never trim user whitespace.
+        case 10: tree.children[0].children.append(.init(role: "AXParagraph", children: [.init(role: "AXStaticText", text: "\n")]))
+        case 11: tree.children[0].children = [.init(role: "AXStaticText", text: "Work with Codex\nOther")]
+        default: tree.complete = false
+        }
+        #expect(!LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: tree).confirmsEmptyValue(raw))
+    }
+
+    @Test func codexPlaceholderRejectsTraversalCaps() {
+        let raw = "Work with Codex\n"
+        var many = Self.placeholderTree()
+        many.children[0].children += Array(repeating: .init(role: "AXStaticText", text: "\n"), count: 20)
+        #expect(LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: many).structuralStatus == "node_limit")
+        var deep = Self.placeholderTree()
+        var content = deep.children[0].children[0]
+        for _ in 0..<6 { content = .init(role: "AXGroup", children: [content]) }
+        deep.children[0].children = [content]
+        #expect(LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: deep).structuralStatus == "depth_limit")
+    }
+
+    @Test(arguments: [false, true])
+    func structuralPlaceholderSupportsFirstPasteThenNormalCleanup(finalOnly: Bool) async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        editor.placeholderEvidence.characterCount = 16 // Rendered text count isn't DOM content.
+        editor.removesInitialPlaceholder = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !finalOnly {
+            #expect(await target.update(text: "This"))
+            editor.placeholderEvidence = .init() // Decoration disappears after insertion.
+            #expect(await target.update(text: "This works"))
+        }
+        #expect(await target.finish(text: "This works."))
+        #expect(editor.text == "This works.")
+        #expect(editor.selection == NSRange(location: 11, length: 0))
+        #expect(!target.isSuspended)
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func structuralPlaceholderRevalidatesEvidenceAndTargetBeforeDispatch(change: Int) async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if change == 0 {
+            editor.beforeFinalPaste = { editor.placeholderEvidence = .init(structuralStatus: "no_placeholder") }
+        } else {
+            editor.onPlaceholderEvidence = {
+                if change == 1 { editor.focused = false }
+                if change == 2 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 3 { editor.text = "External content" }
+            }
+        }
+        #expect(await target.update(text: "This") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func structuralPlaceholderAlternateIsOneShotEvenIfHostRetainsHint() async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "This"))
+        #expect(editor.text == "ThisWork with Codex\n")
+        editor.afterPasteDispatch = { editor.text = "This works" }
+        #expect(await target.update(text: "This works") == false)
+        #expect(target.isSuspended)
     }
 
     @Test(arguments: [false, true])
