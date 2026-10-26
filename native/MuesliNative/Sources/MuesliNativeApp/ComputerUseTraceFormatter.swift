@@ -119,6 +119,14 @@ enum ComputerUseTraceFormatter {
             else { outcome = "Tool returned — outcome unverified" }
             var raw = [event]
             if let result { raw.append(result) }
+            // Captions belong to this invocation, including the last read of
+            // automatic verification (several calls can share one step).
+            // Keep them in raw details instead of breaking consecutive reads.
+            if let step = event.step, result != nil {
+                let evidence = following.filter { $0.kind == "visual_evidence" && $0.step == step }
+                raw.append(contentsOf: evidence)
+                consumed.formUnion(evidence.map(\.id))
+            }
             // Keep the terminal message with its invocation rather than duplicating a row.
             if name == "finish" || name == "fail",
                let terminal = following.first(where: { ["finish", "failed", "incomplete"].contains($0.kind) }) {
