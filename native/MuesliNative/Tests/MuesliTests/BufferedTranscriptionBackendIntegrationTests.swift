@@ -39,7 +39,8 @@ struct BufferedTranscriptionBackendIntegrationTests {
             print("[buffered-soak] seconds=\(end / 16_000) committed=\(committed.count) draft=\(update.tail.count)")
         }
         if previousEnd < samples.count { session.enqueue(Array(samples[previousEnd...])) }
-        await session.finish()
+        let reuse = await session.finishForReuse()
+        print("[buffered-reuse] parakeet eligible=\(reuse.canReuse) reason=\(String(describing: reuse.fallbackReason)) \(reuse.diagnostics)")
         #expect(output.failure == nil)
         #expect(!prefixAt30Seconds.isEmpty)
         #expect(committed.count > prefixAt30Seconds.count)
@@ -51,6 +52,46 @@ struct BufferedTranscriptionBackendIntegrationTests {
             #expect(finalWords.contains(phrase))
         }
         await transcriber.shutdown()
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_BUFFERED_REUSE_SMOKE"] == "1"
+                   && ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"] != nil),
+          arguments: ["parakeet", "whisper"])
+    func completedClearSpeechCanSkipFullRetranscription(backend: String) async throws {
+        let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"])
+        // The first fixture includes a long internal pause where Whisper moves
+        // "and" between timing hypotheses and should use the conservative
+        // fallback. The second fixture exercises an ordinary completed stream.
+        let fixture = backend == "parakeet" ? "01-validation-request-21.4s.wav" : "02-release-readiness-19.8s.wav"
+        var samples = try AudioConverter().resampleAudioFile(
+            URL(fileURLWithPath: directory).appendingPathComponent(fixture))
+        // Allow two one-second preview observations after the completed final
+        // word, as when the speaker pauses before stop. Stopping mid-word or on
+        // a low-confidence first observation is tested as a fallback separately.
+        samples += Array(repeating: 0, count: 32_000)
+        if backend == "parakeet" {
+            try #require(ManagedASRModelPlans.parakeetV3().isComplete())
+            let transcriber = FluidAudioTranscriber()
+            try await transcriber.loadModels(version: .v3)
+            do {
+                try await assertProgressivePreview(samples: samples, label: "parakeet-reuse", requireReuse: true) {
+                    try await transcriber.transcribePreview(samples: $0, expectedVersion: .v3)
+                }
+                await transcriber.shutdown()
+            } catch { await transcriber.shutdown(); throw error }
+        } else {
+            let model = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_WHISPER_MODEL"] ?? "large-v3-v20240930_626MB"
+            try #require(ManagedASRModelPlans.whisperKit(modelName: model).isComplete())
+            let transcriber = WhisperKitTranscriber()
+            try await transcriber.loadModel(modelName: model)
+            do {
+                try await assertProgressivePreview(samples: samples, label: "whisper-reuse", requireReuse: true,
+                                                  smoothWhisperPreviews: true) {
+                    try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+                }
+                await transcriber.shutdown()
+            } catch { await transcriber.shutdown(); throw error }
+        }
     }
 
     /// Opt in with a nonprivate speech fixture and an already installed v3 model.
@@ -401,7 +442,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
     // final decode of a long buffer. Shared by v3 and the additional family models.
     @discardableResult
     private func assertProgressivePreview(
-        samples: [Float], label: String, requireEarlyCommit: Bool = true,
+        samples: [Float], label: String, requireEarlyCommit: Bool = true, requireReuse: Bool = false,
         knownTinyTamilOwnershipInstability: Bool = false,
         smoothWhisperPreviews: Bool = false, output: BufferedSmokeOutput? = nil,
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
@@ -450,7 +491,11 @@ struct BufferedTranscriptionBackendIntegrationTests {
             #expect(progressive.lastText != textAtFourteenSeconds, "Live output must advance through the first window boundary before stop")
         }
         if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
-        await live.finish()
+        let finishStart = ContinuousClock.now
+        let reuse = await live.finishForReuse()
+        if requireReuse { #expect(reuse.canReuse, "Clear speech should qualify: \(reuse.fallbackReason) \(reuse.diagnostics)") }
+        print("[buffered-reuse] model=\(label) finish=\(finishStart.duration(to: .now))")
+        print("[buffered-reuse] model=\(label) eligible=\(reuse.canReuse) reason=\(String(describing: reuse.fallbackReason)) \(reuse.diagnostics)")
         if knownTinyTamilOwnershipInstability, progressive.failure == "ownershipUnresolved" {
             // Track the actual model limitation explicitly. Do not classify
             // timestamp validation, overrun, cursor or arbitrary errors as known.

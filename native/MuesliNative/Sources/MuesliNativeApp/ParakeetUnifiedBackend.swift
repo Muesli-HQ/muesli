@@ -91,9 +91,7 @@ actor ParakeetUnifiedTranscriber {
         guard let asrManager else { throw TranscriberError.notLoaded }
         let result = try await asrManager.transcribeWithTimings(samples)
         try Task.checkCancellation()
-        let words = buildWordTimings(from: result.tokenTimings).map {
-            BufferedTranscriptionWord(text: $0.word, start: $0.startTime, end: $0.endTime)
-        }
+        let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings)
         return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
     }
 

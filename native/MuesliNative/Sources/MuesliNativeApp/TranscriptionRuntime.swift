@@ -1026,7 +1026,7 @@ actor TranscriptionCoordinator {
                     TranscriptCleanupDebugLogger.timing("asr_failed", since: asrStart, detail: backend.backend)
                 }
             }
-            var result = try await route(
+            let result = try await route(
                 url: url,
                 backend: backend,
                 cohereLanguage: cohereLanguage,
@@ -1039,16 +1039,38 @@ actor TranscriptionCoordinator {
             )
             asrSucceeded = true
             TranscriptCleanupDebugLogger.timing("asr_completed", since: asrStart, detail: backend.backend)
+            return await finalizeDictationTranscript(
+                result, backend: backend, enablePostProcessor: enablePostProcessor,
+                customWords: customWords, appContext: appContext,
+                timingRequestID: timingRequestID
+            )
+        }
+    }
+
+    /// Both full-recording ASR and a verified, drained stream use exactly the
+    /// same artifact removal, optional local cleanup, and custom dictionary.
+    func finalizeDictationTranscript(
+        _ transcript: SpeechTranscriptionResult,
+        backend: BackendOption,
+        enablePostProcessor: Bool = false,
+        customWords: [[String: Any]] = [],
+        appContext: String? = nil,
+        timingRequestID: String? = nil
+    ) async -> SpeechTranscriptionResult {
+        await TranscriptCleanupDebugLogger.$requestID.withValue(
+            timingRequestID ?? TranscriptCleanupDebugLogger.requestID ?? UUID().uuidString
+        ) {
             // WBCS describes the original Bodhan transcription of spoken words.
             // Cleanup and custom-word replacement can change displayed text, so
             // preserve the ASR measurement separately from that final text.
+            var result = transcript
             let rawASRText = result.text
             let bodhanMeasurement = result.bodhanMeasurement
             result = removeArtifacts(result)
             if !result.text.isEmpty {
                 Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
             }
-            // Capture this after ASR awaits. The snapshot is then passed through the
+            // Capture this after recognition finishes. The snapshot is then passed through the
             // complete cleanup path, so a model switch cannot change the model or
             // empty-output policy for this dictation.
             let postProcessorSnapshot = currentPostProcessorSnapshot()

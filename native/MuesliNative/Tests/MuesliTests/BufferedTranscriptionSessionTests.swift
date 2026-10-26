@@ -4,6 +4,388 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("reuse requires valid confidence and preserves raw final text", arguments: ["strong", "missing", "low", "nan", "negative", "aboveOne"])
+    func reuseConfidence(kind: String) async {
+        let confidence: Float? = switch kind {
+        case "strong": 0.95
+        case "missing": nil
+        case "low": 0.1
+        case "nan": .nan
+        case "negative": -0.1
+        default: 1.1
+        }
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1, end: 0.5, confidence: confidence)])
+        }, onUpdate: { _ in }, onFailure: { _ in })
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let result = await session.finishForReuse()
+        #expect(result.completed)
+        #expect(result.text == "hello")
+        #expect(result.receivedSamples == 16_000 && result.decodedThroughSample == 16_000)
+        #expect(result.canReuse == (kind == "strong"))
+        let expected: BufferedTranscriptionSession.ReuseFallbackReason? = switch kind {
+        case "strong": nil
+        case "missing": .missingConfidence
+        case "low": .lowConfidence
+        default: .invalidConfidence
+        }
+        #expect(result.fallbackReason == expected)
+        #expect(result.diagnostics.committedWordCount == 1)
+    }
+
+    @Test("reuse accepts moderate confidence only after growing audio agreement")
+    func reuseAgreedConfidence() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1, end: 0.5, confidence: 0.3)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 5 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.diagnostics.agreedWordCount == 1)
+        #expect(result.diagnostics.unagreedWordCount == 0)
+    }
+
+    @Test("identical final decode does not manufacture confidence agreement")
+    func reuseSameAudioIsNotAgreement() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1, end: 0.5, confidence: 0.3)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 5 * 16_000))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        #expect(result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .lowConfidence)
+        #expect(result.diagnostics.agreedWordCount == 0)
+    }
+
+    @Test("unsupported final context and zero-support words cannot be reused", arguments: [false, true])
+    func reuseUnsupportedFinal(zeroDuration: Bool) async {
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1,
+                end: zeroDuration ? 0.1 : 5, confidence: 0.99)])
+        }, onUpdate: { _ in }, onFailure: { _ in })
+        session.enqueue(Array(repeating: 0.2, count: 6 * 16_000))
+        let result = await session.finishForReuse()
+        #expect(result.completed && !result.canReuse)
+        #expect(result.fallbackReason == (zeroDuration ? .unsupportedWordTiming : .unagreedContextTooLong))
+    }
+
+    @Test("reuse cancellation releases a waiter before an uncooperative decode completes")
+    func reuseCancellation() async {
+        let decoder = BufferedHeldDecoder()
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var started = decoder.started.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await started.next()
+        let task = Task { await session.finishForReuse() }
+        task.cancel()
+        let result = await task.value
+        #expect(!result.canReuse && !result.completed)
+        #expect(result.fallbackReason == .cancelled)
+        #expect(result.receivedSamples == 32_000)
+        #expect(output.values.isEmpty)
+        await decoder.release()
+    }
+
+    @Test("failure, overrun, and unresolved ownership never yield reusable text", arguments: ["failure", "overrun", "deferral"])
+    func reuseFailure(kind: String) async {
+        let session = BufferedTranscriptionSession(decode: { _ in
+            if kind == "deferral" { throw BufferedTranscriptionPreviewDeferral.invalidWordTimings }
+            throw BufferedTranscriptionSession.Failure.invalidTimings
+        }, onUpdate: { _ in }, onFailure: { _ in })
+        session.enqueue(Array(repeating: 0.2, count: kind == "overrun" ? 720_001 : 16_000))
+        let result = await session.finishForReuse()
+        #expect(!result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .transcriptionFailed)
+    }
+
+    @Test("empty retained hypotheses are provisional but discarded nonzero audio is unverified")
+    func reuseEmptyCoverage() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            samples.count < 48_000 ? .init(text: "", words: []) :
+                .init(text: "hello", words: [.init(text: "hello", start: 2, end: 2.5, confidence: 0.99)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await session.finishForReuse().canReuse)
+        for amplitude: Float in [0, 0.2] {
+            let empty = BufferedTranscriptionSession(decode: { _ in .init(text: "", words: []) },
+                onUpdate: { _ in }, onFailure: { _ in })
+            empty.enqueue(Array(repeating: amplitude, count: 16_000))
+            let result = await empty.finishForReuse()
+            #expect(result.completed)
+            #expect(result.canReuse == (amplitude == 0))
+            #expect(result.fallbackReason == (amplitude == 0 ? nil : .unverifiedEmptyAudio))
+        }
+    }
+
+    @Test("a shorter anchor suffix cannot hide revision of frozen transcript from reuse")
+    func reuseOwnedRevision() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let first = samples.count >= 7 * 16_000 ? "hallo" : "hello"
+            return .init(text: "\(first) world draft", words: [
+                .init(text: first, start: 0.1, end: 0.5, confidence: 0.99),
+                .init(text: "world", start: 1, end: 1.5, confidence: 0.99),
+                .init(text: "draft", start: 4, end: 4.5, confidence: 0.99)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 5 * 16_000))
+        _ = await updates.next()
+        for _ in 0..<2 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            _ = await updates.next()
+        }
+        let result = await session.finishForReuse()
+        #expect(result.completed && !result.canReuse)
+        #expect(result.text == "hello world draft")
+        #expect(result.fallbackReason == .committedTranscriptChanged)
+    }
+
+    @Test("failed rollover restores confidence bookkeeping with its text and audio checkpoint")
+    func reuseQualityRollback() async {
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 96_000
+        config.updateSamples = 32_000
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let confidence: Float = base == 0 && samples.count == 96_000 ? 0.01 : 0.99
+            let words: [BufferedTranscriptionWord] = [("first", 0.1, 0.5), ("second", 2.8, 3.5), ("third", 6.0, 6.5)].compactMap { text, start, end in
+                guard start >= base, end <= base + Double(samples.count) / 16_000 else { return nil }
+                return .init(text: text, start: start - base, end: end - base, confidence: confidence)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<96_000).map(Float.init))
+        _ = await updates.next()
+        #expect(output.values.last?.text == "")
+        #expect(session.knownReuseFallbackReason == nil)
+        session.enqueue((96_000..<128_000).map(Float.init))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        // The later strong words still form a long unsupported run; the
+        // rejected low-confidence proposal must not be its fallback reason.
+        #expect(result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .unagreedContextTooLong)
+        #expect(result.text == "first second third")
+        #expect(result.diagnostics.committedWordCount == 3)
+        #expect(result.diagnostics.lowConfidenceCount == 0)
+        #expect(result.diagnostics.minimumConfidence == 0.99)
+        #expect(result.diagnostics.discardedSamples > 0)
+    }
+
+    @Test("reuse quality survives retired windows and preserves every repeated word", arguments: [false, true])
+    func reuseAcrossRolls(earlyLowConfidence: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let words: [BufferedTranscriptionWord] = (0..<30).compactMap { index in
+                let start = Double(index) + 0.1
+                let finish = Double(index) + 0.7
+                guard start >= base, finish <= end else { return nil }
+                return .init(text: "go", start: start - base, end: finish - base,
+                    confidence: earlyLowConfidence && index == 0 ? 0.1 : 0.99)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<32_000).map(Float.init))
+        _ = await updates.next()
+        for second in 2..<30 {
+            session.enqueue(((second * 16_000)..<((second + 1) * 16_000)).map(Float.init))
+            _ = await updates.next()
+        }
+        let result = await session.finishForReuse()
+        #expect(result.completed)
+        #expect(result.canReuse == !earlyLowConfidence)
+        #expect(result.fallbackReason == (earlyLowConfidence ? .lowConfidence : nil))
+        #expect(result.text == Array(repeating: "go", count: 30).joined(separator: " "))
+        #expect(result.diagnostics.committedWordCount == 30)
+        #expect(result.diagnostics.discardedSamples > 15 * 16_000)
+        #expect(result.decodedThroughSample == 30 * 16_000)
+        #expect(result.diagnostics.lowConfidenceCount == (earlyLowConfidence ? 1 : 0))
+    }
+
+    @Test("final callback cancellation invalidates reuse and empty sessions have no coverage")
+    func reuseReentrantCancellationAndNoAudio() async {
+        let cancellation = BufferedReentrantCancellation()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "hello", words: [.init(text: "hello", start: 0.1, end: 0.5, confidence: 0.99)])
+        }, onUpdate: { _ in cancellation.cancel() }, onFailure: { _ in })
+        cancellation.set(session)
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let cancelled = await session.finishForReuse()
+        #expect(!cancelled.canReuse && !cancelled.completed)
+        #expect(cancelled.fallbackReason == .cancelled)
+        let empty = BufferedTranscriptionSession(decode: { _ in .init(text: "", words: []) },
+            onUpdate: { _ in }, onFailure: { _ in })
+        let result = await empty.finishForReuse()
+        #expect(!result.canReuse && !result.completed)
+        #expect(result.fallbackReason == .noAudio)
+        #expect(result.receivedSamples == 0)
+    }
+
+    @Test("reuse keeps independent later-word agreement after an earlier draft revision")
+    func reuseIndependentWordAgreement() async {
+        let output = BufferedPreviewOutput()
+        var config = BufferedTranscriptionSession.Configuration()
+        config.smoothWhisperPreviews = true
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            let first = samples.count <= 32_000 ? "old" : "new"
+            return .init(text: "\(first) stable", words: [
+                .init(text: first, start: 0.1, end: 0.5, confidence: 0.99),
+                .init(text: "stable", start: 1, end: 1.5, confidence: 0.3)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        #expect(output.values.last?.committedText == "")
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == "new stable")
+        #expect(result.diagnostics.agreedWordCount == 1)
+        #expect(result.diagnostics.unagreedWordCount == 1)
+    }
+
+    @Test("reuse measures separate unsupported runs without counting intervening agreed speech")
+    func reuseSeparateUnsupportedRuns() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let revised = samples.count > 8 * 16_000
+            let first = revised ? "new" : "old"
+            let last = revised ? "end" : "ending"
+            return .init(text: "\(first) stable \(last)", words: [
+                .init(text: first, start: 0.1, end: 0.5, confidence: 0.99),
+                .init(text: "stable", start: 3, end: 3.5, confidence: 0.3),
+                .init(text: last, start: 7, end: 7.5, confidence: 0.99)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 8 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.diagnostics.maximumUnagreedSpan == 0.5)
+        #expect(result.diagnostics.agreedWordCount == 1)
+    }
+
+    @Test("reuse agreement cannot choose ambiguous repeats or reuse a split token", arguments: [false, true])
+    func reuseAmbiguousOrSplitWords(split: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let initial = samples.count <= 32_000
+            let words: [BufferedTranscriptionWord]
+            if split {
+                words = initial ? [.init(text: "cannot", start: 0.1, end: 0.5, confidence: 0.3)] : [
+                    .init(text: "can", start: 0.1, end: 0.3, confidence: 0.3),
+                    .init(text: "not", start: 0.3, end: 0.5, confidence: 0.3)]
+            } else {
+                words = initial ? [
+                    .init(text: "go", start: 0.1, end: 0.2, confidence: 0.3),
+                    .init(text: "go", start: 0.3, end: 0.4, confidence: 0.3)] : [
+                    .init(text: "go", start: 0.2, end: 0.3, confidence: 0.3)]
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        #expect(result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .lowConfidence)
+        #expect(result.diagnostics.agreedWordCount == 0)
+    }
+
+    @Test("unsupported confidence context accumulates across separate forced commitment batches")
+    func reuseUnsupportedRunAcrossBatches() async {
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 6 * 16_000
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            // Each nonfinal window reveals only its mature words. Thus each
+            // small forced batch is strong but has no earlier agreeing tail.
+            let visibleEnd = end >= 12 ? end : end - 3
+            let words: [BufferedTranscriptionWord] = (0..<12).compactMap { index in
+                let start = Double(index) + 0.1
+                let finish = Double(index) + 0.3
+                guard start >= base, finish <= visibleEnd else { return nil }
+                return .init(text: "word\(index)", start: start - base, end: finish - base, confidence: 0.99)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        session.enqueue((0..<(12 * 16_000)).map(Float.init))
+        let result = await session.finishForReuse()
+        #expect(result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .unagreedContextTooLong)
+        #expect(result.diagnostics.maximumUnagreedSpan > 4)
+        #expect(result.diagnostics.lowConfidenceCount == 0)
+        #expect(result.diagnostics.agreedWordCount == 0)
+        #expect(output.values.count > 2)
+    }
+
+    @Test("reuse agreement recognizes punctuation and case revisions without weakening live commitment")
+    func reuseCaseAndPunctuationAgreement() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let word = samples.count <= 32_000 ? "hello" : "Hello!"
+            return .init(text: word, words: [.init(text: word, start: 0.1, end: 0.5, confidence: 0.3)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        #expect(output.values.last?.committedText == "")
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == "Hello!")
+        #expect(result.diagnostics.agreedWordCount == 1)
+    }
+
+    @Test("reuse quality tolerates trailing silence extension but not a new timed occurrence", arguments: ["extension", "shifted", "disjoint"])
+    func reuseOnsetEvidence(kind: String) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { samples in
+            let initial = samples.count <= 32_000
+            let start = initial ? 0.5 : kind == "shifted" ? 0.9 : kind == "disjoint" ? 0.7 : 0.5
+            let end = initial ? 0.6 : kind == "extension" ? 0.92 : 1.1
+            return .init(text: initial ? "out?" : "out.", words: [
+                .init(text: initial ? "out?" : "out.", start: start, end: end, confidence: 0.424)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        let result = await session.finishForReuse()
+        #expect(result.completed)
+        #expect(result.canReuse == (kind == "extension"))
+        #expect(result.fallbackReason == (kind == "extension" ? nil : .lowConfidence))
+        #expect(result.diagnostics.agreedWordCount == (kind == "extension" ? 1 : 0))
+    }
+
     @Test("finish flushes short audio and preserves revisable punctuation")
     func shortFinal() async {
         let output = BufferedPreviewOutput()

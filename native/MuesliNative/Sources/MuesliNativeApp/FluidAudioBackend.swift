@@ -102,9 +102,7 @@ actor FluidAudioTranscriber {
         let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
                                                     language: language.flatMap(Language.init(rawValue:)))
         try Task.checkCancellation()
-        let words = buildWordTimings(from: result.tokenTimings ?? []).map {
-            BufferedTranscriptionWord(text: $0.word, start: $0.startTime, end: $0.endTime)
-        }
+        let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings ?? [])
         return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
     }
 

@@ -11382,7 +11382,9 @@ public final class MuesliController: NSObject {
             self.markDictationLatency("buffered_preview revision=\(update.revision) committed=\(update.committedText.utf16.count) draft=\(update.tail.utf16.count) accepted=\(accepted)", trace: previewTrace)
             guard let current = self.bufferedDictationContext, current.id == id else { return }
             if !accepted {
-                current.session.cancel()
+                // Delivery safety and recognition completeness are independent.
+                // Keep decoding for history; the target still refuses unsafe writes.
+                current.delivery.close()
                 self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
             }
         })
@@ -12013,12 +12015,11 @@ public final class MuesliController: NSObject {
         if let diagnostics = liveContext?.session.diagnostics {
             markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
         }
-        // The retained WAV is authoritative. Cancel provisional inference before
-        // entering the existing final ASR + cleanup pipeline; its backend gate
-        // drains any in-flight call before final decoding can start.
-        liveContext?.session.cancel()
+        // Close preview delivery now. Recognition drains separately below; only
+        // a complete, quality-checked stream may skip full-recording ASR.
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
+            liveContext?.session.cancel()
             liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
@@ -12032,6 +12033,7 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
+            liveContext?.session.cancel()
             liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
@@ -12086,6 +12088,7 @@ public final class MuesliController: NSObject {
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
+                liveContext?.session.cancel()
                 try? FileManager.default.removeItem(at: wavURL)
                 if !isTestMode {
                     self.clearInFlightDictationTranscription(id: transcriptionTaskID)
@@ -12148,20 +12151,39 @@ public final class MuesliController: NSObject {
                 } else {
                     let ppOption = self.runtimePostProcessorOption()
                     await self.configureTranscriptCleanupForRuntime(option: ppOption)
-                    let result = try await self.transcriptionCoordinator.transcribeDictation(
-                        at: wavURL,
-                        backend: transcriptionBackend,
-                        cohereLanguage: transcriptionLanguage,
-                        bodhanLanguage: bodhanTranscriptionLanguage,
-                        bodhanOutputMode: bodhanTranscriptionOutputMode,
-                        whisperLanguage: whisperTranscriptionLanguage,
-                        qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                        parakeetLanguage: parakeetTranscriptionLanguage,
-                        appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
-                        enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                        customWords: self.serializedCustomWords(),
-                        appContext: promptContext,
-                        timingRequestID: completionLatencyTrace?.id.uuidString
+                    let result = try await BufferedDictationFinalizer.transcribe(
+                        session: liveContext?.session,
+                        recordedSampleCount: liveContext == nil ? nil
+                            : BufferedDictationFinalizer.recordedSampleCount(at: wavURL),
+                        onDecision: { decision in
+                            self.markDictationLatency("buffered_finalization:\(decision)", trace: completionLatencyTrace)
+                        },
+                        reuse: { transcript in
+                            await self.transcriptionCoordinator.finalizeDictationTranscript(
+                                SpeechTranscriptionResult(text: transcript, segments: []),
+                                backend: transcriptionBackend,
+                                enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                                customWords: self.serializedCustomWords(),
+                                appContext: promptContext,
+                                timingRequestID: completionLatencyTrace?.id.uuidString
+                            )
+                        }, fallback: {
+                            try await self.transcriptionCoordinator.transcribeDictation(
+                                at: wavURL,
+                                backend: transcriptionBackend,
+                                cohereLanguage: transcriptionLanguage,
+                                bodhanLanguage: bodhanTranscriptionLanguage,
+                                bodhanOutputMode: bodhanTranscriptionOutputMode,
+                                whisperLanguage: whisperTranscriptionLanguage,
+                                qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                                parakeetLanguage: parakeetTranscriptionLanguage,
+                                appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                                enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                                customWords: self.serializedCustomWords(),
+                                appContext: promptContext,
+                                timingRequestID: completionLatencyTrace?.id.uuidString
+                            )
+                        }
                     )
                     rawText = result.text
                     completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,

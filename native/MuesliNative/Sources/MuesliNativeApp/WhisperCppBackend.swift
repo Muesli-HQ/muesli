@@ -100,10 +100,15 @@ actor WhisperKitTranscriber {
         let results: [TranscriptionResult] = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         try Task.checkCancellation()
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        let words = results.flatMap(\.segments).flatMap { $0.words ?? [] }.map {
-            BufferedTranscriptionWord(text: $0.word, start: Double($0.start), end: Double($0.end))
-        }
+        let words = Self.previewWords(from: results.flatMap(\.segments).flatMap { $0.words ?? [] })
         return try Self.previewWindow(text: text, words: words, sampleCount: samples.count)
+    }
+
+    static func previewWords(from words: [WordTiming]) -> [BufferedTranscriptionWord] {
+        words.map {
+            BufferedTranscriptionWord(text: $0.word, start: Double($0.start), end: Double($0.end),
+                                      confidence: $0.probability)
+        }
     }
 
     static func makePreviewDecodeOptions(language: WhisperKitLanguage, modelName: String) -> DecodingOptions {

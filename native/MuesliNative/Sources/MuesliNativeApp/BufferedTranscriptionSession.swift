@@ -14,6 +14,14 @@ struct BufferedTranscriptionWord: Sendable, Equatable {
     let text: String
     let start: Double
     let end: Double
+    let confidence: Float?
+
+    init(text: String, start: Double, end: Double, confidence: Float? = nil) {
+        self.text = text
+        self.start = start
+        self.end = end
+        self.confidence = confidence
+    }
 }
 
 struct BufferedTranscriptionWindow: Sendable {
@@ -33,7 +41,7 @@ struct BufferedTranscriptionWindow: Sendable {
                   text[cursor..<range.lowerBound].allSatisfy({ $0.isWhitespace }) else {
                 throw BufferedTranscriptionSession.Failure.invalidTimings
             }
-            aligned.append(.init(text: String(text[cursor..<range.upperBound]), start: word.start, end: word.end))
+            aligned.append(.init(text: String(text[cursor..<range.upperBound]), start: word.start, end: word.end, confidence: word.confidence))
             cursor = range.upperBound
         }
         guard text[cursor...].allSatisfy({ $0.isWhitespace }) else {
@@ -56,7 +64,8 @@ struct BufferedTranscriptionUpdate: Sendable, Equatable {
     }
 }
 
-/// A preview session only: the retained recording remains the final authority.
+/// Buffered previews may supply final text only after explicit reuse-quality and
+/// full recording sample-coverage checks; otherwise the recording is transcribed.
 /// Audio capture never waits for inference. There is one decoder in flight and
 /// new arrivals coalesce into the next snapshot. Audio-time ownership, rather
 /// than matching strings, preserves deliberately repeated words at rollovers.
@@ -82,6 +91,69 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var silenceRMS: Float = 0.0001
         /// Presentation only; never changes word ownership or PCM trimming.
         var smoothWhisperPreviews = false
+    }
+
+    /// Provisional reuse thresholds, not calibrated transcript correctness.
+    /// Agreement supplies stronger evidence than a single final/forced hypothesis.
+    enum ReusePolicy {
+        static let agreedConfidenceFloor: Float = 0.15
+        static let unagreedConfidenceFloor: Float = 0.8
+    }
+
+    enum ReuseFallbackReason: String, Sendable {
+        case cancelled, transcriptionFailed, noAudio, incompleteCoverage
+        case missingConfidence, invalidConfidence, lowConfidence
+        case unagreedContextTooLong, unsupportedWordTiming
+        case committedTranscriptChanged, unverifiedEmptyAudio
+    }
+
+    struct ReuseDiagnostics: Sendable, CustomStringConvertible {
+        let committedWordCount: Int
+        let agreedWordCount: Int
+        let unagreedWordCount: Int
+        let missingConfidenceCount: Int
+        let invalidConfidenceCount: Int
+        let lowConfidenceCount: Int
+        let minimumConfidence: Float?
+        let maximumUnagreedSpan: Double
+        let discardedSamples: Int
+        let firstLowConfidenceEvidence: String?
+        let lastLowConfidenceEvidence: String?
+        var description: String {
+            "words=\(committedWordCount):agreed=\(agreedWordCount):unagreed=\(unagreedWordCount):missing=\(missingConfidenceCount):invalid=\(invalidConfidenceCount):low=\(lowConfidenceCount):minConfidence=\(minimumConfidence.map(String.init(describing:)) ?? "none"):maxUnagreedSpan=\(maximumUnagreedSpan):discardedSamples=\(discardedSamples):firstLow=[\(firstLowConfidenceEvidence ?? "none")]:lastLow=[\(lastLowConfidenceEvidence ?? "none")]"
+        }
+    }
+
+    struct ReuseResult: Sendable {
+        /// Diagnostic text may be partial when completed is false. Callers must
+        /// check canReuse and recording sample-count equality before using it.
+        let text: String
+        let canReuse: Bool
+        let completed: Bool
+        let fallbackReason: ReuseFallbackReason?
+        let receivedSamples: Int
+        let decodedThroughSample: Int
+        let diagnostics: ReuseDiagnostics
+    }
+
+    private struct ReuseQuality {
+        var reason: ReuseFallbackReason?
+        var committedWords = 0
+        var agreedWords = 0
+        var unagreedWords = 0
+        var missingConfidence = 0
+        var invalidConfidence = 0
+        var lowConfidence = 0
+        var minimumConfidence: Float?
+        var maximumUnagreedSpan: Double = 0
+        var currentUnagreedStart: Double?
+        var currentUnagreedEnd: Double?
+        var firstLowConfidenceEvidence: String?
+        var lastLowConfidenceEvidence: String?
+
+        mutating func reject(_ reason: ReuseFallbackReason) {
+            if self.reason == nil { self.reason = reason }
+        }
     }
 
     enum Failure: Error, LocalizedError {
@@ -119,6 +191,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var committedText = ""
         var committedAnchors: [BufferedTranscriptionWord] = []
         var previousTail: [BufferedTranscriptionWord] = []
+        var previousTailReuseAgreement: [Bool] = []
         var lastPublishedTail = ""
         var lastPresentedTail = ""
         var presentation = WhisperPreviewPresentation()
@@ -128,6 +201,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var revision: UInt64 = 0
         var receivedSamples = 0
         var decodeCount = 0
+        var reuseQuality = ReuseQuality()
+        var reuseTerminalReason: ReuseFallbackReason?
+        var finalText: String?
+        var decodedThroughSample = 0
         var running = false
         var finishing = false
         var closed = false
@@ -148,6 +225,14 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private let onUpdate: @Sendable (BufferedTranscriptionUpdate) -> Void
     private let onFailure: @Sendable (Error) -> Void
     private let onDiagnostic: @Sendable (String) -> Void
+
+    var knownReuseFallbackReason: ReuseFallbackReason? {
+        synchronized { state.reuseTerminalReason ?? state.reuseQuality.reason }
+    }
+
+    var reuseDiagnostics: ReuseDiagnostics {
+        synchronized { reuseResult(cancelled: false).diagnostics }
+    }
 
     var diagnostics: Diagnostics {
         synchronized {
@@ -194,7 +279,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     }
 
     func cancel() {
-        synchronized { close() }
+        synchronized { close(reason: .cancelled) }
     }
 
     /// Closes capture and drains all accepted samples. Failures use onFailure;
@@ -208,6 +293,36 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 startIfNeeded()
             }
         }
+    }
+
+    /// Returns raw, fully drained ASR only when its bounded quality evidence
+    /// supports reuse. Cancellation closes this session without waiting for an
+    /// uncooperative decoder; the recording remains the caller's fallback.
+    func finishForReuse() async -> ReuseResult {
+        await withTaskCancellationHandler {
+            await finish()
+            return synchronized { reuseResult(cancelled: Task.isCancelled) }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    private func reuseResult(cancelled: Bool) -> ReuseResult {
+        let quality = state.reuseQuality
+        let completed = state.finalText != nil && state.closed && state.reuseTerminalReason == nil
+            && state.decodedThroughSample == state.receivedSamples
+        let reason: ReuseFallbackReason? = cancelled ? .cancelled
+            : state.reuseTerminalReason ?? quality.reason ?? (completed ? nil : .incompleteCoverage)
+        return ReuseResult(text: state.finalText ?? state.committedText + state.lastPublishedTail,
+            canReuse: completed && reason == nil, completed: completed && !cancelled,
+            fallbackReason: reason, receivedSamples: state.receivedSamples,
+            decodedThroughSample: state.decodedThroughSample,
+            diagnostics: .init(committedWordCount: quality.committedWords, agreedWordCount: quality.agreedWords,
+                unagreedWordCount: quality.unagreedWords, missingConfidenceCount: quality.missingConfidence,
+                invalidConfidenceCount: quality.invalidConfidence, lowConfidenceCount: quality.lowConfidence,
+                minimumConfidence: quality.minimumConfidence, maximumUnagreedSpan: quality.maximumUnagreedSpan,
+                discardedSamples: state.offset, firstLowConfidenceEvidence: quality.firstLowConfidenceEvidence,
+                lastLowConfidenceEvidence: quality.lastLowConfidenceEvidence))
     }
 
     private func synchronized<T>(_ body: () throws -> T) rethrows -> T {
@@ -227,7 +342,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private func snapshot() -> Snapshot? {
         synchronized {
             guard !state.closed else { state.running = false; return nil }
-            if state.finishing && state.audio.isEmpty { close(); return nil }
+            if state.finishing && state.audio.isEmpty {
+                close(reason: state.receivedSamples == 0 ? .noAudio : .incompleteCoverage)
+                return nil
+            }
             let end = state.offset + state.audio.count
             if !state.finishing && (state.audio.count < configuration.minimumSamples || end - state.lastDecodedEnd < configuration.updateSamples) {
                 state.running = false
@@ -310,7 +428,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
         let base = Double(snapshot.offset) / 16_000
         let absoluteWords = result.words.map {
-            BufferedTranscriptionWord(text: $0.text, start: base + $0.start, end: base + $0.end)
+            BufferedTranscriptionWord(text: $0.text, start: base + $0.start, end: base + $0.end, confidence: $0.confidence)
         }
         let unownedStart = try unownedStart(in: absoluteWords, base: base)
         let words = Array(absoluteWords.dropFirst(unownedStart))
@@ -327,6 +445,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 abs(previous.end - current.end) <= configuration.maximumTimestampDrift else { break }
             agreementCount += 1
         }
+        let reuseAgreement = reuseAgreement(for: words, freshCoverage: snapshot.offset + snapshot.audio.count > state.lastDecodedEnd)
         // A full encoder window must advance even after a coalesced first decode.
         // Its existing right-context policy remains the bounded fallback; shorter
         // windows now freeze agreed prefixes instead of rewriting whole sentences.
@@ -335,6 +454,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var retainsLexicalAnchor = false
         if commitCount > 0 {
             let committed = Array(words.prefix(commitCount))
+            recordReuseQuality(committed, agreement: Array(reuseAgreement.prefix(commitCount)))
             let last = committed[committed.count - 1]
             let next = words.dropFirst(commitCount).first
             state.ownedUntil = try ownershipBoundary(after: last, before: next)
@@ -379,9 +499,17 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let tail = join(tailWords, after: state.committedText)
         // Preserve agreement across rolls in absolute audio time.
         state.previousTail = tailWords
+        state.previousTailReuseAgreement = Array(reuseAgreement.dropFirst(commitCount))
         state.lastPublishedTail = tail
         state.followingAnchor = tailWords.first
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
+        state.decodedThroughSample = state.lastDecodedEnd
+        // Early empty hypotheses can improve while their PCM remains retained.
+        // Only permanently discarded/final empty coverage affects reuse.
+        if (rolls || snapshot.final), result.words.isEmpty,
+           snapshot.audio.contains(where: { $0 != 0 }) {
+            state.reuseQuality.reject(.unverifiedEmptyAudio)
+        }
         if rolls {
             if retainsLexicalAnchor, let preceding = state.committedAnchors.dropLast().last {
                 // An owned onset can move into a preceding pause after cropping.
@@ -415,7 +543,14 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                                          words: tailWords, final: snapshot.final) : tail
         state.lastPresentedTail = visibleTail
         onUpdate(.init(committedText: state.committedText, tail: visibleTail, revision: state.revision))
-        if snapshot.final { close() }
+        if snapshot.final, !state.closed {
+            guard state.decodedThroughSample == state.receivedSamples else {
+                close(reason: .incompleteCoverage)
+                return
+            }
+            state.finalText = state.committedText + tail
+            close()
+        }
     }
 
     /// Locate already-owned words using ordered, timed anchors, not textual
@@ -509,6 +644,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                            new.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16)
                            && abs(old.start - new.start) <= configuration.maximumTimestampDrift
                    }) {
+                    if zip(suffix, candidate).contains(where: { anchorIdentity($0.text) != anchorIdentity($1.text) }) {
+                        state.reuseQuality.reject(.committedTranscriptChanged)
+                    }
                     matchedIndex = index
                     break
                 }
@@ -517,6 +655,17 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
         guard let matchedIndex else { throw AlignmentRecovery(reason: .missingAnchor) }
         let lastCurrent = words[matchedIndex]
+        // A shorter suffix can legitimately recover live ownership while older
+        // committed wording changed. Live text stays frozen, but that evidence
+        // cannot authorize reusing it as the final raw transcription.
+        if matchedIndex + 1 < anchors.count {
+            state.reuseQuality.reject(.committedTranscriptChanged)
+        } else {
+            let currentOwned = words[(matchedIndex + 1 - anchors.count)...matchedIndex]
+            if !zip(anchors, currentOwned).allSatisfy({ anchorIdentity($0.text) == anchorIdentity($1.text) }) {
+                state.reuseQuality.reject(.committedTranscriptChanged)
+            }
+        }
         state.committedAnchors = Array(words.prefix(matchedIndex + 1).suffix(4))
         state.ownedUntil = try ownershipBoundary(after: lastCurrent,
                                                before: words.dropFirst(matchedIndex + 1).first)
@@ -530,6 +679,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private func deferAlignment(_ recovery: AlignmentRecovery, snapshot: Snapshot) {
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         state.previousTail = [] // Fresh two-hypothesis agreement after recovery.
+        state.previousTailReuseAgreement = []
         state.recovering = true
         state.recoveryCandidate = recovery.candidate
         let eligibleAnchors = state.committedAnchors.filter { $0.start >= Double(snapshot.offset) / 16_000 }.count
@@ -545,6 +695,77 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Consumers keep their visible prefix/draft and continue accepting audio.
         state.revision += 1
         onUpdate(.init(committedText: state.committedText, tail: state.lastPresentedTail, revision: state.revision))
+    }
+
+    /// Quality evidence is independent of the live prefix-commit policy. An
+    /// earlier revised word must not erase agreement of later timed occurrences.
+    /// Ambiguous repeats never gain evidence by choosing the nearest candidate.
+    private func reuseAgreement(for words: [BufferedTranscriptionWord], freshCoverage: Bool) -> [Bool] {
+        var previousIndex = -1
+        return words.map { word in
+            let matches = state.previousTail.indices.filter { index in
+                let previous = state.previousTail[index]
+                // The same word can absorb trailing silence as context grows.
+                // Its unique onset identifies the occurrence; positive speech
+                // intervals must still overlap, and all times are validated.
+                let overlaps = previous.start == previous.end || word.start == word.end
+                    || max(previous.start, word.start) < min(previous.end, word.end)
+                return anchorIdentity(previous.text) == anchorIdentity(word.text)
+                    && abs(previous.start - word.start) <= configuration.maximumTimestampDrift
+                    && overlaps
+            }
+            guard matches.count == 1, let index = matches.first, index > previousIndex else { return false }
+            previousIndex = index
+            // An identical stop snapshot may retain prior independent evidence,
+            // but two decodes of the same PCM cannot create that evidence.
+            return freshCoverage || (state.previousTailReuseAgreement.indices.contains(index)
+                && state.previousTailReuseAgreement[index])
+        }
+    }
+
+    private func recordReuseQuality(_ words: [BufferedTranscriptionWord], agreement: [Bool]) {
+        let supportedSpan = Double(configuration.rightContextSamples + configuration.updateSamples) / 16_000
+        for (index, word) in words.enumerated() {
+            let agreed = agreement[index]
+            state.reuseQuality.committedWords += 1
+            if agreed {
+                state.reuseQuality.agreedWords += 1
+                state.reuseQuality.currentUnagreedStart = nil
+                state.reuseQuality.currentUnagreedEnd = nil
+            } else {
+                state.reuseQuality.unagreedWords += 1
+                // Carry unsupported runs across commitment batches; only an
+                // independently agreed word resets this provisional bound.
+                state.reuseQuality.currentUnagreedStart = min(state.reuseQuality.currentUnagreedStart ?? word.start, word.start)
+                state.reuseQuality.currentUnagreedEnd = max(state.reuseQuality.currentUnagreedEnd ?? word.end, word.end)
+                let span = (state.reuseQuality.currentUnagreedEnd ?? word.end) - (state.reuseQuality.currentUnagreedStart ?? word.start)
+                state.reuseQuality.maximumUnagreedSpan = max(state.reuseQuality.maximumUnagreedSpan, span)
+                if span > supportedSpan { state.reuseQuality.reject(.unagreedContextTooLong) }
+                if word.start == word.end,
+                   word.text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) {
+                    state.reuseQuality.reject(.unsupportedWordTiming)
+                }
+            }
+            guard let confidence = word.confidence else {
+                state.reuseQuality.missingConfidence += 1
+                state.reuseQuality.reject(.missingConfidence)
+                continue
+            }
+            guard confidence.isFinite, (0...1).contains(confidence) else {
+                state.reuseQuality.invalidConfidence += 1
+                state.reuseQuality.reject(.invalidConfidence)
+                continue
+            }
+            state.reuseQuality.minimumConfidence = min(state.reuseQuality.minimumConfidence ?? confidence, confidence)
+            let floor = agreed ? ReusePolicy.agreedConfidenceFloor : ReusePolicy.unagreedConfidenceFloor
+            if confidence < floor {
+                state.reuseQuality.lowConfidence += 1
+                let evidence = "start=\(word.start),end=\(word.end),confidence=\(confidence),agreed=\(agreed)"
+                if state.reuseQuality.firstLowConfidenceEvidence == nil { state.reuseQuality.firstLowConfidenceEvidence = evidence }
+                state.reuseQuality.lastLowConfidenceEvidence = evidence
+                state.reuseQuality.reject(.lowConfidence)
+            }
+        }
     }
 
     private func anchorIdentity(_ text: String) -> String {
@@ -599,6 +820,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Publish failure before releasing finish waiters so a caller cannot
         // mistake a failed drain for a successfully completed preview.
         state.closed = true
+        state.reuseTerminalReason = .transcriptionFailed
+        state.finalText = nil
         // A failure handler may reentrantly cancel. Keep these continuations
         // out of close() until that handler has completely delivered failure.
         let waiters = state.waiters
@@ -608,7 +831,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         waiters.forEach { $0.resume() }
     }
 
-    private func close() {
+    private func close(reason: ReuseFallbackReason? = nil) {
+        if let reason {
+            state.reuseTerminalReason = reason
+            state.finalText = nil
+        }
         state.closed = true
         state.running = false
         state.audio.removeAll()
