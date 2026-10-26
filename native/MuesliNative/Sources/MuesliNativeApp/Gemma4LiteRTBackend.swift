@@ -68,7 +68,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: "Gemma 4 E2B"
         case .e4b: "Gemma 4 E4B"
-        case .muesliCleanupV2: "Muesli Pro Cleanup — Gemma 4 (Beta)"
+        case .muesliCleanupV2: "Muesli Pro Cleanup — Gemma 4"
         }
     }
 
@@ -103,7 +103,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
     }
 
     static func resolved(_ repoID: String?) -> Self {
-        // Preserve the beta selection when upgrading the local v10 artifact to v12.
+        // Preserve the saved selection when upgrading the local v10 artifact to v12.
         if repoID == "muesli-cleanup-v2-gemma-v10" { return .muesliCleanupV2 }
         return allCases.first(where: { $0.repoID == repoID }) ?? .e2b
     }

@@ -3,11 +3,11 @@ import CryptoKit
 import MuesliCore
 
 enum BodhanModel: String, CaseIterable, Sendable {
-    case core = "phequals/indic-transcribe-core-coreml"
-    case flex = "phequals/indic-transcribe-flex-coreml"
+    case core = "Muesli-HQ/indic-transcribe-core-coreml"
+    case flex = "Muesli-HQ/indic-transcribe-flex-coreml"
 
-    case coreInt8 = "phequals/indic-transcribe-core-coreml-int8"
-    case flexInt8 = "phequals/indic-transcribe-flex-coreml-int8"
+    case coreInt8 = "Muesli-HQ/indic-transcribe-core-coreml-int8"
+    case flexInt8 = "Muesli-HQ/indic-transcribe-flex-coreml-int8"
 
     var isInt8: Bool { self == .coreInt8 || self == .flexInt8 }
     var isCore: Bool { self == .core || self == .coreInt8 }

@@ -9,6 +9,39 @@ struct GemmaNativeAudioTests {
     init() {
         if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
     }
+    @Test func optionalCleanupAvailability() {
+        let lite = PostProcessorOption.defaultOption
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: nil) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: true, backend: .bodhanFlex, available: lite) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: lite) == lite)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: true,
+            isHosted: false, backend: .bodhanFlex, available: lite) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: false, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: lite) == nil)
+    }
+
+    @Test @MainActor func optionalCleanupFailureDoesNotBlockRecording() async throws {
+        enum Failure: Error { case missingWeights }
+        let gate = GemmaRecordingPreparationGate()
+        let plan = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: "lite")
+        var ready = false
+        var failed = false
+        let initiallyAllowed = gate.request(plan, prepare: {
+            let prepared = try await LocalCleanupPreparationPolicy.prepare { throw Failure.missingWeights }
+            #expect(!prepared)
+        }, ready: { ready = true }, failed: { _ in failed = true })
+        #expect(!initiallyAllowed)
+        await gate.waitForPreparation()
+        #expect(ready && !failed)
+        #expect(gate.request(plan, prepare: {}, ready: {}, failed: { _ in }))
+        await #expect(throws: CancellationError.self) {
+            try await LocalCleanupPreparationPolicy.prepare { throw CancellationError() }
+        }
+    }
+
     @Test func mtpDefaultsOnWithOneDiagnosticOptOut() {
         for value in ["", "1", "unexpected"] {
             #expect(GemmaMTPPolicy.isEnabled(environment: [GemmaMTPPolicy.environmentKey: value]))
@@ -415,6 +448,45 @@ struct GemmaNativeAudioTests {
         #expect(different.entries.map(\.model) == [.e2b, .muesliCleanupV2, .e4b])
         #expect(different.key != same.key)
     }
+    @Test func localCleanupParticipatesInReadinessWithoutGemma() {
+        let disabled = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
+        #expect(disabled.isEmpty)
+        for option in PostProcessorOption.all {
+            let local = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: option.id)
+            #expect(!local.isEmpty)
+            #expect(local.entries.isEmpty)
+            #expect(local.additionalPreparationKey == nil)
+            #expect(local.key != disabled.key)
+        }
+        let lite = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: PostProcessorOption.finetunedV4.id)
+        let pro = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: PostProcessorOption.qwenV12.id)
+        #expect(lite.key != pro.key)
+    }
+
+    @MainActor @Test func localCleanupBlocksMicrophoneAndDiscardsStalePreparation() async {
+        let gate = GemmaRecordingPreparationGate()
+        let lite = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: "lite")
+        let pro = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: "pro")
+        var release: CheckedContinuation<Void, Never>?
+        var readyCount = 0
+        #expect(!gate.request(lite, prepare: { await withCheckedContinuation { release = $0 } },
+                             ready: { readyCount += 1 }, failed: { _ in Issue.record("Unexpected failure") }))
+        while release == nil { await Task.yield() }
+        #expect(!gate.request(lite, prepare: { Issue.record("Duplicate warm-up") }, ready: {}, failed: { _ in }))
+        #expect(!gate.request(pro, prepare: {}, ready: { readyCount += 1 }, failed: { _ in }))
+        await gate.waitForPreparation()
+        release?.resume()
+        await Task.yield()
+        #expect(readyCount == 1)
+        #expect(gate.readyKey == pro.key)
+        #expect(gate.request(pro, prepare: { Issue.record("Already-ready model warmed again") }, ready: {}, failed: { _ in }))
+        gate.invalidate()
+        enum Failed: Error { case load }
+        #expect(!gate.request(lite, prepare: { throw Failed.load }, ready: { Issue.record("Failed cleanup announced ready") }, failed: { _ in }))
+        await gate.waitForPreparation()
+        #expect(gate.readyKey == nil)
+    }
+
     @MainActor @Test func microphoneGateBlocksUntilReadyWithoutQueuingStart() async {
         let gate = GemmaRecordingPreparationGate()
         let plan = GemmaPreparationPlan(dictation: .e2b, cleanup: nil, quill: .e4b)

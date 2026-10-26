@@ -126,10 +126,12 @@ struct GemmaPreparationPlan: Equatable, Sendable {
     let entries: [Entry]
     /// A local non-Gemma ASR dependency used by Quill, prepared by the coordinator.
     let additionalPreparationKey: String?
-    var isEmpty: Bool { entries.isEmpty && additionalPreparationKey == nil }
-    var key: String { (additionalPreparationKey.map { $0 + "|" } ?? "") + entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
-    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false, additionalPreparationKey: String? = nil) {
+    let localCleanupKey: String?
+    var isEmpty: Bool { entries.isEmpty && additionalPreparationKey == nil && localCleanupKey == nil }
+    var key: String { (localCleanupKey.map { "cleanup:\($0)|" } ?? "") + (additionalPreparationKey.map { $0 + "|" } ?? "") + entries.map { "\($0.model.rawValue):\($0.audio):\($0.text):\($0.required)" }.joined(separator: "|") }
+    init(dictation: Gemma4LiteRTModel?, cleanup: Gemma4LiteRTModel?, quill: Gemma4LiteRTModel?, requireQuill: Bool = false, additionalPreparationKey: String? = nil, localCleanupKey: String? = nil) {
         self.additionalPreparationKey = additionalPreparationKey
+        self.localCleanupKey = localCleanupKey
         var result: [Entry] = []
         func add(_ model: Gemma4LiteRTModel?, audio: Bool, text: Bool, required: Bool) {
             guard let model else { return }
@@ -213,4 +215,28 @@ final class GemmaRecordingPreparationGate {
     }
 
     func waitForPreparation() async { await task?.value }
+}
+
+/// Optional cleanup must not prevent ASR when weights are missing or fail to load.
+enum LocalCleanupPreparationPolicy {
+    static func option(enabled: Bool, forQuill: Bool, isHosted: Bool,
+                       backend: BackendOption, available: PostProcessorOption?) -> PostProcessorOption? {
+        guard enabled, !forQuill, !isHosted,
+              let available, available.isCompatible(with: backend) else { return nil }
+        return available
+    }
+
+    @MainActor
+    static func prepare(_ operation: () async throws -> Void) async throws -> Bool {
+        try Task.checkCancellation()
+        do {
+            try await operation()
+            try Task.checkCancellation()
+            return true
+        } catch {
+            try Task.checkCancellation()
+            if error is CancellationError { throw error }
+            return false
+        }
+    }
 }

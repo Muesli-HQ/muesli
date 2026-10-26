@@ -26,7 +26,7 @@ enum MuesliCleanupV2Prompt {
     static func ggufRequest(_ text: String, appContext: String?, format: PostProcessorOption.InputFormat) -> String {
         let userText = request(text, appContext: appContext)
         let prefix = format == .muesliTrainedV12LFM ? "<|startoftext|>" : ""
-        let suffix = format == .muesliTrainedV12Qwen ? "<think>\n\n</think>\n\n" : ""
+        let suffix = (format == .muesliTrainedV12Qwen || format == .muesliTrainedV12Qwen08) ? "<think>\n\n</think>\n\n" : ""
         return prefix + "<|im_start|>user\n" + userText + "<|im_end|>\n<|im_start|>assistant\n" + suffix
     }
 

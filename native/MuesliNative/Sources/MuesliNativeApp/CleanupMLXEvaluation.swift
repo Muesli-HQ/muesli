@@ -5,7 +5,7 @@ import MLXLMCommon
 import Tokenizers
 import Hub
 
-/// Evaluation-only adapter. Training framing is constructed by Muesli, never a chat template.
+/// Shared native cleanup tokenizer adapter. Training framing is constructed by Muesli, never a chat template.
 struct CleanupHFTokenizer: MLXLMCommon.Tokenizer {
     let tokenizer: any Tokenizers.Tokenizer
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { tokenizer.encode(text: text, addSpecialTokens: addSpecialTokens) }
@@ -29,19 +29,26 @@ struct CleanupHFTokenizerLoader: TokenizerLoader {
         let config = try decoder.decode(Config.self, from: Data(contentsOf: directory.appendingPathComponent("tokenizer_config.json")))
         var values = config.dictionary(or: [:])
         values["clean_up_tokenization_spaces"] = false
+        // Qwen3.5 uses the same byte-level BPE as Qwen2. The pinned Swift
+        // tokenizer does not yet recognize the export's new class name.
+        if values["tokenizer_class"]?.string() == "Qwen3_5Tokenizer" {
+            values["tokenizer_class"] = "Qwen2Tokenizer"
+        }
         let data = try decoder.decode(Config.self, from: Data(contentsOf: directory.appendingPathComponent("tokenizer.json")))
         return CleanupHFTokenizer(tokenizer: try AutoTokenizer.from(tokenizerConfig: Config(values), tokenizerData: data))
     }
 }
 
-/// Opt-in benchmark engine; not registered as a user-selectable backend.
+/// Shared native cleanup engine; raw training prompts bypass chat templates.
 actor CleanupMLXEvaluation {
-    enum Model: String, Sendable { case lfm, gemma
-        var stop: String { self == .lfm ? "<|im_end|>" : "<turn|>" }
+    enum Model: String, Sendable { case lfm, gemma, qwen, qwen08
+        var stop: String { self == .gemma ? "<turn|>" : "<|im_end|>" }
         func prompt(_ text: String, context: String?) -> String {
             switch self {
             case .lfm:
                 return MuesliCleanupV2Prompt.ggufRequest(text, appContext: context, format: .muesliTrainedV12LFM)
+            case .qwen, .qwen08:
+                return MuesliCleanupV2Prompt.ggufRequest(text, appContext: context, format: self == .qwen ? .muesliTrainedV12Qwen : .muesliTrainedV12Qwen08)
             case .gemma:
                 // Gemma turn-start is token 105 (<|turn>), not the ordinary-text typo
                 // <|turn|> in the handoff table. Preserve the training user content.
@@ -52,6 +59,7 @@ actor CleanupMLXEvaluation {
     struct Result: Sendable, Codable {
         let raw: String
         let output: String
+        let didFallback: Bool
         let seconds: Double
         let tokenizeSeconds: Double
         let prefillSeconds: Double
@@ -88,7 +96,7 @@ actor CleanupMLXEvaluation {
         await container.update { context in context.configuration.extraEOSTokens.insert(model.stop) }
     }
 
-    func process(_ text: String, context: String?, prefillStepSize: Int = 2048) async throws -> Result {
+    func process(_ text: String, context: String?, prefillStepSize: Int = 2048, maxTokens: Int = 1024) async throws -> Result {
         let prompt = model.prompt(text, context: context)
         return try await container.perform { context in
             let start = Date()
@@ -97,7 +105,7 @@ actor CleanupMLXEvaluation {
             let tokenizeSeconds = Date().timeIntervalSince(start)
             // Match the reference mlx-lm 0.32.2: stride 2048, reserve the final token.
             // Swift defaults to balanced 512-token chunks, which changes rounding.
-            let parameters = GenerateParameters(maxTokens: 1024, temperature: 0, topK: 1, prefill: .init(stepSize: prefillStepSize, chunking: .remainder))
+            let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0, topK: 1, prefill: .init(stepSize: prefillStepSize, chunking: .remainder))
             // Swift's generic prepare also forwards short prompts whole. The Python
             // reference always evaluates all but the last token into a fresh cache.
             // Use official model/cache APIs to preserve those exact boundaries.
@@ -122,10 +130,11 @@ actor CleanupMLXEvaluation {
                 case .info(let info): completion = info
                 }
             }
+            try Task.checkCancellation()
             guard let completion else { throw CancellationError() }
             let raw = context.tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
-            let output = MuesliCleanupV2Prompt.guardedOutput(raw, input: text, generationCompleted: completion.stopReason == .stop)
-            return Result(raw: raw, output: output, seconds: Date().timeIntervalSince(start), tokenizeSeconds: tokenizeSeconds, prefillSeconds: manualPrefillSeconds + completion.promptTime, decodeSeconds: completion.generateTime, inputTokens: ids.count, outputTokens: tokens.count, stopReason: String(describing: completion.stopReason), startedAt: start, thermalStateBefore: thermalBefore, thermalStateAfter: ProcessInfo.processInfo.thermalState.rawValue, prefillStepSize: prefillStepSize)
+            let guarded = MuesliCleanupV2Prompt.guardResult(raw, input: text, generationCompleted: completion.stopReason == .stop)
+            return Result(raw: raw, output: guarded.text, didFallback: guarded.didFallback, seconds: Date().timeIntervalSince(start), tokenizeSeconds: tokenizeSeconds, prefillSeconds: manualPrefillSeconds + completion.promptTime, decodeSeconds: completion.generateTime, inputTokens: ids.count, outputTokens: tokens.count, stopReason: String(describing: completion.stopReason), startedAt: start, thermalStateBefore: thermalBefore, thermalStateAfter: ProcessInfo.processInfo.thermalState.rawValue, prefillStepSize: prefillStepSize)
         }
     }
 }

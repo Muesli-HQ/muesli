@@ -118,7 +118,7 @@ struct BackendOption: Equatable {
 
     static let cohereTranscribe = BackendOption(
         backend: "cohere",
-        model: "phequals/cohere-transcribe-coreml-mixed-precision",
+        model: "Muesli-HQ/cohere-transcribe-coreml-mixed-precision",
         label: "Cohere Transcribe",
         sizeLabel: "~3.8 GB",
         description: "The most deliberate option for difficult accents and tricky audio. It supports 14 languages and can be more accurate than faster models, but the download is large and you only see the result after you stop speaking.",
@@ -182,7 +182,7 @@ struct BackendOption: Equatable {
         case .muesliCleanupV2:
             BackendOption(backend: "gemma4-litert", model: model.repoID,
                           label: model.label, sizeLabel: model.sizeLabel,
-                          description: "Fine-tuned from Gemma 4 E2B. More capable cleanup with app and screen context. Opt-in beta.", recommended: false)
+                          description: "Fine-tuned from Gemma 4 E2B. More capable cleanup with app and screen context.", recommended: false)
         }
     }
 
@@ -316,6 +316,8 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
+        // Keep saved pre-rename choices without changing cache locations.
+        let model = model.hasPrefix("phequals/") ? "Muesli-HQ/" + model.dropFirst(9) : model
         // Compatibility for saved selections from the retired Indic backend.
         if backend == "indicasr" {
             return all.first { $0.backend == "bodhan" && $0.model == model } ?? .bodhanFlex
@@ -1493,8 +1495,9 @@ struct PostProcessorOption: Identifiable, Equatable {
         case s1Mini
         case muesliTrainedV12LFM
         case muesliTrainedV12Qwen
+        case muesliTrainedV12Qwen08
 
-        var isTrainedV12: Bool { self == .muesliTrainedV12LFM || self == .muesliTrainedV12Qwen }
+        var isTrainedV12: Bool { self == .muesliTrainedV12LFM || self == .muesliTrainedV12Qwen || self == .muesliTrainedV12Qwen08 }
     }
 
     let id: String
@@ -1542,7 +1545,8 @@ struct PostProcessorOption: Identifiable, Equatable {
     var managedModel: ManagedCleanupModel? {
         switch inputFormat {
         case .muesliTrainedV12LFM: .lfm
-        case .muesliTrainedV12Qwen: .qwen
+        case .muesliTrainedV12Qwen: .qwenMLX
+        case .muesliTrainedV12Qwen08: .qwen08MLX
         default: nil
         }
     }
@@ -1569,15 +1573,14 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat != .s1Mini || transcriptionBackend.backend != "bodhan"
     }
 
-    /// Retained only so existing installs keep working. This option is not in
-    /// the download catalogue; once its local cache is deleted, it cannot be
-    /// downloaded again.
+    /// Retired artifact metadata for migration and cache identification only.
+    /// Saved selections now resolve to the current Cleanup Lite model.
     static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Muesli Cleanup Light (Legacy)",
+        label: "Muesli Cleanup Lite (Legacy)",
         sizeLabel: "~390 MB",
         description: "Fine-tuned from Qwen3. An earlier lightweight model for filler words, corrections, and spoken lists.",
-        downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
+        downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
         filename: "qwen3-postproc-v2-q4_k_m.gguf",
         isDownloadable: false
     )
@@ -1595,11 +1598,21 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Muesli Cleanup Light",
+        label: "Muesli Cleanup Lite",
         sizeLabel: "~505 MB",
         description: "Fine-tuned from Qwen3.5-0.8B. Small and fast for everyday cleanup, with lighter correction and context capabilities than Pro.",
-        downloadURL: URL(string: "https://huggingface.co/phequals/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
-        filename: "qwen35-postproc-v3-Q4_K_M.gguf"
+        downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
+        filename: "qwen35-postproc-v3-Q4_K_M.gguf", isDownloadable: false
+    )
+
+    static let finetunedV4 = PostProcessorOption(
+        id: "qwen35-postproc-v4",
+        label: "Muesli Cleanup Lite",
+        sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
+        description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
+        downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
+        filename: ManagedCleanupModel.qwen08MLX.modelFilename,
+        inputFormat: .muesliTrainedV12Qwen08
     )
 
     static let s1Mini = PostProcessorOption(
@@ -1613,24 +1626,22 @@ struct PostProcessorOption: Identifiable, Equatable {
     )
 
     static let lfmV12 = PostProcessorOption(
-        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5 (Beta)", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
+        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
         description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
         filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5 (Beta)", sizeLabel: ManagedCleanupModel.qwen.sizeLabel,
+        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
-        downloadURL: ManagedCleanupModel.qwen.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwen.modelFilename, inputFormat: .muesliTrainedV12Qwen)
-    static let all: [PostProcessorOption] = [.finetunedV3, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
+        downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
+        filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+    static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
-    static let defaultOption: PostProcessorOption = .finetunedV3
+    static let defaultOption: PostProcessorOption = .finetunedV4
     static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
 
-    /// Includes retired options that remain runnable when they are already
-    /// cached locally. Keep this separate from `all` so retired models never
-    /// appear as downloadable catalogue entries.
-    private static let knownOptions: [PostProcessorOption] = all + [.legacyV2]
+    // Retired Lite artifacts are retained only as internal migration metadata.
+    private static let knownOptions: [PostProcessorOption] = all
 
     static var downloaded: [PostProcessorOption] {
         knownOptions.filter(\.isDownloaded)
@@ -1697,7 +1708,7 @@ struct PostProcessorOption: Identifiable, Equatable {
             configuredSystemPrompt
         case .s1Mini:
             Self.s1MiniSystemPrompt
-        case .muesliTrainedV12LFM, .muesliTrainedV12Qwen:
+        case .muesliTrainedV12LFM, .muesliTrainedV12Qwen, .muesliTrainedV12Qwen08:
             MuesliCleanupV2Prompt.systemPrompt
         }
     }
@@ -2484,10 +2495,10 @@ struct AppConfig: Codable {
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
-        if sttBackend == "indicasr", let migrated = BackendOption.resolve(backend: sttBackend, model: sttModel) {
+        if let migrated = BackendOption.resolve(backend: sttBackend, model: sttModel) {
             sttBackend = migrated.backend; sttModel = migrated.model
         }
-        if meetingTranscriptionBackend == "indicasr", let migrated = BackendOption.resolve(backend: meetingTranscriptionBackend, model: meetingTranscriptionModel) {
+        if let migrated = BackendOption.resolve(backend: meetingTranscriptionBackend, model: meetingTranscriptionModel) {
             meetingTranscriptionBackend = migrated.backend; meetingTranscriptionModel = migrated.model
         }
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
@@ -2662,6 +2673,9 @@ struct AppConfig: Codable {
             .resolved(try? c.decode(String.self, forKey: .postProcessorGemmaModel))
             .repoID
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
+        if [PostProcessorOption.legacyV2.id, PostProcessorOption.finetunedV3.id].contains(activePostProcessorId) {
+            activePostProcessorId = PostProcessorOption.defaultOption.id
+        }
         postProcessorChatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             SummaryModelPreset.migratedFromGPT55(
                 (try? c.decode(String.self, forKey: .postProcessorChatGPTModel)) ?? defaults.postProcessorChatGPTModel

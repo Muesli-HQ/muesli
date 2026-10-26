@@ -275,6 +275,8 @@ private actor Qwen3PostProcessorManager {
     private let inputFormat: PostProcessorOption.InputFormat
     private let maxTokenCount: Int32
     private var bot: LLM?
+    private var mlx: CleanupMLXEvaluation?
+    private var isPreparedForDictation = false
     private let inferenceGate = InferenceGate()
 
     init(
@@ -289,8 +291,56 @@ private actor Qwen3PostProcessorManager {
         self.maxTokenCount = maxTokenCount
     }
 
-    func warm() throws {
-        _ = try loadBot()
+    func warm() async throws {
+        if modelURL.pathExtension == "safetensors" {
+            guard inputFormat == .muesliTrainedV12Qwen || inputFormat == .muesliTrainedV12Qwen08 else {
+                throw NSError(domain: "Qwen3PostProcessor", code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "Unsupported MLX cleanup model"])
+            }
+            if mlx == nil {
+                let start = Date()
+                let small = inputFormat == .muesliTrainedV12Qwen08
+                mlx = try await CleanupMLXEvaluation(directory: modelURL.deletingLastPathComponent(),
+                    descriptor: small ? .qwen08MLX : .qwenMLX, model: small ? .qwen08 : .qwen)
+                Qwen3PostProcessorLogging.logVerbose("cleanup runtime=mlx model=\(inputFormat) load_seconds=\(Date().timeIntervalSince(start))")
+            }
+        } else {
+            _ = try loadBot()
+        }
+    }
+
+    /// Prime the selected engine once, with a bounded disposable generation.
+    /// No warm-up text is exposed as a dictation or retained as chat history.
+    func prepareForDictation() async throws {
+        try await inferenceGate.acquire()
+        do {
+            try Task.checkCancellation()
+            if !isPreparedForDictation {
+                try await warm()
+                if let mlx {
+                    _ = try await mlx.process("Hello.", context: nil, maxTokens: 16)
+                } else {
+                    let bot = try loadBot()
+                    let prompt: String
+                    if inputFormat.isTrainedV12 {
+                        prompt = MuesliCleanupV2Prompt.ggufRequest("Hello.", appContext: nil, format: inputFormat)
+                    } else {
+                        let input = inputFormat == .s1Mini
+                            ? Qwen3PostProcessorConfig.formatS1MiniInput("Hello.")
+                            : Qwen3PostProcessorConfig.formatInput("Hello.")
+                        prompt = bot.preprocess(input, [], .suppressed)
+                    }
+                    _ = await bot.getCompletionResult(from: prompt, maxNewTokens: 16)
+                    // Raw completion keeps no history; the next request resets its KV cache.
+                }
+                try Task.checkCancellation()
+                isPreparedForDictation = true
+            }
+            await inferenceGate.release()
+        } catch {
+            await inferenceGate.release()
+            throw error
+        }
     }
 
     func process(_ text: String, appContext: String? = nil) async throws -> Qwen3PostProcessor.Result {
@@ -298,6 +348,15 @@ private actor Qwen3PostProcessorManager {
         try await inferenceGate.acquire()
         do {
             try Task.checkCancellation()
+            if modelURL.pathExtension == "safetensors" {
+                try await warm()
+                guard let mlx else { throw CancellationError() }
+                let result = try await mlx.process(text, context: appContext)
+                try Task.checkCancellation()
+                Qwen3PostProcessorLogging.logVerbose("cleanup runtime=mlx generation_seconds=\(result.seconds) prefill_seconds=\(result.prefillSeconds) decode_seconds=\(result.decodeSeconds) output_tokens=\(result.outputTokens) stop=\(result.stopReason)")
+                await inferenceGate.release()
+                return Qwen3PostProcessor.Result(text: result.output, rawOutput: result.raw, didFallback: result.didFallback)
+            }
             let bot = try loadBot()
             defer { if !inputFormat.isTrainedV12 { bot.reset() } }
             let formattedInput: String
@@ -306,7 +365,7 @@ private actor Qwen3PostProcessorManager {
                 formattedInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
             case .s1Mini:
                 formattedInput = Qwen3PostProcessorConfig.formatS1MiniInput(text)
-            case .muesliTrainedV12LFM, .muesliTrainedV12Qwen:
+            case .muesliTrainedV12LFM, .muesliTrainedV12Qwen, .muesliTrainedV12Qwen08:
                 formattedInput = MuesliCleanupV2Prompt.ggufRequest(text, appContext: appContext, format: inputFormat)
             }
             if inputFormat.isTrainedV12 {
@@ -318,9 +377,6 @@ private actor Qwen3PostProcessorManager {
                     generationCompleted: completion.stopReason == .endOfSequence)
                 let cleaned = guarded.text
                 Qwen3PostProcessorLogging.logVerbose("v12 GGUF stop reason: \(completion.stopReason)")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF exact prompt: \(String(reflecting: formattedInput))")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF raw output: \(String(reflecting: raw))")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF guarded output: \(String(reflecting: cleaned))")
                 await inferenceGate.release()
                 return Qwen3PostProcessor.Result(text: cleaned, rawOutput: raw, didFallback: guarded.didFallback)
             }
@@ -329,8 +385,6 @@ private actor Qwen3PostProcessorManager {
             let raw = bot.output
             let cleaned = Qwen3PostProcessorOutputCleaner.clean(raw)
             Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF prompt chars=\(bot.preprocess(formattedInput, [], .suppressed).count)")
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF raw output: \(raw)")
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF cleaned output: \(cleaned)")
             let result: String
             let acceptsS1MiniEmptyOutput = inputFormat == .s1Mini && (
                 cleaned.isEmpty || Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(cleaned)
@@ -369,7 +423,12 @@ private actor Qwen3PostProcessorManager {
 
     private func loadBot() throws -> LLM {
         if let bot { return bot }
-        let descriptor: ManagedCleanupModel? = inputFormat == .muesliTrainedV12LFM ? .lfm : (inputFormat == .muesliTrainedV12Qwen ? .qwen : nil)
+        let descriptor: ManagedCleanupModel? = switch inputFormat {
+        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12Qwen: .qwen
+        case .muesliTrainedV12Qwen08: .qwen08
+        default: nil
+        }
         try descriptor?.validate(modelURL: modelURL)
         guard let loaded = LLM(
             from: modelURL,
@@ -445,7 +504,8 @@ actor Qwen3PostProcessor {
     }
 
     func prepare() async throws {
-        _ = try await loadManager(for: activeConfiguration)
+        let manager = try await loadManager(for: activeConfiguration)
+        try await manager.prepareForDictation()
     }
 
     func process(

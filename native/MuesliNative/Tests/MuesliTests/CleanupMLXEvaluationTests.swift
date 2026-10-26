@@ -14,6 +14,69 @@ struct CleanupMLXEvaluationTests {
             GPU.metallib = URL(fileURLWithPath: path)
         }
     }
+    @Test func qwenMLXCatalogAndPromptContract() {
+        for option in [PostProcessorOption.finetunedV4, .qwenV12] {
+            #expect(option.modelURL.pathExtension == "safetensors")
+            #expect(option.managedModel?.files.count == 6)
+            #expect(option.managedModel?.revision.count == 40)
+            #expect(option.managedModel?.files.allSatisfy { $0.sha256?.count == 64 } == true)
+            #expect(!option.label.contains("Light"))
+            let model: CleanupMLXEvaluation.Model = option == .finetunedV4 ? .qwen08 : .qwen
+            #expect(model.prompt("First check latency. Second check formatting.", context: "App: Codex") ==
+                MuesliCleanupV2Prompt.ggufRequest("First check latency. Second check formatting.", appContext: "App: Codex", format: option.inputFormat))
+        }
+        #expect(PostProcessorOption.lfmV12.modelURL.pathExtension == "gguf")
+        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
+    }
+
+    /// Exercises the actual production manager, not just the evaluation adapter.
+    @Test func qwenProductionMLXGolden() async throws {
+        guard #available(macOS 15, *), let root = ProcessInfo.processInfo.environment["MUESLI_QWEN_MLX_VERIFY_ROOT"] else { return }
+        func rows(_ path: String) throws -> [Row] {
+            try String(contentsOfFile: root + "/" + path).split(separator: "\n").map {
+                try JSONDecoder().decode(Row.self, from: Data($0.utf8))
+            }
+        }
+        struct NativeReference: Decodable { let kind: String; let text: String }
+        let inputs = Array(try rows("common/data/context_authored_v1/heldout.jsonl").prefix(10))
+        for option in [PostProcessorOption.finetunedV4, .qwenV12] {
+            let references: [String]
+            if option == .finetunedV4 {
+                references = Array(try rows("models/gemma4/eval/results/challengers/qwen08mlxq8_held.jsonl").prefix(10)).map { $0.pred_text ?? "" }
+            } else {
+                references = Array(try String(contentsOfFile: root + "/models/gemma4/eval/results/native/sets/qwen2b_mlxq8_held.raw.jsonl")
+                    .split(separator: "\n").map { try JSONDecoder().decode(NativeReference.self, from: Data($0.utf8)) }
+                    .filter { $0.kind != "warmup" }.prefix(10)).map(\.text)
+            }
+            let processor = Qwen3PostProcessor(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let config = Qwen3PostProcessor.Configuration(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let loadStart = Date()
+            try await processor.prepare()
+            print("MLX PRODUCTION \(option.id) load_seconds=\(Date().timeIntervalSince(loadStart))")
+            _ = try await processor.process("Hello world.", configuration: config)
+            var times: [Double] = []
+            for (index, row) in inputs.enumerated() {
+                let start = Date()
+                let result = try await processor.processResult(row.input_text, appContext: row.context?.formatted, configuration: config)
+                times.append(Date().timeIntervalSince(start))
+                let matchesReference = result.rawOutput == references[index]
+                #expect(matchesReference, "\(option.id) \(row.id): reference mismatch")
+                #expect(!result.didFallback)
+                let preservesGuardedOutput = result.text == result.rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                #expect(preservesGuardedOutput, "\(option.id) \(row.id): guard mismatch")
+            }
+            print("MLX PRODUCTION \(option.id) warm_median_seconds=\((times.sorted()[4] + times.sorted()[5]) / 2)")
+            let bulletInput = "Put this in bullet points. First I am testing the latency. Second I am checking whether formatting survives. Third combine both."
+            let bullet = try await processor.processResult(bulletInput, appContext: "App: Codex", configuration: config)
+            print("MLX PRODUCTION \(option.id) bullets=\(String(reflecting: bullet.text))")
+            #expect(!bullet.didFallback)
+            #expect(bullet.text.contains("\n"))
+            let unchanged = try await processor.process("The meeting starts at 3 PM.", configuration: config)
+            #expect(unchanged == "The meeting starts at 3 PM.")
+            await processor.shutdown()
+        }
+    }
+
     @Test func exactPromptFraming() {
         let text = "Put this in bullets. First check latency. Second check formatting."
         let context = "App: Codex\nOCR screen text: Muesli"
@@ -197,9 +260,11 @@ struct CleanupMLXEvaluationTests {
             }
         } else {
             let option: PostProcessorOption = runtime == "lfm-gguf" ? .lfmV12 : .qwenV12
-            try option.managedModel?.validate(modelURL: option.modelURL)
-            let engine = Qwen3PostProcessor(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
-            let config = Qwen3PostProcessor.Configuration(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let descriptor: ManagedCleanupModel = runtime == "lfm-gguf" ? .lfm : .qwen
+            let modelURL = option.cacheDirectory.appendingPathComponent(descriptor.modelFilename)
+            try descriptor.validate(modelURL: modelURL)
+            let engine = Qwen3PostProcessor(modelURL: modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let config = Qwen3PostProcessor.Configuration(modelURL: modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
             let start = Date()
             try await engine.prepare()
             let load = Date().timeIntervalSince(start)
