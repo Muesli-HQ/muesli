@@ -9,7 +9,7 @@ import Testing
 @MainActor
 struct PasteShortcutTests {
     @Test("settings dropdowns keep the model width regardless of label or enabled state",
-          arguments: ["Romanized", "Automatic", "Automatic (⌘V)", "Bodhan Flex INT8"], [true, false])
+          arguments: ["Romanized", "Automatic", "Automatic (⌘V)", "Bodhan Flex Lite"], [true, false])
     func dropdownWidth(label: String, enabled: Bool) throws {
         _ = NSApplication.shared
         let host = NSHostingView(rootView:

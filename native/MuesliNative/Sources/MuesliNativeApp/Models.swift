@@ -127,24 +127,24 @@ struct BackendOption: Equatable {
 
     static let bodhanCore = BackendOption(
         backend: "bodhan", model: BodhanModel.core.rawValue,
-        label: "Bodhan Core FP16", sizeLabel: "~2.46 GB FP16",
+        label: BodhanModel.core.name, sizeLabel: "~2.46 GB",
         description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
     )
     static let bodhanFlex = BackendOption(
         backend: "bodhan", model: BodhanModel.flex.rawValue,
-        label: "Bodhan Flex FP16", sizeLabel: "~2.46 GB FP16",
+        label: BodhanModel.flex.name, sizeLabel: "~2.46 GB",
         description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
     )
 
     static let bodhanCoreInt8 = BackendOption(
         backend: "bodhan", model: BodhanModel.coreInt8.rawValue,
-        label: "Bodhan Core INT8", sizeLabel: "~1.27 GB",
-        description: "A smaller download of Core for Indian-language speech in its native script. Detects language automatically. Uses less space; transcription can differ slightly from FP16.", recommended: false
+        label: BodhanModel.coreInt8.name, sizeLabel: "~1.27 GB",
+        description: "A smaller download of Core for Indian-language speech in its native script. Detects language automatically. Uses less space; transcription can differ slightly from Pro.", recommended: false
     )
     static let bodhanFlexInt8 = BackendOption(
         backend: "bodhan", model: BodhanModel.flexInt8.rawValue,
-        label: "Bodhan Flex INT8", sizeLabel: "~1.27 GB",
-        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Uses less space; transcription can differ slightly from FP16.", recommended: false
+        label: BodhanModel.flexInt8.name, sizeLabel: "~1.27 GB",
+        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Uses less space; transcription can differ slightly from Pro.", recommended: false
     )
     static let bodhanFamily: [BackendOption] = [.bodhanCore, .bodhanCoreInt8, .bodhanFlex, .bodhanFlexInt8]
 
@@ -1860,7 +1860,7 @@ enum IndicatorAnchor: String, Codable, CaseIterable {
 
     var label: String {
         switch self {
-        case .notch: return "Notch (with floating fallback)"
+        case .notch: return "Notch"
         case .topLeading: return "Top Left"
         case .topCenter: return "Top Center"
         case .topTrailing: return "Top Right"

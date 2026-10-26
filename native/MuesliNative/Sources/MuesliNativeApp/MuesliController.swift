@@ -3225,7 +3225,17 @@ public final class MuesliController: NSObject {
                 backend: backend,
                 enablePostProcessor: false,
                 includeMeetingHelpers: false,
-                appleSpeechLanguage: config.resolvedAppleSpeechLanguage
+                appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
+                progressSnapshot: { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self, self.dictationBackendPreparation.owns(preparation),
+                              self.dictationBackendPreparation.readiness == .preparing,
+                              self.dictationState == .idle, !self.isMeetingRecording(),
+                              progress.phase == .downloading || progress.phase == .preparing else { return }
+                        self.indicator.showLoading(ModelDownloadDisplayFormatting.indicatorMessage(
+                            progress, modelName: backend.label))
+                    }
+                }
             )
             guard dictationBackendPreparation.finish(preparation, succeeded: true) else { return false }
             indicator.hideLoading()

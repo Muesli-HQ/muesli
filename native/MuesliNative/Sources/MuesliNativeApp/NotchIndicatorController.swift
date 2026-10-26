@@ -19,6 +19,10 @@ struct NotchToolResult: Identifiable, Equatable {
     }
 }
 
+enum NotchStatus: Equatable {
+    case loading, warning, success, cursor
+}
+
 enum NotchOutcome: Equatable {
     case success, needsInput, failure
 
@@ -121,6 +125,18 @@ struct NotchIndicatorGeometry: Equatable {
         guard wing >= 80 else { return nil }
         return Self(cutout: CGRect(x: left.maxX, y: screen.maxY - topInset,
                                   width: width, height: topInset), wingWidth: wing)
+    }
+
+    /// External displays use the same surface, with no space reserved for a camera.
+    static func presentation(screen: CGRect, visibleFrame: CGRect, topInset: CGFloat,
+                             left: CGRect?, right: CGRect?) -> Self {
+        if let physical = resolve(screen: screen, topInset: topInset, left: left, right: right) {
+            return physical
+        }
+        // Keep controls usable when the menu bar is hidden, and stay at the screen's top edge.
+        let height = max(CGFloat(28), min(32, screen.maxY - visibleFrame.maxY))
+        return Self(cutout: CGRect(x: screen.midX, y: screen.maxY - height, width: 0, height: height),
+                    wingWidth: min(110, screen.width / 2))
     }
 
     func frame() -> CGRect {
@@ -252,6 +268,9 @@ final class NotchIndicatorController {
     private var screenBounds = CGRect.zero
     private var requiresReview = false
     private(set) var outcome: NotchOutcome?
+    private(set) var status: NotchStatus?
+    private(set) var statusDismissAt: Date?
+    var statusMessage: String? { status == nil ? nil : instruction }
     private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
 
     private let pointerLocation: () -> NSPoint
@@ -273,10 +292,9 @@ final class NotchIndicatorController {
     var screenFrame: CGRect? { isVisible ? panel?.frame : nil }
 
     static func geometry(for screen: NSScreen) -> NotchIndicatorGeometry? {
-        // These APIs predate Muesli's macOS 14.2 deployment target. Hardware
-        // capability is still checked for every display; Apple Silicon is not enough.
-        NotchIndicatorGeometry.resolve(screen: screen.frame, topInset: screen.safeAreaInsets.top,
-                                       left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
+        NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
+            topInset: screen.safeAreaInsets.top,
+            left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
     }
 
     @discardableResult
@@ -284,10 +302,13 @@ final class NotchIndicatorController {
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
-              toolResults: [NotchToolResult] = []) -> Bool {
+              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
+        let continuesStatus = status != nil && self.status == status && isVisible
         requiresReview = false
-        outcome = nil
+        self.status = status
+        statusDismissAt = nil
+        outcome = status == .warning ? .needsInput : (status == .success ? .success : nil)
         dismissActivity?.cancel()
         dismissActivity = nil
         let now = Date()
@@ -339,6 +360,7 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             self.panel = panel
         }
+        if status != nil && !continuesStatus { expanded = true }
         render()
         panel?.orderFrontRegardless()
         logPresentation("show")
@@ -364,6 +386,8 @@ final class NotchIndicatorController {
         closeMeetingTranscript()
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
+        status = nil
+        statusDismissAt = nil
         outcome = nil
         requiresReview = false
         instructionPanel?.orderOut(nil)
@@ -384,14 +408,45 @@ final class NotchIndicatorController {
     /// pending review; show that existing result below the external menu bar.
     @discardableResult
     func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
-        guard outcome != nil else { return false }
+        guard outcome != nil || status != nil else { return false }
         guard let screen else { return true }
+        let resolved = resolveGeometry(screen)
+        if status != nil && resolved == nil { return false }
         screenBounds = screen.visibleFrame
-        geometry = resolveGeometry(screen) ?? NotchIndicatorGeometry(
+        geometry = resolved ?? NotchIndicatorGeometry(
             cutout: CGRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.maxY - 32,
                            width: 0, height: 32), wingWidth: 110)
         render()
         panel?.orderFrontRegardless()
+        return true
+    }
+
+    @discardableResult
+    func showStatus(on screen: NSScreen, kind: NotchStatus, message: String,
+                    duration: TimeInterval? = nil) -> Bool {
+        if duration == nil, status == kind, instruction == message, isVisible {
+            if refreshOutcomePlacement(on: screen) { return true }
+            hide()
+            return false
+        }
+        let title: String
+        let color: NSColor
+        switch kind {
+        case .loading: title = "Working"; color = .systemBlue
+        case .warning: title = "Notice"; color = .systemYellow
+        case .success: title = "Done"; color = .systemGreen
+        case .cursor: title = "Computer use"; color = .systemBlue
+        }
+        guard show(on: screen, title: title, detail: message, recording: false,
+                   paused: false, meeting: false, handsFree: false, active: true,
+                   icon: NSImage(systemSymbolName: "waveform", accessibilityDescription: nil) ?? NSImage(),
+                   accent: color, instruction: message, status: kind) else { return false }
+        if let duration {
+            statusDismissAt = Date().addingTimeInterval(duration)
+            let work = DispatchWorkItem { [weak self] in self?.hide() }
+            dismissActivity = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+        }
         return true
     }
 
@@ -422,6 +477,11 @@ final class NotchIndicatorController {
         return true
     }
 
+    func toggleInstructionExpansion() {
+        expanded.toggle()
+        render()
+    }
+
     private func render() {
         guard let geometry, let panel else { return }
         let frame = geometry.frame()
@@ -434,12 +494,8 @@ final class NotchIndicatorController {
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
-            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome,
-            onToggleInstruction: { [weak self] in
-                guard let self else { return }
-                self.expanded.toggle()
-                self.render()
-            },
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
+            onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
             onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
@@ -489,6 +545,18 @@ final class NotchIndicatorController {
         }
         meetingTranscript.hide()
         (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if status != nil {
+            let width = min(CGFloat(380), screenBounds.width)
+            let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - 64), width: width, height: 64)
+            let view = NotchStatusView(message: instruction ?? "")
+            if let hosting = instructionPanel?.contentView as? NSHostingView<NotchStatusView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
         if let question {
             let size = ComputerUseQuestionLayout.size(in: screenBounds)
             let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
@@ -518,7 +586,24 @@ final class NotchIndicatorController {
     }
 
     private func cancelOrDismiss() {
-        if outcome != nil { hide() } else { onCancel?() }
+        if outcome != nil || status != nil { hide() } else { onCancel?() }
+    }
+}
+
+private struct NotchStatusView: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .help(message)
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18))
+            .preferredColorScheme(.dark)
     }
 }
 
@@ -614,6 +699,7 @@ private struct NotchIndicatorView: View {
     let expanded: Bool
     let requiresReview: Bool
     let outcome: NotchOutcome?
+    var isStatus = false
     let onToggleInstruction: () -> Void
     let power: () -> Float
     var onHover: (Bool) -> Void = { _ in }
@@ -721,8 +807,8 @@ private struct NotchIndicatorView: View {
                             .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5) }
                             .contentShape(Circle())
                     }
-                    .accessibilityLabel(outcome != nil ? "Dismiss result" : (meeting ? "Discard meeting" : "Cancel activity"))
-                    .help(outcome != nil ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
+                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : "Cancel activity"))
+                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
                 }
             }
             .padding(.horizontal, 6)
