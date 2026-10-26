@@ -21,7 +21,11 @@ final class BufferedDictationPreviewDelivery {
     func offer(_ update: BufferedTranscriptionUpdate) {
         guard !closed, update.revision > latestRevision else { return }
         latestRevision = update.revision
-        pending = update
+        // Recognition retains its hypothesis for agreement/alignment, but the
+        // destination only receives committed groups. Never revise a visible
+        // draft while the user is speaking; final cleanup is a separate write.
+        pending = BufferedTranscriptionUpdate(committedText: update.committedText,
+                                              tail: "", revision: update.revision)
         guard worker == nil else { return }
         worker = Task { @MainActor in
             while !closed, let update = pending {

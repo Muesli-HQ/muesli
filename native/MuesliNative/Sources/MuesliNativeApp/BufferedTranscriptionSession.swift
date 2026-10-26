@@ -64,8 +64,9 @@ struct BufferedTranscriptionUpdate: Sendable, Equatable {
     }
 }
 
-/// Buffered previews may supply final text only after explicit reuse-quality and
-/// full recording sample-coverage checks; otherwise the recording is transcribed.
+/// Buffered previews supply final text after validated ownership and complete
+/// audio coverage. Confidence is diagnostic; structural failures retain partial
+/// text and the recording for explicit recovery.
 /// Audio capture never waits for inference. There is one decoder in flight and
 /// new arrivals coalesce into the next snapshot. Audio-time ownership, rather
 /// than matching strings, preserves deliberately repeated words at rollovers.
@@ -93,7 +94,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var smoothWhisperPreviews = false
     }
 
-    /// Provisional reuse thresholds, not calibrated transcript correctness.
+    /// Provisional telemetry thresholds, not finalization gates or calibrated correctness.
     /// Agreement supplies stronger evidence than a single final/forced hypothesis.
     enum ReusePolicy {
         static let agreedConfidenceFloor: Float = 0.15
@@ -105,9 +106,22 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         case missingConfidence, invalidConfidence, lowConfidence
         case unagreedContextTooLong, unsupportedWordTiming
         case committedTranscriptChanged, unverifiedEmptyAudio
+
+        /// Quality uncertainty never requests a new full-session transcription.
+        /// Coverage, alignment, and lifecycle failures still prevent completion.
+        var preventsReuse: Bool {
+            switch self {
+            case .cancelled, .transcriptionFailed, .noAudio, .incompleteCoverage:
+                return true
+            case .missingConfidence, .invalidConfidence, .lowConfidence, .unagreedContextTooLong,
+                 .unsupportedWordTiming, .committedTranscriptChanged, .unverifiedEmptyAudio:
+                return false
+            }
+        }
     }
 
     struct ReuseDiagnostics: Sendable, CustomStringConvertible {
+        let qualityConcern: ReuseFallbackReason?
         let committedWordCount: Int
         let agreedWordCount: Int
         let unagreedWordCount: Int
@@ -120,7 +134,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let firstLowConfidenceEvidence: String?
         let lastLowConfidenceEvidence: String?
         var description: String {
-            "words=\(committedWordCount):agreed=\(agreedWordCount):unagreed=\(unagreedWordCount):missing=\(missingConfidenceCount):invalid=\(invalidConfidenceCount):low=\(lowConfidenceCount):minConfidence=\(minimumConfidence.map(String.init(describing:)) ?? "none"):maxUnagreedSpan=\(maximumUnagreedSpan):discardedSamples=\(discardedSamples):firstLow=[\(firstLowConfidenceEvidence ?? "none")]:lastLow=[\(lastLowConfidenceEvidence ?? "none")]"
+            "qualityConcern=\(qualityConcern?.rawValue ?? "none"):words=\(committedWordCount):agreed=\(agreedWordCount):unagreed=\(unagreedWordCount):missing=\(missingConfidenceCount):invalid=\(invalidConfidenceCount):low=\(lowConfidenceCount):minConfidence=\(minimumConfidence.map(String.init(describing:)) ?? "none"):maxUnagreedSpan=\(maximumUnagreedSpan):discardedSamples=\(discardedSamples):firstLow=[\(firstLowConfidenceEvidence ?? "none")]:lastLow=[\(lastLowConfidenceEvidence ?? "none")]"
         }
     }
 
@@ -137,7 +151,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     }
 
     private struct ReuseQuality {
-        var reason: ReuseFallbackReason?
+        var qualityConcern: ReuseFallbackReason?
+        var structuralReason: ReuseFallbackReason?
         var committedWords = 0
         var agreedWords = 0
         var unagreedWords = 0
@@ -151,8 +166,12 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var firstLowConfidenceEvidence: String?
         var lastLowConfidenceEvidence: String?
 
-        mutating func reject(_ reason: ReuseFallbackReason) {
-            if self.reason == nil { self.reason = reason }
+        mutating func recordConcern(_ reason: ReuseFallbackReason) {
+            if reason.preventsReuse {
+                if structuralReason == nil { structuralReason = reason }
+            } else if qualityConcern == nil {
+                qualityConcern = reason
+            }
         }
     }
 
@@ -227,7 +246,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private let onDiagnostic: @Sendable (String) -> Void
 
     var knownReuseFallbackReason: ReuseFallbackReason? {
-        synchronized { state.reuseTerminalReason ?? state.reuseQuality.reason }
+        synchronized { state.reuseTerminalReason ?? state.reuseQuality.structuralReason }
+    }
+
+    /// Best raw hypothesis, including the undecided tail, for saved recovery.
+    /// This accessor makes no claim that the stream completed successfully.
+    var currentTranscript: String {
+        synchronized { state.finalText ?? state.committedText + state.lastPublishedTail }
     }
 
     var reuseDiagnostics: ReuseDiagnostics {
@@ -295,9 +320,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
     }
 
-    /// Returns raw, fully drained ASR only when its bounded quality evidence
-    /// supports reuse. Cancellation closes this session without waiting for an
-    /// uncooperative decoder; the recording remains the caller's fallback.
+    /// Drains the retained tail using the established streaming policy. Quality
+    /// concerns remain telemetry; successful ownership and complete sample
+    /// coverage permit reuse. Cancellation returns partial text promptly without
+    /// waiting for an uncooperative decoder.
     func finishForReuse() async -> ReuseResult {
         await withTaskCancellationHandler {
             await finish()
@@ -312,12 +338,12 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let completed = state.finalText != nil && state.closed && state.reuseTerminalReason == nil
             && state.decodedThroughSample == state.receivedSamples
         let reason: ReuseFallbackReason? = cancelled ? .cancelled
-            : state.reuseTerminalReason ?? quality.reason ?? (completed ? nil : .incompleteCoverage)
+            : state.reuseTerminalReason ?? quality.structuralReason ?? (completed ? nil : .incompleteCoverage)
         return ReuseResult(text: state.finalText ?? state.committedText + state.lastPublishedTail,
             canReuse: completed && reason == nil, completed: completed && !cancelled,
             fallbackReason: reason, receivedSamples: state.receivedSamples,
             decodedThroughSample: state.decodedThroughSample,
-            diagnostics: .init(committedWordCount: quality.committedWords, agreedWordCount: quality.agreedWords,
+            diagnostics: .init(qualityConcern: quality.qualityConcern, committedWordCount: quality.committedWords, agreedWordCount: quality.agreedWords,
                 unagreedWordCount: quality.unagreedWords, missingConfidenceCount: quality.missingConfidence,
                 invalidConfidenceCount: quality.invalidConfidence, lowConfidenceCount: quality.lowConfidence,
                 minimumConfidence: quality.minimumConfidence, maximumUnagreedSpan: quality.maximumUnagreedSpan,
@@ -504,11 +530,12 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.followingAnchor = tailWords.first
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         state.decodedThroughSample = state.lastDecodedEnd
-        // Early empty hypotheses can improve while their PCM remains retained.
-        // Only permanently discarded/final empty coverage affects reuse.
+        // Empty recognition over nonzero microphone noise is acoustic uncertainty,
+        // not missing sample coverage. Preserve it as quality telemetry only once
+        // that decoded span is discarded or finalized.
         if (rolls || snapshot.final), result.words.isEmpty,
            snapshot.audio.contains(where: { $0 != 0 }) {
-            state.reuseQuality.reject(.unverifiedEmptyAudio)
+            state.reuseQuality.recordConcern(.unverifiedEmptyAudio)
         }
         if rolls {
             if retainsLexicalAnchor, let preceding = state.committedAnchors.dropLast().last {
@@ -645,7 +672,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                            && abs(old.start - new.start) <= configuration.maximumTimestampDrift
                    }) {
                     if zip(suffix, candidate).contains(where: { anchorIdentity($0.text) != anchorIdentity($1.text) }) {
-                        state.reuseQuality.reject(.committedTranscriptChanged)
+                        state.reuseQuality.recordConcern(.committedTranscriptChanged)
                     }
                     matchedIndex = index
                     break
@@ -656,14 +683,14 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         guard let matchedIndex else { throw AlignmentRecovery(reason: .missingAnchor) }
         let lastCurrent = words[matchedIndex]
         // A shorter suffix can legitimately recover live ownership while older
-        // committed wording changed. Live text stays frozen, but that evidence
-        // cannot authorize reusing it as the final raw transcription.
+        // committed wording changed. Preserve frozen text under the streaming
+        // policy and retain the revision as quality telemetry.
         if matchedIndex + 1 < anchors.count {
-            state.reuseQuality.reject(.committedTranscriptChanged)
+            state.reuseQuality.recordConcern(.committedTranscriptChanged)
         } else {
             let currentOwned = words[(matchedIndex + 1 - anchors.count)...matchedIndex]
             if !zip(anchors, currentOwned).allSatisfy({ anchorIdentity($0.text) == anchorIdentity($1.text) }) {
-                state.reuseQuality.reject(.committedTranscriptChanged)
+                state.reuseQuality.recordConcern(.committedTranscriptChanged)
             }
         }
         state.committedAnchors = Array(words.prefix(matchedIndex + 1).suffix(4))
@@ -740,20 +767,20 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 state.reuseQuality.currentUnagreedEnd = max(state.reuseQuality.currentUnagreedEnd ?? word.end, word.end)
                 let span = (state.reuseQuality.currentUnagreedEnd ?? word.end) - (state.reuseQuality.currentUnagreedStart ?? word.start)
                 state.reuseQuality.maximumUnagreedSpan = max(state.reuseQuality.maximumUnagreedSpan, span)
-                if span > supportedSpan { state.reuseQuality.reject(.unagreedContextTooLong) }
+                if span > supportedSpan { state.reuseQuality.recordConcern(.unagreedContextTooLong) }
                 if word.start == word.end,
                    word.text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) {
-                    state.reuseQuality.reject(.unsupportedWordTiming)
+                    state.reuseQuality.recordConcern(.unsupportedWordTiming)
                 }
             }
             guard let confidence = word.confidence else {
                 state.reuseQuality.missingConfidence += 1
-                state.reuseQuality.reject(.missingConfidence)
+                state.reuseQuality.recordConcern(.missingConfidence)
                 continue
             }
             guard confidence.isFinite, (0...1).contains(confidence) else {
                 state.reuseQuality.invalidConfidence += 1
-                state.reuseQuality.reject(.invalidConfidence)
+                state.reuseQuality.recordConcern(.invalidConfidence)
                 continue
             }
             state.reuseQuality.minimumConfidence = min(state.reuseQuality.minimumConfidence ?? confidence, confidence)
@@ -763,7 +790,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 let evidence = "start=\(word.start),end=\(word.end),confidence=\(confidence),agreed=\(agreed)"
                 if state.reuseQuality.firstLowConfidenceEvidence == nil { state.reuseQuality.firstLowConfidenceEvidence = evidence }
                 state.reuseQuality.lastLowConfidenceEvidence = evidence
-                state.reuseQuality.reject(.lowConfidence)
+                state.reuseQuality.recordConcern(.lowConfidence)
             }
         }
     }

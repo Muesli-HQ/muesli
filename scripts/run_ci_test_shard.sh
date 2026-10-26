@@ -78,6 +78,7 @@ case "${shard}" in
       BufferedTranscriptionSessionTests
       BufferedAdapterConfidenceTests
       BufferedDictationFinalizerTests
+      BufferedDictationRecoveryTests
       BufferedDictationPreviewDeliveryTests
       LiveDictationTextTargetTests
       LiveDictationKeyboardInputTests

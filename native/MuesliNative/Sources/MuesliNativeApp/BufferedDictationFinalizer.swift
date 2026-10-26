@@ -5,6 +5,14 @@ import Foundation
 /// All output still goes through the original target lease and cleanup pipeline.
 @MainActor
 enum BufferedDictationFinalizer {
+    /// An incomplete stream is recoverable from its saved recording, never an
+    /// invitation to silently run a second, whole-recording recognition pass.
+    struct IncompleteStream: Error, LocalizedError {
+        let reason: String
+        let partialText: String
+        var errorDescription: String? { "Live transcription could not finish (\(reason))." }
+    }
+
     static func recordedSampleCount(at url: URL) -> Int? {
         guard let file = try? AVAudioFile(forReading: url),
               file.fileFormat.sampleRate == 16_000,
@@ -19,23 +27,23 @@ enum BufferedDictationFinalizer {
         drainTimeout: Duration = .seconds(10),
         onDecision: (String) -> Void = { _ in },
         reuse: (String) async throws -> SpeechTranscriptionResult,
-        fallback: () async throws -> SpeechTranscriptionResult
+        nonStreaming: () async throws -> SpeechTranscriptionResult
     ) async throws -> SpeechTranscriptionResult {
         defer { session?.cancel() }
         try Task.checkCancellation()
-        guard let session else { return try await fallback() }
+        guard let session else { return try await nonStreaming() }
         guard let recordedSampleCount, recordedSampleCount > 0,
               session.diagnostics.receivedSamples == recordedSampleCount else {
             session.cancel()
-            onDecision("fallback:recording_coverage_mismatch:recorded=\(recordedSampleCount ?? -1):streamed=\(session.diagnostics.receivedSamples)")
+            onDecision("incomplete:recording_coverage_mismatch:recorded=\(recordedSampleCount ?? -1):streamed=\(session.diagnostics.receivedSamples)")
             try Task.checkCancellation()
-            return try await fallback()
+            throw IncompleteStream(reason: "recording_coverage_mismatch", partialText: session.currentTranscript)
         }
         if let reason = session.knownReuseFallbackReason {
             session.cancel()
-            onDecision("fallback:\(reason.rawValue):committed_evidence \(session.reuseDiagnostics)")
+            onDecision("incomplete:\(reason.rawValue):committed_evidence \(session.reuseDiagnostics)")
             try Task.checkCancellation()
-            return try await fallback()
+            throw IncompleteStream(reason: reason.rawValue, partialText: session.currentTranscript)
         }
         var timedOut = false
         let deadline = Task { @MainActor in
@@ -50,10 +58,11 @@ enum BufferedDictationFinalizer {
         guard result.canReuse,
               result.receivedSamples == recordedSampleCount,
               result.decodedThroughSample == recordedSampleCount else {
-            if timedOut { onDecision("fallback:tail_drain_timeout") }
-            onDecision("fallback:\(result.fallbackReason.map { String(describing: $0) } ?? "incomplete_coverage") \(result.diagnostics)")
+            let reason = timedOut ? "tail_drain_timeout"
+                : result.fallbackReason?.rawValue ?? "incomplete_coverage"
+            onDecision("incomplete:\(reason) \(result.diagnostics)")
             try Task.checkCancellation()
-            return try await fallback()
+            throw IncompleteStream(reason: reason, partialText: result.text)
         }
         onDecision("reuse \(result.diagnostics)")
         // If cleanup fails/cancels, propagate normally; do not run ASR and cleanup

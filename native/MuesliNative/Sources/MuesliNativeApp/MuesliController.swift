@@ -11408,7 +11408,7 @@ public final class MuesliController: NSObject {
                         self.markDictationLatency("buffered_preview_failed:\(category)", trace: previewTrace)
                         // Keep the target lease for final cleanup; failure of preview
                         // inference must never trigger a duplicate normal paste.
-                        self.statusBarController?.setStatus("Live preview stopped; finishing transcription when you stop")
+                        self.statusBarController?.setStatus("Live transcription stopped; recording will be saved for recovery")
                     }
                 },
                 onDiagnostic: { [weak self] event in
@@ -12015,8 +12015,8 @@ public final class MuesliController: NSObject {
         if let diagnostics = liveContext?.session.diagnostics {
             markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
         }
-        // Close preview delivery now. Recognition drains separately below; only
-        // a complete, quality-checked stream may skip full-recording ASR.
+        // Close live delivery now. Recognition drains the remaining tail below;
+        // structural failure preserves the recording for explicit recovery.
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
             liveContext?.session.cancel()
@@ -12087,9 +12087,12 @@ public final class MuesliController: NSObject {
         }
         let task = Task { [weak self] in
             guard let self else { return }
+            var preserveRecordingForRecovery = false
             defer {
                 liveContext?.session.cancel()
-                try? FileManager.default.removeItem(at: wavURL)
+                if !preserveRecordingForRecovery {
+                    try? FileManager.default.removeItem(at: wavURL)
+                }
                 if !isTestMode {
                     self.clearInFlightDictationTranscription(id: transcriptionTaskID)
                 }
@@ -12167,7 +12170,7 @@ public final class MuesliController: NSObject {
                                 appContext: promptContext,
                                 timingRequestID: completionLatencyTrace?.id.uuidString
                             )
-                        }, fallback: {
+                        }, nonStreaming: {
                             try await self.transcriptionCoordinator.transcribeDictation(
                                 at: wavURL,
                                 backend: transcriptionBackend,
@@ -12363,6 +12366,48 @@ public final class MuesliController: NSObject {
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionCancelled))
                     self.finishDictationLatencyTrace("transcription_cancelled", trace: completionLatencyTrace)
+                }
+            } catch let streamError as BufferedDictationFinalizer.IncompleteStream {
+                guard self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }
+                // Do not replace the safe visible prefix with an incomplete
+                // hypothesis. Preserve the source for an explicit later retry.
+                liveContext?.target.cancel()
+                let recoveryURL: URL
+                let recoveryMessage: String
+                do {
+                    recoveryURL = try BufferedDictationRecovery.save(
+                        wavURL: wavURL, transcript: streamError.partialText,
+                        directory: self.configStore.supportDirectory()
+                            .appendingPathComponent("Dictation Recovery", isDirectory: true)
+                    )
+                    recoveryMessage = "The recording and available transcript were saved for recovery. Text already inserted has been left in place."
+                } catch {
+                    // A full disk or permissions error must not let the defer
+                    // delete the only remaining recording.
+                    preserveRecordingForRecovery = true
+                    recoveryURL = wavURL
+                    if let textURL = try? BufferedDictationRecovery.saveTranscript(streamError.partialText, beside: wavURL) {
+                        recoveryMessage = "The recovery copy could not be saved. The original recording remains at \(wavURL.path), with the available transcript at \(textURL.path)."
+                    } else {
+                        recoveryMessage = "The recording remains at \(wavURL.path). The available transcript could not be saved; copy it here before closing:\n\n\(streamError.partialText)"
+                    }
+                }
+                self.clearCapturedDictationSessionContext()
+                self.resetDictationOutputMode()
+                self.setState(.idle)
+                self.meetingMonitor.resumeAfterCooldown()
+                self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
+                self.finishDictationLatencyTrace("buffered_live_incomplete:\(streamError.reason)", trace: completionLatencyTrace)
+                let alert = NSAlert()
+                alert.messageText = "Live transcription could not finish"
+                alert.informativeText = recoveryMessage
+                alert.addButton(withTitle: "Show Recording")
+                alert.addButton(withTitle: "OK")
+                self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery",
+                                  includeInformativeTextInFallbackLog: false) { response in
+                    if response == .alertFirstButtonReturn {
+                        NSWorkspace.shared.activateFileViewerSelecting([recoveryURL])
+                    }
                 }
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)

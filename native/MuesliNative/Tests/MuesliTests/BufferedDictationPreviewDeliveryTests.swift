@@ -32,6 +32,22 @@ struct BufferedDictationPreviewDeliveryTests {
         .init(committedText: "stable ", tail: "draft \(revision)", revision: revision)
     }
 
+    @Test func onlyCommittedGroupsReachTheEditor() async {
+        var delivered: [BufferedTranscriptionUpdate] = []
+        let delivery = BufferedDictationPreviewDelivery(deliver: {
+            delivered.append($0)
+            return true
+        })
+        delivery.offer(.init(committedText: "Hello", tail: " speculative words", revision: 1))
+        await delivery.waitUntilIdle()
+        delivery.offer(.init(committedText: "Hello", tail: " revised hypothesis", revision: 2))
+        await delivery.waitUntilIdle()
+        delivery.offer(.init(committedText: "Hello world", tail: " uncertain ending", revision: 3))
+        await delivery.waitUntilIdle()
+        #expect(delivered.map(\.text) == ["Hello", "Hello", "Hello world"])
+        #expect(delivered.allSatisfy { $0.tail.isEmpty })
+    }
+
     @Test func slowEditorReceivesOnlyCurrentAndNewestPreview() async {
         let editor = Editor()
         var completed: [UInt64] = []

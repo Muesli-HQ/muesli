@@ -41,6 +41,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
         if previousEnd < samples.count { session.enqueue(Array(samples[previousEnd...])) }
         let reuse = await session.finishForReuse()
         print("[buffered-reuse] parakeet eligible=\(reuse.canReuse) reason=\(String(describing: reuse.fallbackReason)) \(reuse.diagnostics)")
+        #expect(reuse.canReuse, "Complete multiwindow speech must not require a second ASR pass")
         #expect(output.failure == nil)
         #expect(!prefixAt30Seconds.isEmpty)
         #expect(committed.count > prefixAt30Seconds.count)
@@ -59,16 +60,11 @@ struct BufferedTranscriptionBackendIntegrationTests {
           arguments: ["parakeet", "whisper"])
     func completedClearSpeechCanSkipFullRetranscription(backend: String) async throws {
         let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_FIXTURE_DIR"])
-        // The first fixture includes a long internal pause where Whisper moves
-        // "and" between timing hypotheses and should use the conservative
-        // fallback. The second fixture exercises an ordinary completed stream.
+        // These fixtures include low-confidence words and timestamp revisions;
+        // those must not disqualify an otherwise complete streaming result.
         let fixture = backend == "parakeet" ? "01-validation-request-21.4s.wav" : "02-release-readiness-19.8s.wav"
-        var samples = try AudioConverter().resampleAudioFile(
+        let samples = try AudioConverter().resampleAudioFile(
             URL(fileURLWithPath: directory).appendingPathComponent(fixture))
-        // Allow two one-second preview observations after the completed final
-        // word, as when the speaker pauses before stop. Stopping mid-word or on
-        // a low-confidence first observation is tested as a fallback separately.
-        samples += Array(repeating: 0, count: 32_000)
         if backend == "parakeet" {
             try #require(ManagedASRModelPlans.parakeetV3().isComplete())
             let transcriber = FluidAudioTranscriber()
@@ -307,7 +303,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
         let transcriber = WhisperKitTranscriber()
         do {
             try await transcriber.loadModel(modelName: model)
-            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak", smoothWhisperPreviews: true) {
+            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak", requireReuse: true, smoothWhisperPreviews: true) {
                 try await transcriber.transcribePreview(samples: $0, expectedModel: model)
             }
             let words = preview.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")

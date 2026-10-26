@@ -24,7 +24,7 @@ struct BufferedDictationFinalizerTests {
                 cleanups += 1
                 #expect(text == "Hello")
                 return .init(text: "Hello!", segments: [])
-            }, fallback: {
+            }, nonStreaming: {
                 retranscriptions += 1
                 return .init(text: "fallback", segments: [])
             }
@@ -35,28 +35,59 @@ struct BufferedDictationFinalizerTests {
     }
 
     @Test(arguments: [Optional<Int>.none, 31_999, 32_001])
-    func incompleteCaptureFallsBack(recordedSamples: Int?) async throws {
-        var fallbacks = 0
+    func incompleteCaptureIsReportedWithoutRetranscribing(recordedSamples: Int?) async throws {
         let stream = session()
-        let result = try await BufferedDictationFinalizer.transcribe(
-            session: stream, recordedSampleCount: recordedSamples,
-            reuse: { _ in Issue.record("Incomplete stream reused"); return .init(text: "", segments: []) },
-            fallback: { fallbacks += 1; return .init(text: "recording", segments: []) }
-        )
-        #expect(result.text == "recording")
-        #expect(fallbacks == 1)
+        do {
+            _ = try await BufferedDictationFinalizer.transcribe(
+                session: stream, recordedSampleCount: recordedSamples,
+                reuse: { _ in Issue.record("Incomplete stream reused"); return .init(text: "", segments: []) },
+                nonStreaming: { Issue.record("Incomplete stream retranscribed"); return .init(text: "", segments: []) }
+            )
+            Issue.record("Missing capture was silently accepted")
+        } catch let error as BufferedDictationFinalizer.IncompleteStream {
+            #expect(error.reason == "recording_coverage_mismatch")
+        }
         #expect(stream.diagnostics.closed)
     }
 
     @Test(arguments: [Optional<Float>.none, 0.1])
-    func uncertainStreamUsesOriginalPipeline(confidence: Float?) async throws {
-        var fallbacks = 0
-        _ = try await BufferedDictationFinalizer.transcribe(
+    func uncertaintyDoesNotRetranscribe(confidence: Float?) async throws {
+        var cleanups = 0
+        let result = try await BufferedDictationFinalizer.transcribe(
             session: session(confidence: confidence), recordedSampleCount: 32_000,
-            reuse: { _ in Issue.record("Uncertain recognition reused"); return .init(text: "", segments: []) },
-            fallback: { fallbacks += 1; return .init(text: "recording", segments: []) }
+            reuse: { text in cleanups += 1; return .init(text: text, segments: []) },
+            nonStreaming: { Issue.record("Uncertainty triggered ASR"); return .init(text: "", segments: []) }
         )
-        #expect(fallbacks == 1)
+        #expect(result.text == "Hello")
+        #expect(cleanups == 1)
+    }
+
+    @Test func ordinaryDictationStillTranscribesRecording() async throws {
+        var fullPasses = 0
+        let result = try await BufferedDictationFinalizer.transcribe(
+            session: nil, recordedSampleCount: nil,
+            reuse: { _ in Issue.record("No stream exists"); return .init(text: "", segments: []) },
+            nonStreaming: { fullPasses += 1; return .init(text: "Normal dictation", segments: []) }
+        )
+        #expect(result.text == "Normal dictation")
+        #expect(fullPasses == 1)
+    }
+
+    @Test func decoderFailureRequestsRecoveryWithoutAnotherPass() async throws {
+        let stream = BufferedTranscriptionSession(decode: { _ in
+            throw BufferedTranscriptionSession.Failure.invalidTimings
+        }, onUpdate: { _ in }, onFailure: { _ in })
+        stream.enqueue(Array(repeating: 0.1, count: 32_000))
+        do {
+            _ = try await BufferedDictationFinalizer.transcribe(
+                session: stream, recordedSampleCount: 32_000,
+                reuse: { _ in Issue.record("Failed stream cleaned up"); return .init(text: "", segments: []) },
+                nonStreaming: { Issue.record("Decoder failure triggered ASR"); return .init(text: "", segments: []) }
+            )
+            Issue.record("Decoder failure was swallowed")
+        } catch let error as BufferedDictationFinalizer.IncompleteStream {
+            #expect(error.reason == "transcriptionFailed")
+        }
     }
 
     @Test func cleanupCancellationDoesNotRetranscribe() async throws {
@@ -64,13 +95,13 @@ struct BufferedDictationFinalizerTests {
             _ = try await BufferedDictationFinalizer.transcribe(
                 session: session(), recordedSampleCount: 32_000,
                 reuse: { _ in throw CancellationError() },
-                fallback: { Issue.record("Cleanup cancellation triggered ASR"); return .init(text: "", segments: []) }
+                nonStreaming: { Issue.record("Cleanup cancellation triggered ASR"); return .init(text: "", segments: []) }
             )
             Issue.record("Cancellation was swallowed")
         } catch is CancellationError { }
     }
 
-    @Test func tailTimeoutFallsBackWithoutWaitingForDecoder() async throws {
+    @Test func tailTimeoutReportsRecoveryWithoutWaitingForDecoderOrRetranscribing() async throws {
         let gate = AsyncStream<Void>.makeStream()
         defer { gate.continuation.finish() }
         let stream = BufferedTranscriptionSession(decode: { _ in
@@ -80,14 +111,18 @@ struct BufferedDictationFinalizerTests {
         }, onUpdate: { _ in }, onFailure: { _ in })
         stream.enqueue(Array(repeating: 0.1, count: 32_000))
         var decisions: [String] = []
-        let result = try await BufferedDictationFinalizer.transcribe(
-            session: stream, recordedSampleCount: 32_000, drainTimeout: .milliseconds(20),
-            onDecision: { decisions.append($0) },
-            reuse: { _ in Issue.record("Timed-out decoder reused"); return .init(text: "", segments: []) },
-            fallback: { .init(text: "fallback", segments: []) }
-        )
-        #expect(result.text == "fallback")
-        #expect(decisions.contains("fallback:tail_drain_timeout"))
+        do {
+            _ = try await BufferedDictationFinalizer.transcribe(
+                session: stream, recordedSampleCount: 32_000, drainTimeout: .milliseconds(20),
+                onDecision: { decisions.append($0) },
+                reuse: { _ in Issue.record("Timed-out decoder reused"); return .init(text: "", segments: []) },
+                nonStreaming: { Issue.record("Timeout triggered ASR"); return .init(text: "", segments: []) }
+            )
+            Issue.record("Timeout was swallowed")
+        } catch let error as BufferedDictationFinalizer.IncompleteStream {
+            #expect(error.reason == "tail_drain_timeout")
+        }
+        #expect(decisions.contains { $0.hasPrefix("incomplete:tail_drain_timeout") })
         #expect(stream.diagnostics.closed)
     }
 
