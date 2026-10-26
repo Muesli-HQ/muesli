@@ -10891,15 +10891,17 @@ public final class MuesliController: NSObject {
         let directQuill = forQuill && quillUsesDirectAudio
         let dictation: Gemma4LiteRTModel? = !directQuill && (forQuill || !selectedDictationProvider.isHosted) && selectedBackend.backend == "gemma4-litert"
             ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
-        let cleanup: Gemma4LiteRTModel? = !forQuill && config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        let cleanup: Gemma4LiteRTModel? = !forQuill && !selectedDictationProvider.isHosted && config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
         // Hosted dictation readiness says nothing about the local ASR Quill uses.
         let localASRKey = forQuill && !directQuill && selectedBackend.backend != "gemma4-litert"
             ? "quill-asr:\(selectedBackend.backend):\(selectedBackend.model):\(config.resolvedAppleSpeechLanguage)" : nil
-        let localCleanup = !forQuill && config.enablePostProcessor && selectedPostProcessorBackend == .local
-            ? PostProcessorOption.resolve(id: config.activePostProcessorId) : nil
+        let localCleanup = LocalCleanupPreparationPolicy.option(
+            enabled: config.enablePostProcessor && selectedPostProcessorBackend == .local,
+            forQuill: forQuill, isHosted: selectedDictationProvider.isHosted,
+            backend: selectedBackend, available: runtimePostProcessorOption())
         let cleanupKey = localCleanup.flatMap { option in
             option.isCompatible(with: selectedBackend)
                 ? option.id + ":" + option.effectiveSystemPrompt(configuredSystemPrompt: config.postProcessorSystemPrompt) : nil
@@ -10915,8 +10917,9 @@ public final class MuesliController: NSObject {
         if plan.isEmpty { indicator.hideLoading() }
         let localBackend = selectedBackend
         let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
-        let cleanupOption = PostProcessorOption.resolve(id: config.activePostProcessorId)
+        let cleanupOption = runtimePostProcessorOption()
         let cleanupConfig = config
+        var cleanupPreparationFailed = false
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
             guard let self else { throw CancellationError() }
             if plan.additionalPreparationKey != nil {
@@ -10925,15 +10928,20 @@ public final class MuesliController: NSObject {
                     appleSpeechLanguage: appleSpeechLanguage)
                 try Task.checkCancellation()
             }
-            if plan.localCleanupKey != nil {
+            if plan.localCleanupKey != nil, let cleanupOption {
                 guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else { throw CancellationError() }
                 let message = "Preparing \(cleanupOption.label)… Mic off"
                 if self.dictationState == .idle && !self.isMeetingRecording() {
                     self.indicator.showLoading(message)
                     self.statusBarController?.setStatus(message)
                 }
-                try await self.transcriptionCoordinator.prepareLocalCleanupForRecording(
-                    option: cleanupOption, config: cleanupConfig)
+                cleanupPreparationFailed = try await !LocalCleanupPreparationPolicy.prepare {
+                    try await self.transcriptionCoordinator.prepareLocalCleanupForRecording(
+                        option: cleanupOption, config: cleanupConfig)
+                }
+                if cleanupPreparationFailed {
+                    fputs("[cleanup-preparation] optional preparation failed; dictation remains available\n", stderr)
+                }
                 try Task.checkCancellation()
             }
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
@@ -10954,8 +10962,13 @@ public final class MuesliController: NSObject {
             }
             self.indicator.hideLoading()
             if self.dictationState == .idle && !self.isMeetingRecording() {
-                self.statusBarController?.setStatus("Models ready")
-                self.indicator.showSuccess("Ready — start recording", duration: 3)
+                if cleanupPreparationFailed {
+                    self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
+                    self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4)
+                } else {
+                    self.statusBarController?.setStatus("Models ready")
+                    self.indicator.showSuccess("Ready — start recording", duration: 3)
+                }
             }
         }, failed: { [weak self] error in
             guard let self else { return }

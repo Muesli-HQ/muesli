@@ -9,6 +9,39 @@ struct GemmaNativeAudioTests {
     init() {
         if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
     }
+    @Test func optionalCleanupAvailability() {
+        let lite = PostProcessorOption.defaultOption
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: nil) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: true, backend: .bodhanFlex, available: lite) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: lite) == lite)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: true, forQuill: true,
+            isHosted: false, backend: .bodhanFlex, available: lite) == nil)
+        #expect(LocalCleanupPreparationPolicy.option(enabled: false, forQuill: false,
+            isHosted: false, backend: .bodhanFlex, available: lite) == nil)
+    }
+
+    @Test @MainActor func optionalCleanupFailureDoesNotBlockRecording() async throws {
+        enum Failure: Error { case missingWeights }
+        let gate = GemmaRecordingPreparationGate()
+        let plan = GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: "lite")
+        var ready = false
+        var failed = false
+        let initiallyAllowed = gate.request(plan, prepare: {
+            let prepared = try await LocalCleanupPreparationPolicy.prepare { throw Failure.missingWeights }
+            #expect(!prepared)
+        }, ready: { ready = true }, failed: { _ in failed = true })
+        #expect(!initiallyAllowed)
+        await gate.waitForPreparation()
+        #expect(ready && !failed)
+        #expect(gate.request(plan, prepare: {}, ready: {}, failed: { _ in }))
+        await #expect(throws: CancellationError.self) {
+            try await LocalCleanupPreparationPolicy.prepare { throw CancellationError() }
+        }
+    }
+
     @Test func mtpDefaultsOnWithOneDiagnosticOptOut() {
         for value in ["", "1", "unexpected"] {
             #expect(GemmaMTPPolicy.isEnabled(environment: [GemmaMTPPolicy.environmentKey: value]))

@@ -216,3 +216,27 @@ final class GemmaRecordingPreparationGate {
 
     func waitForPreparation() async { await task?.value }
 }
+
+/// Optional cleanup must not prevent ASR when weights are missing or fail to load.
+enum LocalCleanupPreparationPolicy {
+    static func option(enabled: Bool, forQuill: Bool, isHosted: Bool,
+                       backend: BackendOption, available: PostProcessorOption?) -> PostProcessorOption? {
+        guard enabled, !forQuill, !isHosted,
+              let available, available.isCompatible(with: backend) else { return nil }
+        return available
+    }
+
+    @MainActor
+    static func prepare(_ operation: () async throws -> Void) async throws -> Bool {
+        try Task.checkCancellation()
+        do {
+            try await operation()
+            try Task.checkCancellation()
+            return true
+        } catch {
+            try Task.checkCancellation()
+            if error is CancellationError { throw error }
+            return false
+        }
+    }
+}
