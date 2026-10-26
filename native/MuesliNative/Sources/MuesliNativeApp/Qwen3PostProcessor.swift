@@ -353,9 +353,6 @@ private actor Qwen3PostProcessorManager {
                 guard let mlx else { throw CancellationError() }
                 let result = try await mlx.process(text, context: appContext)
                 try Task.checkCancellation()
-                Qwen3PostProcessorLogging.logVerbose("v12 MLX exact prompt: \(String(reflecting: MuesliCleanupV2Prompt.ggufRequest(text, appContext: appContext, format: inputFormat)))")
-                Qwen3PostProcessorLogging.logVerbose("v12 MLX raw output: \(String(reflecting: result.raw))")
-                Qwen3PostProcessorLogging.logVerbose("v12 MLX guarded output: \(String(reflecting: result.output))")
                 Qwen3PostProcessorLogging.logVerbose("cleanup runtime=mlx generation_seconds=\(result.seconds) prefill_seconds=\(result.prefillSeconds) decode_seconds=\(result.decodeSeconds) output_tokens=\(result.outputTokens) stop=\(result.stopReason)")
                 await inferenceGate.release()
                 return Qwen3PostProcessor.Result(text: result.output, rawOutput: result.raw, didFallback: result.didFallback)
@@ -380,9 +377,6 @@ private actor Qwen3PostProcessorManager {
                     generationCompleted: completion.stopReason == .endOfSequence)
                 let cleaned = guarded.text
                 Qwen3PostProcessorLogging.logVerbose("v12 GGUF stop reason: \(completion.stopReason)")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF exact prompt: \(String(reflecting: formattedInput))")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF raw output: \(String(reflecting: raw))")
-                Qwen3PostProcessorLogging.logVerbose("v12 GGUF guarded output: \(String(reflecting: cleaned))")
                 await inferenceGate.release()
                 return Qwen3PostProcessor.Result(text: cleaned, rawOutput: raw, didFallback: guarded.didFallback)
             }
@@ -391,8 +385,6 @@ private actor Qwen3PostProcessorManager {
             let raw = bot.output
             let cleaned = Qwen3PostProcessorOutputCleaner.clean(raw)
             Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF prompt chars=\(bot.preprocess(formattedInput, [], .suppressed).count)")
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF raw output: \(raw)")
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF cleaned output: \(cleaned)")
             let result: String
             let acceptsS1MiniEmptyOutput = inputFormat == .s1Mini && (
                 cleaned.isEmpty || Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(cleaned)

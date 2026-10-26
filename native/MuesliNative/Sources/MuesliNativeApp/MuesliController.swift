@@ -529,6 +529,22 @@ public final class MuesliController: NSObject {
     private var dictationState: DictationState = .idle
     private var dictationBackendPreparation = DictationBackendPreparationState()
     private let nativeRecordingGate = GemmaRecordingPreparationGate()
+    private var cleanupAvailabilityIDs: Set<String> = []
+    private var cleanupDownloadNoticeIDs: Set<String> = []
+
+    func refreshCleanupAvailability() {
+        let available = PostProcessorOption.downloadedIDs
+        guard available != cleanupAvailabilityIDs else { return }
+        cleanupAvailabilityIDs = available
+        nativeRecordingGate.invalidate()
+    }
+
+    private func cachedCleanupOption() -> PostProcessorOption? {
+        guard selectedPostProcessorBackend == .local else { return nil }
+        return PostProcessorOption.runtimeOption(id: config.activePostProcessorId,
+            downloadedIDs: cleanupAvailabilityIDs,
+            hasDevOverride: Qwen3PostProcessorConfig.devOverrideURL() != nil)
+    }
     var dictationBackendReadiness: DictationBackendReadiness { dictationBackendPreparation.readiness }
     private var dictationStartedAt: Date?
     private var hostedDictationSession: (any HostedDictationSession)?
@@ -3405,6 +3421,12 @@ public final class MuesliController: NSObject {
     }
 
     private func configureTranscriptCleanupForRuntime(option: PostProcessorOption? = nil) async {
+        cleanupAvailabilityIDs = PostProcessorOption.downloadedIDs
+        if config.enablePostProcessor, selectedPostProcessorBackend == .local,
+           !selectedDictationProvider.isHosted, cachedCleanupOption() == nil,
+           cleanupDownloadNoticeIDs.insert(config.activePostProcessorId).inserted {
+            presentLocalModelSetupPrompt(forQuill: false)
+        }
         await transcriptionCoordinator.configurePostProcessor(
             backend: selectedPostProcessorBackend,
             option: option ?? runtimePostProcessorOption(),
@@ -10901,7 +10923,7 @@ public final class MuesliController: NSObject {
         let localCleanup = LocalCleanupPreparationPolicy.option(
             enabled: config.enablePostProcessor && selectedPostProcessorBackend == .local,
             forQuill: forQuill, isHosted: selectedDictationProvider.isHosted,
-            backend: selectedBackend, available: runtimePostProcessorOption())
+            backend: selectedBackend, available: cachedCleanupOption())
         let cleanupKey = localCleanup.flatMap { option in
             option.isCompatible(with: selectedBackend)
                 ? option.id + ":" + option.effectiveSystemPrompt(configuredSystemPrompt: config.postProcessorSystemPrompt) : nil
@@ -10917,7 +10939,7 @@ public final class MuesliController: NSObject {
         if plan.isEmpty { indicator.hideLoading() }
         let localBackend = selectedBackend
         let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
-        let cleanupOption = runtimePostProcessorOption()
+        let cleanupOption = cachedCleanupOption()
         let cleanupConfig = config
         var cleanupPreparationFailed = false
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
@@ -10958,6 +10980,17 @@ public final class MuesliController: NSObject {
             guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else {
                 self.nativeRecordingGate.invalidate()
                 self.indicator.hideLoading()
+                return
+            }
+            guard self.dictationBackendReadiness.allowsDictation else {
+                if let message = self.dictationBackendReadiness.blockingMessage(backendLabel: self.selectedBackend.label) {
+                    self.statusBarController?.setStatus(message)
+                    switch self.dictationBackendReadiness {
+                    case .preparing: self.indicator.showLoading(message)
+                    case .failed: self.indicator.showWarning(message, icon: "!")
+                    case .ready: break
+                    }
+                }
                 return
             }
             self.indicator.hideLoading()

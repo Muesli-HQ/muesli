@@ -1590,6 +1590,7 @@ struct ModelsView: View {
                     withAnimation {
                         downloadingPostProcModels.remove(option.id)
                         downloadedPostProcModels.insert(option.id)
+                        controller.refreshCleanupAvailability()
                         downloadProgressPostProc.removeValue(forKey: option.id)
                         downloadMessages.removeValue(forKey: option.id)
                         downloadSnapshots.removeValue(forKey: option.id)
@@ -1682,6 +1683,7 @@ struct ModelsView: View {
                 guard downloadGenerations[option.id] == cancellationGeneration else { return }
                 if option.isDownloaded {
                     downloadedPostProcModels.insert(option.id)
+                    controller.refreshCleanupAvailability()
                     downloadMessages.removeValue(forKey: option.id)
                     downloadSnapshots.removeValue(forKey: option.id)
                 } else {
@@ -1717,17 +1719,14 @@ struct ModelsView: View {
         }
         try? FileManager.default.removeItem(at: option.cacheDirectory)
         downloadedPostProcModels.remove(option.id)
+        controller.refreshCleanupAvailability()
         downloadSnapshots.removeValue(forKey: option.id)
         downloadGenerations.removeValue(forKey: option.id)
     }
 
     private func checkDownloadedPostProcModels() {
-        downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.downloaded {
-            if option.isDownloaded {
-                downloadedPostProcModels.insert(option.id)
-            }
-        }
+        downloadedPostProcModels = PostProcessorOption.downloadedIDs
+        controller.refreshCleanupAvailability()
     }
 
     /// The retired v2 cleanup model stays visible only for people who already

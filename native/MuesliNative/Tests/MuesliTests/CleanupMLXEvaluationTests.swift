@@ -59,9 +59,11 @@ struct CleanupMLXEvaluationTests {
                 let start = Date()
                 let result = try await processor.processResult(row.input_text, appContext: row.context?.formatted, configuration: config)
                 times.append(Date().timeIntervalSince(start))
-                #expect(result.rawOutput == references[index], "\(option.id) \(row.id): \(result.rawOutput)")
+                let matchesReference = result.rawOutput == references[index]
+                #expect(matchesReference, "\(option.id) \(row.id): reference mismatch")
                 #expect(!result.didFallback)
-                #expect(result.text == result.rawOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+                let preservesGuardedOutput = result.text == result.rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                #expect(preservesGuardedOutput, "\(option.id) \(row.id): guard mismatch")
             }
             print("MLX PRODUCTION \(option.id) warm_median_seconds=\((times.sorted()[4] + times.sorted()[5]) / 2)")
             let bulletInput = "Put this in bullet points. First I am testing the latency. Second I am checking whether formatting survives. Third combine both."
