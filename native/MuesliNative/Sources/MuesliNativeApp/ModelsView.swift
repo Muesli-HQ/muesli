@@ -1649,11 +1649,12 @@ struct ModelsView: View {
             }
         }
         try Task.checkCancellation()
+        // The coordinator verifies every managed file's size and SHA-256 on its
+        // own actor before returning. Do not rehash multi-GB weights on the UI actor.
+        // Legacy GGUF downloads additionally need this four-byte format check.
         do {
             if option.modelURL.pathExtension == "gguf" {
                 try validateGGUFHeader(at: option.modelURL)
-            } else {
-                try option.managedModel?.validate(modelURL: option.modelURL)
             }
         } catch {
             try? FileManager.default.removeItem(at: option.modelURL)
