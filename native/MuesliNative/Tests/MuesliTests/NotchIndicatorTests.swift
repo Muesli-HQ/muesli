@@ -744,6 +744,48 @@ struct NotchIndicatorTests {
         #expect(decoded.indicatorAnchor == .notch)
     }
 
+    @Test("External presentation is centered without a camera gap", arguments: [CGPoint.zero, CGPoint(x: -1920, y: 450)], [0.0, 24.0, 32.0])
+    func externalGeometry(origin: CGPoint, menuHeight: Double) {
+        let screen = CGRect(origin: origin, size: CGSize(width: 1920, height: 1080))
+        let visible = CGRect(x: screen.minX, y: screen.minY, width: screen.width, height: screen.height - menuHeight)
+        let geometry = NotchIndicatorGeometry.presentation(screen: screen, visibleFrame: visible,
+            topInset: 0, left: nil, right: nil)
+        #expect(geometry.cutout.width == 0)
+        #expect(geometry.frame().midX == screen.midX)
+        #expect(geometry.frame().maxY == screen.maxY)
+        #expect(geometry.frame().width == 220)
+        #expect(geometry.frame().height >= 28)
+        #expect(screen.contains(geometry.frame()))
+        #expect(geometry.instructionFrame(in: visible).maxY == geometry.frame().minY)
+    }
+
+    @Test("Loading follows built-in and external displays without another progress callback")
+    @MainActor
+    func externalLoadingRoundTrip() throws {
+        let screen = try #require(NSScreen.main)
+        var physical = true
+        let notch = NotchIndicatorController(resolveGeometry: { target in
+            physical ? NotchIndicatorGeometry(cutout: CGRect(x: target.frame.midX - 90,
+                y: target.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+                : NotchIndicatorGeometry.presentation(screen: target.frame, visibleFrame: target.visibleFrame,
+                    topInset: 0, left: nil, right: nil)
+        })
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        notch.toggleInstructionExpansion()
+        physical = false
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.screenFrame?.width == 220)
+        #expect(notch.screenFrame?.maxY == screen.frame.maxY)
+        #expect(notch.expandedPanelFrame == nil)
+        physical = true
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.screenFrame?.width == 368)
+        #expect(notch.status == .loading)
+        #expect(notch.statusMessage == "Preparing")
+        #expect(notch.expandedPanelFrame == nil)
+    }
+
     @Test("No notch is inferred from processor or menu bar height")
     func unsupportedDisplay() {
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)

@@ -1860,7 +1860,7 @@ enum IndicatorAnchor: String, Codable, CaseIterable {
 
     var label: String {
         switch self {
-        case .notch: return "Notch (with floating fallback)"
+        case .notch: return "Notch"
         case .topLeading: return "Top Left"
         case .topCenter: return "Top Center"
         case .topTrailing: return "Top Right"

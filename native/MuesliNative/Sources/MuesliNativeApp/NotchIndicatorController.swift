@@ -127,6 +127,18 @@ struct NotchIndicatorGeometry: Equatable {
                                   width: width, height: topInset), wingWidth: wing)
     }
 
+    /// External displays use the same surface, with no space reserved for a camera.
+    static func presentation(screen: CGRect, visibleFrame: CGRect, topInset: CGFloat,
+                             left: CGRect?, right: CGRect?) -> Self {
+        if let physical = resolve(screen: screen, topInset: topInset, left: left, right: right) {
+            return physical
+        }
+        // Keep controls usable when the menu bar is hidden, and stay at the screen's top edge.
+        let height = max(CGFloat(28), min(32, screen.maxY - visibleFrame.maxY))
+        return Self(cutout: CGRect(x: screen.midX, y: screen.maxY - height, width: 0, height: height),
+                    wingWidth: min(110, screen.width / 2))
+    }
+
     func frame() -> CGRect {
         let height = cutout.height
         return CGRect(x: cutout.minX - wingWidth, y: cutout.maxY - height,
@@ -280,10 +292,9 @@ final class NotchIndicatorController {
     var screenFrame: CGRect? { isVisible ? panel?.frame : nil }
 
     static func geometry(for screen: NSScreen) -> NotchIndicatorGeometry? {
-        // These APIs predate Muesli's macOS 14.2 deployment target. Hardware
-        // capability is still checked for every display; Apple Silicon is not enough.
-        NotchIndicatorGeometry.resolve(screen: screen.frame, topInset: screen.safeAreaInsets.top,
-                                       left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
+        NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
+            topInset: screen.safeAreaInsets.top,
+            left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
     }
 
     @discardableResult
