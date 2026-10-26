@@ -760,6 +760,7 @@ struct ModelsView: View {
     }
 
     private func postProcModelCard(_ option: PostProcessorOption, forQuill: Bool = false) -> some View {
+        let isRetired = PostProcessorOption.retired.contains(option)
         let isDownloaded = downloadedPostProcModels.contains(option.id)
         let isActive = isDownloaded && (forQuill
             ? appState.config.quilBackend == TranscriptCleanupBackendOption.local.backend && appState.config.quilModel == option.id
@@ -773,7 +774,7 @@ struct ModelsView: View {
                 brandLogo(option.logoResourceName)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
-                        Text(option.label)
+                        Text(isRetired ? "Retired Cleanup Lite" : option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -782,7 +783,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text(forQuill ? "A local model for rewriting selected text and generating text at the cursor. Shares its download with cleanup." : option.description)
+                    Text(isRetired ? "This older model is no longer used. Remove it to free disk space." : forQuill ? "A local model for rewriting selected text and generating text at the cursor. Shares its download with cleanup." : option.description)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -830,7 +831,7 @@ struct ModelsView: View {
                     .background(MuesliTheme.surfacePrimary)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
-                    if !isActive {
+                    if !isActive && !isRetired {
                         Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
@@ -1648,7 +1649,6 @@ struct ModelsView: View {
                 downloadSnapshots[option.id] = snapshot
             }
         }
-        try Task.checkCancellation()
         // The coordinator verifies every managed file's size and SHA-256 on its
         // own actor before returning. Do not rehash multi-GB weights on the UI actor.
         // Legacy GGUF downloads additionally need this four-byte format check.
@@ -1660,6 +1660,7 @@ struct ModelsView: View {
             try? FileManager.default.removeItem(at: option.modelURL)
             throw error
         }
+        try Task.checkCancellation()
     }
 
     private func validateGGUFHeader(at url: URL) throws {
@@ -1727,17 +1728,13 @@ struct ModelsView: View {
 
     private func checkDownloadedPostProcModels() {
         downloadedPostProcModels = PostProcessorOption.downloadedIDs
+            .union(PostProcessorOption.retired.filter(\.isDownloaded).map(\.id))
         controller.refreshCleanupAvailability()
     }
 
-    /// The retired v2 cleanup model stays visible only for people who already
-    /// have it installed. Deleting it removes the card, and the model cannot
-    /// be downloaded again.
+    /// Cached retired artifacts remain visible solely for storage removal.
     private var displayedPostProcessorOptions: [PostProcessorOption] {
-        PostProcessorOption.all
-            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
-                ? [.legacyV2]
-                : [])
+        PostProcessorOption.all + PostProcessorOption.removableRetired(downloadedIDs: downloadedPostProcModels)
     }
 
     // MARK: - Actions

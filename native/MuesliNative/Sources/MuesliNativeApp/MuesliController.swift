@@ -10983,7 +10983,7 @@ public final class MuesliController: NSObject {
                 self.indicator.hideLoading()
                 return
             }
-            guard self.dictationBackendReadiness.allowsDictation else {
+            guard (forQuill && self.quillUsesDirectAudio) || self.dictationBackendReadiness.allowsDictation else {
                 if let message = self.dictationBackendReadiness.blockingMessage(backendLabel: self.selectedBackend.label) {
                     self.statusBarController?.setStatus(message)
                     switch self.dictationBackendReadiness {
