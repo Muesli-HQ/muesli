@@ -35,6 +35,17 @@ struct BufferedLiveTranscriptionPolicyTests {
         #expect(empty.text.isEmpty && empty.words.isEmpty)
     }
 
+    @Test("Whisper carries real segment boundaries without trusting padded trim hints")
+    func whisperPreviewSegmentBoundaries() throws {
+        let window = try WhisperKitTranscriber.previewWindow(text: "one two", words: [
+            .init(text: "one", start: 0.1, end: 0.5),
+            .init(text: " two", start: 0.6, end: 1)
+        ], sampleCount: 16_000, segmentEnds: [1, .nan, 30, -1, .infinity, 0.5])
+        #expect(window.segmentEnds == [0.5, 1])
+        #expect(window.text == "one two")
+        #expect(window.words.count == 2)
+    }
+
     @Test("Whisper missing words and text mismatch defer instead of inventing alignment")
     func whisperPreviewAlignmentDeferrals() {
         #expect(throws: BufferedTranscriptionPreviewDeferral.missingWordTimings) {

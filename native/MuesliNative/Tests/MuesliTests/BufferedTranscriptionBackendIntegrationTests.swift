@@ -263,21 +263,88 @@ struct BufferedTranscriptionBackendIntegrationTests {
             samples += try converter.resampleAudioFile(URL(fileURLWithPath: directory).appendingPathComponent(name))
             samples += Array(repeating: 0, count: 16_000)
         }
+        let repetitions = Int(ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_REPETITIONS"] ?? "1") ?? 1
+        try #require((1...5).contains(repetitions))
+        let source = samples
+        samples = (0..<repetitions).flatMap { _ in source }
+        let output = BufferedSmokeOutput()
         let transcriber = WhisperKitTranscriber()
         do {
             try await transcriber.loadModel(modelName: model)
-            let preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak", smoothWhisperPreviews: true) {
-                try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+            let preview: String
+            if ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SOAK_REALTIME"] == "1" {
+                preview = try await assertRealtimeWhisperPreview(samples: samples) {
+                    try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+                }
+            } else {
+                preview = try await assertProgressivePreview(samples: samples, label: "whisper-\(model)-soak",
+                    smoothWhisperPreviews: true, output: output, maximumUnchangedAudioSeconds: 12) {
+                    try await transcriber.transcribePreview(samples: $0, expectedModel: model)
+                }
             }
             let words = preview.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
             for phrase in ["before we go", "help them out", "cutting a release", "in that difference"] {
-                #expect(words.contains(phrase), "Every source recording must survive the rolling boundaries")
+                #expect(words.components(separatedBy: phrase).count - 1 == repetitions,
+                    "Each source phrase must occur once per repetition across rolling boundaries")
             }
             await transcriber.shutdown()
         } catch {
             await transcriber.shutdown()
             throw error
         }
+    }
+
+    /// Feed PCM at capture speed while inference runs independently, exercising
+    /// coalesced snapshots and stop during inference. This complements the
+    /// deterministic one-decode-per-step test rather than replacing its replay.
+    private func assertRealtimeWhisperPreview(
+        samples: [Float],
+        decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
+    ) async throws -> String {
+        let output = BufferedSmokeOutput()
+        let verbose = ProcessInfo.processInfo.environment["MUESLI_BUFFERED_SMOKE_VERBOSE"] == "1"
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview,
+            decode: { chunk in
+                let result = try await decode(chunk)
+                if verbose {
+                    print("[buffered-realtime-public] samples=\(chunk.count) words=\(result.words) segments=\(result.segmentEnds)")
+                }
+                return result
+            }, onUpdate: {
+                output.receive($0)
+                if verbose { print("[buffered-realtime-public] committed=\(String(reflecting: $0.committedText)) draft=\(String(reflecting: $0.tail))") }
+            }, onFailure: { output.fail($0) },
+            onDiagnostic: { print("[buffered-realtime] \($0)") })
+        defer { session.cancel() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        var previousText = ""
+        var lastChangeSample = 0
+        var longestGap = 0
+        for offset in stride(from: 0, to: samples.count, by: 1_600) {
+            let end = min(offset + 1_600, samples.count)
+            try await clock.sleep(until: start + .milliseconds(end / 16))
+            session.enqueue(Array(samples[offset..<end]))
+            try #require(output.failure == nil, "Real-time stream failed: \(output.failure ?? "")")
+            let text = output.lastText
+            if text != previousText {
+                previousText = text
+                lastChangeSample = end
+            }
+            longestGap = max(longestGap, end - lastChangeSample)
+        }
+        #expect(longestGap <= 12 * 16_000, "Public speech must keep updating before stop")
+        let finishStart = clock.now
+        let transcript = await BufferedDictationFinalization.transcript(from: session)
+        print("[buffered-realtime] finish=\(finishStart.duration(to: clock.now)) longest_unchanged_ms=\(longestGap / 16) decodes=\(session.diagnostics.decodeCount)")
+        try #require(output.failure == nil)
+        let final = try #require(transcript, "Healthy real-time stream must finish within the production deadline")
+        #expect(final == output.lastText)
+        #expect(session.diagnostics.receivedSamples == samples.count)
+        for pair in zip(output.updates, output.updates.dropFirst()) {
+            #expect(pair.1.committedText.utf16.starts(with: pair.0.committedText.utf16))
+        }
+        return final
     }
 
     /// Separate opt-in for neutral Tamil text synthesized locally with macOS
@@ -321,6 +388,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
         knownTinyTamilOwnershipInstability: Bool = false,
         smoothWhisperPreviews: Bool = false, output: BufferedSmokeOutput? = nil,
         windowConfiguration: BufferedTranscriptionSession.Configuration? = nil,
+        maximumUnchangedAudioSeconds: Int? = nil,
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
     ) async throws -> String {
         try #require(samples.count > 15 * 16_000, "The speech fixture must exceed one rolling window")
@@ -350,12 +418,24 @@ struct BufferedTranscriptionBackendIntegrationTests {
         var committedBeforeRollover = false
         var textAtEightSeconds = ""
         var textAtFourteenSeconds = ""
+        var lastVisibleText = ""
+        var lastVisibleChangeSample = 0
+        var longestUnchangedSamples = 0
         for end in stride(from: 32_000, through: samples.count, by: 16_000) {
             live.enqueue(Array(samples[previousEnd..<end]))
             previousEnd = end
             let update = try #require(await events.next(), "Preview failed: \(progressive.failure ?? "unknown")")
             #expect(update.committedText.utf16.starts(with: committed.utf16))
             committed = update.committedText
+            if update.text != lastVisibleText {
+                lastVisibleText = update.text
+                lastVisibleChangeSample = end
+            }
+            longestUnchangedSamples = max(longestUnchangedSamples, end - lastVisibleChangeSample)
+            if let maximumUnchangedAudioSeconds {
+                #expect(end - lastVisibleChangeSample <= maximumUnchangedAudioSeconds * 16_000,
+                    "Public speech fixture must keep changing the live preview before stop")
+            }
             if end == 8 * 16_000 { textAtEightSeconds = update.text }
             if end == 14 * 16_000 { textAtFourteenSeconds = update.text }
             if end < 240_000, !committed.isEmpty { committedBeforeRollover = true }
@@ -366,6 +446,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
             #expect(textAtFourteenSeconds != textAtEightSeconds, "Live output must keep advancing past the reported five-second freeze")
             #expect(progressive.lastText != textAtFourteenSeconds, "Live output must advance through the first window boundary before stop")
         }
+        print("[buffered-progress] model=\(label) longest_unchanged_audio_ms=\(longestUnchangedSamples / 16)")
         if previousEnd < samples.count { live.enqueue(Array(samples[previousEnd...])) }
         let finishStart = ProcessInfo.processInfo.systemUptime
         let completedTranscript = await live.finishTranscript()

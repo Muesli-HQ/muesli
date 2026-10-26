@@ -103,7 +103,9 @@ actor WhisperKitTranscriber {
         let words = results.flatMap(\.segments).flatMap { $0.words ?? [] }.map {
             BufferedTranscriptionWord(text: $0.word, start: Double($0.start), end: Double($0.end))
         }
-        return try Self.previewWindow(text: text, words: words, sampleCount: samples.count)
+        let segmentEnds = results.flatMap(\.segments).map { Double($0.end) }
+        return try Self.previewWindow(text: text, words: words, sampleCount: samples.count,
+                                      segmentEnds: segmentEnds)
     }
 
     static func makePreviewDecodeOptions(language: WhisperKitLanguage, modelName: String) -> DecodingOptions {
@@ -119,7 +121,7 @@ actor WhisperKitTranscriber {
     /// Never publish words aligned to Whisper's padded encoder input. A short
     /// undecodable window is temporary; the session can retry with more context.
     static func previewWindow(text: String, words: [BufferedTranscriptionWord],
-                              sampleCount: Int) throws -> BufferedTranscriptionWindow {
+                              sampleCount: Int, segmentEnds: [Double] = []) throws -> BufferedTranscriptionWindow {
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, words.isEmpty {
             throw BufferedTranscriptionPreviewDeferral.missingWordTimings
         }
@@ -134,7 +136,12 @@ actor WhisperKitTranscriber {
             previousStart = word.start
         }
         do {
-            return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+            // Segment ends are optional trim hints, never permission to discard
+            // unconfirmed speech. Ignore padded/invalid hints while preserving a
+            // valid word transcript; the session checks confirmation at the cut.
+            let realSegmentEnds = segmentEnds.filter { $0.isFinite && $0 > 0 && $0 <= duration }.sorted()
+            return try BufferedTranscriptionWindow.aligned(text: text, words: words,
+                                                           segmentEnds: realSegmentEnds)
         } catch {
             throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
         }

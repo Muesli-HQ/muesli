@@ -15,10 +15,252 @@ struct BufferedTranscriptionSessionTests {
         #expect(configuration.maximumRecoveryWindowSamples == 480_000)
         #expect(configuration.maximumBufferedSamples == 720_000)
         #expect(configuration.smoothWhisperPreviews)
+        #expect(configuration.usesWhisperLocalAgreement)
         let standard = BufferedTranscriptionSession.Configuration()
         #expect(standard.updateSamples == 16_000)
         #expect(standard.windowSamples == 240_000)
         #expect(!standard.smoothWhisperPreviews)
+        #expect(!standard.usesWhisperLocalAgreement)
+    }
+
+    @Test("Whisper text agreement survives timing drift, old lexical revisions and token splits", arguments: [false, true])
+    func whisperLexicalAgreement(changedEarlier: Bool) async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([
+            whisperWindow(["old", "phrase", "cannot", "go", "go", "draft"]),
+            whisperWindow(["old", "phrase", "cannot", "go", "go", "next"], shift: 0.6),
+            whisperWindow([changedEarlier ? "new" : "old", "phrase", "can", "not", "go", "go", "next", "later"], shift: 1.0)
+        ])
+        var config = BufferedTranscriptionSession.Configuration.whisperPreview
+        config.smoothWhisperPreviews = false
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        #expect(await updates.next()?.committedText == "")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "old phrase cannot")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "old phrase cannot go")
+        #expect(await session.finishTranscript() == "old phrase cannot go go next later")
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Whisper never deduplicates the first of multiple matching repeated seams")
+    func whisperAmbiguousRepeatedSeam() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([
+            whisperWindow(["old", "alpha", "go", "go", "held", "words", "draft"]),
+            whisperWindow(["old", "alpha", "go", "go", "held", "words", "next"]),
+            whisperWindow(["new", "alpha", "go", "go", "held", "words", "next", "alpha", "go", "go", "held", "words", "next"])
+        ])
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        for _ in 0..<2 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next()?.text == stable?.text)
+        }
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.failures == 1)
+        #expect(output.diagnostics.contains { $0.contains("local_agreement_deferred:ambiguous_anchor") && $0.contains("candidate_count=2") })
+    }
+
+    @Test("Whisper keeps two agreed edge words visible but revisable until more context arrives")
+    func whisperAgreementLookbackCorrectsDIF() async {
+        let output = BufferedPreviewOutput()
+        let prefix = ["I", "am", "cutting", "a", "release"]
+        let decoder = BufferedWindowSequence([
+            whisperWindow(prefix + ["DIF", "means", "draft"]),
+            whisperWindow(prefix + ["DIF", "means", "comparing"]),
+            whisperWindow(prefix + ["Diff", "means", "comparing", "what", "is"]),
+            whisperWindow(prefix + ["Diff", "means", "comparing", "what", "is", "changed"])
+        ])
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let edge = await updates.next()
+        #expect(edge?.committedText == "I am cutting a release")
+        #expect(edge?.text == "I am cutting a release DIF means comparing")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "I am cutting a release")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "I am cutting a release Diff means comparing")
+        #expect(await session.finishTranscript() == "I am cutting a release Diff means comparing what is changed")
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Whisper retains following seam evidence after failed observations")
+    func whisperFollowingContextSurvivesDeferral() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([
+            whisperWindow(["old", "alpha", "beta", "held", "words", "draft"]),
+            whisperWindow(["old", "alpha", "beta", "held", "words", "next"]),
+            whisperWindow(["new", "alpha", "beta", "wrong", "words", "next"]),
+            whisperWindow(["new", "alpha", "beta", "wrong", "words", "next"]),
+            whisperWindow(["new", "alpha", "beta", "held", "words", "next", "later"])
+        ])
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        for _ in 0..<2 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next()?.text == stable?.text)
+        }
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        #expect(await session.finishTranscript() == "old alpha beta held words next later")
+        #expect(output.failures == 0)
+    }
+
+    @Test("Whisper does not force commitment or trim an unconfirmed full window")
+    func whisperNoAgreementIsBounded() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { samples in
+            let word = "hypothesis\(samples.count)"
+            return .init(text: word, words: [.init(text: word, start: 0.1, end: 0.8)], segmentEnds: [1])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 15 * 16_000))
+        #expect(await updates.next()?.committedText == "")
+        #expect(session.diagnostics.decodeCount == 1)
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "")
+        #expect(session.diagnostics.decodeCount == 2)
+        session.enqueue(Array(repeating: 0.2, count: 14 * 16_000))
+        #expect(await updates.next() == nil)
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.values.allSatisfy { $0.committedText.isEmpty })
+        #expect(output.failures == 1)
+    }
+
+    @Test("Whisper repeated clauses survive more than a minute of segment or word-gap rolls", arguments: [false, true])
+    func whisperLongRepeatedClauses(segmentMetadata: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { samples in
+            let base = Double(samples[0]) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let vocabulary = ["go", "go", "again", "please", "now"]
+            let words: [BufferedTranscriptionWord] = (0..<75).compactMap { index in
+                let start = Double(index) + 0.2
+                let stop = Double(index) + 0.7
+                guard start >= base, stop <= end else { return nil }
+                return .init(text: vocabulary[index % vocabulary.count], start: start - base, end: stop - base)
+            }
+            let ends = segmentMetadata ? (1...15).map { Double($0 * 5) - 0.3 - base }.filter { $0 > 0 && $0 < end - base } : []
+            return try .aligned(text: words.map(\.text).joined(separator: " "), words: words, segmentEnds: ends)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        var previousEnd = 0
+        for second in 2...75 {
+            session.enqueue((previousEnd..<(second * 16_000)).map(Float.init))
+            previousEnd = second * 16_000
+            _ = await updates.next()
+            if output.failures > 0 { break }
+        }
+        let expected = (0..<75).map { ["go", "go", "again", "please", "now"][$0 % 5] }.joined(separator: " ")
+        #expect(await session.finishTranscript() == expected)
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.filter { $0.hasPrefix("local_agreement_trim:") }.count >= 4)
+        #expect(output.diagnostics.contains { $0.contains("segment=\(segmentMetadata)") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    private func whisperWindow(_ text: [String], shift: Double = 0) -> BufferedTranscriptionWindow {
+        .init(text: text.joined(separator: " "), words: text.enumerated().map {
+            .init(text: $0.element, start: 0.1 + Double($0.offset) * 0.15 + shift,
+                  end: 0.2 + Double($0.offset) * 0.15 + shift)
+        })
+    }
+
+    @Test("healthy Whisper window awaiting a trim still finalizes without new audio")
+    func whisperUntrimmedFinal() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { _ in
+            .init(text: "complete tail", words: [.init(text: "complete", start: 0.1, end: 0.4),
+                                                .init(text: " tail", start: 0.5, end: 0.8)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 15 * 16_000))
+        #expect(await updates.next()?.committedText == "")
+        #expect(await session.finishTranscript() == "complete tail")
+        #expect(session.diagnostics.decodeCount == 2)
+        #expect(output.failures == 0)
+    }
+
+    @Test("Whisper cannot trim across an earlier owned word with an extended end")
+    func whisperTrimChecksEveryRemovedWordEnd() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { _ in
+            let words = (0..<18).map { index in
+                BufferedTranscriptionWord(text: "word\(index)", start: Double(index) * 0.7,
+                    end: index == 0 ? 14 : Double(index) * 0.7 + 0.4)
+            }
+            return try .aligned(text: words.map(\.text).joined(separator: " "), words: words, segmentEnds: [5, 10])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 15 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText.isEmpty == false)
+        #expect(!output.diagnostics.contains { $0.hasPrefix("local_agreement_trim:") })
+        #expect(await session.finishTranscript() == (0..<18).map { "word\($0)" }.joined(separator: " "))
+        #expect(output.failures == 0)
+    }
+
+    @Test("empty normalized punctuation never owns an arbitrary lexical word")
+    func whisperPunctuationOnlyOwnership() async {
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([whisperWindow(["…", "!", "?"]), whisperWindow(["…", "!", "?"]), whisperWindow(["new"])])
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        #expect(stable?.committedText == "…")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.text == stable?.text)
+        #expect(await session.finishTranscript() == nil)
+    }
+
+    @Test("cancellation from a Whisper seam diagnostic cannot publish or trim after close")
+    func whisperSeamDiagnosticCancellation() async {
+        let output = BufferedPreviewOutput()
+        let cancellation = BufferedReentrantCancellation()
+        let decoder = BufferedWindowSequence([
+            whisperWindow(["old", "alpha", "beta", "held", "words", "draft"]),
+            whisperWindow(["old", "alpha", "beta", "held", "words", "next"]),
+            whisperWindow(["new", "alpha", "beta", "held", "words", "next"])
+        ])
+        let session = BufferedTranscriptionSession(configuration: .whisperPreview, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: {
+                if $0.hasPrefix("local_agreement_seam_rebased:") { cancellation.cancel() }
+            })
+        cancellation.set(session)
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        // Final decode deliberately changes older committed context.
+        #expect(await session.finishTranscript() == nil)
+        #expect(output.values.count == 2)
+        #expect(output.failures == 0)
     }
 
     @Test("finish flushes short audio and preserves revisable punctuation")
