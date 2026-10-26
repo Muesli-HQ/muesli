@@ -329,7 +329,7 @@ struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
         abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self, ClipboardSnapshotCommand.self]
     )
 
     static func exit(withError error: Error? = nil) -> Never {

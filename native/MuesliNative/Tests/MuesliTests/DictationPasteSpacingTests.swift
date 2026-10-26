@@ -42,6 +42,7 @@ struct DictationPasteSpacingTests {
                 text: text,
                 appendDictationSentenceSpace: dictation,
                 pasteboard: pasteboard,
+                snapshotWorker: makeTestClipboardSnapshotWorker(),
                 requireStagedClipboardOwnership: true,
                 targetApplicationProvider: { nil },
                 simulatePasteAction: { _ in

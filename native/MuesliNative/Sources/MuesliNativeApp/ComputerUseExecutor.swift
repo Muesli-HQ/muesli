@@ -520,7 +520,7 @@ enum ComputerUseToolExecutor {
             }
         }
 
-        guard focusedEditableTextTarget(requiredApp: app) != nil else {
+        guard let focusedTarget = focusedEditableTextTarget(requiredApp: app) else {
             let target = textEntryTargetDescription(app: app, toolCall: toolCall)
             return .failed("No focused editable text target\(target). Click an editable note body, title, text field, or text area before using \(mode.toolName).")
         }
@@ -536,7 +536,19 @@ enum ComputerUseToolExecutor {
                 return .failed(error.localizedDescription)
             }
         case .paste:
-            return await pasteText(toolCall.text ?? "", shortcut: pasteShortcut)
+            guard let targetProcessID = processID(of: focusedTarget) else {
+                return .failed("Could not verify the focused text target. Focus the intended editable field and try again.")
+            }
+            return await pasteText(
+                toolCall.text ?? "", shortcut: pasteShortcut,
+                isTargetStillFocused: {
+                    // Keep the validated field identity across the asynchronous
+                    // clipboard snapshot, including when no app was requested.
+                    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetProcessID,
+                          let currentTarget = focusedEditableTextTarget(requiredApp: app) else { return false }
+                    return CFEqual(focusedTarget, currentTarget)
+                }
+            )
         }
         return .executed(mode.completedMessage)
     }
@@ -547,29 +559,49 @@ enum ComputerUseToolExecutor {
         _ text: String,
         shortcut: PasteShortcut,
         pasteboard: NSPasteboard = .general,
+        snapshotWorker: PasteController.ClipboardSnapshotWorker? = nil,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
+        isTargetStillFocused: @escaping @MainActor () -> Bool,
         simulatePasteAction: (@MainActor (PasteShortcut) -> Bool)? = nil
     ) async -> ComputerUseExecutionResult {
         guard !Task.isCancelled else { return .cancelled() }
         // PasteController intentionally does not invoke callbacks for empty input.
         guard !text.isEmpty else { return .failed("No text to paste.") }
 
-        let didDispatch: Bool = await withCheckedContinuation { continuation in
-            var dispatched = false
-            PasteController.paste(
-                text: text,
-                pasteboard: pasteboard,
-                shortcut: shortcut,
-                targetApplicationProvider: targetApplicationProvider,
-                simulatePasteAction: simulatePasteAction,
-                onPasteDispatched: { dispatched = true },
-                onPasteFinished: { _ in continuation.resume(returning: dispatched) }
-            )
+        let cancellation = PasteCancellationState()
+        var targetChanged = false
+        let didDispatch: Bool = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                var dispatched = false
+                PasteController.paste(
+                    text: text,
+                    pasteboard: pasteboard,
+                    shortcut: shortcut,
+                    snapshotWorker: snapshotWorker,
+                    targetApplicationProvider: targetApplicationProvider,
+                    shouldDispatchPaste: {
+                        guard !cancellation.isCancelled else { return false }
+                        guard isTargetStillFocused() else {
+                            targetChanged = true
+                            return false
+                        }
+                        return true
+                    },
+                    simulatePasteAction: simulatePasteAction,
+                    onPasteDispatched: { dispatched = true },
+                    onPasteFinished: { _ in continuation.resume(returning: dispatched) }
+                )
+            }
+        } onCancel: {
+            cancellation.cancel()
         }
         guard !Task.isCancelled else { return .cancelled() }
         guard didDispatch else {
+            if targetChanged {
+                return .failed("Paste target changed before dispatch. Focus the intended editable field and try again.")
+            }
             return .failed("Paste shortcut could not be dispatched. Check the keyboard layout or configured paste shortcut.")
         }
 
@@ -1249,5 +1281,24 @@ enum ComputerUseExecutor {
 
     static func keyCode(for key: String) -> CGKeyCode? {
         ComputerUseToolExecutor.keyCode(for: key)
+    }
+}
+
+/// Cancellation handlers can run off MainActor while the snapshot or dispatch
+/// timer is pending. A locked flag makes cancellation visible before any write.
+private final class PasteCancellationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
