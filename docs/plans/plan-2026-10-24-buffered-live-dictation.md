@@ -4,6 +4,54 @@ Implementation branch: `codex/buffered-live-dictation`, worktree `c519/muesli`.
 Baseline: `ecdb38648aea4a4d9c44fdb33c3d12de0b11208e`.
 Tracking request: https://github.com/Muesli-HQ/muesli/issues/564.
 
+## Current implementation (2026-10-27)
+
+This section describes the shipped dev-lane B implementation and supersedes the
+initial plan and chronological implementation notes below.
+
+- The off-by-default “Watch text appear during hands-free mode” toggle supports
+  local Parakeet v2, v3, Redux, Unified, and catalog WhisperKit models.
+- Only committed word groups are inserted at the cursor. Revisable hypotheses
+  remain internal; there is no editable draft repeatedly replaced in the field.
+  Hands-free pauses do not finalize a sentence. The hotkey ends the session.
+- The shared engine uses bounded rolling audio, timed word ownership and agreement,
+  serial inference, and coalesced delivery. Its 45-second pending-audio cap is not
+  a limit on recording duration. Whisper preview alignment excludes padded audio.
+- Cursor updates require ownership of the original focused element, text span,
+  and selection. Temporary Accessibility read failures pause delivery; genuine
+  focus changes, edits, and cursor movement revoke it. Codex uses acknowledged,
+  bounded plain-text pastes, including verified empty-placeholder handling.
+- Stopping drains the unfinished tail and reuses the streamed transcript. Live
+  dictation does not automatically retranscribe the whole recording. Confidence,
+  agreement, and spelling-revision evidence are retained for diagnostics rather
+  than triggering a full-recording retry. A bounded finalization deadline and
+  retained audio/partial-text recovery handle incomplete coverage or decoder failure.
+- Optional cleanup and dictionary processing still run after recognition. Final
+  insertion uses one guarded replacement of the changed text; losing ownership
+  preserves the result in history instead of risking an unrelated field.
+- Recognized decorated non-speech cues such as `*crickets*`, `[cheers]`, and
+  `(laughter)` are filtered from live and final output across both model families.
+  Ordinary spoken uses of these words remain. Incomplete cue markers are withheld
+  until resolved so they cannot leak into committed cursor text.
+- Meeting previews reuse the engine with independent microphone/system sessions.
+  Existing VAD-segment final transcripts remain authoritative for saved meetings;
+  provisional captions do not become durable segments or speaker attribution.
+
+Validation: 218 targeted tests passed after the cue-filter change; 297 broader
+regression tests and actual Parakeet v3/Whisper Turbo fixture runs passed on the
+preceding tail-finalization change. Synthetic coverage includes five-minute rolling
+sessions. The signed dev B app was installed and its LocalVQE runtime verified.
+A user-driven approximately 192-second Whisper Turbo session in Codex completed
+about 3.0 seconds after stopping, with no whole-recording retranscription (cleanup
+disabled). This is one observed run, not a latency guarantee. Whisper Tiny Tamil
+streaming remains unreliable and needs further model/alignment investigation.
+
+## Initial plan and implementation history
+
+The following records earlier decisions and experiments. Statements about a visible
+editable draft, mandatory full-WAV final recognition, or transport restrictions
+are historical where they differ from the current contract above.
+
 ## Product contract
 
 Opt-in hands-free local dictation for Parakeet v2, v3, Redux, Unified and the catalog's WhisperKit
