@@ -107,6 +107,68 @@ struct NotchIndicatorTests {
         #expect(!notch.isVisible)
     }
 
+    @Test("Progress reuses config and follows settings changes while idle UI is hidden")
+    @MainActor
+    func progressConfigurationCache() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        config.showFloatingIndicator = false
+        var loads = 0
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch,
+            loadFeedbackConfiguration: { loads += 1; return config })
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.showLoading("Preparing")
+        for _ in 0..<10 { indicator.showLoading("Preparing") }
+        indicator.showLoading("Downloading 50%")
+        #expect(loads == 1)
+        #expect(notch.isVisible)
+        config.indicatorAnchor = .bottomCenter
+        // This is the settings refresh entry point even when showFloatingIndicator is off.
+        indicator.refreshMeetingTranscriptPreference(config: config)
+        indicator.showLoading("Downloading 50%")
+        #expect(!notch.isVisible)
+        for _ in 0..<10 { indicator.showLoading("Downloading 50%") }
+        #expect(loads == 1)
+        config.indicatorAnchor = .notch
+        indicator.refreshMeetingTranscriptPreference(config: config)
+        indicator.showLoading("Downloading 50%")
+        #expect(notch.isVisible)
+        #expect(loads == 1)
+    }
+
+    @Test("Notices release loading ownership before external-display fallback", arguments: [true, false])
+    @MainActor
+    func noticeReleasesLoading(success: Bool) throws {
+        _ = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        #expect(indicator.isShowingLoading)
+        if success { indicator.showSuccess("Done") } else { indicator.showWarning("Failed") }
+        #expect(!indicator.isShowingLoading)
+        supported = false
+        #expect(indicator.refreshNotchFeedbackPlacement())
+        let frame = indicator.currentFrame
+        indicator.hideLoading()
+        #expect(!indicator.isShowingLoading)
+        #expect(indicator.currentFrame == frame)
+        #expect(!notch.isVisible)
+    }
+
     @Test("Late loading completion cannot hide a success notice")
     @MainActor
     func loadingCompletionPreservesNotice() throws {
