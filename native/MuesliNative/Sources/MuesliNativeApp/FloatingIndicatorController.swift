@@ -201,6 +201,7 @@ final class FloatingIndicatorController: NSObject {
     private var state: DictationState = .idle
     private var isHovered = false
     private var lastLoadedConfig: AppConfig?
+    private let loadFeedbackConfiguration: () -> AppConfig
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
@@ -253,10 +254,11 @@ final class FloatingIndicatorController: NSObject {
     private var instructionTranscriptText: String?
     private var instructionTranscriptShowsProgress = false
     private var loadingSpinner: NSProgressIndicator?
-    private var isShowingLoading = false
+    private(set) var isShowingLoading = false
     private var deferredLoadingMessage: String?
     private var isComputerUseCursorMode = false
     private var computerUseCursorReturnFrame: NSRect?
+    private var computerUseCursorPoint = CGPoint.zero
 
     private enum WaveformAnimationMode {
         case level
@@ -264,9 +266,11 @@ final class FloatingIndicatorController: NSObject {
     }
 
     init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
-         notchIndicator injectedNotch: NotchIndicatorController? = nil) {
+         notchIndicator injectedNotch: NotchIndicatorController? = nil,
+         loadFeedbackConfiguration: (() -> AppConfig)? = nil) {
         self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
+        self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.load() }
         self.pointerLocation = pointerLocation
         super.init()
         notchIndicator.onOpenMeetingNotes = { [weak self] in self?.onOpenMeetingNotes?() }
@@ -284,12 +288,30 @@ final class FloatingIndicatorController: NSObject {
     }
 
     @objc private func displayConfigurationChanged() {
-        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch,
-              !isShowingLoading, !isComputerUseCursorMode else { return }
-        // A terminal result belongs to presentation, not the now-idle recorder.
+        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch else { return }
+        // Status messages and terminal results belong to presentation, not the idle recorder.
         // Moving it must not replay idle or restart its dismissal deadline.
-        if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return }
+        if refreshNotchFeedbackPlacement() { return }
+        guard !isShowingLoading, !isComputerUseCursorMode else { return }
         setState(state, config: config)
+    }
+
+    /// Transfer ordinary statuses to the pill when the target display loses its notch.
+    @discardableResult
+    func refreshNotchFeedbackPlacement() -> Bool {
+        if notchIndicator.refreshOutcomePlacement(on: NSScreen.main) { return true }
+        guard let kind = notchIndicator.status, let message = notchIndicator.statusMessage else { return false }
+        let duration = notchIndicator.statusDismissAt.map { max(0, $0.timeIntervalSinceNow) }
+        notchIndicator.hide()
+        switch kind {
+        case .loading:
+            isShowingLoading = false
+            showLoading(message)
+        case .cursor: showComputerUseCursor(at: computerUseCursorPoint, label: message)
+        case .warning: showWarning(message, duration: duration ?? 0)
+        case .success: showSuccess(message, duration: duration ?? 0)
+        }
+        return true
     }
 
     var onStopToggleDictation: (() -> Void)?
@@ -304,8 +326,10 @@ final class FloatingIndicatorController: NSObject {
         notchIndicator.onReview = { [weak self] in self?.onReviewComputerUse?() }
         let icon = mode == .quill ? QuillIcon.image() :
             NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "Computer use") ?? NSImage()
-        return notchIndicator.showOutcome(on: screen, outcome: outcome, instruction: instruction,
-                                          message: message, icon: icon)
+        let shown = notchIndicator.showOutcome(on: screen, outcome: outcome, instruction: instruction,
+                                               message: message, icon: icon)
+        if shown { prepareForNotchPresentation() }
+        return shown
     }
 
     private(set) var isComputerUseCancellationAvailable = false
@@ -528,6 +552,8 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func refreshMeetingTranscriptPreference(config: AppConfig) {
+        // Called for settings changes even when the idle floating indicator is hidden.
+        lastLoadedConfig = config
         notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
         guard config.showMeetingTranscriptOnIndicatorHover else {
             hideMeetingTranscript()
@@ -960,9 +986,11 @@ final class FloatingIndicatorController: NSObject {
         // and Stop control for the entire run. A simultaneous cursor bubble
         // requires a separate panel; switching this one would hide Stop.
         guard state == .idle, !isComputerUseCancellationAvailable else { return }
+        computerUseCursorPoint = quartzPoint
+        if showNotchStatus(.cursor, message: rawLabel ?? "Computer use") { return }
         notchIndicator.hide()
         hideShortcutPillChrome()
-        let config = configStore.load()
+        let config = feedbackConfiguration()
         if panel == nil {
             createPanel(config: config)
         }
@@ -1034,6 +1062,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func hideComputerUseCursor() {
+        if notchIndicator.status == .cursor { notchIndicator.hide() }
         exitComputerUseCursorMode(restoreFrame: true)
     }
 
@@ -1044,8 +1073,10 @@ final class FloatingIndicatorController: NSObject {
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
         let config = configStore.load()
+        lastLoadedConfig = config
         micIconView?.image = Self.idleIndicatorIcon(config: config)
         if config.indicatorAnchor == .notch, !isShowingLoading, !isComputerUseCursorMode {
+            if refreshNotchFeedbackPlacement() { return }
             setState(state, config: config)
         }
     }
@@ -1064,22 +1095,39 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showSuccess(_ message: String, duration: TimeInterval = 3.0) {
-        let config = lastLoadedConfig ?? configStore.load()
-        if state == .idle, config.indicatorAnchor == .notch,
-           let screen = NSScreen.main, NotchIndicatorController.geometry(for: screen) != nil {
-            notchIndicator.showCompletion()
-            return
-        }
         showNotice(message, icon: "✓", duration: duration, background: NSColor.colorWith(hex: 0x34C759, alpha: 0.92))
+    }
+
+    private func feedbackConfiguration() -> AppConfig {
+        if let config = lastLoadedConfig { return config }
+        let config = loadFeedbackConfiguration()
+        lastLoadedConfig = config
+        return config
+    }
+
+    @discardableResult
+    private func showNotchStatus(_ kind: NotchStatus, message: String, duration: TimeInterval? = nil) -> Bool {
+        let config = feedbackConfiguration()
+        guard config.indicatorAnchor == .notch, let screen = NSScreen.main,
+              notchIndicator.showStatus(on: screen, kind: kind, message: message, duration: duration) else { return false }
+        lastLoadedConfig = config
+        prepareForNotchPresentation()
+        return true
     }
 
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
         hideShortcutPillChrome()
         guard state == .idle else { return }
+        // A notice takes ownership from loading before either presentation is chosen.
+        isShowingLoading = false
+        deferredLoadingMessage = nil
+        loadingSpinner?.stopAnimation(nil)
+        loadingSpinner?.isHidden = true
+        if showNotchStatus(icon == "✓" ? .success : .warning, message: message, duration: duration) { return }
         hoverExitWorkItem?.cancel()
         isHovered = false
         notchIndicator.hide()
-        let config = configStore.load()
+        let config = feedbackConfiguration()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
@@ -1158,11 +1206,15 @@ final class FloatingIndicatorController: NSObject {
             deferredLoadingMessage = message
             return
         }
+        if showNotchStatus(.loading, message: message) {
+            isShowingLoading = true
+            return
+        }
         // Repeated progress callbacks must not animate or reposition the panel.
-        if isShowingLoading, textLabel?.stringValue == message { return }
+        if isShowingLoading, panel?.isVisible == true, textLabel?.stringValue == message { return }
         notchIndicator.hide()
         hideShortcutPillChrome()
-        let config = configStore.load()
+        let config = feedbackConfiguration()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
@@ -1274,7 +1326,7 @@ final class FloatingIndicatorController: NSObject {
         loadingSpinner?.stopAnimation(nil)
         loadingSpinner?.isHidden = true
         // Loading does not own an activity that started during warmup.
-        if state == .idle {
+        if state == .idle, notchIndicator.status == nil || notchIndicator.status == .loading {
             setState(.idle, config: configStore.load())
         }
     }

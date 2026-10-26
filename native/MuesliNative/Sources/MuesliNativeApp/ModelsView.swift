@@ -1387,7 +1387,7 @@ struct ModelsView: View {
                             ForEach(BackendOption.bodhanFamily.filter {
                                 BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
                             }, id: \.model) { variant in
-                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                Text(BodhanModel(rawValue: variant.model)?.tierName ?? "Pro")
                                     .tag(variant.model)
                             }
                         }

@@ -466,7 +466,7 @@ struct ComputerUseSettingsTests {
         for setting in settings {
             #expect(Set(setting.choices.map(\.id)).count == setting.choices.count)
         }
-        #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex FP16" } })
+        #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex Pro" } })
         #expect(!settings.contains { $0.id.localizedCaseInsensitiveContains("api_key") })
         #expect(settings.first { $0.id == "cleanup_preset" }?.voiceRestriction != nil)
         #expect(settings.first { $0.id == "quill_source" }?.followUpSelections[QuilModelSourceOption.localModels.id] == "quill_local_model")
