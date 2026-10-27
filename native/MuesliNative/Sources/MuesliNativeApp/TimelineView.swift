@@ -214,6 +214,12 @@ struct TimelineView: View {
             TimelineMeetingRow(record: record) {
                 controller.showTimelineMeetingDocument(id: record.id)
             }
+        case .cotypist(let record):
+            TimelineCotypistRow(
+                record: record,
+                onCopy: { controller.copyToClipboard(record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")) },
+                onDelete: { controller.deleteCotypistSession(id: record.id) }
+            )
         }
     }
 
@@ -330,4 +336,113 @@ private struct TimelineMeetingRow: View {
         return "\(rounded)s"
     }
 
+}
+
+/// A run of Cotypist typeahead in one app, styled like a dictation row: each accepted suggestion
+/// in the sentence it completed, with the app's icon on the right.
+private struct TimelineCotypistRow: View {
+    let record: CotypistSessionRecord
+    let onCopy: () -> Void
+    let onDelete: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
+            Text(TimelineView.formatTime(record.timestamp))
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: 80, alignment: .leading)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
+                    badge
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        ForEach(Array(shown.enumerated()), id: \.offset) { _, acceptance in
+                            sentence(acceptance)
+                        }
+                        if hidden > 0 {
+                            Text("+\(hidden) more")
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text(summary)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !record.targetAppName.isEmpty {
+                TargetApplicationIconView(appName: record.targetAppName, bundleIdentifier: record.targetAppBundleID)
+            }
+
+            HStack(spacing: 8) {
+                Button(action: onCopy) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy accepted text")
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("Remove from timeline")
+            }
+            .opacity(isHovered ? 1 : 0)
+        }
+        .padding(.horizontal, MuesliTheme.spacing20)
+        .padding(.vertical, MuesliTheme.spacing16)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private static let maxShown = 3
+
+    private var shown: ArraySlice<CotypistAcceptance> { record.acceptances.prefix(Self.maxShown) }
+    private var hidden: Int { max(record.acceptances.count - Self.maxShown, 0) }
+
+    private var badge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "text.cursor")
+                .font(.system(size: 9, weight: .bold))
+            Text("COTYPIST")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+        }
+        .foregroundStyle(MuesliTheme.accent)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(MuesliTheme.accentSubtle)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    /// What the user had written, dimmed, then the accepted suggestion in full colour.
+    private func sentence(_ acceptance: CotypistAcceptance) -> some View {
+        (Text(acceptance.contextBefore).foregroundStyle(MuesliTheme.textTertiary)
+            + Text(acceptance.text).foregroundStyle(MuesliTheme.textPrimary).fontWeight(.semibold))
+            .font(MuesliTheme.reading())
+            .lineLimit(2)
+            .lineSpacing(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var summary: String {
+        let words = record.wordsAccepted == 1 ? "1 word" : "\(record.wordsAccepted) words"
+        return "\(words) accepted from \(record.suggestionsAccepted) of \(record.suggestionsShown) suggestions"
+    }
 }

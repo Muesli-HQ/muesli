@@ -2,7 +2,8 @@
 //
 // Every key passes through to the app untouched. After a word boundary (space, punctuation) or a
 // pause inside a word, the helper asks Muesli for a suggestion over a Unix socket and shows it as
-// marked text after the caret ("ghost"). Tab inserts it; any other key clears it and passes through.
+// marked text after the caret ("ghost"). Tab inserts it, Option-Right inserts its next word; any
+// other key clears it and passes through.
 // Muesli gathers context, runs the model and journals outcomes; this process needs no permissions,
 // and it never waits on Muesli while handling a key — a slow or absent Muesli means no ghost, never
 // a stalled keyboard.
@@ -21,7 +22,9 @@ extern NSString *NSTextInputChromaticMarkedTextAttributeName;
 @end
 
 static const NSTimeInterval kBoundaryDelay = 0.06;
-static const NSTimeInterval kMidWordDelay = 0.5;
+// The pause before completing a half-typed word; 0 turns that off. Muesli sends the user's setting
+// with every reply.
+static NSTimeInterval sMidWordDelay = 0.5;
 static const NSUInteger kContextChars = 1500;
 
 // Diagnostics for the experiment: request outcomes and timings only, never typed text.
@@ -101,7 +104,8 @@ static void TellMuesli(NSDictionary *message) {
     BOOL _afterSpace;
     BOOL _midWord;
     CFAbsoluteTime _triggeredAt;
-    NSMutableDictionary *_shown;  // journal record for the suggestion on screen
+    NSMutableDictionary *_shown;  // outcome record for the suggestion on screen
+    NSMutableString *_acceptedSoFar;  // words of it taken one at a time
     // What the user typed into the current field — context for clients that hand input methods no
     // text (cmux/Ghostty) when Muesli can't read the screen either.
     NSMutableString *_typed;
@@ -125,22 +129,20 @@ static void TellMuesli(NSDictionary *message) {
     BOOL plainTab = event.keyCode == 48 && (mods & (NSEventModifierFlagShift | NSEventModifierFlagCommand |
                                                     NSEventModifierFlagControl | NSEventModifierFlagOption)) == 0;
     if (_ghost && plainTab) {
-        NSString *accepted = _ghost;
-        [_debounce invalidate];
-        _ghost = nil;
-        // Clear the composition now and insert once this key event has finished: inserting during
-        // the keyDown lets clients like Ghostty fold the text into the consumed Tab.
-        [sender setMarkedText:@"" selectionRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
-        id client = sender;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [client insertText:accepted replacementRange:NSMakeRange(NSNotFound, 0)];
-        });
-        [_typed appendString:accepted];
-        [self finishShown:@"accepted"];
+        [self accept:_ghost rest:nil client:sender];
         return YES;  // consumed: the app never sees this Tab
     }
+    BOOL optionRight = event.keyCode == 124 && (mods & (NSEventModifierFlagShift | NSEventModifierFlagCommand |
+                                                        NSEventModifierFlagControl | NSEventModifierFlagOption)) == NSEventModifierFlagOption;
+    if (_ghost && optionRight) {
+        NSUInteger length = NextWordLength(_ghost);
+        NSString *rest = [_ghost substringFromIndex:length];
+        BOOL more = [rest stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet].length > 0;
+        [self accept:[_ghost substringToIndex:length] rest:more ? rest : nil client:sender];
+        return YES;
+    }
 
-    if (_ghost) [self finishShown:@"ignored"];
+    if (_shown) [self finishShown:@"ignored"];
     [self clearGhost:sender];
     [self trackKey:event];
 
@@ -162,9 +164,9 @@ static void TellMuesli(NSDictionary *message) {
     if ([boundary characterIsMember:typed]) {
         _midWord = NO;
         delay = kBoundaryDelay;
-    } else if ([wordCharacters characterIsMember:typed]) {
+    } else if ([wordCharacters characterIsMember:typed] && sMidWordDelay > 0) {
         _midWord = YES;
-        delay = kMidWordDelay;
+        delay = sMidWordDelay;
     } else {
         return NO;
     }
@@ -176,6 +178,33 @@ static void TellMuesli(NSDictionary *message) {
         [weakSelf requestSuggestion];
     }];
     return NO;
+}
+
+// Leading spaces, then up to the next space: " of" from " of a word.", "dle" from "dle of".
+static NSUInteger NextWordLength(NSString *text) {
+    NSUInteger index = 0;
+    while (index < text.length && [text characterAtIndex:index] == ' ') index++;
+    while (index < text.length && [text characterAtIndex:index] != ' ') index++;
+    return index;
+}
+
+// Inserts `text` from the ghost; `rest`, when given, stays on screen as the remaining suggestion.
+- (void)accept:(NSString *)text rest:(NSString *)rest client:(id)sender {
+    [_debounce invalidate];
+    _ghost = nil;
+    if (!_acceptedSoFar) _acceptedSoFar = [NSMutableString string];
+    [_acceptedSoFar appendString:text];
+    [_typed appendString:text];
+    // Clear the composition now and insert once this key event has finished: inserting during
+    // the keyDown lets clients like Ghostty fold the text into the consumed key.
+    [sender setMarkedText:@"" selectionRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    id client = sender;
+    NSUInteger generation = _generation;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [client insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
+        if (rest && generation == self->_generation) [self showGhost:rest client:client];
+    });
+    if (!rest) [self finishShown:@"accepted"];
 }
 
 - (void)trackKey:(NSEvent *)event {
@@ -225,6 +254,7 @@ static void TellMuesli(NSDictionary *message) {
     NSMutableDictionary *first = [base mutableCopy];
     first[@"firstWordOnly"] = @YES;
     AskMuesli(first, ^(NSDictionary *one) {
+        [CotypistController applySettings:one];
         HelperLog(@"stage1 %@ text=%lu rejection=%@ source=%@ model=%@ms", generation == self->_generation ? @"current" : @"stale",
                   (unsigned long)[one[@"text"] length], one[@"rejection"], one[@"source"], one[@"modelMs"]);
         if (generation != self->_generation) return;
@@ -237,6 +267,7 @@ static void TellMuesli(NSDictionary *message) {
         } else if (![one[@"rejection"] isEqual:@"first word not complete yet"]) {
             return;  // the gate said no (or Muesli isn't there): don't spend a second request
         }
+        if ([one[@"complete"] boolValue]) return;  // one-word suggestions: nothing more to fetch
         // Stage 2: the full suggestion, extending the ghost in place if nothing changed meanwhile.
         NSMutableDictionary *full = [base mutableCopy];
         full[@"firstWordOnly"] = @NO;
@@ -257,11 +288,20 @@ static void TellMuesli(NSDictionary *message) {
     });
 }
 
++ (void)applySettings:(NSDictionary *)reply {
+    NSNumber *delay = reply[@"midWordDelay"];
+    if ([delay isKindOfClass:[NSNumber class]]) sMidWordDelay = delay.doubleValue;
+}
+
+// `accepted` covers all of it; otherwise words taken one at a time make it "partial".
 - (void)finishShown:(NSString *)outcome {
+    NSString *accepted = [_acceptedSoFar copy] ?: @"";
+    _acceptedSoFar = nil;
     if (!_shown) return;
     NSMutableDictionary *record = _shown;
     record[@"type"] = @"outcome";
-    record[@"outcome"] = outcome;
+    record[@"outcome"] = accepted.length && ![outcome isEqual:@"accepted"] ? @"partial" : outcome;
+    record[@"accepted"] = accepted;
     TellMuesli(record);
     _shown = nil;
 }
@@ -303,13 +343,13 @@ static void TellMuesli(NSDictionary *message) {
 - (void)commitComposition:(id)sender {
     _generation++;
     [_typed setString:@""];
-    if (_ghost) [self finishShown:@"dismissed"];
+    if (_shown) [self finishShown:@"dismissed"];
     [self clearGhost:sender];
 }
 
 - (void)deactivateServer:(id)sender {
     _generation++;
-    if (_ghost) [self finishShown:@"dismissed"];
+    if (_shown) [self finishShown:@"dismissed"];
     [self clearGhost:sender];
     [super deactivateServer:sender];
 }

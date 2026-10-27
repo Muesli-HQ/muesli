@@ -119,8 +119,9 @@ actor CotypistEngine {
             let promptMs = Date().timeIntervalSince(start) * 1000
 
             let decodeStart = Date()
+            // `<turn|>` ends an instruction-tuned Gemma's reply when the prompt uses its chat format.
             let eos = Set([context.tokenizer.eosTokenId].compactMap { $0 }
-                + context.configuration.extraEOSTokens.compactMap { context.tokenizer.convertTokenToId($0) })
+                + (context.configuration.extraEOSTokens.union(["<turn|>"])).compactMap { context.tokenizer.convertTokenToId($0) })
             var next = ids[ids.count - 1]
             var generated: [Int] = []
             var tokens: [CotypistToken] = []

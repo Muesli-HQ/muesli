@@ -351,6 +351,7 @@ public final class DictationStore {
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
+        try migrateCotypist(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         try renameLegacyGranolaImportFolder(db: db)
@@ -453,6 +454,213 @@ public final class DictationStore {
             DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = OLD.id;
         END;
         """, db: db)
+    }
+
+    // MARK: - Cotypist
+
+    /// Cotypist typeahead history, local only. `cotypist_suggestions` has one row per suggestion
+    /// shown: the suggestion, what was accepted, and the sentence it continued (`context_before`);
+    /// `cotypist_sessions` groups accepted suggestions by app into runs for the timeline. Session
+    /// columns are named like the dictation ones so timeline filters apply to both.
+    private func migrateCotypist(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE TABLE IF NOT EXISTS cotypist_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            last_activity_at REAL NOT NULL,
+            target_app_name TEXT NOT NULL DEFAULT '',
+            target_app_bundle_id TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'cotypist',
+            deleted_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cotypist_sessions_app_activity
+            ON cotypist_sessions(target_app_bundle_id, last_activity_at DESC);
+        CREATE TABLE IF NOT EXISTS cotypist_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_id INTEGER REFERENCES cotypist_sessions(id) ON DELETE SET NULL,
+            target_app_name TEXT NOT NULL DEFAULT '',
+            target_app_bundle_id TEXT NOT NULL DEFAULT '',
+            trigger TEXT NOT NULL,
+            suggestion_text TEXT NOT NULL,
+            accepted_text TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL,
+            words_suggested INTEGER NOT NULL DEFAULT 0,
+            words_accepted INTEGER NOT NULL DEFAULT 0,
+            first_word_logprob REAL,
+            first_ms INTEGER,
+            full_ms INTEGER,
+            context_source TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_cotypist_suggestions_session ON cotypist_suggestions(session_id);
+        CREATE INDEX IF NOT EXISTS idx_cotypist_suggestions_timestamp ON cotypist_suggestions(timestamp);
+        """, db: db)
+        if sqlite3_exec(db, "ALTER TABLE cotypist_suggestions ADD COLUMN context_before TEXT NOT NULL DEFAULT ''", nil, nil, nil) != SQLITE_OK {
+            // Column may already exist.
+        }
+    }
+
+    /// A quiet spell this long in an app ends its Cotypist session.
+    public static let cotypistSessionGap: TimeInterval = 10 * 60
+
+    /// Records a suggestion's outcome. An acceptance joins the app's open session or starts one;
+    /// a suggestion that wasn't taken only counts toward an open session. Returns the session id.
+    @discardableResult
+    public func recordCotypistSuggestion(_ event: CotypistSuggestionEvent) throws -> Int64? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let accepted = event.outcome == .accepted || event.outcome == .partial
+            var sessionID = try openCotypistSession(bundleID: event.appBundleID, at: event.date, db: db)
+            if sessionID == nil && accepted {
+                sessionID = try insertCotypistSession(event, db: db)
+            }
+            if let sessionID {
+                try withStatement("UPDATE cotypist_sessions SET last_activity_at = ? WHERE id = ?", db: db, bind: { statement in
+                    sqlite3_bind_double(statement, 1, event.date.timeIntervalSince1970)
+                    sqlite3_bind_int64(statement, 2, sessionID)
+                })
+            }
+            try withStatement("""
+            INSERT INTO cotypist_suggestions
+            (timestamp, session_id, target_app_name, target_app_bundle_id, trigger, suggestion_text, accepted_text,
+             outcome, words_suggested, words_accepted, first_word_logprob, first_ms, full_ms, context_source, model,
+             context_before)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, db: db, bind: { statement in
+                bindCotypistText(formatISODate(event.date), at: 1, statement: statement)
+                if let sessionID { sqlite3_bind_int64(statement, 2, sessionID) } else { sqlite3_bind_null(statement, 2) }
+                bindCotypistText(event.appName, at: 3, statement: statement)
+                bindCotypistText(event.appBundleID, at: 4, statement: statement)
+                bindCotypistText(event.trigger, at: 5, statement: statement)
+                bindCotypistText(event.suggestionText, at: 6, statement: statement)
+                bindCotypistText(event.acceptedText, at: 7, statement: statement)
+                bindCotypistText(event.outcome.rawValue, at: 8, statement: statement)
+                sqlite3_bind_int(statement, 9, Int32(Self.countWords(in: event.suggestionText)))
+                sqlite3_bind_int(statement, 10, Int32(Self.countWords(in: event.acceptedText)))
+                bindOptionalDouble(event.firstWordLogProb, at: 11, statement: statement)
+                bindOptionalDouble(event.firstMs.map(Double.init), at: 12, statement: statement)
+                bindOptionalDouble(event.fullMs.map(Double.init), at: 13, statement: statement)
+                bindCotypistText(event.contextSource, at: 14, statement: statement)
+                bindCotypistText(event.model, at: 15, statement: statement)
+                bindCotypistText(event.contextBefore, at: 16, statement: statement)
+            })
+            try exec("COMMIT", db: db)
+            return sessionID
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    public func cotypistSession(id: Int64) throws -> CotypistSessionRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try cotypistSession(id: id, db: db)
+    }
+
+    public func deleteCotypistSession(id: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try withStatement("UPDATE cotypist_sessions SET deleted_at = ? WHERE id = ?", db: db, bind: { statement in
+            sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+            sqlite3_bind_int64(statement, 2, id)
+        })
+    }
+
+    private func openCotypistSession(bundleID: String, at date: Date, db: OpaquePointer?) throws -> Int64? {
+        var sessionID: Int64?
+        try withStatement("""
+        SELECT id FROM cotypist_sessions
+        WHERE target_app_bundle_id = ? AND deleted_at IS NULL AND last_activity_at >= ?
+        ORDER BY last_activity_at DESC LIMIT 1
+        """, db: db, bind: { statement in
+            bindCotypistText(bundleID, at: 1, statement: statement)
+            sqlite3_bind_double(statement, 2, date.timeIntervalSince1970 - Self.cotypistSessionGap)
+        }, row: { statement in
+            sessionID = sqlite3_column_int64(statement, 0)
+        })
+        return sessionID
+    }
+
+    private func insertCotypistSession(_ event: CotypistSuggestionEvent, db: OpaquePointer?) throws -> Int64 {
+        try withStatement("""
+        INSERT INTO cotypist_sessions (timestamp, last_activity_at, target_app_name, target_app_bundle_id)
+        VALUES (?, ?, ?, ?)
+        """, db: db, bind: { statement in
+            bindCotypistText(formatISODate(event.date), at: 1, statement: statement)
+            sqlite3_bind_double(statement, 2, event.date.timeIntervalSince1970)
+            bindCotypistText(event.appName, at: 3, statement: statement)
+            bindCotypistText(event.appBundleID, at: 4, statement: statement)
+        })
+        return sqlite3_last_insert_rowid(db)
+    }
+
+    private func cotypistSession(id: Int64, db: OpaquePointer?) throws -> CotypistSessionRecord? {
+        var record: CotypistSessionRecord?
+        try withStatement("""
+        SELECT s.id, s.timestamp, s.last_activity_at, s.target_app_name, s.target_app_bundle_id,
+               COUNT(e.id),
+               COALESCE(SUM(CASE WHEN e.accepted_text <> '' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(e.words_accepted), 0)
+        FROM cotypist_sessions s
+        LEFT JOIN cotypist_suggestions e ON e.session_id = s.id
+        WHERE s.id = ? AND s.deleted_at IS NULL
+        GROUP BY s.id
+        """, db: db, bind: { sqlite3_bind_int64($0, 1, id) }, row: { statement in
+            record = CotypistSessionRecord(
+                id: sqlite3_column_int64(statement, 0),
+                timestamp: stringColumn(statement, index: 1),
+                lastActivityAt: formatISODate(Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))),
+                targetAppName: stringColumn(statement, index: 3),
+                targetAppBundleID: stringColumn(statement, index: 4),
+                acceptances: [],
+                wordsAccepted: Int(sqlite3_column_int(statement, 7)),
+                suggestionsShown: Int(sqlite3_column_int(statement, 5)),
+                suggestionsAccepted: Int(sqlite3_column_int(statement, 6))
+            )
+        })
+        guard let base = record else { return nil }
+        var acceptances: [CotypistAcceptance] = []
+        try withStatement("""
+        SELECT context_before, accepted_text FROM cotypist_suggestions
+        WHERE session_id = ? AND accepted_text <> '' ORDER BY id
+        """, db: db, bind: { sqlite3_bind_int64($0, 1, id) }, row: {
+            acceptances.append(CotypistAcceptance(contextBefore: stringColumn($0, index: 0), text: stringColumn($0, index: 1)))
+        })
+        return CotypistSessionRecord(
+            id: base.id, timestamp: base.timestamp, lastActivityAt: base.lastActivityAt,
+            targetAppName: base.targetAppName, targetAppBundleID: base.targetAppBundleID, acceptances: acceptances,
+            wordsAccepted: base.wordsAccepted, suggestionsShown: base.suggestionsShown,
+            suggestionsAccepted: base.suggestionsAccepted
+        )
+    }
+
+    /// Binds a copy: these values are temporaries, gone before the statement steps.
+    private func bindCotypistText(_ value: String, at index: Int32, statement: OpaquePointer?) {
+        sqlite3_bind_text(statement, index, value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    }
+
+    /// Prepares, binds, steps through every row and finalizes one statement.
+    private func withStatement(
+        _ sql: String,
+        db: OpaquePointer?,
+        bind: (OpaquePointer?) -> Void = { _ in },
+        row: (OpaquePointer?) -> Void = { _ in }
+    ) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        bind(statement)
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW: row(statement)
+            case SQLITE_DONE: return
+            default: throw lastError(db)
+            }
+        }
     }
 
     @discardableResult
@@ -784,6 +992,14 @@ public final class DictationStore {
         if targetApplication != nil {
             meetingFilter.conditions.append("0 = 1")
         }
+        let cotypistFilter = historyFilterConditions(
+            alias: "c",
+            dateColumn: "timestamp",
+            fromDate: fromDate,
+            toDate: toDate,
+            origin: origin,
+            targetApplication: targetApplication
+        )
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -793,6 +1009,10 @@ public final class DictationStore {
             SELECT 1, m.id, m.start_time
             FROM meetings m
             WHERE \(meetingFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 2, c.id, c.timestamp
+            FROM cotypist_sessions c
+            WHERE \(cotypistFilter.conditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
@@ -805,7 +1025,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
@@ -824,6 +1044,8 @@ public final class DictationStore {
                 entries.append(.dictation(record))
             } else if key.kind == 1, let record = try meeting(id: key.id, db: db) {
                 entries.append(.meeting(record))
+            } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
+                entries.append(.cotypist(record))
             }
         }
         return entries

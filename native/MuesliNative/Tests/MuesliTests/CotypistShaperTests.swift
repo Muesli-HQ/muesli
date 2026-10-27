@@ -16,6 +16,16 @@ struct CotypistShaperTests {
         #expect(shaped.firstWordLogProb == -1.0)
     }
 
+    @Test("suggestion length and frequency settings set the word limit and the gate")
+    func settings() throws {
+        let raw = completion([(" file", -2.5), (" to", -0.5), (" you", -0.4), (" in", -0.3), (" a", -0.2)])
+        let phrase = CotypistShaper.Thresholds(firstWord: CotypistFrequency.balanced.firstWordGate,
+                                               maxWords: CotypistSuggestionLength.phrase.maxWords)
+        #expect(try CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: phrase).get().text == "file to you")
+        let fewer = CotypistShaper.Thresholds(firstWord: CotypistFrequency.fewer.firstWordGate)
+        #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: fewer) == .failure(.lowConfidence(-2.5)))
+    }
+
     @Test("rejects a first word below the gate")
     func gate() {
         let raw = completion([(" payment", -3.5), (" now", -0.5)])

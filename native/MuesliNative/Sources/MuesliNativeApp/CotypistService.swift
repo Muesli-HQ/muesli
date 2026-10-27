@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon
 import Foundation
+import MuesliCore
 
 /// Cotypist (experimental): local typeahead delivered through an input method.
 ///
@@ -9,22 +10,31 @@ import Foundation
 /// keys, the inline ghost (marked text) and insertion, and needs no permissions. It asks this
 /// service — inside Muesli, which already holds Accessibility and Screen Recording — for each
 /// suggestion over a Unix socket in the app's support directory. Muesli gathers context, runs
-/// the base model and gates the result, and journals what happened to every suggestion shown.
+/// the base model and gates the result, and records what happened to every suggestion shown in
+/// the local database (accepted ones also appear in the timeline).
 @MainActor
 final class CotypistService {
     static let shared = CotypistService()
 
     /// Set by MuesliController: screenshots conflict with meeting system-audio capture (SCStream).
     var isScreenCaptureAllowed: () -> Bool = { true }
+    /// Set by MuesliController: the user's Cotypist settings, read on every request.
+    var config: () -> AppConfig = { AppConfig() }
+    /// Set by MuesliController: where suggestion outcomes are recorded.
+    var store: DictationStore?
+    /// Called after an accepted suggestion is recorded, to refresh the timeline.
+    var onAccepted: () -> Void = {}
 
     private var server: CotypistSocketServer?
     private var engineTask: Task<CotypistEngine, Error>?
     /// Screen OCR per app, refreshed in the background through the dictation context plumbing.
     private var screenText: [String: (text: String, at: Date)] = [:]
     private var screenInFlight: Set<String> = []
+    /// The text before the caret for recent suggestions, keyed by app and suggestion text, so an
+    /// outcome can be recorded with the sentence it completed.
+    private var recentContexts: [(key: String, before: String)] = []
 
     static var socketURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist.sock") }
-    static var journalURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist-suggestions.jsonl") }
 
     func start() {
         guard server == nil else { return }
@@ -84,21 +94,34 @@ final class CotypistService {
         switch request["type"] as? String {
         case "suggest": return await suggest(request)
         case "outcome":
-            journal(request)
+            record(request)
             return [:]
         default: return ["rejection": "unknown request"]
         }
     }
 
+    /// Every reply carries the settings the helper applies itself, so changes reach it with the
+    /// next suggestion: the pause before completing a word (0 when that's off).
     private func suggest(_ request: [String: Any]) async -> [String: Any] {
+        let config = config()
+        let helperSettings: [String: Any] = ["midWordDelay": config.cotypistCompleteWords ? config.cotypistWordPause.seconds : 0]
+        return helperSettings.merging(await suggestion(request, config: config)) { $1 }
+    }
+
+    private func suggestion(_ request: [String: Any], config: AppConfig) async -> [String: Any] {
         let bundleID = request["app"] as? String ?? ""
         let midWord = request["midWord"] as? Bool ?? false
         let afterSpace = request["afterSpace"] as? Bool ?? false
         let firstWordOnly = request["firstWordOnly"] as? Bool ?? false
+        if config.cotypistDisabledApps.contains(bundleID) { return ["rejection": "off in this app"] }
+        if midWord && !config.cotypistCompleteWords { return ["rejection": "completing words is off"] }
+        let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate,
+                                                   maxWords: config.cotypistSuggestionLength.maxWords)
 
         var (fieldText, source) = context(bundleID: bundleID, field: request["field"] as? String,
                                           typed: request["typed"] as? String ?? "")
         guard !fieldText.isEmpty else { return ["rejection": "no context", "source": source] }
+        let textBeforeCaret = fieldText
 
         // Mid-word: split off the half-typed word for token healing.
         var heal: String?
@@ -111,8 +134,8 @@ final class CotypistService {
         // the same document. Only when the field itself says little, and never where the context
         // already carries the conversation (an agent prompt in a terminal).
         var prompt = fieldText.trimmingCharacters(in: .whitespaces)
-        refreshScreenIfNeeded(bundleID: bundleID)
-        if prompt.count < 200, source != "agent-prompt", let screen = screenText[bundleID]?.text, !screen.isEmpty {
+        if config.cotypistUseScreenContext { refreshScreenIfNeeded(bundleID: bundleID) }
+        if config.cotypistUseScreenContext, prompt.count < 200, source != "agent-prompt", let screen = screenText[bundleID]?.text, !screen.isEmpty {
             prompt = screen + "\n\n" + prompt
             source += "+ocr"
         }
@@ -123,9 +146,14 @@ final class CotypistService {
             let maxTokens = firstWordOnly ? 4 : 10
             let completion = try await engine.complete(prompt: prompt, maxTokens: maxTokens, heal: heal)
             let timing: [String: Any] = ["source": source, "modelMs": Int(completion.promptMs + completion.decodeMs)]
-            switch CotypistShaper.shape(completion, afterSpace: afterSpace, heal: heal, maxTokens: maxTokens, firstWordOnly: firstWordOnly) {
+            switch CotypistShaper.shape(completion, afterSpace: afterSpace, heal: heal, maxTokens: maxTokens,
+                                        firstWordOnly: firstWordOnly, thresholds: thresholds) {
             case .success(let shaped):
-                return timing.merging(["text": shaped.text, "firstWordLogProb": shaped.firstWordLogProb]) { $1 }
+                remember(before: textBeforeCaret, app: bundleID, suggestion: shaped.text)
+                // With one-word suggestions the first stage is the whole suggestion.
+                let complete = firstWordOnly && thresholds.maxWords == 1
+                return timing.merging(["text": shaped.text, "firstWordLogProb": shaped.firstWordLogProb,
+                                       "complete": complete]) { $1 }
             case .failure(let rejection):
                 return timing.merging(["rejection": rejection.description]) { $1 }
             }
@@ -213,20 +241,80 @@ final class CotypistService {
         return kept.joined(separator: " ")
     }
 
-    // MARK: - Journal
+    // MARK: - History
 
-    /// One line per suggestion shown and its outcome — suggestion text only, never the user's text.
-    private func journal(_ record: [String: Any]) {
-        var entry = record
-        entry.removeValue(forKey: "type")
-        entry["ts"] = Date().timeIntervalSince1970
-        guard let data = try? JSONSerialization.data(withJSONObject: entry) else { return }
-        let url = Self.journalURL
-        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        handle.seekToEndOfFile()
-        handle.write(data + Data("\n".utf8))
-        try? handle.close()
+    /// Records a suggestion's outcome: the suggestion, what was accepted of it, and the sentence it
+    /// continued (the user's own text, kept to that one sentence, in the local database only).
+    private func record(_ message: [String: Any]) {
+        let key = Self.contextKey(app: message["app"] as? String ?? "", suggestion: message["text"] as? String ?? "")
+        let before = recentContexts.last { $0.key == key }?.before ?? ""
+        guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before)) else { return }
+        do {
+            try store.recordCotypistSuggestion(event)
+            if !event.acceptedText.isEmpty { onAccepted() }
+        } catch {
+            log("could not record suggestion: \(error)")
+        }
+    }
+
+    private func remember(before: String, app: String, suggestion: String) {
+        recentContexts.append((Self.contextKey(app: app, suggestion: suggestion), before))
+        if recentContexts.count > 16 { recentContexts.removeFirst(recentContexts.count - 16) }
+    }
+
+    private static func contextKey(app: String, suggestion: String) -> String { app + "\n" + suggestion }
+
+    /// The sentence being written at the caret, for showing where a suggestion was accepted: from
+    /// the last sentence end (or line break), reaching back one more sentence when the current one
+    /// has only just started, and at most `maxCharacters`, cut at a word.
+    static func sentence(endingAt text: String, maxCharacters: Int = 120) -> String {
+        var line = String(text.split(separator: "\n", omittingEmptySubsequences: false).last ?? "")
+        // Sentence starts: just after ". ", "! " or "? ".
+        var starts: [String.Index] = [line.startIndex]
+        var index = line.startIndex
+        while index < line.endIndex {
+            let next = line.index(after: index)
+            if ".!?".contains(line[index]), next < line.endIndex, line[next] == " " { starts.append(line.index(after: next)) }
+            index = next
+        }
+        let current = starts.last!
+        let start = line[current...].split(separator: " ").count >= 3 ? current : starts[max(starts.count - 2, 0)]
+        line = String(line[start...]).trimmingCharacters(in: .newlines)
+        guard line.count > maxCharacters else { return line.drop { $0 == " " }.description }
+        let tail = line.suffix(maxCharacters)
+        let word = tail.firstIndex(of: " ").map { tail.index(after: $0) } ?? tail.startIndex
+        return "…" + tail[word...]
+    }
+
+    static func event(from message: [String: Any], contextBefore: String = "", date: Date = Date()) -> CotypistSuggestionEvent? {
+        guard let text = message["text"] as? String, !text.isEmpty,
+              let outcome = CotypistSuggestionEvent.Outcome(rawValue: message["outcome"] as? String ?? "") else { return nil }
+        let bundleID = message["app"] as? String ?? ""
+        func int(_ key: String) -> Int? { (message[key] as? NSNumber)?.intValue }
+        return CotypistSuggestionEvent(
+            date: date,
+            appBundleID: bundleID,
+            appName: appName(bundleID: bundleID),
+            trigger: message["trigger"] as? String ?? "boundary",
+            suggestionText: text,
+            acceptedText: message["accepted"] as? String ?? (outcome == .accepted ? text : ""),
+            contextBefore: contextBefore,
+            outcome: outcome,
+            firstWordLogProb: (message["first_word_logprob"] as? NSNumber)?.doubleValue,
+            firstMs: int("first_ms"),
+            fullMs: int("full_ms"),
+            contextSource: message["source"] as? String ?? "",
+            model: CotypistModel.repoID
+        )
+    }
+
+    /// The app's name as the user knows it; empty (no name or icon shown) when it can't be found,
+    /// never the bundle ID.
+    private static func appName(bundleID: String) -> String {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
+           let name = app.localizedName { return name }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return "" }
+        return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
     }
 
     private func log(_ message: String) {

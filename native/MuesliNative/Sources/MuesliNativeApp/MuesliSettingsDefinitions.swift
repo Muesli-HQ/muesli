@@ -367,6 +367,25 @@ extension MuesliController {
             if !self.config.enableScreenContext { return "Enable app context first." }
             return CGPreflightScreenCaptureAccess() ? nil : "Grant Screen Recording in System Settings to enable screen OCR context."
         })
+        // Cotypist (experimental): its Settings section and input method exist on dev builds only.
+        add("cotypist_enabled", "Cotypist typeahead suggestions", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in CotypistSetup.shared.state == .off ? "off" : "on" },
+            unavailable: { $0 == "on" && !CotypistSetup.isAvailable ? "Cotypist is only in development builds." : nil }) { value in
+            CotypistSetup.shared.setOn(value == "on")
+        }
+        menu("cotypist_length", "Cotypist suggestion length", CotypistSuggestionLength.allCases,
+             \.cotypistSuggestionLength, title: \.label)
+        add("cotypist_frequency", "Cotypist suggestion frequency",
+            CotypistFrequency.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.cotypistFrequency.rawValue }, presentation: .discreteSlider) { value in
+            guard let frequency = CotypistFrequency(rawValue: value) else { return }
+            self.updateConfig { $0.cotypistFrequency = frequency }
+        }
+        toggle("cotypist_complete_words", "Cotypist finishes half-typed words", \.cotypistCompleteWords)
+        menu("cotypist_word_pause", "Cotypist pause before completing a word", CotypistWordPause.allCases,
+             \.cotypistWordPause, title: \.label)
+        toggle("cotypist_screen_context", "Cotypist uses on-screen text", \.cotypistUseScreenContext,
+               unavailable: { $0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil })
 
         add("dictation_provider", "Dictation provider", DictationProvider.allCases.map { .init(id: $0.rawValue, label: $0.label) },
             read: { $0.dictationProvider }) { value in
