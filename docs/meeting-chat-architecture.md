@@ -39,7 +39,9 @@ Threads are first-class records, separate from meetings. They belong in their ow
 | `meeting_chat_dependencies` | Every source revision disclosed to a turn, including inherited history and uncited evidence |
 | `meeting_chat_passages` and index tables | Rebuildable local retrieval data |
 
-The anchor records where a conversation started; it is independent of the current set of selected meetings. Entering from a meeting resumes its newest anchored conversation if that conversation still explicitly includes the meeting. Otherwise it prepares an unpersisted draft; a nonempty existing draft keeps its text and scope. Meeting-specific navigation is refused while a response or chat update is active. Archive-wide chats which merely cited a meeting are not implicitly selected by that entry point.
+The anchor records where a conversation started; it is independent of the current set of selected meetings. Opening a saved meeting selects its document. The embedded panel preserves the shared selected conversation; when there is no selected conversation and the draft is empty, it seeds an unpersisted draft for that meeting. A nonempty draft keeps its text and scope. Preparing an empty draft is retried when the coordinator becomes idle. Ordinary meeting navigation does not automatically select an anchored conversation.
+
+The separate controller method `showMeetingChat(meetingID:)` can resume the newest anchored conversation that still explicitly includes the requested meeting, or prepare a draft when none exists. This method refuses meeting-specific entry while a response or chat update is active; it is not the ordinary saved-meeting selection path. Archive-wide chats which merely cited a meeting are not selected by this anchor lookup.
 
 Selection and evidence are deliberately separate. Selecting a meeting does not mean it was consulted. Conversely, an archive-scoped thread can consult a meeting without explicitly selecting it. `sessions(meetingID:)` can find all three relationships: anchor, selection, or consulted evidence.
 
