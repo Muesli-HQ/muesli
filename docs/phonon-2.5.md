@@ -29,8 +29,10 @@ publishing a manager or readiness, including when Core ML finishes after
 cancellation. Concurrent callers for the same model share preparation; cancelling
 one caller leaves the others running. Deleting a model invalidates its matching
 pending load while preserving unrelated loaded or preparing models. Model-library
-downloads validate in disposable runtimes, independently of active selection and
-other downloads.
+downloads validate in disposable runtimes, independently of active selection.
+Transfers can run in parallel. Core ML loading and GPU warmup are serialized across
+library requests, with the temporary runtime released before the next preparation.
+Queued cancellation and preparation errors release the slot without polling.
 
 Phonon has its own model card, separate from the Parakeet family; voice selection
 continues to derive choices from the existing catalog. The Fermion logo is the

@@ -77,11 +77,12 @@ struct FluidAudioModelLoadTests {
         }
     }
 
-    @Test("Independent library downloads do not cancel each other or replace the selected runtime")
+    @Test("Library validation is serialized without blocking selection or replacing its runtime")
     func libraryDownloadsAreIndependentOfSelection() async throws {
         let loader = Loader()
         let factory = TranscriberFactory(loader: loader)
-        let coordinator = TranscriptionCoordinator(fluidAudioTranscriberFactory: { factory.make() })
+        let coordinator = TranscriptionCoordinator(fluidAudioTranscriberFactory: { factory.make() },
+            libraryModelPreparation: ModelLibraryPreparation(), libraryModelDownload: { _, _, _ in })
         var started = loader.started.stream.makeAsyncIterator()
         let selected = Task {
             try await coordinator.preloadRequired(backend: .phonon25, includeMeetingHelpers: false)
@@ -96,21 +97,35 @@ struct FluidAudioModelLoadTests {
         }
         defer { first.cancel() }
         #expect(await started.next() == Self.parakeet)
+        let queued = AsyncStream<Void>.makeStream()
         let second = Task {
             try await coordinator.preloadRequired(backend: .parakeetEnglish,
-                includeMeetingHelpers: false, meetingHelperTrigger: .modelLibrary)
+                includeMeetingHelpers: false, meetingHelperTrigger: .modelLibrary,
+                progressSnapshot: {
+                    if $0.message?.hasPrefix("Waiting to prepare") == true { queued.continuation.yield() }
+                })
         }
-        defer { second.cancel() }
-        #expect(await started.next() == BackendOption.parakeetEnglish.model)
+        defer { second.cancel(); queued.continuation.finish() }
+        for await _ in queued.stream { break }
+        #expect(await loader.loadCount == 2) // Selected model plus first library validation.
+        // Selection uses the active runtime and must not wait for the library slot.
+        let switchModel = Task {
+            try await coordinator.preloadRequired(backend: .parakeetRedux, includeMeetingHelpers: false)
+        }
+        defer { switchModel.cancel() }
+        #expect(await started.next() == BackendOption.parakeetRedux.model)
+        await loader.complete(BackendOption.parakeetRedux.model)
+        try await switchModel.value
         await loader.complete(Self.parakeet)
         try await first.value
+        #expect(await started.next() == BackendOption.parakeetEnglish.model)
         await loader.complete(BackendOption.parakeetEnglish.model)
         try await second.value
         let instances = factory.instances
         #expect(instances.count == 3)
-        #expect(await instances[0].loadedModelID == Self.phonon)
-        #expect(await instances[1].loadedModelID == Self.parakeet)
-        #expect(await instances[2].loadedModelID == BackendOption.parakeetEnglish.model)
+        #expect(await instances[0].loadedModelID == BackendOption.parakeetRedux.model)
+        #expect(await instances[1].loadedModelID == nil)
+        #expect(await instances[2].loadedModelID == nil)
     }
 
     @Test("Same-model callers share preparation and either caller can cancel independently", arguments: [0, 1, 2])

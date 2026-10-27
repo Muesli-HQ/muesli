@@ -126,6 +126,11 @@ actor TranscriptionCoordinator {
 
     private let fluidTranscriber: FluidAudioTranscriber
     private let fluidAudioTranscriberFactory: @Sendable () -> FluidAudioTranscriber
+    typealias LibraryModelDownload = @Sendable (
+        String, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> Void
+    private let libraryModelDownload: LibraryModelDownload
+    private let libraryModelPreparation: ModelLibraryPreparation
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
@@ -160,8 +165,15 @@ actor TranscriptionCoordinator {
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
         diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
         nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {},
-        fluidAudioTranscriberFactory: @escaping @Sendable () -> FluidAudioTranscriber = { FluidAudioTranscriber() }
+        fluidAudioTranscriberFactory: @escaping @Sendable () -> FluidAudioTranscriber = { FluidAudioTranscriber() },
+        libraryModelPreparation: ModelLibraryPreparation = .shared,
+        libraryModelDownload: @escaping LibraryModelDownload = { modelID, progress, progressSnapshot in
+            _ = try await ManagedASRModelDownloader.downloadIfNeeded(FluidAudioModel.plan(for: modelID),
+                progress: progress, progressSnapshot: progressSnapshot)
+        }
     ) {
+        self.libraryModelDownload = libraryModelDownload
+        self.libraryModelPreparation = libraryModelPreparation
         self.fluidAudioTranscriberFactory = fluidAudioTranscriberFactory
         self.fluidTranscriber = fluidAudioTranscriberFactory()
         self.diarizerModelLoader = diarizerModelLoader
@@ -650,9 +662,22 @@ actor TranscriptionCoordinator {
         if backend.backend == "fluidaudio", meetingHelperTrigger == .modelLibrary {
             // A library download is not a selection: validate in a disposable runtime
             // so independent downloads cannot cancel or replace the active manager.
-            let downloadTranscriber = fluidAudioTranscriberFactory()
-            try await downloadTranscriber.loadModels(modelID: backend.model,
-                progress: progress, progressSnapshot: progressSnapshot)
+            try await libraryModelPreparation.run {
+                try await self.libraryModelDownload(backend.model, progress, progressSnapshot)
+            } onQueued: {
+                progressSnapshot?(.preparing(modelID: backend.model,
+                    message: "Waiting to prepare \(backend.label)..."))
+            } prepare: {
+                let downloadTranscriber = self.fluidAudioTranscriberFactory()
+                do {
+                    try await downloadTranscriber.loadModels(modelID: backend.model,
+                        progress: progress, progressSnapshot: progressSnapshot)
+                    await downloadTranscriber.shutdown()
+                } catch {
+                    await downloadTranscriber.shutdown()
+                    throw error
+                }
+            }
             return
         }
         activeBackend = backend.backend

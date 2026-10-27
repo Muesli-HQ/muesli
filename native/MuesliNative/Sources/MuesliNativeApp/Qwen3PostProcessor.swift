@@ -231,7 +231,7 @@ actor InferenceGate {
     private var isProcessing = false
     private var waiters: [Waiter] = []
 
-    func acquire() async throws {
+    func acquire(onWait: (@Sendable () -> Void)? = nil) async throws {
         try Task.checkCancellation()
         if !isProcessing {
             isProcessing = true
@@ -242,6 +242,7 @@ actor InferenceGate {
         let acquired = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 waiters.append(Waiter(id: id, continuation: continuation))
+                onWait?()
             }
         } onCancel: {
             Task { await self.cancelWaiter(id) }

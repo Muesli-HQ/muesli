@@ -79,6 +79,7 @@ case "${shard}" in
     filters=(
       FluidAudioTranscriberTests
       FluidAudioModelLoadTests
+      ModelLibraryPreparationTests
       ParakeetModelPreparationTests
       Phonon25IntegrationTests
       AppleSpeechAnalyzerBackendTests
