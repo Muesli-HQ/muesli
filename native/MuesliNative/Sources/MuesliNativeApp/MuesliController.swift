@@ -1083,8 +1083,13 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// The step `shutdown()` is in, so a quit that overruns its deadline can say what it waited on.
+    private(set) var shutdownStep = "not started"
+
     func cancelMeetingRetranscriptionsForShutdown() async {
         isShuttingDown = true
+        shutdownStep = "retranscription tasks"
+
         // Suspend asynchronously (never block the main thread) until retry
         // cancellation and its deferred state cleanup finish. Do this before
         // tearing down any shared resources those jobs may still access.
@@ -1093,7 +1098,22 @@ public final class MuesliController: NSObject {
         for task in retranscriptionTasks { await task.value }
     }
 
-    func shutdown() async {
+    func shutdown(
+        discardScreenRecording: (@MainActor () async -> Void)? = nil,
+        cleanupAudioDevices: @escaping @Sendable () -> Void = {
+            CoreAudioSystemRecorder.cleanupStaleDevices()
+        }
+    ) async {
+        isShuttingDown = true
+        // AppDelegate's deadline must cover the entire discard, including video
+        // finalization and database/file cleanup, not just the work after it.
+        shutdownStep = "screen recording discard"
+        if let discardScreenRecording {
+            await discardScreenRecording()
+        } else {
+            await visualMemory.stopRecording(discard: true)
+        }
+        discardMeetingStateForTermination()
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
         if let dataDidChangeObserver {
@@ -1133,6 +1153,7 @@ public final class MuesliController: NSObject {
         pendingComputerUseStopStartedAt = nil
         let attendeePersistenceTasks = calendarAttendeePersistenceTasks.values.map(\.task)
         calendarAttendeePersistenceTasks.removeAll()
+        shutdownStep = "calendar attendee persistence"
         for task in attendeePersistenceTasks {
             _ = await task.value
         }
@@ -1160,11 +1181,22 @@ public final class MuesliController: NSObject {
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
+        shutdownStep = "iCloud sync engine"
         await syncEngineCancellationTask?.value
         nativeRecordingGate.invalidate()
+        shutdownStep = "transcription coordinator"
         await transcriptionCoordinator.shutdown()
+        shutdownStep = "audio device cleanup"
         indicator.close()
-        CoreAudioSystemRecorder.cleanupStaleDevices()
+        // CoreAudio may block in a driver. Keep both MainActor and Swift's
+        // cooperative executor free so the termination deadline can reply.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                cleanupAudioDevices()
+                continuation.resume()
+            }
+        }
+        shutdownStep = "finished"
     }
 
     func recentDictations() -> [DictationRecord] {
@@ -5896,7 +5928,7 @@ public final class MuesliController: NSObject {
     }
 
     @objc func quitApp() {
-        NSApplication.shared.terminate(nil)
+        ApplicationTermination.request()
     }
 
     @objc func copyRecentDictation(_ sender: NSMenuItem) {
@@ -6969,10 +7001,9 @@ public final class MuesliController: NSObject {
                 guard let self else { return }
                 self.isPresentingMeetingTerminationConfirmation = false
                 guard response == .alertSecondButtonReturn else { return }
-                await self.visualMemory.stopRecording(discard: true)
-                self.discardMeetingStateForTermination()
-                self.isTerminatingAfterMeetingConfirmation = true
-                NSApp.terminate(nil)
+                ApplicationTermination.request { [weak self] in
+                    self?.isTerminatingAfterMeetingConfirmation = true
+                }
             }
         }
         if !didPresent {
