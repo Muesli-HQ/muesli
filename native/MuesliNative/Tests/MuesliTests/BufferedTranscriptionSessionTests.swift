@@ -616,6 +616,33 @@ struct BufferedTranscriptionSessionTests {
         #expect(output.values.last?.text == "hello")
     }
 
+    @Test("closing a session cancels queued model work before its permit is granted", arguments: [false, true])
+    func closeCancelsQueuedInference(overrun: Bool) async {
+        let decoder = BufferedHeldDecoder(checkCancellationAfterPermit: true)
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { try await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var calls = decoder.started.stream.makeAsyncIterator()
+        var completions = decoder.completed.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        _ = await calls.next()
+        if overrun {
+            session.enqueue(Array(repeating: 0.2, count: 720_001))
+        } else {
+            session.cancel()
+        }
+        // Finish must return before the permit is released, even though the
+        // decoder's continuation itself cannot be cancelled.
+        let result = await session.finishForReuse()
+        #expect(!result.completed && !result.canReuse)
+        #expect(result.fallbackReason == (overrun ? .transcriptionFailed : .cancelled))
+        await decoder.release()
+        _ = await completions.next()
+        #expect(await decoder.inferenceCount == 0)
+        #expect(output.values.isEmpty)
+        #expect(output.failures == (overrun ? 1 : 0))
+    }
+
     @Test("cancel releases finish and rejects in-flight completion and future audio")
     func cancellation() async {
         let decoder = BufferedHeldDecoder()
@@ -1658,14 +1685,23 @@ private actor BufferedHeldDecoder {
     private var inFlight = 0
     private(set) var maximumInFlight = 0
     private(set) var callCount = 0
+    private(set) var inferenceCount = 0
+    private let checkCancellationAfterPermit: Bool
+    init(checkCancellationAfterPermit: Bool = false) {
+        self.checkCancellationAfterPermit = checkCancellationAfterPermit
+    }
     func decode(_ samples: [Float]) async throws -> BufferedTranscriptionWindow {
         callCount += 1
         inFlight += 1
         maximumInFlight = max(maximumInFlight, inFlight)
         started.continuation.yield(samples.count)
+        defer {
+            inFlight -= 1
+            completed.continuation.yield(())
+        }
         if !released { await withCheckedContinuation { permit = $0 } }
-        inFlight -= 1
-        completed.continuation.yield(())
+        if checkCancellationAfterPermit { try Task.checkCancellation() }
+        inferenceCount += 1
         return .init(text: "hello", words: [.init(text: "hello", start: 0, end: 0.5)])
     }
     func release() { released = true; permit?.resume(); permit = nil }

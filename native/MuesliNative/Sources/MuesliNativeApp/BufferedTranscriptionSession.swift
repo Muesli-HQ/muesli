@@ -240,6 +240,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     // start after cancel() returns. Recursive permits a callback to cancel.
     private let lock = NSRecursiveLock()
     private var state = State()
+    // Lifecycle state must not be restored by alignment's transactional rollback.
+    // Access is protected by the same recursive lock as State.
+    private var drainTask: (id: UUID, task: Task<Void, Never>)?
     private let configuration: Configuration
     private let decode: @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
     private let onUpdate: @Sendable (BufferedTranscriptionUpdate) -> Void
@@ -363,7 +366,18 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         guard state.finishing || state.audio.count >= configuration.minimumSamples else { return }
         guard state.finishing || state.offset + state.audio.count - state.lastDecodedEnd >= configuration.updateSamples else { return }
         state.running = true
-        Task { await drain() }
+        let id = UUID()
+        // This runs under lock, so a new task cannot reach snapshot()/close()
+        // before its handle has been published here.
+        let task = Task {
+            await drain()
+            synchronized {
+                // A new arrival can start another drain after snapshot marks
+                // this one idle; its cancellation handle must remain intact.
+                if drainTask?.id == id { drainTask = nil }
+            }
+        }
+        drainTask = (id, task)
     }
 
     private func snapshot() -> Snapshot? {
@@ -408,6 +422,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                         return true
                     }
                     guard canDecode else { return }
+                    try Task.checkCancellation()
                     result = try await decode(snapshot.audio)
                 }
                 try synchronized {
@@ -875,6 +890,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
         state.closed = true
         state.running = false
+        let task = drainTask?.task
+        drainTask = nil
+        // Cancellation propagates to a backend waiting for its decode permit.
+        // Do not await it: an uncooperative decoder must not delay finish.
+        // A successful drain may cancel itself here; its result is already
+        // committed, and finish waiters are independent tasks.
+        task?.cancel()
         state.audio.removeAll()
         let waiters = state.waiters
         state.waiters.removeAll()
