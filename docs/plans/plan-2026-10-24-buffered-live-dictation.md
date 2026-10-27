@@ -17,6 +17,22 @@ initial plan and chronological implementation notes below.
 - The shared engine uses bounded rolling audio, timed word ownership and agreement,
   serial inference, and coalesced delivery. Its 45-second pending-audio cap is not
   a limit on recording duration. Whisper preview alignment excludes padded audio.
+- Whisper normally decodes at most eight seconds per rolling window. Consecutive
+  hypotheses can confirm a word group before the three-second age cutoff when a
+  following timed word establishes context. Case and edge punctuation may differ;
+  ordered lexical identity and both timestamps must still agree. A mature prefix
+  can also commit before physical rollover when its endpoint and following word
+  agree at the same positions across two hypotheses; revising an earlier word
+  does not hold that whole group until another full-window decode. Initial groups
+  require positive-duration lexical anchors, or a mature independently agreed
+  single word. Zero-duration words remain pending until a usable boundary follows,
+  and finalization preserves them. A valid hypothesis that cannot yet advance its
+  crop retains agreement evidence only; ownership, text and PCM remain unchanged.
+  Invalid or ambiguous alignments still clear that evidence and use bounded
+  recovery. The recovery window can exceed eight seconds, up to the existing cap.
+  After a decoded pause retires lexical anchors, already-owned left context is
+  removed only when no pending word needs it and every owned word has ended
+  before the crop. Words spanning the boundary retain context.
 - Cursor updates require ownership of the original focused element, text span,
   and selection. Temporary Accessibility read failures pause delivery; genuine
   focus changes, edits, and cursor movement revoke it. Codex uses acknowledged,
@@ -26,6 +42,10 @@ initial plan and chronological implementation notes below.
   prefix transfers in order after capture succeeds. Staged clipboard text is
   marked transient/concealed and limited to the current host; restoring the
   original clipboard preserves its original representations.
+- Permanent cursor ownership loss displays “Cursor updates stopped · Still
+  recording” in the indicator. Recognition failure has a separate persistent
+  notice promising only audio and available text for recovery. Temporary AX
+  pauses do not trigger either notice. Stop/cancel controls remain available.
 - Stopping drains the unfinished tail and reuses the streamed transcript. Live
   dictation does not automatically retranscribe the whole recording. Confidence,
   agreement, and spelling-revision evidence are retained for diagnostics rather
@@ -422,3 +442,37 @@ shard checks passed. A delayed meeting-caption test now explicitly retains its
 session through callback readback; production meeting delivery is unchanged.
 These checks do not substitute for a manual Dev B composer trial, and the Tamil
 diagnostic failures above remain outstanding.
+
+The post-review cadence investigation reproduced delayed visible commits on the
+real Whisper Turbo backend. The acceptance harness now measures committed cursor
+text rather than draft-inclusive previews; changing hypotheses cannot conceal a
+stalled visible prefix. Recorded hypotheses cover punctuation revisions,
+zero-duration onset anchors, already-owned context after pauses, and mature groups
+waiting unnecessarily for the physical eight-second rollover. Ordered boundary
+agreement permits those mature groups to commit without relaxing cursor ownership.
+
+A real-time 344.65-second Whisper Turbo replay with repeated 2-, 8-, and 18-second
+pauses passed all four source-occurrence checks, monotonic committed output,
+12-second resumed-speech progress checks, and tail-only finalization. It produced
+126 cursor updates with median 20 UTF-16 characters and median 1.35-second spacing
+within speech ranges (largest such interval 6.1 seconds). Four temporary alignment
+deferrals recovered across three episodes without failing the progress checks.
+One observed recognition
+substitution, “cutting it release” for “cutting a release,” is accepted by the
+occurrence check; no words are removed to make the test pass. The fixture ends in
+18 seconds of silence, so its 55 ms finish does not measure immediate-stop latency.
+The final separate real-model immediate-stop check finished Whisper's tail
+in 2.46 seconds. These are fixture measurements, not a latency guarantee.
+
+Independent review additionally found a synthetic overlapping-timestamp case:
+a long owned word could outlive the last four saved anchors. Tracking the maximum
+owned end keeps its lexical boundary until the existing silence margin passes,
+with a regression preventing duplicate suffix insertion. Parakeet's default
+commit and crop policies remain unchanged. Injected cursor tests exercise user
+edits, focus changes, transient AX reads, acknowledgment, and final cleanup;
+manual verification in the Codex composer is still required.
+
+The final focused suite passed 361 tests across 17 suites. After the defensive
+overlap fix, real Parakeet v3 multi-window recognition and both Parakeet/Whisper
+immediate-stop reuse checks passed, including identical committed ownership with
+presentation smoothing enabled or disabled.

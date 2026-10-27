@@ -187,6 +187,34 @@ private final class IdleShortcutPillView: NSView {
     }
 }
 
+enum BufferedDictationInsertionStopReason: Equatable {
+    case cursorOwnershipLost
+    case transcriptionFailed
+
+    var title: String {
+        switch self {
+        case .cursorOwnershipLost: "Cursor updates stopped · Still recording"
+        case .transcriptionFailed: "Live transcription stopped · Still recording"
+        }
+    }
+
+    var compactTitle: String {
+        switch self {
+        case .cursorOwnershipLost: "Cursor stopped"
+        case .transcriptionFailed: "Live text stopped"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .cursorOwnershipLost:
+            "Cursor updates stopped. Still recording; the final dictation will be saved in history."
+        case .transcriptionFailed:
+            "Live transcription stopped. Still recording; audio and the available transcript will be saved for recovery when you stop."
+        }
+    }
+}
+
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private let notchIndicator: NotchIndicatorController
@@ -199,6 +227,9 @@ final class FloatingIndicatorController: NSObject {
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
+    private(set) var insertionStopReason: BufferedDictationInsertionStopReason?
+    var cursorInsertionStopped: Bool { insertionStopReason != nil }
+    var insertionStoppedDetail: String { (insertionStopReason ?? .cursorOwnershipLost).detail }
     private var isHovered = false
     private var lastLoadedConfig: AppConfig?
     private let loadFeedbackConfiguration: () -> AppConfig
@@ -711,6 +742,25 @@ final class FloatingIndicatorController: NSObject {
         setState(.transcribing, config: config)
     }
 
+    /// This is a recording notice, not a warning overlay: stop/cancel controls
+    /// remain active, and ordinary recording refreshes cannot dismiss it.
+    func setCursorInsertionStopped(_ stopped: Bool, config: AppConfig) {
+        // A later focus notification must not replace the more important
+        // inference failure with a promise of a complete transcript in history.
+        if stopped, insertionStopReason == .transcriptionFailed { return }
+        setInsertionStopReason(stopped ? .cursorOwnershipLost : nil, config: config)
+    }
+
+    func setLiveTranscriptionFailed(config: AppConfig) {
+        setInsertionStopReason(.transcriptionFailed, config: config)
+    }
+
+    private func setInsertionStopReason(_ reason: BufferedDictationInsertionStopReason?, config: AppConfig) {
+        guard insertionStopReason != reason else { return }
+        insertionStopReason = reason
+        if state == .recording { setState(.recording, config: config) }
+    }
+
     func setState(_ requestedState: DictationState, config: AppConfig) {
         // The shared indicator also receives dictation completion/failure and
         // warmup updates. They must not retire a still-active meeting's controls.
@@ -718,6 +768,7 @@ final class FloatingIndicatorController: NSObject {
             return
         }
         let state: DictationState = isMeetingRecording ? .recording : requestedState
+        if state != .recording || isMeetingRecording { insertionStopReason = nil }
         let restoresMeetingTranscript = isMeetingRecording && state == .recording
             && meetingTranscriptPanel.isVisible && config.showMeetingTranscriptOnIndicatorHover
             && config.indicatorAnchor != .notch
@@ -784,12 +835,12 @@ final class FloatingIndicatorController: NSObject {
             switch state {
             case .idle: title = "Muesli"
             case .preparing: title = "Preparing"
-            case .recording: title = isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")
+            case .recording: title = insertionStopReason?.compactTitle ?? (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
             if notchIndicator.show(on: screen, title: title,
-                detail: state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title,
+                detail: cursorInsertionStopped ? insertionStoppedDetail : (state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title),
                 recording: state == .recording, paused: isMeetingRecordingPaused, meeting: isMeetingRecording,
                 handsFree: isToggleDictation || isMeetingRecording,
                 active: state != .idle,
@@ -798,7 +849,7 @@ final class FloatingIndicatorController: NSObject {
                 accent: RecordingIndicatorPalette.accent(hex: config.recordingColorHex),
                 instruction: notchInstruction, instructionStatus: instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle,
                 appName: instructionAppName, appIcon: instructionAppIcon, question: question,
-                toolResults: notchToolResults) {
+                toolResults: notchToolResults, cursorInsertionStopped: cursorInsertionStopped) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 return
@@ -891,9 +942,20 @@ final class FloatingIndicatorController: NSObject {
                     height: xSize
                 )
 
-                textLabel.animator().alphaValue = 0
-                textLabel.isHidden = true
+                textLabel.animator().alphaValue = cursorInsertionStopped ? 1 : 0
+                textLabel.isHidden = !cursorInsertionStopped
+                if let insertionStopReason {
+                    configureTextLabelForTranscript(false)
+                    textLabel.stringValue = insertionStopReason.title
+                    textLabel.font = .systemFont(ofSize: 11, weight: .medium)
+                    textLabel.textColor = .systemYellow
+                    textLabel.toolTip = insertionStoppedDetail
+                    textLabel.setAccessibilityLabel(insertionStoppedDetail)
+                    textLabel.frame = NSRect(x: 23, y: 3, width: targetFrame.width - 46, height: 16)
+                }
             } else {
+                textLabel.toolTip = nil
+                textLabel.setAccessibilityLabel(nil)
                 iconLabel.isHidden = false
                 iconLabel.animator().alphaValue = 1
                 iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
@@ -1583,6 +1645,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func ensureWaveformAnimation(in frameSize: NSSize, mode: WaveformAnimationMode) {
+        if cursorInsertionStopped {
+            if !barLayers.isEmpty { stopWaveformAnimation() }
+            return
+        }
         if barLayers.isEmpty {
             setupWaveformBars(in: frameSize)
         } else {
@@ -2364,7 +2430,9 @@ final class FloatingIndicatorController: NSObject {
                     : NSSize(width: 44, height: 28)
             }
         case .preparing: size = NSSize(width: 76, height: 22)
-        case .recording: size = NSSize(width: 76, height: 22)
+        case .recording:
+            let textWidth = ((insertionStopReason?.title ?? "") as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width
+            size = NSSize(width: cursorInsertionStopped ? ceil(textWidth) + 54 : 76, height: 22)
         case .transcribing:
             hideShortcutPillChrome()
             if let transcript = instructionTranscriptText {

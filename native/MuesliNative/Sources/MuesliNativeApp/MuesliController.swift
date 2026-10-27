@@ -11607,6 +11607,7 @@ public final class MuesliController: NSObject {
     /// Only hands-free local dictation opts in. A missing safe target preserves
     /// the existing paste-on-stop behavior without attempting speculative writes.
     private func beginBufferedDictationIfNeeded() {
+        indicator.setCursorInsertionStopped(false, config: config)
         guard config.enableBufferedLiveDictation,
               selectedDictationProvider == .local,
               selectedBackend.supportsBufferedLiveTranscription,
@@ -11645,6 +11646,11 @@ public final class MuesliController: NSObject {
     private func completeBufferedDictationCapture(target: LiveDictationTextTarget, id: UUID,
         backend: BackendOption, whisperLanguage: WhisperKitLanguage, parakeetLanguage: ParakeetLanguage,
         pendingAudio: BufferedDictationCaptureAudio, previewTrace: DictationLatencyTraceToken?) {
+        target.onSuspended = { [weak self] in
+            guard let self, self.bufferedDictationContext?.id == id else { return }
+            self.indicator.setCursorInsertionStopped(true, config: self.config)
+            self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
+        }
         let delivery = BufferedDictationPreviewDelivery(deliver: { update in
             await target.update(committedText: update.committedText, tail: update.tail)
         }, onResult: { [weak self] update, accepted in
@@ -11655,7 +11661,10 @@ public final class MuesliController: NSObject {
                 // Delivery safety and recognition completeness are independent.
                 // Keep decoding for history; the target still refuses unsafe writes.
                 current.delivery.close()
-                self.statusBarController?.setStatus("Live updates paused; final dictation will be saved in history")
+                if target.isSuspended {
+                    self.indicator.setCursorInsertionStopped(true, config: self.config)
+                    self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
+                }
             }
         })
         do {
@@ -11676,9 +11685,10 @@ public final class MuesliController: NSObject {
                     Task { @MainActor [weak self] in
                         guard let self, self.bufferedDictationContext?.id == id else { return }
                         self.markDictationLatency("buffered_preview_failed:\(category)", trace: previewTrace)
-                        // Keep the target lease for final cleanup; failure of preview
-                        // inference must never trigger a duplicate normal paste.
-                        self.statusBarController?.setStatus("Live transcription stopped; recording will be saved for recovery")
+                        // Preserve the target lease for the existing recovery path;
+                        // failed inference must never trigger a duplicate normal paste.
+                        self.indicator.setLiveTranscriptionFailed(config: self.config)
+                        self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
                     }
                 },
                 onDiagnostic: { [weak self] event in
@@ -11714,6 +11724,7 @@ public final class MuesliController: NSObject {
     }
 
     private func cancelBufferedDictation() {
+        indicator.setCursorInsertionStopped(false, config: config)
         cancelBufferedDictationCapture()
         bufferedDictationContext?.delivery.close()
         bufferedDictationContext?.session.cancel()
@@ -12306,6 +12317,7 @@ public final class MuesliController: NSObject {
     ) {
         cancelBufferedDictationCapture()
         let liveContext = bufferedDictationContext
+        indicator.setCursorInsertionStopped(false, config: config)
         bufferedDictationContext = nil
         liveContext?.delivery.close()
         if let diagnostics = liveContext?.session.diagnostics {

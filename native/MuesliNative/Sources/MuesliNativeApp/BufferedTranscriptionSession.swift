@@ -92,6 +92,19 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var silenceRMS: Float = 0.0001
         /// Presentation only; never changes word ownership or PCM trimming.
         var smoothWhisperPreviews = false
+        /// Whisper's local agreement ignores cosmetic revisions and can use a
+        /// following timed word as context instead of the fixed age cutoff.
+        var lexicalAgreement = false
+
+        static var whisper: Self {
+            var configuration = Self()
+            configuration.smoothWhisperPreviews = true
+            configuration.lexicalAgreement = true
+            // Bound repeated decoding and the wait for an ordinary rollover.
+            // Timestamp tolerances and the recovery budget are unchanged.
+            configuration.windowSamples = 128_000
+            return configuration
+        }
     }
 
     /// Provisional telemetry thresholds, not finalization gates or calibrated correctness.
@@ -200,6 +213,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private struct AlignmentRecovery: Error {
         let reason: RecoveryReason
         var candidate: [BufferedTranscriptionWord]? = nil
+        var agreementTail: [BufferedTranscriptionWord]? = nil
     }
 
     private struct State {
@@ -210,6 +224,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var ownedUntil: Double?
         var committedText = ""
         var committedAnchors: [BufferedTranscriptionWord] = []
+        // Early Whisper commitments may outlast the four retained anchors.
+        // Keep their furthest decoded end until the silence cutoff passes it.
+        var maximumOwnedWordEnd: Double?
         var previousTail: [BufferedTranscriptionWord] = []
         var previousTailReuseAgreement: [Bool] = []
         var lastPublishedTail = ""
@@ -411,6 +428,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private func drain() async {
         while let snapshot = snapshot() {
             do {
+                let decodeStarted = ProcessInfo.processInfo.systemUptime
                 let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
                 let result: BufferedTranscriptionWindow
                 if rms <= Double(configuration.silenceRMS) {
@@ -426,6 +444,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                     result = try await decode(snapshot.audio)
                 }
                 try synchronized {
+                    guard !state.closed else { return }
+                    let decodeMilliseconds = Int((ProcessInfo.processInfo.systemUptime - decodeStarted) * 1_000)
+                    onDiagnostic("decode:audioMs=\(snapshot.audio.count / 16):decodeMs=\(decodeMilliseconds):final=\(snapshot.final)")
                     guard !state.closed else { return }
                     // accept can update anchors before discovering that a roll
                     // cannot advance. Recovery must restore the entire proposal,
@@ -480,29 +501,75 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             BufferedTranscriptionWord(text: $0.text, start: base + $0.start, end: base + $0.end, confidence: $0.confidence)
         }
         let unownedStart = try unownedStart(in: absoluteWords, base: base)
+        if let ownedEnd = absoluteWords.prefix(unownedStart).map(\.end).max() {
+            state.maximumOwnedWordEnd = max(state.maximumOwnedWordEnd ?? ownedEnd, ownedEnd)
+        }
         let words = Array(absoluteWords.dropFirst(unownedStart))
         let matureUntil = base + duration - Double(configuration.rightContextSamples) / 16_000
         let matureCount = words.prefix { $0.end <= matureUntil }.count
         var agreementCount = 0
         for (previous, current) in zip(state.previousTail, words) {
-            // Position and time must agree as well as spelling. Repeated words
-            // remain separate occurrences; punctuation and case stay revisable
-            // until both consecutive hypotheses agree exactly.
-            guard previous.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.elementsEqual(
-                current.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16),
-                abs(previous.start - current.start) <= configuration.maximumTimestampDrift,
-                abs(previous.end - current.end) <= configuration.maximumTimestampDrift else { break }
+            // Position and both timestamps still identify the same occurrence.
+            // Whisper may change edge punctuation/casing indefinitely despite
+            // agreeing on the word. Freeze its latest rendering without holding
+            // the entire following prefix hostage to those cosmetic revisions.
+            guard wordsAgree(previous, current) else { break }
             agreementCount += 1
         }
         let reuseAgreement = reuseAgreement(for: words, freshCoverage: snapshot.offset + snapshot.audio.count > state.lastDecodedEnd)
         // A full encoder window must advance even after a coalesced first decode.
         // Its existing right-context policy remains the bounded fallback; shorter
         // windows now freeze agreed prefixes instead of rewriting whole sentences.
-        let commitCount = snapshot.final ? words.count : rolls ? matureCount : min(matureCount, agreementCount)
+        // Local agreement plus a following timed word already establishes a
+        // complete prefix. Whisper should not wait another three seconds for
+        // that prefix; the right-context budget remains the rollover fallback
+        // for words that have not agreed, and for an isolated final word.
+        var confirmedCount = configuration.lexicalAgreement ? min(agreementCount, max(0, words.count - 1)) : 0
+        while confirmedCount > 0, words[confirmedCount].end == words[confirmedCount].start {
+            confirmedCount -= 1
+        }
+        // Maturity is an evidence budget, not a reason to wait for the next
+        // physical crop. A stable ordered seam can close a mature prefix even
+        // when an earlier unowned word is still revising its spelling or onset.
+        let stableSeamCount = !rolls && !snapshot.final
+            && snapshot.offset + snapshot.audio.count > state.lastDecodedEnd
+            ? maturePrefixWithStableSeam(words, matureCount: matureCount) : 0
+        let matureCommitCount = rolls ? matureCount : max(min(matureCount, agreementCount), stableSeamCount)
+        var commitCount = snapshot.final ? words.count : max(confirmedCount, matureCommitCount)
+        // Preserve quantized zero-duration words, but never make one the live
+        // boundary anchor. Whisper can later relocate that onset substantially,
+        // leaving a lone committed word unmatchable for many decoding passes.
+        // Keep it pending until a positive-duration neighbor can anchor the group;
+        // finalization still flushes every word, including a lone zero-timed word.
+        let proposedCount = commitCount
+        var zeroAnchorHeld = 0
+        if !snapshot.final, configuration.lexicalAgreement {
+            while commitCount > 0, words[commitCount - 1].end == words[commitCount - 1].start {
+                commitCount -= 1
+            }
+            zeroAnchorHeld = proposedCount - commitCount
+            // After startup or a long silent roll there is no preceding anchor
+            // to corroborate an onset revision. Establish a small timed group,
+            // rather than freezing one speculative word as the sole boundary.
+            if state.committedAnchors.isEmpty {
+                let lexicalCount = words.prefix(commitCount).filter { $0.end > $0.start
+                    && $0.text.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains) }.count
+                // A real one-word utterance may be followed by any length pause.
+                // Independent agreement plus mature context can confirm it.
+                if lexicalCount == 0 || (lexicalCount < 2 && commitCount > min(matureCount, agreementCount)) {
+                    commitCount = 0
+                }
+            }
+        }
+        onDiagnostic("commit_policy:mature=\(matureCount):agreed=\(agreementCount):confirmed=\(confirmedCount):stableSeam=\(stableSeamCount):committed=\(commitCount):pending=\(words.count - commitCount):zeroAnchorHeld=\(zeroAnchorHeld):initialGroupHeld=\(proposedCount - zeroAnchorHeld - commitCount):roll=\(rolls)")
+        guard !state.closed else { return }
         var retainFrom = base + duration
         var retainsLexicalAnchor = false
         if commitCount > 0 {
             let committed = Array(words.prefix(commitCount))
+            if let ownedEnd = committed.map(\.end).max() {
+                state.maximumOwnedWordEnd = max(state.maximumOwnedWordEnd ?? ownedEnd, ownedEnd)
+            }
             recordReuseQuality(committed, agreement: Array(reuseAgreement.prefix(commitCount)))
             let last = committed[committed.count - 1]
             let next = words.dropFirst(commitCount).first
@@ -515,8 +582,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             retainsLexicalAnchor = true
             state.committedText += join(committed, after: state.committedText)
             state.committedAnchors = Array((state.committedAnchors + committed).suffix(4))
+            let ownedEnd = configuration.lexicalAgreement ? state.maximumOwnedWordEnd ?? last.end : last.end
             if rolls, (next?.start ?? matureUntil) >= matureUntil,
-               last.end + Double(configuration.leftContextSamples) / 16_000 + configuration.maximumTimestampDrift < matureUntil {
+               ownedEnd + Double(configuration.leftContextSamples) / 16_000 + configuration.maximumTimestampDrift < matureUntil {
                 // A long decoded silence after the last word needs no lexical
                 // anchor. Retain its right context and own only the silent lead.
                 state.ownedUntil = matureUntil
@@ -524,13 +592,18 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 retainsLexicalAnchor = false
             }
         } else if rolls {
-            let hasSilentLead = state.committedAnchors.last.map {
-                $0.end + Double(configuration.leftContextSamples) / 16_000
+            let lastOwnedEnd = configuration.lexicalAgreement
+                ? state.maximumOwnedWordEnd : state.committedAnchors.last?.end
+            let hasSilentLead = lastOwnedEnd.map {
+                $0 + Double(configuration.leftContextSamples) / 16_000
                     + configuration.maximumTimestampDrift < matureUntil
             } ?? true
             // A next word at the maturity cutoff is not itself evidence of a
             // long pause. Preserve nearby owned onsets and their timing margin.
-            if words.isEmpty || ((words.first?.start ?? base) >= matureUntil && hasSilentLead) {
+            // Empty pending text does not mean every early-owned word ended.
+            // Keep a lexical seam while any earlier owned interval crosses it.
+            if (words.isEmpty && (!configuration.lexicalAgreement || hasSilentLead))
+                || ((words.first?.start ?? base) >= matureUntil && hasSilentLead) {
                 // There is no unowned speech in this leading span. Its old anchors
                 // may leave the retained PCM; the absolute time boundary then owns it.
                 state.ownedUntil = max(state.ownedUntil ?? -.infinity, matureUntil)
@@ -542,7 +615,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 retainFrom = min(ownedUntil, words.first?.start ?? ownedUntil, lastOwned.start)
                 retainsLexicalAnchor = true
             } else {
-                throw AlignmentRecovery(reason: .noRollProgress)
+                throw AlignmentRecovery(reason: .noRollProgress, agreementTail: words)
             }
         }
         let tailWords = Array(words.dropFirst(commitCount))
@@ -571,8 +644,22 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 let contextualDiscard = Int(contextualStart * 16_000) - configuration.leftContextSamples - state.offset
                 if contextualDiscard >= configuration.updateSamples { retainFrom = contextualStart }
             }
-            let discard = Int(retainFrom * 16_000) - configuration.leftContextSamples - state.offset
-            guard discard > 0, discard <= state.audio.count else { throw AlignmentRecovery(reason: .noRollProgress) }
+            // Once a decoded silent lead has retired every lexical anchor and
+            // there is no pending word, old context is already owned. Feeding it
+            // back to Whisper can hallucinate a new phrase over the pause.
+            // Keep left context whenever an anchor or an unfinished word needs it.
+            // An empty new tail can also follow an early-agreed owned word
+            // spanning the cutoff. Preserve its onset until that word has ended;
+            // cropping it could make the remaining suffix appear to be new speech.
+            let ownedWordsEnded = configuration.lexicalAgreement
+                ? (state.maximumOwnedWordEnd.map { $0 <= retainFrom } ?? true)
+                : state.committedAnchors.allSatisfy { $0.end <= retainFrom }
+            let leftContext = configuration.lexicalAgreement && !retainsLexicalAnchor && tailWords.isEmpty && ownedWordsEnded
+                ? 0 : configuration.leftContextSamples
+            let discard = Int(retainFrom * 16_000) - leftContext - state.offset
+            guard discard > 0, discard <= state.audio.count else {
+                throw AlignmentRecovery(reason: .noRollProgress, agreementTail: words)
+            }
             state.audio.removeFirst(discard)
             state.offset += discard
             let newBase = Double(state.offset) / 16_000
@@ -610,7 +697,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private func unownedStart(in words: [BufferedTranscriptionWord], base: Double) throws -> Int {
         guard !state.committedAnchors.isEmpty else {
             guard let ownedUntil = state.ownedUntil else { return 0 }
-            return words.prefix { ($0.start + $0.end) / 2 <= ownedUntil }.count
+            // Silent ownership is half-open: a zero-duration word exactly at
+            // its right edge was not committed and must survive the next roll.
+            return words.prefix { ($0.start + $0.end) / 2 < ownedUntil }.count
         }
         let anchors = state.committedAnchors.filter { $0.start >= base }
         guard !anchors.isEmpty else { throw AlignmentRecovery(reason: .missingAnchor) }
@@ -730,8 +819,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
 
     private func deferAlignment(_ recovery: AlignmentRecovery, snapshot: Snapshot) {
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
-        state.previousTail = [] // Fresh two-hypothesis agreement after recovery.
-        state.previousTailReuseAgreement = []
+        // A valid hypothesis that cannot yet advance the crop is still evidence
+        // for the next growing window. Invalid/ambiguous alignments are not.
+        state.previousTail = configuration.lexicalAgreement ? recovery.agreementTail ?? [] : []
+        state.previousTailReuseAgreement = Array(repeating: false, count: state.previousTail.count)
         state.recovering = true
         state.recoveryCandidate = recovery.candidate
         let eligibleAnchors = state.committedAnchors.filter { $0.start >= Double(snapshot.offset) / 16_000 }.count
@@ -818,6 +909,49 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 state.reuseQuality.recordConcern(.lowConfidence)
             }
         }
+    }
+
+    private func wordsAgree(_ previous: BufferedTranscriptionWord, _ current: BufferedTranscriptionWord) -> Bool {
+        let sameWord = configuration.lexicalAgreement
+            ? agreementIdentity(previous.text) == agreementIdentity(current.text)
+            : previous.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.elementsEqual(
+                current.text.trimmingCharacters(in: .whitespacesAndNewlines).utf16)
+        return sameWord
+            && abs(previous.start - current.start) <= configuration.maximumTimestampDrift
+            && abs(previous.end - current.end) <= configuration.maximumTimestampDrift
+    }
+
+    private func maturePrefixWithStableSeam(_ words: [BufferedTranscriptionWord], matureCount: Int) -> Int {
+        guard configuration.lexicalAgreement, matureCount > 0,
+              matureCount < words.count, matureCount < state.previousTail.count else { return 0 }
+        // Compare exactly the endpoint and next position, never search for a
+        // nearby repeated word. Both observations must contain real timed words;
+        // standalone punctuation cannot establish the new ownership boundary.
+        for index in (matureCount - 1)...matureCount {
+            let previous = state.previousTail[index]
+            let current = words[index]
+            guard previous.end > previous.start, current.end > current.start,
+                  previous.text.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains),
+                  current.text.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains),
+                  wordsAgree(previous, current) else { return 0 }
+        }
+        return matureCount
+    }
+
+    private func agreementIdentity(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A hyphen can be a numeric sign. Do not treat '-1' and '1' as
+        // cosmetic variants when freezing new speech. Internal punctuation
+        // (can't/cant, decimal points) and standalone punctuation also survive.
+        let edges = CharacterSet.punctuationCharacters.subtracting(CharacterSet(charactersIn: "-#%٪‰‱'’′″"))
+            .union(.whitespacesAndNewlines)
+        var lexical = trimmed[...]
+        while let first = lexical.first, first.unicodeScalars.allSatisfy(edges.contains) {
+            if (first == "." || first == ","), lexical.dropFirst().first?.isNumber == true { break }
+            lexical.removeFirst()
+        }
+        while let last = lexical.last, last.unicodeScalars.allSatisfy(edges.contains) { lexical.removeLast() }
+        return lexical.isEmpty ? trimmed : lexical.lowercased()
     }
 
     private func anchorIdentity(_ text: String) -> String {

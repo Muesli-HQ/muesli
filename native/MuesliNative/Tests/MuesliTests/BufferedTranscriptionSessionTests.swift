@@ -4,6 +4,373 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("Whisper closes a mature prefix at a stable ordered seam before the physical rollover", arguments: [
+        "none", "followingSpelling", "followingStart", "followingEnd", "endpointStart", "endpointEnd",
+        "zeroEndpoint", "zeroFollowing", "missingFollowing", "shiftedIndex"
+    ])
+    func whisperStableSeamBeforeRollover(change: String) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let phase = samples.count < 100_000 ? 0 : samples.count < 120_000 ? 1 : 2
+            var words: [BufferedTranscriptionWord]
+            if phase == 0 {
+                words = [.init(text: "DIF", start: 3.28, end: 3.62),
+                         .init(text: "means", start: 3.62, end: 4.12)]
+            } else if phase == 1 {
+                words = [.init(text: "DIF", start: 2.52, end: 3.56),
+                         .init(text: "means", start: 3.56, end: change == "zeroEndpoint" ? 3.7 : 4.08),
+                         .init(text: "comparing", start: change == "zeroFollowing" ? 4.98 : 4.08,
+                               end: change == "zeroFollowing" ? 5.1 : 6.36)]
+            } else {
+                words = [.init(text: "- Diff", start: 3.26, end: 3.62),
+                         .init(text: "means", start: change == "endpointStart" ? 3.9 : 3.62,
+                               end: change == "zeroEndpoint" ? 3.62 : change == "endpointEnd" ? 4.5 : 4.10)]
+                if change != "missingFollowing" {
+                    words.append(.init(text: change == "followingSpelling" ? "contrasting" : "comparing",
+                        start: change == "zeroFollowing" ? 5.0 : change == "followingStart" ? 4.5 : 4.10,
+                        end: change == "zeroFollowing" ? 5.0 : change == "followingEnd" ? 6.9 : 6.36))
+                }
+                if change == "shiftedIndex" { words.insert(.init(text: "the", start: 2.9, end: 3.1), at: 0) }
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) },
+        onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 91_520)) // 5.72 seconds
+        #expect(await updates.next()?.committedText == "")
+        session.enqueue(Array(repeating: 0.2, count: 17_600)) // 6.82 seconds
+        #expect(await updates.next()?.committedText == "")
+        session.enqueue(Array(repeating: 0.2, count: 17_600)) // 7.92 seconds: no 8-second decode
+        #expect(await updates.next()?.committedText == (change == "none" ? "- Diff means" : ""))
+        #expect(session.diagnostics.receivedSamples < BufferedTranscriptionSession.Configuration.whisper.windowSamples)
+        if change == "none" {
+            #expect(output.diagnostics.contains { $0.contains("stableSeam=2") && $0.contains("roll=false") })
+        }
+        let result = await session.finishForReuse()
+        let expected = (change == "shiftedIndex" ? "the " : "") + "- Diff means"
+            + (change == "missingFollowing" ? "" : change == "followingSpelling" ? " contrasting" : " comparing")
+        #expect(result.canReuse && result.text == expected)
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Parakeet emission-point words retain their live ownership policy")
+    func parakeetEmissionPointsStillCommit() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "go again", words: [.init(text: "go", start: 0.2, end: 0.2),
+                .init(text: "again", start: 0.6, end: 0.6)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 4 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "go again")
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == "go again")
+    }
+
+    @Test("a zero-duration leading word cannot strand streaming on a lone anchor")
+    func zeroDurationLeadingAnchorDoesNotStall() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let corrected = samples.count >= 6 * 16_000
+            return .init(text: "Thank you.", words: [
+                .init(text: "Thank", start: corrected ? 0.5 : 0, end: corrected ? 0.9 : 0),
+                .init(text: "you.", start: 1.0, end: 2.5)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) },
+        onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 4 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "")
+        for _ in 6...7 {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            _ = await updates.next()
+        }
+        #expect(output.values.last?.committedText == "Thank you.")
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery") })
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == "Thank you.")
+        #expect(output.failures == 0)
+    }
+
+    @Test("Whisper retains an owned word's onset when its duration crosses an empty-tail crop")
+    func whisperEmptyTailRetainsCrossingOwnedWord() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            var events: [(String, Double, Double)] = [("hello", 1, 1.5)]
+            if end <= 8 {
+                events.append(("long", 4.5, 5.8))
+                if end <= 7 { events.append(("following", 5.9, 6)) }
+            } else {
+                // More context extends the owned word through a pause. If its
+                // onset was cropped, the decoder retimes the surviving suffix
+                // at the new window's start instead of the original occurrence.
+                events.append(("long", max(4.5, base), 7.5))
+                events.append(("resumed", 8, 8.6))
+            }
+            let words = events.compactMap { text, start, finish -> BufferedTranscriptionWord? in
+                guard start >= base else { return nil }
+                return .init(text: text, start: start - base, end: finish - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(6 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        session.enqueue(((6 * 16_000)..<(7 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "hello long")
+        // The following draft disappears at the full-window boundary. The owned
+        // word still spans its 5-second crop and requires its left context.
+        for second in 8...10 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            _ = await updates.next()
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == "hello long resumed")
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Whisper retains lexical ownership when an older owned word outlasts the four saved anchors")
+    func whisperOlderOwnedWordCannotReappearAfterEmptyTailCrop() async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            // End times are not required to be monotonic by the decoder
+            // contract. The long owned word leaves the last-four anchor list.
+            var events: [(String, Double, Double)] = [
+                ("long", end <= 8 ? 1 : max(1, base), end <= 8 ? 5.8 : 7.5),
+                ("a", 1.5, 1.7), ("b", 2, 2.2), ("c", 2.5, 2.7),
+                ("d", 3, 3.2), ("e", 3.5, 3.7)]
+            if end <= 7 { events.append(("following", 4, 4.2)) }
+            if end > 8 { events.append(("resumed", 8, 8.6)) }
+            let words = events.compactMap { text, start, finish -> BufferedTranscriptionWord? in
+                guard start >= base else { return nil }
+                return .init(text: text, start: start - base, end: finish - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(6 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        session.enqueue(((6 * 16_000)..<(7 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "long a b c d e")
+        for second in 8...10 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            _ = await updates.next()
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == "long a b c d e resumed")
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Whisper lexical agreement emits small groups for five minutes despite punctuation revisions")
+    func whisperPunctuationCadenceAcrossFiveMinutes() async {
+        let config = BufferedTranscriptionSession.Configuration.whisper
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let upper = Int(end.rounded()) % 2 == 0
+            let words: [BufferedTranscriptionWord] = (0..<300).compactMap { index in
+                let start = Double(index) + 0.1
+                let finish = start + 0.4
+                guard start >= base, finish <= end else { return nil }
+                // Includes deliberate repeats; spelling changes at the edge
+                // must not merge occurrences or reset otherwise stable agreement.
+                let text = upper ? "Go," : "go"
+                return .init(text: text, start: start - base, end: finish - base, confidence: 0.95)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<32_000).map(Float.init))
+        _ = await updates.next()
+        var previousCount = 0
+        var stalledSteps = 0
+        for second in 3...300 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            guard let update = await updates.next() else { break }
+            let count = update.committedText.split(separator: " ").count
+            if second >= 5 {
+                // The capped rollover snapshot can end between sample arrivals.
+                // Permit that one-step boundary, never a sentence-length hold.
+                #expect((second - 2...second - 1).contains(count), "Stable words stalled at audio second \(second)")
+                #expect(count - previousCount <= 2, "Committed a sentence-sized catch-up group")
+                stalledSteps = count == previousCount ? stalledSteps + 1 : 0
+                #expect(stalledSteps <= 1)
+            }
+            previousCount = count
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text.split(separator: " ").count == 300)
+        #expect(output.failures == 0)
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
+    @Test("Whisper lexical agreement still rejects changed words and occurrences", arguments: ["spelling", "internalPunctuation", "timing", "punctuationOnly", "numberSign", "leadingDecimal", "decimalComma", "percentage", "codeSuffix", "primeUnit"])
+    func whisperAgreementRequiresSameWordAndOccurrence(change: String) async {
+        var config = BufferedTranscriptionSession.Configuration()
+        config.lexicalAgreement = true
+        let variants: [String: (String, String)] = ["spelling": ("go", "stop"), "internalPunctuation": ("can't", "cant"),
+            "punctuationOnly": ("-", ","), "numberSign": ("-1", "1"), "leadingDecimal": (".5", "5"),
+            "decimalComma": (",5", "5"), "percentage": ("50%", "50"), "codeSuffix": ("C#", "C"), "primeUnit": ("2′", "2")]
+        let (original, revised) = variants[change] ?? ("go", "go")
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            let first = samples.count == 2 * 16_000
+            let text = first ? original : revised
+            let start = !first && change == "timing" ? 0.5 : 0.1
+            return .init(text: text + " now", words: [.init(text: text, start: start, end: start + 0.4),
+                .init(text: "now", start: 1.0, end: 1.4)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 2 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "")
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == revised + " now")
+    }
+
+    @Test("a zero-timed word on the silent ownership edge survives rollover", arguments: [false, true])
+    func zeroDurationAtSilentBoundaryIsNotDiscarded(hasEarlierWord: Bool) async {
+        let output = BufferedPreviewOutput()
+        var configuration = BufferedTranscriptionSession.Configuration.whisper
+        configuration.windowSamples = 240_000
+        let session = BufferedTranscriptionSession(configuration: configuration, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let events: [(String, Double, Double)] = (hasEarlierWord ? [("hello", 1, 2)] : [])
+                + [("I", 12, 12)] + (end > 15 ? [("agree", 12.1, 12.5)] : [])
+            let words: [BufferedTranscriptionWord] = events.compactMap { text, start, finish in
+                guard start >= base else { return nil }
+                return .init(text: text, start: start - base, end: finish - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(15 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        for second in 16...17 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            _ = await updates.next()
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == (hasEarlierWord ? "hello I agree" : "I agree"))
+        #expect(output.failures == 0)
+    }
+
+    @Test("Whisper only uses positive-duration following context before the age cutoff", arguments: [false, true])
+    func whisperFollowingWordConfirmsPrefix(zeroDurationFollower: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { _ in
+            .init(text: "hello world again", words: [
+                .init(text: "hello", start: 0.3, end: 0.6),
+                .init(text: "world", start: 0.7, end: 1.2),
+                .init(text: "again", start: 1.3, end: zeroDurationFollower ? 1.3 : 1.8)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 32_000))
+        #expect(await updates.next()?.committedText == "")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == (zeroDurationFollower ? "" : "hello world"))
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == "hello world again")
+    }
+
+    @Test("Whisper waits for a corroborated initial group after a speculative pause word", arguments: ["zero", "punctuation", "changed"])
+    func whisperInitialGroupSurvivesPauseHallucination(kind: String) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            let end = base + Double(samples.count) / 16_000
+            let initial: [(String, Double, Double)] = kind == "punctuation"
+                ? [(".", 1.92, 3.0), ("-", 3.0, 3.32)]
+                : [("Thank", 1.92, 3.32), ("you", 3.32, 3.32)]
+            let changed = kind == "changed" && end >= 10
+            let events: [(String, Double, Double)] = end <= 8 ? initial
+                : [(changed ? "other" : "diff", 7.4, 7.7), ("means", 7.7, 8.2), ("comparing", 8.2, 8.8)]
+            let words = events.filter { $0.1 >= base }.map {
+                BufferedTranscriptionWord(text: $0.0, start: $0.1 - base, end: $0.2 - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) },
+        onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(8 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "")
+        for second in 9...10 {
+            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            _ = await updates.next()
+        }
+        #expect(output.values.last?.committedText == (kind == "changed" ? "" : "diff means"))
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == (kind == "changed" ? "other means comparing" : "diff means comparing"))
+        #expect(output.failures == 0)
+        #expect(!output.diagnostics.contains { $0.contains("missing_anchor") })
+    }
+
+    @Test("Whisper confirms a single real word before a long pause without exhausting recovery")
+    func whisperSingleWordWithLongPause() async {
+        let output = BufferedPreviewOutput()
+        let events: [(String, Double, Double)] = [("yes", 0.1, 0.5), ("later", 40.1, 40.5), ("now", 41.1, 41.5)]
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let base = BufferedTimedAudio.origin(samples)
+            let end = base + Double(samples.count) / 16_000
+            let words = events.filter { $0.1 >= base && $0.2 <= end }.map {
+                BufferedTranscriptionWord(text: $0.0, start: $0.1 - base, end: $0.2 - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(BufferedTimedAudio.samples(0..<32_000, speech: events.map { $0.1..<$0.2 }))
+        _ = await updates.next()
+        for second in 3...44 {
+            session.enqueue(BufferedTimedAudio.samples(((second - 1) * 16_000)..<(second * 16_000), speech: events.map { $0.1..<$0.2 }))
+            guard let update = await updates.next() else { break }
+            if second == 4 { #expect(update.committedText == "yes") }
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == "yes later now")
+        #expect(output.failures == 0)
+    }
+
+    @Test("Whisper retires old silent context only when no unfinished word needs it", arguments: [false, true])
+    func whisperRetiresOwnedPauseContext(hasPendingWord: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+            let base = Double(samples.first ?? 0) / 16_000
+            output.diagnostic("origin=\(base)")
+            let events: [(String, Double, Double)] = [("all", 0.5, 1), ("right", 1, 1.5)]
+                + (hasPendingWord ? [("later", 5, 6)] : [])
+            let words = events.filter { $0.1 >= base }.map {
+                BufferedTranscriptionWord(text: $0.0, start: $0.1 - base, end: $0.2 - base)
+            }
+            return .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue((0..<(8 * 16_000)).map(Float.init))
+        #expect(await updates.next()?.committedText == "all right")
+        session.enqueue(((8 * 16_000)..<(9 * 16_000)).map(Float.init))
+        _ = await updates.next()
+        #expect(output.diagnostics.contains("origin=\(hasPendingWord ? 4.0 : 5.0)"))
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.text == (hasPendingWord ? "all right later" : "all right"))
+        #expect(output.failures == 0)
+    }
+
     @Test("empty rolling recognition retains audible words for later context")
     func emptyRollRetainsUnrecognizedAudio() async {
         var config = BufferedTranscriptionSession.Configuration()

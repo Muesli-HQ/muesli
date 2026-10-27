@@ -1313,6 +1313,48 @@ struct LiveDictationTextTargetTests {
         }
     }
 
+    @Test("Permanent cursor loss announces immediately, even without another preview", arguments: [false, true])
+    func announcesPermanentOwnershipLoss(changesFocus: Bool) async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        var notices = 0
+        target.onSuspended = { notices += 1 }
+        #expect(await target.update(text: "first"))
+        if changesFocus {
+            target.focusTargetDidDepart()
+        } else {
+            editor.selection.location = 0
+            target.textTargetDidChange()
+        }
+        #expect(notices == 1)
+        #expect(target.isSuspended)
+        target.focusTargetDidDepart()
+        #expect(await target.update(text: "late preview") == false)
+        #expect(await target.finish(text: "Final cleanup.") == false)
+        #expect(notices == 1)
+        #expect(editor.text == "Before first after")
+    }
+
+    @Test("Temporary AX loss and ordinary completion never announce stopped insertion")
+    func transientAvailabilityDoesNotAnnounceStop() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        var notices = 0
+        target.onSuspended = { notices += 1 }
+        editor.focusUnavailable = true
+        #expect(await target.update(text: "first"))
+        #expect(target.isPaused)
+        #expect(notices == 0)
+        editor.focusUnavailable = false
+        #expect(await target.update(text: "first"))
+        #expect(await target.finish(text: "First."))
+        #expect(editor.text == "Before First. after")
+        #expect(notices == 0)
+    }
+
     @Test func focusLossPermanentlySuspends() async throws {
         let editor = Editor()
         let target = try #require(LiveDictationTextTarget(access: editor.access))

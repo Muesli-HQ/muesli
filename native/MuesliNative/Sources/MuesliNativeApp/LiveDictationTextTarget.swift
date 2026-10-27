@@ -186,6 +186,8 @@ final class LiveDictationTextTarget {
     private var frozenCommittedText = ""
     private var nativeTarget: AccessibilityTarget?
     private let onDiagnostic: (String) -> Void
+    /// Permanent ownership loss only; transient AX pauses must not announce a stop.
+    var onSuspended: (() -> Void)?
     private(set) var isSuspended = false
     private(set) var isPaused = false
     private var availabilityWaitUsed: TimeInterval = 0
@@ -921,9 +923,11 @@ final class LiveDictationTextTarget {
 
     @discardableResult
     private func suspend(_ reason: String) -> Bool {
+        let firstSuspension = !isSuspended
         onDiagnostic(reason)
         isSuspended = true
         cancel()
+        if firstSuspension { onSuspended?() }
         return false
     }
 
