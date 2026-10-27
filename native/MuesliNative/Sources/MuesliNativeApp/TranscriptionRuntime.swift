@@ -124,7 +124,8 @@ actor TranscriptionCoordinator {
         "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
-    private let fluidTranscriber = FluidAudioTranscriber()
+    private let fluidTranscriber: FluidAudioTranscriber
+    private let fluidAudioTranscriberFactory: @Sendable () -> FluidAudioTranscriber
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
@@ -158,8 +159,11 @@ actor TranscriptionCoordinator {
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
         diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
-        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {}
+        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {},
+        fluidAudioTranscriberFactory: @escaping @Sendable () -> FluidAudioTranscriber = { FluidAudioTranscriber() }
     ) {
+        self.fluidAudioTranscriberFactory = fluidAudioTranscriberFactory
+        self.fluidTranscriber = fluidAudioTranscriberFactory()
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
@@ -643,6 +647,14 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        if backend.backend == "fluidaudio", meetingHelperTrigger == .modelLibrary {
+            // A library download is not a selection: validate in a disposable runtime
+            // so independent downloads cannot cancel or replace the active manager.
+            let downloadTranscriber = fluidAudioTranscriberFactory()
+            try await downloadTranscriber.loadModels(modelID: backend.model,
+                progress: progress, progressSnapshot: progressSnapshot)
+            return
+        }
         activeBackend = backend.backend
 
         if includeMeetingHelpers {

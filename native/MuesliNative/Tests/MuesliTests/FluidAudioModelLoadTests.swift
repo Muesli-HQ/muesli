@@ -14,8 +14,10 @@ struct FluidAudioModelLoadTests {
         let started = AsyncStream<String>.makeStream()
         let cancelled = AsyncStream<String>.makeStream()
         private var continuations: [String: CheckedContinuation<AsrManager, Error>] = [:]
+        private(set) var loadCount = 0
 
         func load(_ modelID: String) async throws -> AsrManager {
+            loadCount += 1
             let cancellation = cancelled.continuation
             return try await withTaskCancellationHandler(operation: {
                 try await withCheckedThrowingContinuation { continuation in
@@ -52,6 +54,104 @@ struct FluidAudioModelLoadTests {
             defer { lock.unlock() }
             return readyModels
         }
+    }
+
+    private final class TranscriberFactory: @unchecked Sendable {
+        private let lock = NSLock()
+        private var transcribers: [FluidAudioTranscriber] = []
+        private let loader: Loader
+        init(loader: Loader) { self.loader = loader }
+        func make() -> FluidAudioTranscriber {
+            let transcriber = FluidAudioTranscriber { [loader] modelID, _, _ in
+                try await loader.load(modelID)
+            }
+            lock.lock()
+            transcribers.append(transcriber)
+            lock.unlock()
+            return transcriber
+        }
+        var instances: [FluidAudioTranscriber] {
+            lock.lock()
+            defer { lock.unlock() }
+            return transcribers
+        }
+    }
+
+    @Test("Independent library downloads do not cancel each other or replace the selected runtime")
+    func libraryDownloadsAreIndependentOfSelection() async throws {
+        let loader = Loader()
+        let factory = TranscriberFactory(loader: loader)
+        let coordinator = TranscriptionCoordinator(fluidAudioTranscriberFactory: { factory.make() })
+        var started = loader.started.stream.makeAsyncIterator()
+        let selected = Task {
+            try await coordinator.preloadRequired(backend: .phonon25, includeMeetingHelpers: false)
+        }
+        defer { selected.cancel(); Task { await loader.releaseAll() } }
+        #expect(await started.next() == Self.phonon)
+        await loader.complete(Self.phonon)
+        try await selected.value
+        let first = Task {
+            try await coordinator.preloadRequired(backend: .parakeetMultilingual,
+                includeMeetingHelpers: false, meetingHelperTrigger: .modelLibrary)
+        }
+        defer { first.cancel() }
+        #expect(await started.next() == Self.parakeet)
+        let second = Task {
+            try await coordinator.preloadRequired(backend: .parakeetEnglish,
+                includeMeetingHelpers: false, meetingHelperTrigger: .modelLibrary)
+        }
+        defer { second.cancel() }
+        #expect(await started.next() == BackendOption.parakeetEnglish.model)
+        await loader.complete(Self.parakeet)
+        try await first.value
+        await loader.complete(BackendOption.parakeetEnglish.model)
+        try await second.value
+        let instances = factory.instances
+        #expect(instances.count == 3)
+        #expect(await instances[0].loadedModelID == Self.phonon)
+        #expect(await instances[1].loadedModelID == Self.parakeet)
+        #expect(await instances[2].loadedModelID == BackendOption.parakeetEnglish.model)
+    }
+
+    @Test("Same-model callers share preparation and either caller can cancel independently", arguments: [0, 1, 2])
+    func sameModelPreparationIsShared(_ cancelledCaller: Int) async throws {
+        let loader = Loader()
+        let firstProgress = ProgressLog()
+        let secondProgress = ProgressLog()
+        let joined = AsyncStream<Void>.makeStream()
+        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        var started = loader.started.stream.makeAsyncIterator()
+        let first = Task {
+            try await transcriber.loadModels(modelID: Self.phonon,
+                progressSnapshot: { firstProgress.record($0) })
+        }
+        defer { first.cancel(); joined.continuation.finish(); Task { await loader.releaseAll() } }
+        #expect(await started.next() == Self.phonon)
+        let second = Task {
+            try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: {
+                if $0.phase == .preparing { joined.continuation.yield() }
+                secondProgress.record($0)
+            })
+        }
+        defer { second.cancel() }
+        for await _ in joined.stream { break }
+        if cancelledCaller == 1 { first.cancel() }
+        if cancelledCaller == 2 { second.cancel() }
+        await loader.complete(Self.phonon)
+        if cancelledCaller == 1 {
+            await #expect(throws: CancellationError.self) { try await first.value }
+        } else {
+            try await first.value
+        }
+        if cancelledCaller == 2 {
+            await #expect(throws: CancellationError.self) { try await second.value }
+        } else {
+            try await second.value
+        }
+        #expect(await loader.loadCount == 1)
+        #expect(await transcriber.loadedModelID == Self.phonon)
+        #expect(firstProgress.ready == (cancelledCaller == 1 ? [] : [Self.phonon]))
+        #expect(secondProgress.ready == (cancelledCaller == 2 ? [] : [Self.phonon]))
     }
 
     @Test("A newer load cancels its predecessor and wins even when the predecessor finishes last")

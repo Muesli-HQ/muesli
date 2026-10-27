@@ -12,7 +12,13 @@ actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private(set) var loadedModelID: String?
     private var loadGeneration = UUID()
-    private var pendingLoad: (generation: UUID, modelID: String, task: Task<AsrManager, Error>)?
+    private struct PendingLoad {
+        let generation: UUID
+        let modelID: String
+        let task: Task<AsrManager, Error>
+        var waiters: Set<UUID>
+    }
+    private var pendingLoad: PendingLoad?
     private let modelLoader: ModelLoader
 
     init(modelLoader: @escaping ModelLoader = { modelID, progress, progressSnapshot in
@@ -45,23 +51,34 @@ actor FluidAudioTranscriber {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
-        // Invalidate before the cache hit: selecting loaded A must supersede pending B.
-        cancelPendingLoad()
-        if loadedModelID == modelID, asrManager != nil { return }
-        let generation = loadGeneration
-        let task = Task { try await modelLoader(modelID, progress, progressSnapshot) }
-        pendingLoad = (generation, modelID, task)
-        defer {
-            if pendingLoad?.generation == generation { pendingLoad = nil }
+        let callerID = UUID()
+        let operation: PendingLoad
+        if var pending = pendingLoad, pending.modelID == modelID {
+            // Independent dictation/meeting callers can share the same preparation.
+            pending.waiters.insert(callerID)
+            pendingLoad = pending
+            operation = pending
+            progressSnapshot?(.preparing(modelID: modelID,
+                message: ParakeetRuntimePolicy.preparingMessage(for: modelID)))
+        } else {
+            // Invalidate before the cache hit: selecting loaded A supersedes pending B.
+            cancelPendingLoad()
+            if loadedModelID == modelID, asrManager != nil { return }
+            let task = Task { try await modelLoader(modelID, progress, progressSnapshot) }
+            operation = PendingLoad(generation: loadGeneration, modelID: modelID,
+                task: task, waiters: [callerID])
+            pendingLoad = operation
         }
+        defer { removeWaiter(callerID, generation: operation.generation) }
         let manager = try await withTaskCancellationHandler(operation: {
-            try await task.value
+            try await operation.task.value
         }, onCancel: {
-            task.cancel()
+            // Cancellation detaches this caller; another caller may still need the model.
+            Task { await self.removeWaiter(callerID, generation: operation.generation) }
         })
         // Core ML may finish an uncancellable operation after cancellation.
         try Task.checkCancellation()
-        guard loadGeneration == generation, !task.isCancelled else { throw CancellationError() }
+        guard loadGeneration == operation.generation, !operation.task.isCancelled else { throw CancellationError() }
         self.asrManager = manager
         self.loadedModelID = modelID
         let preparing = ModelDownloadProgress.preparing(
@@ -128,6 +145,17 @@ actor FluidAudioTranscriber {
         let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
+    }
+
+    private func removeWaiter(_ callerID: UUID, generation: UUID) {
+        guard var pending = pendingLoad, pending.generation == generation,
+              pending.waiters.remove(callerID) != nil else { return }
+        if pending.waiters.isEmpty {
+            pendingLoad = nil
+            pending.task.cancel()
+        } else {
+            pendingLoad = pending
+        }
     }
 
     private func cancelPendingLoad() {
