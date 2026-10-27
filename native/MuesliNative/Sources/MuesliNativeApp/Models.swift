@@ -44,6 +44,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let phonon25 = BackendOption(
+        backend: "fluidaudio",
+        model: ParakeetRuntimePolicy.phonon25ModelID,
+        label: "Phonon-2.5",
+        sizeLabel: "~290 MB",
+        description: "Compact multilingual transcription in 25 languages.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -233,7 +242,7 @@ struct BackendOption: Equatable {
         let all = systemManaged
             + parakeetFamily
             + whisperFamily
-            + [.cohereTranscribe]
+            + [.phonon25, .cohereTranscribe]
             + streaming
             + bodhanFamily
             + experimental
@@ -343,7 +352,7 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
-            || Self.bodhanFamily.contains(self) || self == .appleSpeechAnalyzer
+            || Self.bodhanFamily.contains(self) || self == .phonon25 || self == .appleSpeechAnalyzer
             || self == .nemotron35Multilingual
     }
 
@@ -354,7 +363,7 @@ struct BackendOption: Equatable {
     /// Shared OS requirements for model selection in onboarding and the library.
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
-        if self == .parakeetRedux {
+        if backend == "fluidaudio", ParakeetRuntimePolicy.requiresMacOS15(for: model) {
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
         }
         switch backend {
@@ -473,7 +482,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: model))
+            let plan = FluidAudioModel.plan(for: model)
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)

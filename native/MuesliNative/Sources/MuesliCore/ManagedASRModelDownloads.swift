@@ -255,6 +255,21 @@ public enum ManagedASRModelPlans {
         )
     }
 
+    /// Phonon-2.5's validated dense GPU encoder with its own decoder/joint.
+    public static func phonon25(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
+        fluidAudioPlan(
+            modelID: ParakeetRuntimePolicy.phonon25ModelID,
+            repository: ParakeetRuntimePolicy.phonon25ModelID,
+            directoryName: "phonon-2.5-gpu",
+            required: [
+                "Preprocessor.mlmodelc", "Encoder.mlmodelc", "Decoder.mlmodelc",
+                "JointDecisionv3.mlmodelc", "parakeet_vocab.json",
+            ],
+            revision: "a042ef89966d289df295709b58ffdabb50bd2510",
+            modelsRoot: modelsRoot
+        )
+    }
+
     /// Parakeet Unified 0.6B (FastConformer-RNNT), English-focused offline batch
     /// path: int8 full-attention encoder + decoder + joint + vocabulary.
     public static func parakeetUnified(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
@@ -391,6 +406,7 @@ public enum ManagedASRModelPlans {
         repository: String,
         directoryName: String,
         required: [String],
+        revision: String = "main",
         mirror: MuesliModelMirror? = nil,
         modelsRoot: URL?
     ) -> ManagedASRModelPlan {
@@ -399,6 +415,7 @@ public enum ManagedASRModelPlans {
         return ManagedASRModelPlan(
             modelID: modelID,
             repository: repository,
+            revision: revision,
             cacheDirectory: directory,
             selections: [HuggingFaceModelSelection(includedPaths: Set(required))],
             requiredArtifactAlternatives: completenessRequirements(for: required),

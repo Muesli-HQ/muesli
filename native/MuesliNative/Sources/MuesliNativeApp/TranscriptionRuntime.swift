@@ -124,7 +124,13 @@ actor TranscriptionCoordinator {
         "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
-    private let fluidTranscriber = FluidAudioTranscriber()
+    private let fluidTranscriber: FluidAudioTranscriber
+    private let fluidAudioTranscriberFactory: @Sendable () -> FluidAudioTranscriber
+    typealias LibraryModelDownload = @Sendable (
+        String, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> Void
+    private let libraryModelDownload: LibraryModelDownload
+    private let libraryModelPreparation: ModelLibraryPreparation
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
@@ -158,8 +164,18 @@ actor TranscriptionCoordinator {
         vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
         diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics(),
-        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {}
+        nativeGemmaReadinessInvalidated: @escaping @MainActor @Sendable () -> Void = {},
+        fluidAudioTranscriberFactory: @escaping @Sendable () -> FluidAudioTranscriber = { FluidAudioTranscriber() },
+        libraryModelPreparation: ModelLibraryPreparation = .shared,
+        libraryModelDownload: @escaping LibraryModelDownload = { modelID, progress, progressSnapshot in
+            _ = try await ManagedASRModelDownloader.downloadIfNeeded(FluidAudioModel.plan(for: modelID),
+                progress: progress, progressSnapshot: progressSnapshot)
+        }
     ) {
+        self.libraryModelDownload = libraryModelDownload
+        self.libraryModelPreparation = libraryModelPreparation
+        self.fluidAudioTranscriberFactory = fluidAudioTranscriberFactory
+        self.fluidTranscriber = fluidAudioTranscriberFactory()
         self.diarizerModelLoader = diarizerModelLoader
         self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
@@ -228,8 +244,8 @@ actor TranscriptionCoordinator {
         await nativeGemmaReadinessInvalidated()
     }
 
-    func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
-        await fluidTranscriber.shutdown(ifLoadedVersion: version)
+    func unloadFluidAudioTranscriber(ifLoadedModelID modelID: String) async {
+        await fluidTranscriber.shutdown(ifLoadedModelID: modelID)
     }
 
     func unloadParakeetUnifiedTranscriber() async {
@@ -643,6 +659,27 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        if backend.backend == "fluidaudio", meetingHelperTrigger == .modelLibrary {
+            // A library download is not a selection: validate in a disposable runtime
+            // so independent downloads cannot cancel or replace the active manager.
+            try await libraryModelPreparation.run {
+                try await self.libraryModelDownload(backend.model, progress, progressSnapshot)
+            } onQueued: {
+                progressSnapshot?(.preparing(modelID: backend.model,
+                    message: "Waiting to prepare \(backend.label)..."))
+            } prepare: {
+                let downloadTranscriber = self.fluidAudioTranscriberFactory()
+                do {
+                    try await downloadTranscriber.loadModels(modelID: backend.model,
+                        progress: progress, progressSnapshot: progressSnapshot)
+                    await downloadTranscriber.shutdown()
+                } catch {
+                    await downloadTranscriber.shutdown()
+                    throw error
+                }
+            }
+            return
+        }
         activeBackend = backend.backend
 
         if includeMeetingHelpers {
@@ -652,9 +689,8 @@ actor TranscriptionCoordinator {
 
         switch backend.backend {
         case "fluidaudio":
-            let version = FluidAudioModel.version(for: backend.model)
             try await fluidTranscriber.loadModels(
-                version: version,
+                modelID: backend.model,
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
