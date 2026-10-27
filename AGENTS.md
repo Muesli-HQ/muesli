@@ -107,6 +107,81 @@ muesli_localvqe_runtime_is_complete /Applications/MuesliDevB.app/Contents/MacOS
 
 For cross-worktree reuse, prefer a pinned-ref- and architecture-specific runtime under `$HOME/Library/Caches/muesli-localvqe/` and pass it through `MUESLI_LOCALVQE_LIB_DIR`. Until the repository resolves that layout automatically, never copy an unvalidated partial dylib set between worktrees, and do not treat `/tmp/LocalVQE` as durable storage.
 
+## SQLite and Local Data
+
+Read [database-schema.md](database-schema.md) before changing persistence. Schema
+ownership spans `DictationStore`, `MeetingChatSQL`, and `MeetingVideoStore`, with
+lazy retrieval-index and import initialization. Update the guide alongside schema
+or serialization changes; JSON bodies require backward-compatible decoding just
+as SQL columns require migrations. Keep projected columns and relationship rows
+consistent with their serialized records through the store APIs.
+
+Inspect user databases read-only, using schema metadata and integrity checks;
+use synthetic fixtures for tests and provider requests. Never commit database
+files, private transcripts, or query results containing user content. Use SQLite's
+backup API for live snapshots rather than copying a database and WAL separately.
+Do not repair user data through ad hoc SQL writes: store APIs maintain tombstones,
+sync bookkeeping, source invalidation, derived indexes, and media cleanup.
+Chat history, memory, and retrieval indexes are local-only; a new field does not
+implicitly belong in CloudKit, telemetry, exports, or CLI output.
+
+## Ask Meetings
+
+Read [docs/meeting-chat-architecture.md](docs/meeting-chat-architecture.md) for
+provider adapters, tool contracts, memory budgets, and source validation.
+
+- Keep thread identity, selected/anchor meetings, and evidence dependencies
+  separate. Follow-ups may use valid conversation context without new attachments;
+  new meeting-based claims require retrieval and current citations. An empty
+  explicit selection must never widen silently to all meetings.
+- Preserve context across provider/model switches using portable history and
+  rolling memory. Revalidate source revisions and inherited dependencies before
+  publishing answers, summaries, or generated titles. Removing an attachment and
+  deleting its source are different operations; deleted or stale evidence must
+  not re-enter prompts through history or memory.
+- Route tool calling by supported provider capability. Preserve native call IDs
+  and tool-result replay; do not silently downgrade native providers to prose/JSON
+  tool requests after errors. Keep retrieval bounded and scoped to the captured
+  turn; do not add general shell, file, or web access to the meeting harness.
+- Guard asynchronous writes and UI callbacks with request/attempt ownership.
+  Cancellation, retries, source mutations, and navigation must not let late
+  results overwrite a newer conversation. Keep database/retrieval work off the
+  main actor in navigation and rendering paths.
+- Distinguish transient composer drafts from persisted turns. Preserve draft
+  text, scope, and undo identity across navigation and panel collapse; only
+  explicit new-chat actions, accepted sends, or required source invalidation
+  should reset the relevant draft.
+  Busy-state recovery must not retarget a selected chat or a nonempty draft.
+
+## Native UI and Recording Lifecycle
+
+Reuse `native/AIElementsSwift` for chat presentation and icons; keep provider,
+settings, and persistence policy in Muesli. Preserve upstream credits/licenses
+and update the package's porting coverage when adding adapted components.
+Show actual tool operations and provider-designated reasoning summaries only;
+never label generic progress as model reasoning or expose encrypted/raw reasoning.
+Use one active thinking indicator, with Reduce Motion support.
+
+Native text inputs must accept Muesli dictation, paste, IME composition, selection,
+and undo. Test pointer clicks as well as accessibility actions: decorative
+borders and overlays must not intercept controls, and clipped content must not
+cover adjacent headers. Verify composer focus after mounting, collapse/reopen,
+New chat, and index navigation. Copy copies the answer with visible confirmation;
+full provenance and model metadata belong in export, not the ordinary clipboard.
+
+Keep notch and floating indicators consistent with the same recording/request
+state. Dismissing UI or pressing Escape must not stop an established meeting;
+meeting stop actions remain explicit. Quill's instruction transcription preview
+is best-effort display: it must not block edit generation/paste or delete audio
+still used by another task. Suppress late preview updates after cancellation.
+
+For affected behavior, run the relevant navigation, presentation, storage,
+transport, or recording lifecycle regressions and maintain CI shard registration.
+Use manual native checks for focus, hit testing, dictation, and undo; unit tests
+alone do not establish those interactions. Documentation-only changes do not
+require an app rebuild. Report validation against the actual tested commit and
+app lane, and distinguish pending/skipped review checks from approvals.
+
 ## Finite Settings (UI and Voice)
 
 Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
