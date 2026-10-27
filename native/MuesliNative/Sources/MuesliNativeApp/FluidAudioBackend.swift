@@ -63,7 +63,10 @@ actor FluidAudioTranscriber {
             }
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
-            return manager
+            return try await ParakeetRuntimePolicy.prepareLoadedModel(manager, for: plan.modelID) { candidate, samples in
+                var state = TdtDecoderState.make(decoderLayers: await candidate.decoderLayerCount)
+                _ = try await candidate.transcribe(samples, decoderState: &state)
+            }
         }
         self.asrManager = manager
         self.loadedModelID = modelID

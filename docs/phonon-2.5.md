@@ -19,6 +19,10 @@ change the default model or add a new inference runtime.
 not stock Parakeet weights. Runtime reuse and unloading use the distinct **model
 ID**, because Phonon and Parakeet v3 share that contract but different weights.
 App and CLI share `ParakeetRuntimePolicy` for compute selection and preparation.
+Before publishing readiness, the GPU model transcribes one second of in-memory
+silence with a disposable decoder state. The result is discarded. This runs once
+per model load, consumes first-inference setup during preparation and propagates
+errors/cancellation before the manager is cached or a ready event is emitted.
 Model cards and voice selection derive choices from the existing catalog.
 
 ```sh
@@ -64,3 +68,8 @@ checks four language hints through the app actor, verifies that deleting the v3
 identity leaves Phonon loaded, checks unloading the matching identity, and runs
 the CLI transcriber. Ordinary CI skips this test and exercises synthetic catalog,
 routing, compatibility and download/deletion regressions instead.
+
+A preparation-warmup check on the M5 took 7.72 seconds to prepare the model; the
+first real 10.4-second speech fixture then transcribed in 0.38 seconds. Later
+fixtures took 0.26–0.55 seconds. These are local smoke timings, not a benchmark
+or a guarantee for other hardware.

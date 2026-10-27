@@ -18,6 +18,21 @@ public enum ParakeetRuntimePolicy {
         }
     }
 
+    /// Finish first-inference GPU setup before a caller publishes model readiness.
+    /// Only the GPU variant needs this; the result and decoder state are disposable.
+    public static func prepareLoadedModel<Model: Sendable>(
+        _ model: Model,
+        for modelID: String,
+        warmup: (Model, [Float]) async throws -> Void
+    ) async throws -> Model {
+        try Task.checkCancellation()
+        if encoderComputeUnits(for: modelID) == .cpuAndGPU {
+            try await warmup(model, [Float](repeating: 0, count: 16_000))
+        }
+        try Task.checkCancellation()
+        return model
+    }
+
     public static func usesLocalComponents(for modelID: String) -> Bool {
         modelID == phonon25ModelID
     }

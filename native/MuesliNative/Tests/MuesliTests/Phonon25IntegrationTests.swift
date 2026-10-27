@@ -13,7 +13,10 @@ struct Phonon25IntegrationTests {
         let directory = try #require(ProcessInfo.processInfo.environment["MUESLI_PHONON_FIXTURE_DIR"])
         let root = URL(fileURLWithPath: directory)
         let app = FluidAudioTranscriber()
+        let preparationStart = Date()
         try await app.loadModels(modelID: BackendOption.phonon25.model)
+        let preparationSeconds = Date().timeIntervalSince(preparationStart)
+        var dictationSeconds: [Double] = []
         let samples = [
             ("1089-134686-0000.flac", "en", "stew for dinner"),
             ("fr_fr-10043298898524273336.wav", "fr", "terrain montagneux"),
@@ -21,9 +24,12 @@ struct Phonon25IntegrationTests {
             ("es_419-1001146817223348054.wav", "es", "a los viajeros"),
         ]
         for (name, language, phrase) in samples {
+            let start = Date()
             let result = try await app.transcribe(wavURL: root.appendingPathComponent(name), language: language)
+            dictationSeconds.append(Date().timeIntervalSince(start))
             #expect(result.text.lowercased().contains(phrase), "Unexpected \(language) transcript: \(result.text)")
         }
+        print("Phonon preparation: \(preparationSeconds)s; real transcriptions after ready: \(dictationSeconds)s")
         // Both models use the v3 contract. Deleting v3 must not unload Phonon.
         await app.shutdown(ifLoadedModelID: BackendOption.parakeetMultilingual.model)
         let englishURL = root.appendingPathComponent(samples[0].0)
