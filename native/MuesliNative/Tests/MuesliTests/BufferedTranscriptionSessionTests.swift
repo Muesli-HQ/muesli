@@ -4,6 +4,57 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("empty rolling recognition retains audible words for later context")
+    func emptyRollRetainsUnrecognizedAudio() async {
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 64_000
+        config.rightContextSamples = 8_000
+        config.leftContextSamples = 4_000
+        config.maximumRecoveryWindowSamples = 128_000
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config, decode: { samples in
+            samples.count >= 80_000
+                ? .init(text: "hello", words: [.init(text: "hello", start: 0.25, end: 0.75, confidence: 0.99)])
+                : .init(text: "", words: [])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 64_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let recovered = await updates.next()
+        #expect(recovered?.committedText == "hello")
+        let result = await session.finishForReuse()
+        #expect(result.completed && result.canReuse)
+        #expect(result.text == "hello")
+        #expect(result.decodedThroughSample == 80_000)
+    }
+
+    @Test("unresolved empty audible rolls fail without claiming coverage", arguments: [false, true])
+    func unresolvedEmptyRollCannotComplete(reachLimit: Bool) async {
+        var config = BufferedTranscriptionSession.Configuration()
+        config.windowSamples = 64_000
+        config.rightContextSamples = 8_000
+        config.leftContextSamples = 4_000
+        config.maximumRecoveryWindowSamples = 80_000
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(configuration: config,
+            decode: { _ in .init(text: "", words: []) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) },
+            onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 64_000))
+        _ = await updates.next()
+        if reachLimit {
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            #expect(await updates.next() == nil)
+            #expect(output.diagnostics.contains("ownership_recovery_exhausted:window_limit"))
+        }
+        let result = await session.finishForReuse()
+        #expect(!result.completed && !result.canReuse)
+        #expect(result.fallbackReason == .transcriptionFailed)
+        #expect(result.decodedThroughSample == 0)
+    }
+
     @Test("a word at the audio origin survives preview agreement and finalization", arguments: [false, true])
     func zeroDurationFirstWord(finalOnly: Bool) async {
         let output = BufferedPreviewOutput()
@@ -918,7 +969,7 @@ struct BufferedTranscriptionSessionTests {
                     ("again.", base + 16.1, base + 16.5)]
         }
         let session = BufferedTranscriptionSession(decode: { samples in
-            let base = Double(samples[0]) / 16_000
+            let base = BufferedTimedAudio.origin(samples)
             let end = base + Double(samples.count) / 16_000
             var words: [BufferedTranscriptionWord] = events.compactMap { text, start, finish in
                 guard start >= base, finish <= end else { return nil }
@@ -933,11 +984,11 @@ struct BufferedTranscriptionSessionTests {
             return .init(text: words.map(\.text).joined(separator: " "), words: words)
         }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
         var updates = output.updates.stream.makeAsyncIterator()
-        session.enqueue((0..<(2 * 16_000)).map(Float.init))
+        session.enqueue(BufferedTimedAudio.samples(0..<(2 * 16_000), speech: events.map { $0.1..<$0.2 }))
         _ = await updates.next()
         var lastSecond = 2
         for second in 3...330 {
-            session.enqueue((((second - 1) * 16_000)..<(second * 16_000)).map(Float.init))
+            session.enqueue(BufferedTimedAudio.samples(((second - 1) * 16_000)..<(second * 16_000), speech: events.map { $0.1..<$0.2 }))
             guard await updates.next() != nil else { break }
             lastSecond = second
         }
@@ -1349,6 +1400,7 @@ struct BufferedTranscriptionSessionTests {
     @Test("pending PCM has bounded headroom while an extended decode is in flight")
     func recoveryDecodeRetainsQueuedArrivals() async {
         let output = BufferedPreviewOutput()
+        let speech: [Range<Double>] = [0.1..<0.5, 1..<1.5, 4..<4.5]
         let decoder = BufferedRecoveryOracle(recoverAt: 10, holdAt: 10 * 16_000)
         var config = BufferedTranscriptionSession.Configuration()
         config.windowSamples = 8 * 16_000
@@ -1358,17 +1410,17 @@ struct BufferedTranscriptionSessionTests {
             onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
         var updates = output.updates.stream.makeAsyncIterator()
         var starts = decoder.started.stream.makeAsyncIterator()
-        session.enqueue((0..<(5 * 16_000)).map(Float.init))
+        session.enqueue(BufferedTimedAudio.samples(0..<(5 * 16_000), speech: speech))
         _ = await starts.next()
         _ = await updates.next()
         for end in 6...9 {
-            session.enqueue((((end - 1) * 16_000)..<(end * 16_000)).map(Float.init))
+            session.enqueue(BufferedTimedAudio.samples(((end - 1) * 16_000)..<(end * 16_000), speech: speech))
             _ = await starts.next()
             _ = await updates.next()
         }
-        session.enqueue(((9 * 16_000)..<(10 * 16_000)).map(Float.init))
+        session.enqueue(BufferedTimedAudio.samples((9 * 16_000)..<(10 * 16_000), speech: speech))
         #expect(await starts.next() == 10 * 16_000)
-        session.enqueue(((10 * 16_000)..<(15 * 16_000)).map(Float.init))
+        session.enqueue(BufferedTimedAudio.samples((10 * 16_000)..<(15 * 16_000), speech: speech))
         #expect(output.failures == 0)
         await decoder.release()
         await session.finish()
@@ -1737,7 +1789,7 @@ private actor BufferedRecoveryOracle {
         started.continuation.yield(samples.count)
         if samples.count == holdAt && !released { await withCheckedContinuation { permit = $0 } }
         defer { inFlight -= 1 }
-        let base = Double(samples[0]) / 16_000
+        let base = BufferedTimedAudio.origin(samples)
         let end = base + Double(samples.count) / 16_000
         let missing = end >= 7 && end < recoverAt
         let values: [(String, Double, Double)] = [
@@ -1751,4 +1803,23 @@ private actor BufferedRecoveryOracle {
         return .init(text: words.map(\.text).joined(separator: " "), words: words)
     }
     func release() { released = true; permit?.resume(); permit = nil }
+}
+
+/// Preserve absolute-time fixture metadata without making pauses acoustically loud.
+private enum BufferedTimedAudio {
+    static func samples(_ range: Range<Int>, speech: [Range<Double>]) -> [Float] {
+        var result = range.map { Float($0) / 1e12 }
+        for span in speech {
+            let start = max(range.lowerBound, Int(span.lowerBound * 16_000))
+            let end = min(range.upperBound, Int(span.upperBound * 16_000))
+            guard start < end else { continue }
+            for sample in start..<end { result[sample - range.lowerBound] = Float(sample) }
+        }
+        return result
+    }
+
+    static func origin(_ samples: [Float]) -> Double {
+        let first = Double(samples[0])
+        return (first < 0.0001 ? first * 1e12 : first) / 16_000
+    }
 }

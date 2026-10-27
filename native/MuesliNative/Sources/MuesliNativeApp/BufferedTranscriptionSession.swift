@@ -417,7 +417,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                     // including PCM, before deferring this observation.
                     let checkpoint = state
                     do {
-                        try accept(result, snapshot: snapshot)
+                        try accept(result, snapshot: snapshot, isSilent: rms <= Double(configuration.silenceRMS))
                     } catch let recovery as AlignmentRecovery {
                         state = checkpoint
                         deferAlignment(recovery, snapshot: snapshot)
@@ -436,7 +436,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
     }
 
-    private func accept(_ result: BufferedTranscriptionWindow, snapshot: Snapshot) throws {
+    private func accept(_ result: BufferedTranscriptionWindow, snapshot: Snapshot, isSilent: Bool) throws {
         let result = try BufferedTranscriptionWindow.aligned(text: result.text, words: result.words)
         let duration = Double(snapshot.audio.count) / 16_000
         var previousStart = -Double.infinity
@@ -450,6 +450,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             throw Failure.invalidTimings
         }
         let rolls = snapshot.audio.count >= configuration.windowSamples && !snapshot.final
+        // An empty decoder result does not establish ownership of audible PCM.
+        // Keep the window for bounded context recovery rather than discarding a
+        // lead that a later hypothesis could recognize. The existing acoustic
+        // silence bypass may still advance without inventing sentence boundaries.
+        if result.words.isEmpty, !isSilent, rolls || state.recovering {
+            throw AlignmentRecovery(reason: .emptyHypothesis)
+        }
         if result.words.isEmpty && (!state.committedAnchors.isEmpty || !state.lastPublishedTail.isEmpty) {
             throw AlignmentRecovery(reason: .emptyHypothesis)
         }
