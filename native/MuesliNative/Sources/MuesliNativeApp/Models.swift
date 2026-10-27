@@ -208,7 +208,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .phonon25, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -242,7 +242,7 @@ struct BackendOption: Equatable {
         let all = systemManaged
             + parakeetFamily
             + whisperFamily
-            + [.cohereTranscribe]
+            + [.phonon25, .cohereTranscribe]
             + streaming
             + bodhanFamily
             + experimental
@@ -352,7 +352,7 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
-            || Self.bodhanFamily.contains(self) || self == .appleSpeechAnalyzer
+            || Self.bodhanFamily.contains(self) || self == .phonon25 || self == .appleSpeechAnalyzer
             || self == .nemotron35Multilingual
     }
 

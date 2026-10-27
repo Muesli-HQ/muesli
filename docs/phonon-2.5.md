@@ -23,7 +23,11 @@ Before publishing readiness, the GPU model transcribes one second of in-memory
 silence with a disposable decoder state. The result is discarded. This runs once
 per model load, consumes first-inference setup during preparation and propagates
 errors/cancellation before the manager is cached or a ready event is emitted.
-Model cards and voice selection derive choices from the existing catalog.
+Phonon has its own model card, separate from the Parakeet family; voice selection
+continues to derive choices from the existing catalog. The Fermion logo is the
+unmodified [official brand asset](https://www.fermionresearch.com/images/brand/newlogo.svg)
+from Fermion Research, used to identify the model provider. The logo remains the
+property of Fermion Research and is not relicensed under Muesli’s MIT license.
 
 ```sh
 muesli-cli transcribe recording.wav --model phonon-2.5

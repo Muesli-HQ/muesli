@@ -184,7 +184,7 @@ struct BackendOptionTests {
         #expect(options.allSatisfy { $0.isCompatible(currentOSVersion: version) })
         let variants = BackendOption.compatibleOptions(BackendOption.parakeetFamily, currentOSVersion: version)
         #expect(variants.contains(.parakeetRedux) == (major >= 15))
-        #expect(variants.contains(.phonon25) == (major >= 15))
+        #expect(!variants.contains(.phonon25))
     }
 
     @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
@@ -372,7 +372,7 @@ struct BackendOptionTests {
     @Test("Phonon has its own identity despite sharing the v3 decoder contract")
     func phonon25RoutingAndDeletion() {
         let phonon = BackendOption.phonon25
-        #expect(BackendOption.parakeetFamily.contains(phonon))
+        #expect(!BackendOption.parakeetFamily.contains(phonon))
         #expect(BackendOption.all.contains(phonon))
         #expect(phonon.supportsMeetingTranscription)
         #expect(phonon.supportsHostedDictationFallback)

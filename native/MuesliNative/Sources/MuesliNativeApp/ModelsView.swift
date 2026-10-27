@@ -258,6 +258,10 @@ struct ModelsView: View {
                 options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
             )
 
+            if BackendOption.phonon25.isCompatible() {
+                modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
+            }
+
             if BackendOption.cohereTranscribe.isCompatible() {
                 modelCard(option: .cohereTranscribe, logo: "cohere-logo")
             }
@@ -952,12 +956,6 @@ struct ModelsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
-            if selectedOption == .phonon25 {
-                Text("[Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5) · [Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-
             if selectedOption == .parakeetRedux {
                 Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
                     .font(MuesliTheme.caption())
@@ -980,24 +978,7 @@ struct ModelsView: View {
                 }
             }
 
-            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
-                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
-                    Text("Language")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 64, alignment: .leading)
-
-                    MuesliSettingControl(controller: controller, id: "parakeet_language")
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 220, alignment: .leading)
-                    .disabled(incompatibilityReason != nil)
-                }
-
-                Text("Filters writing script; Parakeet v2 ignores this setting.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
+            parakeetLanguageControls(for: selectedOption)
 
             if showsDownloadStatus, incompatibilityReason == nil {
                 downloadProgressView(
@@ -1188,6 +1169,7 @@ struct ModelsView: View {
     }
 
     private func logoForBackend(_ option: BackendOption) -> String? {
+        if option == .phonon25 { return "fermion-logo" }
         switch option.backend {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
@@ -1276,6 +1258,28 @@ struct ModelsView: View {
         }
     }
 
+    @ViewBuilder
+    private func parakeetLanguageControls(for option: BackendOption) -> some View {
+        if option.backend == BackendOption.parakeetMultilingual.backend {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                Text("Language")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 64, alignment: .leading)
+
+                MuesliSettingControl(controller: controller, id: "parakeet_language")
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 220, alignment: .leading)
+                .disabled(option.incompatibilityReason() != nil)
+            }
+
+            Text(option == .phonon25 ? "Filters writing script." : "Filters writing script; Parakeet v2 ignores this setting.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+    }
+
     private func modelCard(
         option: BackendOption,
         logo: String? = nil,
@@ -1355,6 +1359,14 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
             }
+
+            if option == .phonon25 {
+                Text("[Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5) · [Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
+            parakeetLanguageControls(for: option)
 
             if option.backend == BackendOption.cohereTranscribe.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
