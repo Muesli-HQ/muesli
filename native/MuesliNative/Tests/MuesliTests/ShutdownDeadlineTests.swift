@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Shutdown deadline")
 struct ShutdownDeadlineTests {
+    @Test("confirmed quit lets AppKit run async shutdown and its fallback deadline")
+    func appKitTerminationRunLoop() async throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let status = try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = [root.appendingPathComponent("scripts/test_application_termination.sh").path]
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }.value
+        #expect(status == 0)
+    }
+
     @Test("work that finishes in time returns at once and reports success")
     func finishesInTime() async {
         let started = Date()

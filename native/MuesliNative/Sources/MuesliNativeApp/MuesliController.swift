@@ -5894,7 +5894,7 @@ public final class MuesliController: NSObject {
     }
 
     @objc func quitApp() {
-        NSApplication.shared.terminate(nil)
+        ApplicationTermination.request()
     }
 
     @objc func copyRecentDictation(_ sender: NSMenuItem) {
@@ -6969,8 +6969,9 @@ public final class MuesliController: NSObject {
                 guard response == .alertSecondButtonReturn else { return }
                 await self.visualMemory.stopRecording(discard: true)
                 self.discardMeetingStateForTermination()
-                self.isTerminatingAfterMeetingConfirmation = true
-                NSApp.terminate(nil)
+                ApplicationTermination.request { [weak self] in
+                    self?.isTerminatingAfterMeetingConfirmation = true
+                }
             }
         }
         if !didPresent {

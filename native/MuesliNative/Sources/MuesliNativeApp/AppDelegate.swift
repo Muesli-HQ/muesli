@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             alert.messageText = "\(AppIdentity.displayName) failed to start"
             alert.informativeText = error.localizedDescription
             alert.runModal()
-            NSApplication.shared.terminate(nil)
+            ApplicationTermination.request()
         }
     }
 
@@ -75,7 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller?.handleICloudRemoteNotification(userInfo: userInfo)
     }
 
-    /// Quitting waits this long for the controller to wind down, then goes ahead.
+    /// Best-effort cleanup budget, not a measured duration or the deadlock fix.
+    /// The run-loop handoff in ApplicationTermination lets this deadline run.
     private static let shutdownDeadline: TimeInterval = 8
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
