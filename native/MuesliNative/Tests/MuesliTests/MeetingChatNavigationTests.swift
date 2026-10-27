@@ -6,6 +6,27 @@ import Testing
 @MainActor
 @Suite("Meeting chat navigation")
 struct MeetingChatNavigationTests {
+    @Test func repeatedMeetingEntryPreservesUntitledDraft() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        controller.showMeetingChat(meetingID: citation.meetingID)
+        let chat = controller.meetingChatCoordinator
+        chat.composerDraft = "Keep this question"
+        let undo = chat.composerUndoIdentity
+        controller.showMeetingChat(meetingID: citation.meetingID)
+        controller.showMeetingChat(meetingID: citation.meetingID + 1)
+        #expect(chat.composerDraft == "Keep this question")
+        #expect(chat.composerUndoIdentity == undo)
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+    }
+
+    @Test func dateRestrictionsHaveVisibleLabels() {
+        #expect(MeetingChatScopePresentation.dateLabel(.init()) == nil)
+        let start = Date(timeIntervalSince1970: 100000)
+        #expect(MeetingChatScopePresentation.dateLabel(.init(startDate: start))?.hasPrefix("From ") == true)
+        #expect(MeetingChatScopePresentation.dateLabel(.init(endDateExclusive: start))?.hasPrefix("Through ") == true)
+        #expect(MeetingChatScopePresentation.dateLabel(.init(startDate: start, endDateExclusive: start.addingTimeInterval(86400)))?.contains(" – ") == true)
+    }
+
     private func controllerFixture() throws -> (MuesliController, DictationStore, MeetingChatCitation) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("chat-navigation-\(UUID())")
         let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db")); try store.migrateIfNeeded()

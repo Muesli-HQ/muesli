@@ -5773,7 +5773,8 @@ public final class MuesliController: NSObject {
                 coordinator.selectChat(id: session.id)
                 return nil
             }
-            coordinator.startDraft(scope: .init(selection: .meetings([id])))
+            coordinator.showIndex()
+            coordinator.prepareMeetingDraft(id: id)
             return nil
         }
         return nil

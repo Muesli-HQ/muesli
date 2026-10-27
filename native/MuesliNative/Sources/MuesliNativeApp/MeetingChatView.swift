@@ -103,7 +103,15 @@ struct MeetingChatView: View {
                         .contentShape(Rectangle())
                         .clipped()
                 }
-                if isEmbedded && !expanded { restingComposer } else { composer }
+                ZStack {
+                    composer
+                        .frame(height: isEmbedded && !expanded ? 0 : nil)
+                        .opacity(isEmbedded && !expanded ? 0 : 1)
+                        .clipped()
+                        .allowsHitTesting(!isEmbedded || expanded)
+                        .accessibilityHidden(isEmbedded && !expanded)
+                    if isEmbedded && !expanded { restingComposer }
+                }
             }
         }
         .background(isEmbedded && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
@@ -315,11 +323,8 @@ struct MeetingChatView: View {
                             .foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
                     }
                     MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                              focusRequest: composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0; if $0 && isEmbedded { expanded = true } }, onKey: handleComposerKey)
+                                              focusRequest: isEmbedded && !expanded ? nil : composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0; if $0 && isEmbedded { expanded = true } }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
-                        // New chat can replace the entire layout. Focus the newly
-                        // mounted editor rather than only the one being removed.
-                        .onAppear { focusComposer() }
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
                 }
@@ -332,6 +337,9 @@ struct MeetingChatView: View {
                         HStack(spacing: 5) {
                             AIIcon(.slidersHorizontal)
                             if attachedMeetingIDs == nil { Text(scopeLabel).font(.caption).lineLimit(1) }
+                            if let dates = MeetingChatScopePresentation.dateLabel(coordinator.scope) {
+                                Text(dates).font(.caption).lineLimit(1)
+                            }
                         }
                     }
                         .buttonStyle(.plain).help("Meeting context: " + scopeLabel)
@@ -610,13 +618,13 @@ struct MeetingChatView: View {
     @ViewBuilder private func answerActions(_ turn: MeetingChatTurn) -> some View {
         if let session = coordinator.sessions.first(where: { $0.id == turn.sessionID }) {
             HStack(spacing: 14) {
-                MeetingChatCopyButton(text: MeetingChatExporter.answerText(turn: turn))
+                MeetingChatCopyButton(text: MeetingChatExporter.clipboardText(turn: turn))
                 Menu {
                     Button("Export answer…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: false) }
                     if turn.editableDraft != nil {
                         Button("Copy edited draft") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(MeetingChatExporter.answerText(turn: turn, useEditedDraft: true), forType: .string)
+                            NSPasteboard.general.setString(MeetingChatExporter.clipboardText(turn: turn, useEditedDraft: true), forType: .string)
                         }
                         Button("Export edited draft…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: true) }
                     }
@@ -663,7 +671,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     enum Key { case up, down, escape, submit, tab }
     @Binding var text: String
     @Binding var selection: NSRange
-    var focusRequest: UUID
+    var focusRequest: UUID?
     var undoIdentity: UUID
     let onFocus: (Bool) -> Void
     let onKey: (Key) -> Bool
@@ -716,7 +724,10 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         let length = (text as NSString).length
         let safe = NSRange(location: min(selection.location, length), length: min(selection.length, max(0, length - selection.location)))
         if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
-        if context.coordinator.lastFocusRequest != focusRequest {
+        if focusRequest == nil, editor.window?.firstResponder === editor {
+            editor.window?.makeFirstResponder(nil)
+        }
+        if let focusRequest, context.coordinator.lastFocusRequest != focusRequest {
             context.coordinator.lastFocusRequest = focusRequest
             editor.requestComposerFocus()
         }
@@ -867,5 +878,19 @@ enum MeetingChatComposerTextSync {
         editor.textStorage?.replaceCharacters(in: range, with: text)
         editor.didChangeText()
         editor.breakUndoCoalescing()
+    }
+}
+
+/// Keep active date restrictions visible independently of attachment chips.
+enum MeetingChatScopePresentation {
+    static func dateLabel(_ scope: MeetingChatScope) -> String? {
+        let start = scope.startDate?.formatted(date: .abbreviated, time: .omitted)
+        let end = scope.endDateExclusive?.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted)
+        switch (start, end) {
+        case let (.some(start), .some(end)): return "\(start) – \(end)"
+        case let (.some(start), nil): return "From \(start)"
+        case let (nil, .some(end)): return "Through \(end)"
+        default: return nil
+        }
     }
 }

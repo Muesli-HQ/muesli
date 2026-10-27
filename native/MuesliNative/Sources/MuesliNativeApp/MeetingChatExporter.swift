@@ -10,6 +10,9 @@ enum MeetingChatExporter {
         }
         return answer
     }
+    static func clipboardText(turn: MeetingChatTurn, useEditedDraft: Bool = false) -> String {
+        answerText(turn: turn, useEditedDraft: useEditedDraft).replacingOccurrences(of: "**", with: "")
+    }
     static func markdown(turn: MeetingChatTurn, session: MeetingChatSession, useEditedDraft: Bool) -> String {
         let answer = answerText(turn: turn, useEditedDraft: useEditedDraft)
         var parts = ["# \(session.title)", "", "**Question:** \(turn.question)", "**AI:** \(turn.provider) · \(turn.model)", ""]
