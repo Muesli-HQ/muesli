@@ -26,6 +26,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
     var isEditable: Bool = true
     var placeholder: String = "Write notes here..."
     var onTextChange: ((String) -> Void)?
+    var onSelectionChange: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, command: $command, onTextChange: onTextChange)
@@ -73,6 +74,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         textView.isEditable = isEditable
         textView.isSelectable = true
         context.coordinator.onTextChange = onTextChange
+        context.coordinator.onSelectionChange = onSelectionChange
         if context.coordinator.shouldApplyExternalMarkdown(text) {
             context.coordinator.apply(markdown: text, to: textView)
         }
@@ -92,6 +94,21 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         @Binding private var text: String
         @Binding private var command: MarkdownEditorCommand?
         var onTextChange: ((String) -> Void)?
+        var onSelectionChange: ((Bool) -> Void)?
+        private var lastReportedSelection: Bool?
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            // AppKit can change selection during SwiftUI updates; publish after that pass.
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                let hasSelection = textView.selectedRange().length > 0
+                guard hasSelection != self.lastReportedSelection else { return }
+                self.lastReportedSelection = hasSelection
+                self.onSelectionChange?(hasSelection)
+            }
+        }
+
         weak var textView: NSTextView?
         var didFocus = false
         private(set) var currentMarkdown = ""

@@ -199,6 +199,113 @@ struct MeetingsNavigationTests {
         )
     }
 
+    @Test("recording template changes persist without summarizing or changing the default",
+          arguments: [false, true])
+    func recordingTemplateSelection(paused: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Planning", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.defaultMeetingTemplateID = "one-to-one"
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Interview notes", icon: "doc.text"
+            )]
+        }
+        // Pausing leaves the meeting's status as recording, so the choice remains editable.
+        controller.appState.isMeetingRecordingPaused = paused
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let selected = try #require(try store.meeting(id: id))
+        #expect(selected.selectedTemplateID == "custom-test")
+        #expect(selected.selectedTemplatePrompt == "Interview notes")
+        #expect(selected.title == "Planning")
+        #expect(selected.formattedNotes == "## Notes")
+        #expect(selected.rawTranscript == "Transcript")
+        #expect(selected.status == .recording)
+        #expect(controller.config.defaultMeetingTemplateID == "one-to-one")
+        // Explicit Auto must not resolve back to the configured default.
+        try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+        let automatic = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: automatic).id == MeetingTemplates.autoID)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
+    }
+
+    @Test("Stop freezes the template and rejects late selections")
+    func recordingTemplateLocksAtStop() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(try store.meeting(id: id)?.status == .processing)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        }
+        controller.deleteCustomMeetingTemplate(id: "custom-test")
+        #expect(frozen.id == "custom-test")
+        #expect(frozen.prompt == "Original prompt")
+        let persisted = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: persisted).prompt == frozen.prompt)
+        for status in [MeetingStatus.completed, .failed, .noteOnly] {
+            try store.updateMeetingStatus(id: id, status: status)
+            #expect(throws: MeetingTemplateSelectionError.self) {
+                try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+            }
+        }
+    }
+
+    @Test("Stop retains the last saved template when the database read fails", arguments: [false, true])
+    func recordingTemplateReadFailure(explicitAuto: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        let selectedID = explicitAuto ? MeetingTemplates.autoID : "custom-test"
+        try controller.selectRecordingTemplate(id: selectedID, meetingID: id)
+        // A rejected choice must not replace the last successfully saved selection.
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings RENAME TO unavailable_meetings", nil, nil, nil) == SQLITE_OK)
+        defer { sqlite3_exec(db, "ALTER TABLE unavailable_meetings RENAME TO meetings", nil, nil, nil) }
+        #expect(throws: (any Error).self) { _ = try store.meeting(id: id) }
+        // A different capture must never inherit this meeting's choice.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id + 1) == nil)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(frozen.id == selectedID)
+        if !explicitAuto { #expect(frozen.prompt == "Original prompt") }
+        // The fallback is consumed at Stop, not retained indefinitely.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id) == nil)
+    }
+
+    @Test("a deleted template cannot silently replace a recording's selection")
+    func recordingTemplateRejectsMissingChoice() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
+    }
+
     @Test("re-summarize rejects unconfigured Anthropic without changing saved notes")
     func resummarizeWithoutAnthropicKeyPreservesNotes() throws {
         guard MeetingSummaryClient.resolvedAnthropicAPIKey(config: AppConfig()).isEmpty else { return }
