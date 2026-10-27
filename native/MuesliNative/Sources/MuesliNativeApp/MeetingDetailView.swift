@@ -312,6 +312,7 @@ struct MeetingDetailView: View {
             }
 
             responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
+            recordingTemplatePicker(for: meeting)
 
             responsiveContextControls(for: meeting)
             .padding(MuesliTheme.spacing8)
@@ -411,6 +412,8 @@ struct MeetingDetailView: View {
                 Spacer(minLength: 0)
                 detailModePicker(for: meeting)
             }
+
+            recordingTemplatePicker(for: meeting)
 
             threadBreadcrumb
 
@@ -973,9 +976,39 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func recordingTemplatePicker(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .recording || meeting.status == .processing {
+            let template = controller.meetingTemplateSnapshot(for: meeting)
+            Menu {
+                templateMenuItems(for: meeting, appliedTemplate: template)
+            } label: {
+                Text("Template: \(template.name)")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .disabled(meeting.status != .recording || isPreparingThisMeeting(meeting))
+            .accessibilityIdentifier("meeting.recording.template")
+        }
+    }
+
+    private func selectTemplate(_ id: String, for meeting: MeetingRecord) {
+        if meeting.status == .recording || meeting.status == .processing {
+            do {
+                try controller.selectRecordingTemplate(id: id, meetingID: meeting.id)
+                pendingTemplateID = id
+            } catch {
+                summaryErrorMessage = error.localizedDescription
+            }
+        } else {
+            pendingTemplateID = id
+        }
+    }
+
+    @ViewBuilder
     private func templateMenuItems(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
             Button {
-                pendingTemplateID = MeetingTemplates.autoID
+                selectTemplate(MeetingTemplates.autoID, for: meeting)
             } label: {
                 templateMenuItem(
                     title: MeetingTemplates.auto.title,
@@ -987,7 +1020,7 @@ struct MeetingDetailView: View {
             Section("Built-in Templates") {
                 ForEach(controller.builtInMeetingTemplates()) { template in
                     Button {
-                        pendingTemplateID = template.id
+                        selectTemplate(template.id, for: meeting)
                     } label: {
                         templateMenuItem(
                             title: template.title,
@@ -1002,7 +1035,7 @@ struct MeetingDetailView: View {
                 Section("Custom Templates") {
                     ForEach(controller.customMeetingTemplates()) { template in
                         Button {
-                            pendingTemplateID = template.id
+                            selectTemplate(template.id, for: meeting)
                         } label: {
                             let resolved = MeetingTemplates.customDefinition(from: template)
                             templateMenuItem(
@@ -1248,6 +1281,7 @@ struct MeetingDetailView: View {
                     systemImage: iconName(forSelectionOn: meeting, appliedTemplate: appliedTemplate)
                 )
             }
+            .disabled(meeting.status == .processing || isSummarizing)
 
             Menu {
                 if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {

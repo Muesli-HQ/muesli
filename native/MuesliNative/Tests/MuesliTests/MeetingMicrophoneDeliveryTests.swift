@@ -85,6 +85,34 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(try pcm(urls.3) == expectedMic) // Mic diarization shares the cleaned mic timeline.
     }
 
+    @Test("first summary result keeps the template chosen at Stop")
+    func selectedTemplateSurvivesFinalization() async throws {
+        let producer = ContractProducer(useQueue: false, wrapped: false)
+        let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+            StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
+        var config = Self.micDiarizationConfig
+        config.enableLiveStreamingPartials = false
+        let initial = MeetingTemplates.resolveSnapshot(id: MeetingTemplates.autoID, customTemplates: [])
+        let selected = MeetingTemplateSnapshot(id: "selected", name: "Interview", kind: .custom, prompt: "Interview notes")
+        let session = MeetingSession(title: "Interview", calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                  menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: config, templateSnapshot: initial,
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+        try await session.testingStartCapture()
+        let result = try await session.stop(template: selected)
+        defer {
+            for url in [result.retainedRecordingURL, result.systemRecordingURL].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        #expect(result.templateSnapshot.id == selected.id)
+        #expect(result.templateSnapshot.prompt == selected.prompt)
+        #expect(result.rawTranscript.isEmpty)
+    }
+
     @Test("a repeated start is rejected without resetting the running pipeline")
     func repeatedStartKeepsRunningPipeline() async throws {
         let producer = ContractProducer(useQueue: false, wrapped: false)

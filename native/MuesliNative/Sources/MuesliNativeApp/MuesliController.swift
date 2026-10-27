@@ -181,9 +181,12 @@ enum MeetingSummaryPersistenceError: Error, LocalizedError {
 
 enum MeetingTemplateSelectionError: Error, LocalizedError {
     case templateNoLongerExists
+    case recordingEnded
 
     var errorDescription: String? {
         switch self {
+        case .recordingEnded:
+            return "The template is locked once recording stops."
         case .templateNoLongerExists:
             return "That template no longer exists. Choose another template and try again."
         }
@@ -6010,6 +6013,24 @@ public final class MuesliController: NSObject {
         resummarize(meeting: meeting, using: templateSnapshot, summaryConfig: summaryConfig, completion: completion)
     }
 
+    /// Save a per-meeting choice without generating notes or changing the default.
+    func selectRecordingTemplate(id: String, meetingID: Int64) throws {
+        guard !isShuttingDown, !isStoppingMeetingRecording,
+              let meeting = try dictationStore.meeting(id: meetingID), meeting.status == .recording else {
+            throw MeetingTemplateSelectionError.recordingEnded
+        }
+        guard let template = MeetingTemplates.resolveExactSnapshot(id: id, customTemplates: config.customMeetingTemplates) else {
+            throw MeetingTemplateSelectionError.templateNoLongerExists
+        }
+        try dictationStore.updateMeetingSummary(
+            id: meetingID, title: meeting.title, formattedNotes: meeting.formattedNotes,
+            selectedTemplateID: template.id, selectedTemplateName: template.name,
+            selectedTemplateKind: template.kind, selectedTemplatePrompt: template.prompt
+        )
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+    }
+
     func applyMeetingTemplate(id: String, to meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let templateSnapshot = MeetingTemplates.resolveExactSnapshot(
             id: id,
@@ -8418,6 +8439,13 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
+    /// Freeze the choice and lock the picker synchronously, before stop awaits any work.
+    func lockMeetingTemplateForProcessing(id: Int64) -> MeetingTemplateSnapshot? {
+        let template = (try? dictationStore.meeting(id: id)).map { meetingTemplateSnapshot(for: $0) }
+        updateMeetingStatusAndScheduleSync(id: id, status: .processing)
+        return template
+    }
+
     func stopMeetingRecording() {
         meetingRecordingHotkeyMonitor.cancelToggleMode()
         guard let sessionToStop = activeMeetingSession else { return }
@@ -8429,12 +8457,13 @@ public final class MuesliController: NSObject {
         meetingEndTimer = nil
         meetingNotification.close()
         let liveMeetingID = meetingCapture?.id
+        var selectedTemplate: MeetingTemplateSnapshot?
         // Only this capture session's explicit screen recording grants retention.
         let hasScreenRecording = visualMemory.hasRecording(in: sessionToStop.screenRecordingSessionID)
         if let liveMeetingID {
             flushCachedMeetingManualNotes(id: liveMeetingID, sync: false)
             flushCachedMeetingTitle(id: liveMeetingID)
-            updateMeetingStatusAndScheduleSync(id: liveMeetingID, status: .processing)
+            selectedTemplate = lockMeetingTemplateForProcessing(id: liveMeetingID)
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
@@ -8475,7 +8504,7 @@ public final class MuesliController: NSObject {
             do {
                 sessionToStop.flushScreenRecordingAudio()
                 await self.visualMemory.stopRecording()
-                let stopped = try await sessionToStop.stop { url, error in
+                let stopped = try await sessionToStop.stop(template: selectedTemplate) { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
                     let shouldSave = await Self.shouldRetainMeetingRecording(
                         policy: self.config.meetingRecordingSavePolicy,
