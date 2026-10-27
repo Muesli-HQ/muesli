@@ -63,9 +63,14 @@ private final class CotypistVocabulary: @unchecked Sendable {
     }
 
     /// Tokens that keep the output consistent with `remaining`: they finish it or are a prefix of it.
+    /// Tokens that cover all of `remaining` win: a word is usually one token, and stepping
+    /// through a fragment of it (" num" for " numb") puts the model on a path it rarely saw and
+    /// derails what follows. Shorter fragments are the fallback for words no token covers.
     func allowed(continuing remaining: String) -> [Int] {
         guard let first = remaining.first else { return [] }
-        return (byFirst[first] ?? []).filter { pieces[$0].hasPrefix(remaining) || remaining.hasPrefix(pieces[$0]) }
+        let candidates = byFirst[first] ?? []
+        let covering = candidates.filter { pieces[$0].hasPrefix(remaining) }
+        return covering.isEmpty ? candidates.filter { remaining.hasPrefix(pieces[$0]) } : covering
     }
 }
 
@@ -130,6 +135,10 @@ actor CotypistEngine {
                 if state.vocab?.pieces.count != size { state.vocab = CotypistVocabulary(tokenizer: context.tokenizer, size: size) }
                 let token: Int
                 var lineBreakMass = 0.0
+                // While healing, a token's confidence is relative to the tokens consistent with the
+                // typed prefix: P(rest of word | typed part), not P(whole word), which is tiny for
+                // any less common word.
+                var healNorm = 0.0
                 if remaining.isEmpty && generated.isEmpty {
                     // A suggestion never starts with a line break (inputs are mostly one line). Pick the
                     // best other token; its confidence is rescaled to the non-line-break choices below.
@@ -147,10 +156,11 @@ actor CotypistEngine {
                     var mask = [Float](repeating: -1e9, count: size)
                     for id in allowed { mask[id] = 0 }
                     token = argMax(logprobs + MLXArray(mask), axis: -1).item(Int.self)
+                    healNorm = logSumExp(logprobs[MLXArray(allowed.map(Int32.init))]).item(Double.self)
                     let piece = state.vocab!.pieces[token]
                     remaining = piece.count >= remaining.count ? "" : String(remaining.dropFirst(piece.count))
                 }
-                let logprob = logprobs[token].item(Double.self) - log(1 - lineBreakMass)
+                let logprob = logprobs[token].item(Double.self) - log(1 - lineBreakMass) - healNorm
                 if eos.contains(token) { stop = .endOfText; break }
                 // Decode against everything so far so multi-byte characters come out whole.
                 let before = context.tokenizer.decode(tokenIds: generated, skipSpecialTokens: true)

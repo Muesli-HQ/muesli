@@ -100,16 +100,11 @@ final class CotypistService {
                                           typed: request["typed"] as? String ?? "")
         guard !fieldText.isEmpty else { return ["rejection": "no context", "source": source] }
 
-        // Mid-word: split off the half-typed word for token healing. Words after a space, 2+ letters.
+        // Mid-word: split off the half-typed word for token healing.
         var heal: String?
         if midWord {
-            guard let space = fieldText.range(of: " ", options: .backwards) else { return ["rejection": "mid-word: no partial word"] }
-            let partial = String(fieldText[space.upperBound...])
-            guard partial.count >= 2, partial.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
-                return ["rejection": "mid-word: no partial word"]
-            }
-            heal = " " + partial
-            fieldText = String(fieldText[..<space.lowerBound])
+            guard let split = Self.splitPartialWord(fieldText) else { return ["rejection": "mid-word: no partial word"] }
+            (fieldText, heal) = (split.before, split.heal)
         }
 
         // Screen OCR, label-free ahead of the typed text: a base model reads it as earlier parts of
@@ -186,6 +181,19 @@ final class CotypistService {
             screenText[bundleID] = (text, Date())
             log("OCR app=\(bundleID) \(text.count) chars")  // lengths only: on-screen text isn't the user's own
         }
+    }
+
+    /// Splits a half-typed word (2+ characters) off the end of `text` for token healing. After a
+    /// space the space travels with the word, as the model tokenizes it; at the start of the text or
+    /// a line the word stands alone.
+    static func splitPartialWord(_ text: String) -> (before: String, heal: String)? {
+        let start = text.lastIndex(where: \.isWhitespace).map { text.index(after: $0) } ?? text.startIndex
+        let partial = String(text[start...])
+        guard partial.count >= 2 else { return nil }
+        if start > text.startIndex, text[text.index(before: start)] == " " {
+            return (String(text[..<text.index(before: start)]), " " + partial)
+        }
+        return (String(text[..<start]), partial)
     }
 
     /// OCR comes back as a column of short lines (labels, buttons, chat rows); fed as-is, a base model

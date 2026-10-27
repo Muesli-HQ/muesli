@@ -67,6 +67,16 @@ struct CotypistShaperTests {
         #expect(CotypistAgentPrompt.context(screen: "$ ls\n❯ not a box") == nil)
     }
 
+    @Test("splits the half-typed word after a space, at a line start, or at the start of the text")
+    @MainActor
+    func partialWord() {
+        #expect(CotypistService.splitPartialWord("Thanks for the quic")! == ("Thanks for the", " quic"))
+        #expect(CotypistService.splitPartialWord("Hi team,\nWe")! == ("Hi team,\n", "We"))
+        #expect(CotypistService.splitPartialWord("Thou")! == ("", "Thou"))
+        #expect(CotypistService.splitPartialWord("the q") == nil)
+        #expect(CotypistService.splitPartialWord("the ") == nil)
+    }
+
     @Test("screen OCR keeps sentence-like lines nearest the bottom, as flowing text")
     @MainActor
     func screenText() {
