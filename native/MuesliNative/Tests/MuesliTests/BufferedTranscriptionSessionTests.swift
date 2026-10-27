@@ -4,6 +4,32 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("a word at the audio origin survives preview agreement and finalization", arguments: [false, true])
+    func zeroDurationFirstWord(finalOnly: Bool) async {
+        let output = BufferedPreviewOutput()
+        let session = BufferedTranscriptionSession(decode: { _ in
+            .init(text: "I agree", words: [
+                .init(text: "I", start: 0, end: 0, confidence: 0.99),
+                .init(text: "agree", start: 0.1, end: 0.5, confidence: 0.99)])
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: (finalOnly ? 1 : 5) * 16_000))
+        if !finalOnly {
+            let first = await updates.next()
+            #expect(first?.text == "I agree")
+            #expect(first?.committedText == "")
+            session.enqueue(Array(repeating: 0.2, count: 16_000))
+            let agreed = await updates.next()
+            #expect(agreed?.committedText == "I agree")
+        }
+        let result = await session.finishForReuse()
+        #expect(result.completed && result.canReuse)
+        #expect(result.text == "I agree")
+        #expect(result.decodedThroughSample == result.receivedSamples)
+        #expect(result.diagnostics.committedWordCount == 2)
+        #expect(result.diagnostics.qualityConcern == (finalOnly ? .unsupportedWordTiming : nil))
+    }
+
     @Test("confidence uncertainty remains diagnostic while completed raw text is reused", arguments: ["strong", "missing", "low", "nan", "negative", "aboveOne"])
     func reuseConfidence(kind: String) async {
         let confidence: Float? = switch kind {

@@ -6,7 +6,7 @@ import MuesliCore
 actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
-    typealias ModelLoader = (String, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> WhisperKit
+    typealias ModelLoader = (String, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> WhisperKit
     private let modelLoader: ModelLoader
 
     init(modelLoader: ModelLoader? = nil) {
@@ -41,12 +41,13 @@ actor WhisperKitTranscriber {
     /// The caller holds the decode permit across model selection and inference.
     private func loadModelForDecode(
         modelName: String,
+        allowDownload: Bool = true,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
         if loadedModel == modelName, whisperKit != nil { return }
-        let loadedWhisperKit = try await modelLoader(modelName, progress, progressSnapshot)
+        let loadedWhisperKit = try await modelLoader(modelName, allowDownload, progress, progressSnapshot)
         try Task.checkCancellation()
         whisperKit = loadedWhisperKit
         loadedModel = modelName
@@ -54,6 +55,7 @@ actor WhisperKitTranscriber {
 
     private static func makeWhisperKit(
         modelName: String,
+        allowDownload: Bool,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?
     ) async throws -> WhisperKit {
@@ -62,6 +64,7 @@ actor WhisperKitTranscriber {
         let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
         let loadedWhisperKit = try await ManagedASRModelDownloader.loadValidated(
             plan,
+            allowDownload: allowDownload,
             progress: progress,
             progressSnapshot: progressSnapshot
         ) { modelFolder in
@@ -117,7 +120,9 @@ actor WhisperKitTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        try await loadModelForDecode(modelName: expectedModel)
+        // Preview work may restore another already-installed model, but must
+        // never download or repair a cache as a side effect of live captions.
+        try await loadModelForDecode(modelName: expectedModel, allowDownload: false)
         guard let whisperKit else { throw TranscriberError.notLoaded }
         let options = Self.makePreviewDecodeOptions(language: language, modelName: expectedModel)
         let originalSeeker = whisperKit.segmentSeeker

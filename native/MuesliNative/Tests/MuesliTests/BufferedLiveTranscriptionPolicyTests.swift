@@ -9,8 +9,8 @@ struct BufferedLiveTranscriptionPolicyTests {
     @Test("Parakeet reloads the requested dictation model after meeting preload for final and preview decoding")
     func parakeetRequestedModelAfterMeetingPreload() async throws {
         let loads = BufferedBackendLoadRecorder()
-        let transcriber = FluidAudioTranscriber(modelLoader: { version, _, _ in
-            let count = await loads.record(String(describing: version))
+        let transcriber = FluidAudioTranscriber(modelLoader: { version, allowDownload, _, _ in
+            let count = await loads.record(String(describing: version), allowDownload: allowDownload)
             // Empty managers keep this test entirely offline. The sentinel on
             // reload proves selection happens before touching either decoder.
             if count > 2 { throw BufferedBackendLoadRecorder.Failure.requestedReload }
@@ -26,14 +26,15 @@ struct BufferedLiveTranscriptionPolicyTests {
             _ = try await transcriber.transcribePreview(samples: [0], expectedVersion: .v3)
         }
         #expect(await loads.values == ["v3", "v2", "v3", "v3"])
+        #expect(await loads.downloadPermissions == [true, true, true, false])
         await transcriber.shutdown()
     }
 
     @Test("Whisper reloads the requested dictation model after meeting preload for final and preview decoding")
     func whisperRequestedModelAfterMeetingPreload() async throws {
         let loads = BufferedBackendLoadRecorder()
-        let transcriber = WhisperKitTranscriber(modelLoader: { name, _, _ in
-            let count = await loads.record(name)
+        let transcriber = WhisperKitTranscriber(modelLoader: { name, allowDownload, _, _ in
+            let count = await loads.record(name, allowDownload: allowDownload)
             if count > 2 { throw BufferedBackendLoadRecorder.Failure.requestedReload }
             return try await WhisperKit(WhisperKitConfig(prewarm: false, load: false, download: false))
         })
@@ -47,18 +48,19 @@ struct BufferedLiveTranscriptionPolicyTests {
             _ = try await transcriber.transcribePreview(samples: [0], expectedModel: "tiny")
         }
         #expect(await loads.values == ["tiny", "large-v3", "tiny", "tiny"])
+        #expect(await loads.downloadPermissions == [true, true, true, false])
         await transcriber.shutdown()
     }
 
     @Test("Cancelled preview requests do not reload models and release the decode permit")
     func cancelledPreviewsDoNotReload() async {
         let loads = BufferedBackendLoadRecorder()
-        let parakeet = FluidAudioTranscriber(modelLoader: { version, _, _ in
-            _ = await loads.record(String(describing: version))
+        let parakeet = FluidAudioTranscriber(modelLoader: { version, allowDownload, _, _ in
+            _ = await loads.record(String(describing: version), allowDownload: allowDownload)
             throw BufferedBackendLoadRecorder.Failure.requestedReload
         })
-        let whisper = WhisperKitTranscriber(modelLoader: { name, _, _ in
-            _ = await loads.record(name)
+        let whisper = WhisperKitTranscriber(modelLoader: { name, allowDownload, _, _ in
+            _ = await loads.record(name, allowDownload: allowDownload)
             throw BufferedBackendLoadRecorder.Failure.requestedReload
         })
         let cancelled = Task {
@@ -80,6 +82,7 @@ struct BufferedLiveTranscriptionPolicyTests {
             _ = try await whisper.transcribePreview(samples: [0], expectedModel: "tiny")
         }
         #expect(await loads.values == ["v3", "tiny"])
+        #expect(await loads.downloadPermissions == [false, false])
     }
 
     @Test("Parakeet adapters defer text alignment mismatches without dropping recognized words", arguments: [false, true])
@@ -282,9 +285,11 @@ struct BufferedLiveTranscriptionPolicyTests {
 private actor BufferedBackendLoadRecorder {
     enum Failure: Error, Equatable { case requestedReload }
     private(set) var values: [String] = []
+    private(set) var downloadPermissions: [Bool] = []
 
-    func record(_ value: String) -> Int {
+    func record(_ value: String, allowDownload: Bool) -> Int {
         values.append(value)
+        downloadPermissions.append(allowDownload)
         return values.count
     }
 }

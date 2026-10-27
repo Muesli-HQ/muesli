@@ -206,7 +206,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var audio: [Float] = []
         var offset = 0
         var lastDecodedEnd = 0
-        var ownedUntil: Double = 0
+        // No audio is owned at session start, including a word timed at (0, 0).
+        var ownedUntil: Double?
         var committedText = ""
         var committedAnchors: [BufferedTranscriptionWord] = []
         var previousTail: [BufferedTranscriptionWord] = []
@@ -483,10 +484,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             recordReuseQuality(committed, agreement: Array(reuseAgreement.prefix(commitCount)))
             let last = committed[committed.count - 1]
             let next = words.dropFirst(commitCount).first
-            state.ownedUntil = try ownershipBoundary(after: last, before: next)
+            let ownedUntil = try ownershipBoundary(after: last, before: next)
+            state.ownedUntil = ownedUntil
             // Keep the last owned word available as a timing anchor at rollover,
             // including when a long word starts before the usual left context.
-            retainFrom = min(state.ownedUntil, next?.start ?? state.ownedUntil,
+            retainFrom = min(ownedUntil, next?.start ?? ownedUntil,
                              last.start)
             retainsLexicalAnchor = true
             state.committedText += join(committed, after: state.committedText)
@@ -509,13 +511,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             if words.isEmpty || ((words.first?.start ?? base) >= matureUntil && hasSilentLead) {
                 // There is no unowned speech in this leading span. Its old anchors
                 // may leave the retained PCM; the absolute time boundary then owns it.
-                state.ownedUntil = max(state.ownedUntil, matureUntil)
+                state.ownedUntil = max(state.ownedUntil ?? -.infinity, matureUntil)
                 retainFrom = matureUntil
-            } else if let lastOwned = state.committedAnchors.last {
+            } else if let lastOwned = state.committedAnchors.last, let ownedUntil = state.ownedUntil {
                 // A fractional rolling window can end while the next word
                 // straddles the maturity cutoff. Previously owned audio still
                 // provides safe progress; no additional commitment is required.
-                retainFrom = min(state.ownedUntil, words.first?.start ?? state.ownedUntil, lastOwned.start)
+                retainFrom = min(ownedUntil, words.first?.start ?? ownedUntil, lastOwned.start)
                 retainsLexicalAnchor = true
             } else {
                 throw AlignmentRecovery(reason: .noRollProgress)
@@ -585,7 +587,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     /// jitter cannot push an owned repeated word back into the draft tail.
     private func unownedStart(in words: [BufferedTranscriptionWord], base: Double) throws -> Int {
         guard !state.committedAnchors.isEmpty else {
-            return words.prefix { ($0.start + $0.end) / 2 <= state.ownedUntil }.count
+            guard let ownedUntil = state.ownedUntil else { return 0 }
+            return words.prefix { ($0.start + $0.end) / 2 <= ownedUntil }.count
         }
         let anchors = state.committedAnchors.filter { $0.start >= base }
         guard !anchors.isEmpty else { throw AlignmentRecovery(reason: .missingAnchor) }

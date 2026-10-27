@@ -7,7 +7,7 @@ import MuesliCore
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
-    typealias ModelLoader = (AsrModelVersion, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> AsrManager
+    typealias ModelLoader = (AsrModelVersion, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> AsrManager
     private let modelLoader: ModelLoader
 
     init(modelLoader: ModelLoader? = nil) {
@@ -48,12 +48,13 @@ actor FluidAudioTranscriber {
     /// replace the selected model between preparation and inference.
     private func loadModelsForDecode(
         version: AsrModelVersion,
+        allowDownload: Bool = true,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
         if loadedVersion == version, asrManager != nil { return }
-        let manager = try await modelLoader(version, progress, progressSnapshot)
+        let manager = try await modelLoader(version, allowDownload, progress, progressSnapshot)
         try Task.checkCancellation()
         asrManager = manager
         loadedVersion = version
@@ -61,6 +62,7 @@ actor FluidAudioTranscriber {
 
     private static func makeManager(
         version: AsrModelVersion,
+        allowDownload: Bool,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?
     ) async throws -> AsrManager {
@@ -73,6 +75,7 @@ actor FluidAudioTranscriber {
         let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
+            allowDownload: allowDownload,
             progress: progress,
             progressSnapshot: progressSnapshot
         ) { modelDirectory in
@@ -123,7 +126,9 @@ actor FluidAudioTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        try await loadModelsForDecode(version: expectedVersion)
+        // Preview work may restore another already-installed model, but must
+        // never download or repair a cache as a side effect of live captions.
+        try await loadModelsForDecode(version: expectedVersion, allowDownload: false)
         guard let asrManager else { throw TranscriberError.notLoaded }
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
