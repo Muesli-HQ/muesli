@@ -5760,6 +5760,11 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
+        // Meeting-specific entry must not clear selection while draft preparation
+        // is unavailable. Keep the current conversation and its scope intact.
+        if meetingID != nil {
+            guard !meetingChatCoordinator.isBusy, !meetingChatCoordinator.isUpdatingChat else { return nil }
+        }
         appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
         if let id = meetingID {
             let coordinator = meetingChatCoordinator
