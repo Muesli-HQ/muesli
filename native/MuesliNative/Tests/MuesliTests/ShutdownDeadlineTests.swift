@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Shutdown deadline")
@@ -19,6 +20,60 @@ struct ShutdownDeadlineTests {
             return process.terminationStatus
         }.value
         #expect(status == 0)
+    }
+
+    @Test("screen discard is covered by the controller shutdown deadline")
+    @MainActor
+    func screenDiscardDeadline() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeController(directory: directory)
+        let stuck = StuckWork()
+        let shutdown = Task { @MainActor in
+            await controller.shutdown(discardScreenRecording: { await stuck.park() }, cleanupAudioDevices: {})
+        }
+        let finished = await ShutdownDeadline.run(seconds: 0.2) { await shutdown.value }
+        #expect(!finished)
+        #expect(controller.shutdownStep == "screen recording discard")
+        #expect(!controller.canModifyModelFiles)
+        stuck.release()
+        await shutdown.value
+        #expect(controller.shutdownStep == "finished")
+    }
+
+    @Test("blocked audio cleanup leaves MainActor free to handle the deadline")
+    @MainActor
+    func audioCleanupDeadline() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeController(directory: directory)
+        let blocker = DispatchSemaphore(value: 0)
+        let started = StuckWork()
+        let shutdown = Task { @MainActor in
+            await controller.shutdown(discardScreenRecording: {}, cleanupAudioDevices: {
+                #expect(!Thread.isMainThread)
+                started.release()
+                // Bounded only to avoid hanging the test runner if this regresses.
+                _ = blocker.wait(timeout: .now() + 3)
+            })
+        }
+        await started.park()
+        let finished = await ShutdownDeadline.run(seconds: 0.2) { await shutdown.value }
+        #expect(!finished)
+        #expect(controller.shutdownStep == "audio device cleanup")
+        blocker.signal()
+        await shutdown.value
+        #expect(controller.shutdownStep == "finished")
+    }
+
+    @MainActor
+    private func makeController(directory: URL) throws -> MuesliController {
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        return MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: directory)
+        )
     }
 
     @Test("work that finishes in time returns at once and reports success")

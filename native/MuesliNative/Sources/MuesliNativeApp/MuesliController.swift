@@ -1098,7 +1098,22 @@ public final class MuesliController: NSObject {
         for task in retranscriptionTasks { await task.value }
     }
 
-    func shutdown() async {
+    func shutdown(
+        discardScreenRecording: (@MainActor () async -> Void)? = nil,
+        cleanupAudioDevices: @escaping @Sendable () -> Void = {
+            CoreAudioSystemRecorder.cleanupStaleDevices()
+        }
+    ) async {
+        isShuttingDown = true
+        // AppDelegate's deadline must cover the entire discard, including video
+        // finalization and database/file cleanup, not just the work after it.
+        shutdownStep = "screen recording discard"
+        if let discardScreenRecording {
+            await discardScreenRecording()
+        } else {
+            await visualMemory.stopRecording(discard: true)
+        }
+        discardMeetingStateForTermination()
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
         if let dataDidChangeObserver {
@@ -1173,7 +1188,14 @@ public final class MuesliController: NSObject {
         await transcriptionCoordinator.shutdown()
         shutdownStep = "audio device cleanup"
         indicator.close()
-        CoreAudioSystemRecorder.cleanupStaleDevices()
+        // CoreAudio may block in a driver. Keep both MainActor and Swift's
+        // cooperative executor free so the termination deadline can reply.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                cleanupAudioDevices()
+                continuation.resume()
+            }
+        }
         shutdownStep = "finished"
     }
 
@@ -6979,8 +7001,6 @@ public final class MuesliController: NSObject {
                 guard let self else { return }
                 self.isPresentingMeetingTerminationConfirmation = false
                 guard response == .alertSecondButtonReturn else { return }
-                await self.visualMemory.stopRecording(discard: true)
-                self.discardMeetingStateForTermination()
                 ApplicationTermination.request { [weak self] in
                     self?.isTerminatingAfterMeetingConfirmation = true
                 }
