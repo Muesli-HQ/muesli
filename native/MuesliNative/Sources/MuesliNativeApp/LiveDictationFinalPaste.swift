@@ -63,15 +63,30 @@ enum LiveDictationFinalPaste {
             onDiagnostic("final_paste_event_creation_failed")
             return false
         }
-        guard let saved = await boundedSnapshot(timeout: access.snapshotTimeout, operation: access.snapshot) else {
-            onDiagnostic("final_paste_snapshot_incomplete")
-            return false
+        // Before staging or posting any event, an external clipboard refresh
+        // can safely be re-snapshotted once. The fresh contents become the
+        // restoration snapshot; target, cancellation, layout and PID are all
+        // revalidated. Never retry a staged or possibly dispatched paste.
+        var preparation: Snapshot?
+        for attempt in 0..<2 {
+            guard let saved = await boundedSnapshot(timeout: access.snapshotTimeout, operation: access.snapshot) else {
+                onDiagnostic("final_paste_snapshot_incomplete")
+                return false
+            }
+            guard validatePreflight(events: events, pid: pid, targetValid: await validateTarget(),
+                                          access: access, stage: "preflight", onDiagnostic: onDiagnostic) else { return false }
+            if access.generation() != saved.generation {
+                if attempt == 0 {
+                    onDiagnostic("final_paste_preflight_retry:clipboard_generation")
+                    continue
+                }
+                onDiagnostic("final_paste_preflight_changed:clipboard_generation")
+                return false
+            }
+            preparation = saved
+            break
         }
-        guard await validateTarget(), !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid),
-              access.generation() == saved.generation else {
-            onDiagnostic("final_paste_preflight_changed")
-            return false
-        }
+        guard let saved = preparation else { return false }
         let stage = access.stage(text, saved.generation)
         var dispatched = false
         var acknowledged = false
@@ -90,8 +105,10 @@ enum LiveDictationFinalPaste {
             onDiagnostic("final_paste_stage_failed")
             return false
         }
-        guard await validateTarget(), !Task.isCancelled, access.eventsAreCurrent(events), access.processIsCurrent(pid), access.owns(owner) else {
-            onDiagnostic("final_paste_dispatch_preflight_changed")
+        guard validatePreflight(events: events, pid: pid, targetValid: await validateTarget(),
+                                      access: access, stage: "dispatch_preflight", onDiagnostic: onDiagnostic) else { return false }
+        guard access.owns(owner) else {
+            onDiagnostic("final_paste_dispatch_preflight_changed:clipboard_ownership")
             return false
         }
         // No suspension or early return may split the pair. Both always target
@@ -102,6 +119,25 @@ enum LiveDictationFinalPaste {
         acknowledged = await acknowledge()
         guard acknowledged, !Task.isCancelled else {
             onDiagnostic("final_paste_not_acknowledged")
+            return false
+        }
+        return true
+    }
+
+    /// Keep the final synchronous guards after the asynchronous target check.
+    /// Log only the failed invariant, never clipboard or editor contents.
+    @MainActor
+    private static func validatePreflight(events: EventPair, pid: pid_t,
+                                          targetValid: Bool, access: Access,
+                                          stage: String, onDiagnostic: (String) -> Void) -> Bool {
+        let reason: String?
+        if !targetValid { reason = "target" }
+        else if Task.isCancelled { reason = "cancelled" }
+        else if !access.eventsAreCurrent(events) { reason = "keyboard_layout" }
+        else if !access.processIsCurrent(pid) { reason = "foreground_process" }
+        else { reason = nil }
+        if let reason {
+            onDiagnostic("final_paste_\(stage)_changed:\(reason)")
             return false
         }
         return true

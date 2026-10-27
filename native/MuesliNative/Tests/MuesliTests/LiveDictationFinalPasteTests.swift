@@ -259,7 +259,7 @@ struct LiveDictationFinalPasteTests {
                 // process, clipboard generation, or cancelled operation.
                 return focused
             }, acknowledge: {
-                Issue.record("an invalidated preflight must never dispatch or await ACK")
+                #expect(!afterStage && change == "clipboard", "Only a fresh pre-staging snapshot may authorize dispatch")
                 return true
             }, onDiagnostic: { fake.diagnostics.append($0) }, access: fake.access())
         }
@@ -277,14 +277,62 @@ struct LiveDictationFinalPasteTests {
         default: focused = false
         }
         continuation?.resume()
-        #expect(!(await operation.value))
-        #expect(fake.posts.isEmpty)
-        #expect(fake.stages == (afterStage ? 1 : 0))
-        #expect(fake.restores == (afterStage && change != "clipboard" ? 1 : 0))
+        let refreshed = !afterStage && change == "clipboard"
+        #expect(await operation.value == refreshed)
+        #expect(fake.posts.count == (refreshed ? 2 : 0))
+        #expect(fake.stages == (afterStage || refreshed ? 1 : 0))
+        #expect(fake.restores == (refreshed || (afterStage && change != "clipboard") ? 1 : 0))
         #expect(fake.items == (change == "clipboard" ? FakeClipboard.newer : FakeClipboard.original))
         #expect(fake.ownership == nil)
-        #expect(fake.diagnostics.contains(afterStage
-            ? "final_paste_dispatch_preflight_changed" : "final_paste_preflight_changed"))
+        let reason = switch change {
+        case "layout": "keyboard_layout"
+        case "process": "foreground_process"
+        case "cancel": "cancelled"
+        case "clipboard": "clipboard_ownership"
+        default: "target"
+        }
+        #expect(fake.diagnostics.contains(refreshed ? "final_paste_preflight_retry:clipboard_generation"
+            : "final_paste_\(afterStage ? "dispatch_preflight" : "preflight")_changed:\(reason)"))
+    }
+
+    @Test("clipboard churn before staging has a bounded refresh budget")
+    func repeatedClipboardChangesNeverDispatch() async {
+        let fake = FakeClipboard()
+        var validations = 0
+        let success = await Paste.perform(text: "next group", to: 42, validateTarget: {
+            validations += 1
+            fake.externalCopy()
+            return true
+        }, acknowledge: { Issue.record("No event was authorized"); return true },
+        onDiagnostic: { fake.diagnostics.append($0) }, access: fake.access())
+        #expect(!success && validations == 2)
+        #expect(fake.stages == 0 && fake.posts.isEmpty && fake.restores == 0)
+        #expect(fake.items == FakeClipboard.newer)
+        #expect(fake.diagnostics == ["final_paste_preflight_retry:clipboard_generation",
+                                    "final_paste_preflight_changed:clipboard_generation"])
+    }
+
+    @Test("fresh clipboard preparation revalidates every target guard", arguments: ["focus", "process", "layout", "cancel"])
+    func clipboardRefreshCannotBypassTargetGuard(change: String) async {
+        let fake = FakeClipboard()
+        var validations = 0
+        let operation = Task { @MainActor in
+            await Paste.perform(text: "next group", to: 42, validateTarget: {
+                validations += 1
+                if validations == 1 { fake.externalCopy(); return true }
+                switch change {
+                case "process": fake.targetValid = false
+                case "layout": fake.layoutValid = false
+                case "cancel": withUnsafeCurrentTask { $0?.cancel() }
+                default: return false
+                }
+                return true
+            }, acknowledge: { Issue.record("Refreshed clipboard is not target ownership"); return true },
+            onDiagnostic: { fake.diagnostics.append($0) }, access: fake.access())
+        }
+        #expect(!(await operation.value))
+        #expect(validations == 2 && fake.stages == 0 && fake.posts.isEmpty && fake.restores == 0)
+        #expect(fake.items == FakeClipboard.newer)
     }
 
     @Test("empty text and controls cannot stage or submit", arguments: ["", "a\nb", "\t", "\r", "\u{85}", "\u{2028}", "\u{2029}"])
