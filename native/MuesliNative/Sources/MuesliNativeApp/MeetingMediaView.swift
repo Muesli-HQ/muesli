@@ -6,6 +6,7 @@ struct MeetingMediaView: View {
     let meeting: MeetingRecord
     let controller: MuesliController
     let appState: AppState
+    var showsStartControl = true
     @State private var mode = "Screen"
     @State private var selectedID: String?
     @State private var player: AVPlayer?
@@ -33,7 +34,7 @@ struct MeetingMediaView: View {
                         Button(memory.pauseState.userPaused ? "Resume screen" : "Pause screen") { controller.toggleMeetingScreenPause() }
                             .disabled(memory.isFinalizing || memory.isPreparing || appState.isMeetingRecordingPaused)
                         Button("Stop screen") { controller.stopMeetingScreenRecording() }.disabled(memory.isFinalizing)
-                    } else {
+                    } else if showsStartControl {
                         Button { controller.startMeetingScreenRecording() } label: { Label("Record Screen…", systemImage: "record.circle") }
                             .disabled(memory.isPreparing || memory.isFinalizing || appState.isMeetingRecordingPaused)
                         Text("Screen capture starts only after confirmation").font(.caption).foregroundStyle(.secondary)

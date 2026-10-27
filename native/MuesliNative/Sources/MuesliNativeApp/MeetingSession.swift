@@ -735,7 +735,8 @@ final class MeetingSession {
         fputs("[meeting] recording discarded\n", stderr)
     }
 
-    func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+    func stop(template: MeetingTemplateSnapshot? = nil, onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        let templateSnapshot = template ?? self.templateSnapshot
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
