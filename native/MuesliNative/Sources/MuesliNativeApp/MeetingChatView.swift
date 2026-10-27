@@ -164,6 +164,9 @@ struct MeetingChatView: View {
             if let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
             await coordinator.refreshChoices()
         }
+        .onChange(of: coordinator.isBusy || coordinator.isUpdatingChat) { _, busy in
+            if !busy, let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
+        }
     }
     private var header: some View {
         HStack(spacing: 12) {
