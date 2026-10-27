@@ -154,20 +154,20 @@ struct FloatingIndicatorVisibilityTests {
         #expect(decoded.activePostProcessorId == PostProcessorOption.qwen35_0_8b.id)
     }
 
-    @Test("cached legacy post processor persists through JSON round-trip")
+    @Test("retired post processor migrates through JSON round-trip")
     func cachedLegacyPostProcessorRoundTrip() throws {
         let json = #"{"active_post_processor_id":"qwen3-postproc-v2"}"#
         let decoded = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
-        #expect(decoded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+        #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV4.id)
 
         let data = try JSONEncoder().encode(decoded)
         let reloaded = try JSONDecoder().decode(AppConfig.self, from: data)
-        #expect(reloaded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+        #expect(reloaded.activePostProcessorId == PostProcessorOption.finetunedV4.id)
         #expect(PostProcessorOption.runtimeOption(
             id: reloaded.activePostProcessorId,
             downloadedIDs: [PostProcessorOption.legacyV2.id],
             hasDevOverride: false
-        ) == .legacyV2)
+        ) == nil)
     }
 
     @Test("post processor decodes from snake_case JSON")

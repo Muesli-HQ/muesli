@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Benchmarks may narrow the test target locally, but CI shards must see every test.
+unset MUESLI_CLEANUP_EVALUATION_ONLY
+
 list_filters=false
 if [[ "${1:-}" == "--list-filters" ]]; then
   list_filters=true
@@ -20,6 +23,7 @@ case "${shard}" in
       ConfigStoreTests
       InsightsTests
       DictationStoreTests
+      GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
       ComputerUseLocalPlannerBenchmarkTests
@@ -92,6 +96,12 @@ case "${shard}" in
       CleanupFormattingReplayTests
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
+      CleanupMLXEvaluationTests
+      QwenMLXDownloadTests
+      GemmaAudioEvaluationTests
+      GemmaAudioEndToEndTests
+      GemmaMTPEvaluationTests
+      GemmaNativeAudioTests
       LLMGenerationLimitTests
       FillerWordFilterTests
       JaroWinklerTests
@@ -145,6 +155,8 @@ case "${shard}" in
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
+      AudioFileImportControllerTests
+      MeetingHookIntegrationTests
       MeetingCaptureLifecycleTests
       AudioQueueInputRecorderTests
       FallbackStreamingDictationRecorderTests
@@ -220,7 +232,11 @@ if [[ "${list_filters}" == true ]]; then
   exit 0
 fi
 
-args=(--package-path native/MuesliNative)
+build_args=(--package-path native/MuesliNative --build-system native)
+if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
+  build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
+fi
+args=("${build_args[@]}")
 if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
   # Hundreds of concurrent cases can starve caption tasks and diarizer preload
   # coordination, including their setup handshakes, on small runners. Serialize
@@ -228,15 +244,26 @@ if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
   # weakening their deadlines or changing production QoS.
   args+=(--no-parallel)
 fi
-if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
-  args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
-fi
 for filter in "${filters[@]}"; do
   args+=(--filter "${filter}")
 done
 
 echo "Running ${shard} shard with ${#filters[@]} filters"
-swift test "${args[@]}"
+# Nested Swift Testing bundles do not consistently discover MLX's resource
+# bundle. Build first, then supply the actual compiled library to GPU tests.
+swift build "${build_args[@]}" --build-tests
+bin_path="$(swift build "${build_args[@]}" --show-bin-path)"
+metallib="$(find "${bin_path}" -path '*mlx-swift_Cmlx.bundle/*' -name default.metallib -print -quit)"
+if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
+  scratch="${MUESLI_SWIFTPM_SCRATCH_PATH:-.build}"
+  if [[ "$scratch" != /* ]]; then
+    scratch="$PWD/native/MuesliNative/$scratch"
+  fi
+  metallib="$bin_path/muesli-test.metallib"
+  bash scripts/build_mlx_test_metallib.sh "$scratch/checkouts/mlx-swift" "$metallib"
+fi
+export MUESLI_MLX_EVAL_METALLIB="${metallib}"
+swift test "${args[@]}" --skip-build
 
 if [[ "${shard}" == meetings ]]; then
   python3 scripts/test_meeting_video_encoding.py

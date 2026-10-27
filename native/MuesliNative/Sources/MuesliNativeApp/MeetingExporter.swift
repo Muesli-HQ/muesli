@@ -85,8 +85,13 @@ struct MeetingExporter {
         var parts: [String] = []
         parts.append("# \(meeting.title)")
         parts.append("")
-        parts.append("**Date:** \(formatExportDate(meeting.startTime))")
-        parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
+        if meeting.source == .granolaImport {
+            parts.append("**Created in Granola:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Source:** Imported from Granola")
+        } else {
+            parts.append("**Date:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
+        }
         parts.append("**Words:** \(wordCount ?? meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
@@ -104,7 +109,9 @@ struct MeetingExporter {
         case .notes:
             if let notesOverride {
                 parts.append(notesOverride)
-            } else if meeting.notesState == .structuredNotes {
+            } else if meeting.usesImportedManualNotes {
+                parts.append(meeting.manualNotes)
+            } else if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available. Raw transcript included below.*")
@@ -118,7 +125,12 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
-            if meeting.notesState == .structuredNotes {
+            if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
+                parts.append("## Original manual notes from Granola")
+                parts.append(meeting.manualNotes)
+                parts.append("")
+            }
+            if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available.*")

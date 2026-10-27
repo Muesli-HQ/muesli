@@ -417,7 +417,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
-        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
+        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~3.55 GB")
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
@@ -425,7 +425,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E4BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E4BLiteRT.model == Gemma4LiteRTModel.e4b.repoID)
         #expect(BackendOption.gemma4E4BLiteRT.label == "Gemma 4 E4B")
-        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~3.7 GB")
+        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~5.15 GB")
         #expect(BackendOption.experimental.contains(.gemma4E4BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E4BLiteRT))
     }
@@ -617,17 +617,22 @@ struct PostProcessorOptionTests {
         #expect(Set(ids).count == ids.count, "Duplicate id in PostProcessorOption.all")
     }
 
-    @Test("all options have unique filenames")
+    @Test("all options have unique cached model paths")
     func uniqueFilenames() {
-        let filenames = PostProcessorOption.all.map(\.filename)
-        #expect(Set(filenames).count == filenames.count, "Duplicate filename in PostProcessorOption.all")
+        let filenames = PostProcessorOption.all.map { $0.modelURL.path }
+        #expect(Set(filenames).count == filenames.count, "Duplicate model path in PostProcessorOption.all")
     }
 
-    @Test("all options use HTTPS GGUF downloads")
+    @Test("all options use HTTPS downloads with verified MLX manifests")
     func validDownloadMetadata() {
         for option in PostProcessorOption.all {
             #expect(option.downloadURL.scheme == "https", "Non-HTTPS download URL for \(option.id)")
-            #expect(option.filename.lowercased().hasSuffix(".gguf"), "Non-GGUF filename for \(option.id)")
+            if option.modelURL.pathExtension == "safetensors" {
+                #expect(option.managedModel != nil)
+                #expect(option.managedModel?.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
+            } else {
+                #expect(option.modelURL.pathExtension == "gguf")
+            }
             #expect(!option.label.isEmpty, "Empty label for \(option.id)")
             #expect(!option.description.isEmpty, "Empty description for \(option.id)")
             #expect(!option.sizeLabel.isEmpty, "Empty size label for \(option.id)")
@@ -664,16 +669,18 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
-    @Test("cached legacy v2 remains runnable but is not downloadable")
-    func cachedLegacyV2RemainsRunnable() {
-        #expect(!PostProcessorOption.all.contains(PostProcessorOption.legacyV2))
-        #expect(!PostProcessorOption.legacyV2.isDownloadable)
-        #expect(PostProcessorOption.resolve(id: PostProcessorOption.legacyV2.id) == PostProcessorOption.legacyV2)
-        #expect(PostProcessorOption.runtimeOption(
-            id: PostProcessorOption.legacyV2.id,
-            downloadedIDs: [PostProcessorOption.legacyV2.id],
-            hasDevOverride: false
-        ) == PostProcessorOption.legacyV2)
+    @Test("retired Lite selections migrate without exposing old downloads")
+    func retiredLiteMigration() throws {
+        for old in [PostProcessorOption.legacyV2, .finetunedV3] {
+            #expect(!PostProcessorOption.all.contains(old))
+            #expect(!old.isDownloadable)
+            #expect(PostProcessorOption.resolve(id: old.id) == .finetunedV4)
+            #expect(PostProcessorOption.runtimeOption(id: old.id, downloadedIDs: [old.id], hasDevOverride: false) == nil)
+            let data = Data("{\"active_post_processor_id\":\"\(old.id)\"}".utf8)
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+            #expect(config.activePostProcessorId == PostProcessorOption.finetunedV4.id)
+        }
+        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
     }
 
     @Test("resolveDownloaded prefers selected downloaded option")
@@ -726,7 +733,7 @@ struct PostProcessorOptionTests {
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: [],
             hasDevOverride: true
-        ) == PostProcessorOption.finetunedV3)
+        ) == PostProcessorOption.finetunedV4)
     }
 
     @Test("runtimeOption returns nil without a download or dev override")
@@ -3308,8 +3315,121 @@ struct HotkeyMonitorTests {
         monitor.handleRegisteredHotKeyPressForTests()
         scheduler.advance(by: 0.06)
         monitor.handleRegisteredHotKeyReleaseForTests()
-        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: []))
         #expect(events == ["toggle-start", "toggle-stop", "toggle-start", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @MainActor
+    private func makeMeetingStyleChordMonitor(
+        _ scheduler: ManualHotkeyScheduler,
+        events: @escaping (String) -> Void
+    ) -> HotkeyMonitor {
+        let monitor = scheduler.makeMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        monitor.doubleTapEnabled = false
+        monitor.escapeCancelsToggleSession = false
+        monitor.onToggleStart = { events("toggle-start") }
+        monitor.onToggleStop = { events("toggle-stop") }
+        monitor.onCancel = { events("cancel") }
+        return monitor
+    }
+
+    @Test("Escape passes through an established toggle when the monitor opts out")
+    @MainActor
+    func escapeKeepsOptedOutToggleSession() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        // The next full press still ends the session.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("opt-out leaves Escape on a pending first press unchanged")
+    @MainActor
+    func optOutKeepsPendingFirstPressEscape() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+
+        // The monitor still reports the abandoned gesture through onCancel; the
+        // meeting controller leaves onCancel unset, so it is silent there.
+        #expect(events == ["cancel"])
+        #expect(!monitor.isToggleRecording)
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("Escape cancels a pending second press but keeps the opted-out toggle")
+    @MainActor
+    func escapeCancelsPendingStopPressButKeepsToggle() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        // Start pressing the chord to stop, then back out with Escape before the hold fires.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start", "toggle-stop"])
+    }
+
+    @Test("Escape leaves the toggle-start chord held without stopping the toggle")
+    @MainActor
+    func escapeKeepsHeldToggleStartChordActive() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        scheduler.advance(by: 1)
+        #expect(events == ["toggle-start"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
         #expect(!monitor.isToggleRecording)
     }
 

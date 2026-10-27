@@ -20,7 +20,7 @@ perl -ne '
     print "$1\n";
     $awaiting_suite_type = 0;
   }
-' "$test_root"/*.swift \
+' "$test_root"/*.swift "$test_root/../GemmaAudioEvaluationTests"/*.swift \
   | sort -u > "$tmp_dir/discovered"
 
 for shard in core dictation-transcription meetings; do
@@ -59,3 +59,5 @@ if [[ "$failed" == true ]]; then
 fi
 
 echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d ' ') assigned, $(wc -l < "$tmp_dir/baseline" | tr -d ' ') legacy-unsharded)."
+
+bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"

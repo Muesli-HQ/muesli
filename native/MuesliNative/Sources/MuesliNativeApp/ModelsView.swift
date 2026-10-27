@@ -692,7 +692,7 @@ struct ModelsView: View {
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(displayedPostProcessorOptions) { option in
+                ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
@@ -710,7 +710,7 @@ struct ModelsView: View {
             ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
-            ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
+            ForEach(PostProcessorOption.all.filter(\.supportsQuil)) { option in
                 postProcModelCard(option, forQuill: true)
             }
         }
@@ -1387,7 +1387,7 @@ struct ModelsView: View {
                             ForEach(BackendOption.bodhanFamily.filter {
                                 BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
                             }, id: \.model) { variant in
-                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                Text(BodhanModel(rawValue: variant.model)?.tierName ?? "Pro")
                                     .tag(variant.model)
                             }
                         }
@@ -1590,6 +1590,7 @@ struct ModelsView: View {
                     withAnimation {
                         downloadingPostProcModels.remove(option.id)
                         downloadedPostProcModels.insert(option.id)
+                        controller.refreshCleanupAvailability()
                         downloadProgressPostProc.removeValue(forKey: option.id)
                         downloadMessages.removeValue(forKey: option.id)
                         downloadSnapshots.removeValue(forKey: option.id)
@@ -1647,13 +1648,18 @@ struct ModelsView: View {
                 downloadSnapshots[option.id] = snapshot
             }
         }
-        try Task.checkCancellation()
+        // The coordinator verifies every managed file's size and SHA-256 on its
+        // own actor before returning. Do not rehash multi-GB weights on the UI actor.
+        // Legacy GGUF downloads additionally need this four-byte format check.
         do {
-            try validateGGUFHeader(at: option.modelURL)
+            if option.modelURL.pathExtension == "gguf" {
+                try validateGGUFHeader(at: option.modelURL)
+            }
         } catch {
             try? FileManager.default.removeItem(at: option.modelURL)
             throw error
         }
+        try Task.checkCancellation()
     }
 
     private func validateGGUFHeader(at url: URL) throws {
@@ -1678,6 +1684,7 @@ struct ModelsView: View {
                 guard downloadGenerations[option.id] == cancellationGeneration else { return }
                 if option.isDownloaded {
                     downloadedPostProcModels.insert(option.id)
+                    controller.refreshCleanupAvailability()
                     downloadMessages.removeValue(forKey: option.id)
                     downloadSnapshots.removeValue(forKey: option.id)
                 } else {
@@ -1713,27 +1720,14 @@ struct ModelsView: View {
         }
         try? FileManager.default.removeItem(at: option.cacheDirectory)
         downloadedPostProcModels.remove(option.id)
+        controller.refreshCleanupAvailability()
         downloadSnapshots.removeValue(forKey: option.id)
         downloadGenerations.removeValue(forKey: option.id)
     }
 
     private func checkDownloadedPostProcModels() {
-        downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.downloaded {
-            if option.isDownloaded {
-                downloadedPostProcModels.insert(option.id)
-            }
-        }
-    }
-
-    /// The retired v2 cleanup model stays visible only for people who already
-    /// have it installed. Deleting it removes the card, and the model cannot
-    /// be downloaded again.
-    private var displayedPostProcessorOptions: [PostProcessorOption] {
-        PostProcessorOption.all
-            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
-                ? [.legacyV2]
-                : [])
+        downloadedPostProcModels = PostProcessorOption.downloadedIDs
+        controller.refreshCleanupAvailability()
     }
 
     // MARK: - Actions

@@ -1,10 +1,138 @@
 import Foundation
 import Testing
 import MuesliCore
+import MLX
 @testable import MuesliNativeApp
 
 @Suite
 struct MuesliCleanupV2Tests {
+    @Test func namespaceMigrationPreservesModelsAndCaches() throws {
+        for option in [BackendOption.cohereTranscribe] + BackendOption.bodhanFamily {
+            let legacy = option.model.replacingOccurrences(of: "Muesli-HQ/", with: "phequals/")
+            #expect(BackendOption.resolve(backend: option.backend, model: legacy) == option)
+            let json = try JSONSerialization.data(withJSONObject: ["stt_backend": option.backend, "stt_model": legacy,
+                "meeting_transcription_backend": option.backend, "meeting_transcription_model": legacy])
+            let config = try JSONDecoder().decode(AppConfig.self, from: json)
+            #expect(config.sttModel == option.model)
+            #expect(config.meetingTranscriptionModel == option.model)
+        }
+        for model in BodhanModel.allCases {
+            #expect(model.cacheDirectory.lastPathComponent == String(model.rawValue.split(separator: "/").last!))
+            #expect(model.repository.hasPrefix("Muesli-HQ/"))
+        }
+        #expect(CohereTranscribeModelStore.cacheDirectory().lastPathComponent == "cohere-transcribe-coreml-mixed-precision")
+        #expect(PostProcessorOption.finetunedV3.cacheDirectory.lastPathComponent == "postproc-qwen35-postproc-v3")
+        #expect(PostProcessorOption.finetunedV3.downloadURL.path.contains("/Muesli-HQ/"))
+    }
+
+    @Test func renamedNativeModelsLoad() async throws {
+        guard #available(macOS 15, *), let kind = ProcessInfo.processInfo.environment["MUESLI_HF_LOAD_KIND"] else { return }
+        if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] {
+            GPU.metallib = URL(fileURLWithPath: path)
+        }
+        if kind == "cohere" {
+            let transcriber = CohereTranscribeTranscriber()
+            try await transcriber.loadModels()
+            await transcriber.shutdown()
+        } else if let option = (PostProcessorOption.all + [.legacyV2]).first(where: { $0.id == kind }),
+                  let path = ProcessInfo.processInfo.environment["MUESLI_HF_LOAD_FILE"] {
+            let processor = Qwen3PostProcessor(modelURL: URL(fileURLWithPath: path), systemPrompt: PostProcessorOption.defaultSystemPrompt, inputFormat: option.inputFormat)
+            try await processor.prepare()
+            let config = Qwen3PostProcessor.Configuration(modelURL: URL(fileURLWithPath: path), systemPrompt: PostProcessorOption.defaultSystemPrompt, inputFormat: option.inputFormat)
+            let output = try await processor.process("Hello world.", configuration: config)
+            #expect(!output.isEmpty)
+            print("NAMESPACE OUTPUT \(kind): \(output)")
+            await processor.shutdown()
+        } else if let model = BodhanModel.allCases.first(where: { $0.rawValue.hasSuffix("/" + kind) }) {
+            Memory.cacheLimit = 256 * 1024 * 1024
+            let transcriber = BodhanTranscriber()
+            try await transcriber.prepare(modelID: model.rawValue)
+            await transcriber.shutdown()
+        } else {
+            Issue.record("Unknown namespace validation model")
+        }
+        print("NAMESPACE LOAD PASSED \(kind)")
+    }
+
+    @Test func qwenLiteV4Contract() {
+        let option = PostProcessorOption.finetunedV4
+        #expect(PostProcessorOption.defaultOption == .finetunedV4)
+        #expect(option.managedModel?.modelByteCount == 799_973_748)
+        #expect(option.managedModel?.revision == "edd597f9cfd41c0422565758eae6aff3afa2b9d2")
+        #expect(option.managedModel?.files.first?.sha256 == "9bb3f251da42cd5806f25bda751e232e204ef2104d9fc590a28b051de7fe2602")
+        #expect(!option.supportsQuil)
+        #expect(option.effectiveSystemPrompt(configuredSystemPrompt: "custom") == PostProcessorOption.defaultSystemPrompt)
+        let expected = "<|im_start|>user\n" + PostProcessorOption.defaultSystemPrompt + "\n\n<APP-CONTEXT>\nApp: Mail\n</APP-CONTEXT>\n\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        #expect(MuesliCleanupV2Prompt.ggufRequest("hello", appContext: "App: Mail", format: option.inputFormat) == expected)
+    }
+
+    @Test func qwenLightV4Golden() async throws {
+        guard #available(macOS 15, *),
+              let modelPath = ProcessInfo.processInfo.environment["MUESLI_QWEN08_VERIFY_FILE"],
+              let root = ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"] else { return }
+        struct Row: Decodable {
+            let id: String
+            let input_text: String
+            let pred_text: String?
+            let context: Context?
+            struct Context: Decodable {
+                let application: String
+                let focused_field: String?
+                let visible_screen_context: String?
+                var formatted: String {
+                    var parts = ["App: " + application]
+                    if let field = focused_field, !field.isEmpty { parts.append("Document context: " + field) }
+                    if let screen = visible_screen_context, !screen.isEmpty { parts.append("OCR screen text: " + screen) }
+                    return parts.joined(separator: "\n")
+                }
+            }
+        }
+        func rows(_ path: String) throws -> [Row] {
+            try String(contentsOfFile: root + "/" + path).split(separator: "\n").map { try JSONDecoder().decode(Row.self, from: Data($0.utf8)) }
+        }
+        let modelURL = URL(fileURLWithPath: modelPath)
+        try ManagedCleanupModel.qwen08.validate(modelURL: modelURL)
+        let config = Qwen3PostProcessor.Configuration(modelURL: modelURL, systemPrompt: "ignored", inputFormat: .muesliTrainedV12Qwen08)
+        let processor = Qwen3PostProcessor(modelURL: modelURL, systemPrompt: "ignored", inputFormat: .muesliTrainedV12Qwen08)
+        try await processor.prepare()
+        _ = try await processor.process("Hello world.", configuration: config)
+        let references = Dictionary(uniqueKeysWithValues: try rows("models/gemma4/eval/results/challengers/qwen08ggufq4km_held.jsonl").map { ($0.id, $0.pred_text ?? "") })
+        var times: [Double] = []
+        for row in try rows("common/data/context_authored_v1/heldout.jsonl").prefix(10) {
+            let start = Date()
+            let result = try await processor.process(row.input_text, appContext: row.context?.formatted, configuration: config)
+            times.append(Date().timeIntervalSince(start))
+            print("QWEN08 GOLDEN \(row.id) expected=\(references[row.id] ?? "") actual=\(result)")
+            #expect(result == references[row.id])
+        }
+        print("QWEN08 median_seconds=\((times.sorted()[4] + times.sorted()[5]) / 2)")
+        var smokeTimes: [Double] = []
+        let smokes = [
+            ("thanks ill send it tomorrow", "App: Slack"),
+            ("thanks for the update new paragraph ill send the report tomorrow", "App: Mail\nDocument context: Reply body"),
+            ("update src slash auth dot swift", "App: Codex"),
+            ("lets meet tuesday no wait wednesday", "App: Slack"),
+            ("muesli download", "App: Safari\nDocument context: Search"),
+            ("put this in bullet points first check latency second check formatting third compare both", "App: Notes"),
+            ("""
+            Please send the updated project report to Maya before Thursday afternoon. The first section should explain why the release date moved and which customer requests are still waiting for review. The second section should include the testing results from the laptop and desktop machines, with separate notes for cold starts and warmed up sessions. We also need to check that the cleanup model preserves names, file paths, numbered lists, and short search queries. If a recording contains a correction, keep the corrected version rather than both alternatives. Please ask Ravi to review the installation instructions and confirm that existing downloads are reused after the repository name changes. Do not remove the older model until we have completed the comparison on real dictations. For the final section, describe the remaining performance work and list any examples where the output changed the meaning of the original recording. Send the draft to the team first so everyone can add comments before it goes to customers. After the review, save the approved document in the shared project folder and let me know which follow up tasks still need an owner. We can discuss those tasks in our meeting on Friday morning. The final reminder is to keep the rollback option available.
+            """, "App: Notes")
+        ]
+        for (input, context) in smokes {
+            let start = Date()
+            let output = try await processor.process(input, appContext: context, configuration: config)
+            smokeTimes.append(Date().timeIntervalSince(start))
+            #expect(!output.isEmpty)
+            #expect(!output.contains("APP-CONTEXT"))
+            #expect(!output.contains(MuesliCleanupV2Prompt.systemPrompt))
+            print("QWEN08 SMOKE seconds=\(smokeTimes.last!) input=\(input) output=\(output)")
+        }
+        print("QWEN08 short_smoke_median=\((smokeTimes.prefix(6).sorted()[2] + smokeTimes.prefix(6).sorted()[3]) / 2)")
+
+        await processor.shutdown()
+    }
+
+
     @Test func truncatedOutputPreservesEntireTranscript() {
         let input = "First send the report. Then email the customer. Finally archive the results."
         #expect(MuesliCleanupV2Prompt.guardedOutput("First send the report.", input: input, generationCompleted: false) == input)
@@ -21,6 +149,23 @@ struct MuesliCleanupV2Tests {
             #expect(Gemma4LiteRTModelStore.resolvedModelURL(for: model, environment: environment) == Gemma4LiteRTModelStore.managedModelURL(for: model))
         }
         #expect(Gemma4LiteRTModelStore.cleanupOverrideURL(environment: ["MUESLI_CLEANUP_V2_MODEL_PATH": " /tmp/model "]) == URL(fileURLWithPath: "/tmp/model"))
+    }
+
+    @Test func legacyOverrideGuardsNormalizeBlankPaths() {
+        #expect(!Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: [:]))
+        for key in [Gemma4LiteRTModelStore.modelPathEnvVar, "MUESLI_CLEANUP_V2_MODEL_PATH"] {
+            for blank in ["", "  ", "\n\t"] {
+                let environment = [key: blank]
+                #expect(!Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: environment))
+                for model in [Gemma4LiteRTModel.e2b, .e4b, .muesliCleanupV2] {
+                    #expect(Gemma4LiteRTModelStore.isAvailableLocally(model: model, environment: environment)
+                        == GemmaNativeAudioModels.isAvailable(model, environment: environment))
+                }
+            }
+            let environment = [key: " /tmp/legacy-model "]
+            #expect(Gemma4LiteRTModelStore.hasLegacyModelOverride(environment: environment))
+            #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+        }
     }
 
     @Test func trainingContract() {
@@ -61,7 +206,7 @@ struct MuesliCleanupV2Tests {
         #expect(!Gemma4LiteRTModel.generalPurpose.contains(model))
         #expect(!BackendOption.all.contains { $0.model == model.repoID })
         #expect(!ComputerUseLocalPlanner.models.contains { $0.id.contains(model.repoID) })
-        #expect(PostProcessorOption.defaultOption.id == "qwen35-postproc-v3")
+        #expect(PostProcessorOption.defaultOption.id == "qwen35-postproc-v4")
         let url = Gemma4LiteRTModelStore.resolvedModelURL(for: model, environment: [Gemma4LiteRTModelStore.modelPathEnvVar: "/tmp/wrong-model"])
         #expect(url.lastPathComponent == model.filename)
     }
@@ -103,61 +248,8 @@ struct ManagedCleanupV12Tests {
         #expect(!ran)
     }
 
-    @Test func gemmaLongIdleWarmup() async throws {
-        guard #available(macOS 15, *),
-              let fixturePath = ProcessInfo.processInfo.environment["MUESLI_LATENCY_FIXTURE"],
-              let reportPath = ProcessInfo.processInfo.environment["MUESLI_IDLE_REPORT"] else { return }
-        struct Fixture: Decodable {
-            let rawASRText: String
-            let appContextText: String?
-            let cleanupOutputText: String
-        }
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
-        let inputs = [fixture.rawASRText,
-                      "Put this in bullet points. First send the report tomorrow. Second check the formatting. Third compare the latency.",
-                      "Make a numbered list. First open the settings. Second select the cleanup model. Third test the output."]
-        let transcriber = Gemma4LiteRTTranscriber()
-        var baseline: [String] = []
-        var rows: [[String: Any]] = []
-        for input in inputs {
-            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
-                appContext: fixture.appContextText, model: .muesliCleanupV2)
-            baseline.append(result.text)
-            #expect(!result.didFallback)
-        }
-        #expect(baseline[0] == fixture.cleanupOutputText)
-        let recent = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        #expect(!recent)
-        Gemma4LiteRTLogging.profile("idle_test waiting_seconds=180")
-        try await Task.sleep(for: .seconds(180))
-        let expired = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime - 3)
-        #expect(!expired)
-        let cancelledTask = Task {
-            withUnsafeCurrentTask { $0?.cancel() }
-            return await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        }
-        let cancelled = await cancelledTask.value
-        #expect(!cancelled)
-        let warmStart = ProcessInfo.processInfo.systemUptime
-        let ran = await transcriber.warmUpCleanupIfIdle(requestedAt: warmStart)
-        #expect(ran)
-        let warmSeconds = ProcessInfo.processInfo.systemUptime - warmStart
-        let duplicate = await transcriber.warmUpCleanupIfIdle(requestedAt: ProcessInfo.processInfo.systemUptime)
-        #expect(!duplicate)
-        try await Task.sleep(for: .seconds(15))
-        for (index, input) in inputs.enumerated() {
-            let result = try await transcriber.cleanTranscript(input, systemPrompt: "",
-                appContext: fixture.appContextText, model: .muesliCleanupV2)
-            #expect(!result.didFallback)
-            #expect(result.text == baseline[index])
-            #expect(result.rawOutput == result.text)
-            rows.append(["index": index, "seconds": result.processingTime, "output": result.text,
-                         "baseline": baseline[index], "warmupSeconds": warmSeconds])
-        }
-        try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
-            .write(to: URL(fileURLWithPath: reportPath))
-        await transcriber.shutdown()
-    }
+    // The retired LiteRT idle-refresh experiment is intentionally removed.
+    // Native preparation and readiness invalidation are covered by GemmaNativeAudioTests.
 
     /// Private fixture is a cleanup debug log row, kept outside the repository.
     @Test func gemmaLatencyInvestigation() async throws {
@@ -172,13 +264,14 @@ struct ManagedCleanupV12Tests {
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
         var rows: [[String: Any]] = []
         let warmupExperiment = ProcessInfo.processInfo.environment["MUESLI_LATENCY_WARMUP"] == "1"
-        for (label, contextTokens, context) in [
-            ("full_4096", Int32(4096), fixture.appContextText),
-            ("full_2048", Int32(2048), fixture.appContextText),
-            ("app_only_4096", Int32(4096), Optional("App: ChatGPT")),
-            ("full_4096_repeat", Int32(4096), fixture.appContextText)
+        // Native MLX uses a dynamic KV cache, not LiteRT's fixed context allocation.
+        // Compare actual prompt contexts, not unsupported allocation budgets.
+        for (label, context) in [
+            ("full_context", fixture.appContextText),
+            ("app_only", Optional("App: ChatGPT")),
+            ("full_context_repeat", fixture.appContextText)
         ] {
-            if warmupExperiment && label != "full_4096" { continue }
+            if warmupExperiment && label != "full_context" { continue }
             let transcriber = Gemma4LiteRTTranscriber()
             if warmupExperiment {
                 Gemma4LiteRTLogging.profile("experiment warmup=unrelated_short_input")
@@ -191,7 +284,7 @@ struct ManagedCleanupV12Tests {
                 }
                 Gemma4LiteRTLogging.profile("experiment variant=\(label) iteration=\(iteration)")
                 let result = try await transcriber.cleanTranscript(fixture.rawASRText,
-                    systemPrompt: "", appContext: context, model: .muesliCleanupV2, contextTokens: contextTokens)
+                    systemPrompt: "", appContext: context, model: .muesliCleanupV2)
                 rows.append(["variant": label, "iteration": iteration, "generationSeconds": result.processingTime,
                              "output": result.text, "rawOutput": result.rawOutput, "fallback": result.didFallback,
                              "matchesRecordedOutput": result.text == fixture.cleanupOutputText])
@@ -223,7 +316,7 @@ struct ManagedCleanupV12Tests {
         await transcriber.shutdown()
     }
 
-    /// Run in separate processes with MUESLI_GEMMA4_LITERT_MTP=1 and =0.
+    /// Run in separate processes with MUESLI_GEMMA_MLX_MTP=1 and =0.
     @Test func gemmaLongDictationTiming() async throws {
         guard #available(macOS 15, *),
               let root = ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"],
@@ -266,6 +359,8 @@ struct ManagedCleanupV12Tests {
     @Test func gemmaLimitPreservesOriginalTranscript() async throws {
         guard #available(macOS 15, *),
               ProcessInfo.processInfo.environment["MUESLI_V12_GOLDEN_ROOT"] != nil else { return }
+        if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
+        Memory.cacheLimit = 256 * 1024 * 1024
         let transcriber = Gemma4LiteRTTranscriber()
         let input = "First send the report tomorrow morning. Then email the customer and archive the results."
         let capped = try await transcriber.cleanTranscript(input, systemPrompt: "", appContext: nil,
@@ -286,7 +381,7 @@ struct ManagedCleanupV12Tests {
         #expect(MuesliCleanupV2Prompt.ggufRequest("hello", appContext: nil, format: .muesliTrainedV12Qwen) == "<|im_start|>user\n" + user + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
         #expect(MuesliCleanupV2Prompt.guardedOutput("", input: "hello") == "hello")
         #expect(MuesliCleanupV2Prompt.guardedOutput(String(repeating: "x", count: 16), input: "hello") == "hello")
-        #expect(PostProcessorOption.defaultOption == .finetunedV3)
+        #expect(PostProcessorOption.defaultOption == .finetunedV4)
         #expect(!PostProcessorOption.lfmV12.supportsQuil)
     }
 
@@ -335,10 +430,12 @@ struct ManagedCleanupV12Tests {
         let inputs = Array(try rows("common/data/context_authored_v1/heldout.jsonl").prefix(10))
         for (option, name) in [(PostProcessorOption.lfmV12, "lfm25gguf"), (.qwenV12, "qwen35gguf_q4km")]
             where ProcessInfo.processInfo.environment["MUESLI_V12_GEMMA_ONLY"] != "1" {
-            let descriptor = try #require(option.managedModel)
+            // Keep the archived GGUF baseline independent of the production MLX catalog.
+            let descriptor: ManagedCleanupModel = option == .lfmV12 ? .lfm : .qwen
+            let baselineURL = option.cacheDirectory.appendingPathComponent(descriptor.modelFilename)
             try await MuesliCore.ModelDownloadCoordinator.shared.download(descriptor.manifest(id: option.id), to: option.cacheDirectory)
-            let processor = Qwen3PostProcessor(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
-            let config = Qwen3PostProcessor.Configuration(modelURL: option.modelURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let processor = Qwen3PostProcessor(modelURL: baselineURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
+            let config = Qwen3PostProcessor.Configuration(modelURL: baselineURL, systemPrompt: "ignored", inputFormat: option.inputFormat)
             try await processor.prepare()
             _ = try await processor.process("Hello world.", configuration: config)
             let expected = Dictionary(uniqueKeysWithValues: try rows("models/gemma4/eval/results/challengers/\(name)_held.jsonl").map { ($0.id, $0.pred_text ?? "") })

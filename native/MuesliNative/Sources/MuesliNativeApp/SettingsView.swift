@@ -2245,7 +2245,7 @@ struct SettingsView: View {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
-                    settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
+                    settingsDescription("On external displays, the notch appears at the top center.")
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else {

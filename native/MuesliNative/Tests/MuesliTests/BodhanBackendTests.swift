@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Bodhan compatibility and languages")
 struct BodhanBackendTests {
+    @Test("Bodhan tiers use product names without changing saved model IDs", arguments: BodhanModel.allCases)
+    func tierNames(model: BodhanModel) {
+        let tier = model.isInt8 ? "Lite" : "Pro"
+        #expect(model.tierName == tier)
+        #expect(model.name == "Bodhan \(model.isCore ? "Core" : "Flex") \(tier)")
+        #expect(BackendOption.resolve(backend: "bodhan", model: model.rawValue)?.label == model.name)
+    }
+
     private let retiredModel = "phequals/indic-conformer-600m-multilingual-coreml-rnnt"
 
     @Test("Retired Indic model is absent and saved selections resolve to Flex")

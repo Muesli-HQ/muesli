@@ -4,18 +4,27 @@ import Testing
 import MuesliCore
 
 private final class DownloadTestTracker: @unchecked Sendable {
-    private let lock = NSCondition()
+    private let lock = NSLock()
     private var active = 0
     private(set) var maximumActive = 0
-    private(set) var requestCount = 0
+    private var requestCountStorage = 0
+    private var startWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestCountStorage
+    }
 
     func started() {
         lock.lock()
         active += 1
-        requestCount += 1
+        requestCountStorage += 1
         maximumActive = max(maximumActive, active)
-        lock.broadcast()
+        let waiters = Array(startWaiters.values)
+        startWaiters.removeAll()
         lock.unlock()
+        for waiter in waiters { waiter.resume(returning: true) }
     }
 
     func finished() {
@@ -24,14 +33,31 @@ private final class DownloadTestTracker: @unchecked Sendable {
         lock.unlock()
     }
 
-    func waitUntilRequestStarts(timeout: TimeInterval = 2) -> Bool {
+    var activeCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        let deadline = Date().addingTimeInterval(timeout)
-        while requestCount == 0 {
-            guard lock.wait(until: deadline) else { return false }
+        return active
+    }
+
+    func waitUntilRequestStarts(timeout: TimeInterval = 2) async -> Bool {
+        // Suspend rather than occupying the cooperative worker needed to start the request.
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if requestCountStorage > 0 {
+                lock.unlock()
+                continuation.resume(returning: true)
+                return
+            }
+            let id = UUID()
+            startWaiters[id] = continuation
+            lock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [self] in
+                lock.lock()
+                let waiter = startWaiters.removeValue(forKey: id)
+                lock.unlock()
+                waiter?.resume(returning: false)
+            }
         }
-        return true
     }
 }
 
@@ -129,6 +155,12 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        // Do not block URLSession's protocol queue: it must deliver stopLoading
+        // while the simulated server is still streaming a delayed response.
+        DispatchQueue.global().async { self.deliverResponse() }
+    }
+
+    private func deliverResponse() {
         let response: Response? = {
             Self.lock.lock()
             defer { Self.lock.unlock() }
@@ -178,6 +210,27 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
 
 @Suite("ModelDownloadCoordinator", .serialized)
 struct ModelDownloadCoordinatorTests {
+    @Test("namespace changes reuse verified model bytes without a request")
+    func renamedRepositoryReusesCache() async throws {
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            return ModelDownloadTestURLProtocol.Response(data: Data("test".utf8), tracker: tracker)
+        }
+        let coordinator = makeCoordinator()
+        for owner in ["phequals", "Muesli-HQ"] {
+            let file = ModelDownloadFile(relativePath: "model.gguf",
+                remoteURL: URL(string: "https://huggingface.co/\(owner)/model/resolve/pin/model.gguf")!,
+                expectedByteCount: 4, sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+            try await coordinator.download(ModelDownloadManifest(id: "\(owner)/model", version: "pin", files: [file]), to: root)
+        }
+        #expect(tracker.requestCount == 1)
+        #expect(try Data(contentsOf: root.appendingPathComponent("model.gguf")) == Data("test".utf8))
+    }
+
+
     @Test("manifest totals known file sizes")
     func manifestTotalsKnownFileSizes() throws {
         let manifest = ModelDownloadManifest(
@@ -912,7 +965,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(mirrorManifestTracker.waitUntilRequestStarts())
+        try #require(await mirrorManifestTracker.waitUntilRequestStarts())
         let second = Task {
             try await ManagedASRModelDownloader.downloadIfNeeded(
                 plan,
@@ -992,7 +1045,7 @@ struct ModelDownloadCoordinatorTests {
                 throw error
             }
         }
-        #expect(modelTracker.waitUntilRequestStarts())
+        try #require(await modelTracker.waitUntilRequestStarts())
         let second = Task {
             try await ManagedASRModelDownloader.downloadIfNeeded(
                 plan,
@@ -1069,7 +1122,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(modelTracker.waitUntilRequestStarts())
+        try #require(await modelTracker.waitUntilRequestStarts())
 
         await ManagedASRModelDownloader.cancel(
             modelID: plan.modelID,
@@ -1147,7 +1200,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(modelTracker.waitUntilRequestStarts())
+        try #require(await modelTracker.waitUntilRequestStarts())
 
         await ManagedASRModelDownloader.cancelAndWait(
             modelID: plan.modelID,
@@ -1204,7 +1257,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(mirrorTracker.waitUntilRequestStarts())
+        try #require(await mirrorTracker.waitUntilRequestStarts())
 
         await ManagedASRModelDownloader.cancel(modelID: plan.modelID, coordinator: coordinator)
         await #expect(throws: CancellationError.self) {
@@ -1472,6 +1525,40 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.isComplete())
     }
 
+    @Test("local-only ASR loading never repairs a failed legacy cache")
+    func localOnlyLoadPreservesFailedCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "local-only", repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model"),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        var calls = 0
+        await #expect(throws: CocoaError.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+            }
+        }
+        #expect(calls == 0)
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        let modelURL = plan.cacheDirectory.appendingPathComponent("model.bin")
+        try Data("legacy".utf8).write(to: modelURL)
+        enum LoadFailure: Error { case invalidModel }
+        await #expect(throws: LoadFailure.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+                throw LoadFailure.invalidModel
+            }
+        }
+        #expect(calls == 1)
+        #expect(try Data(contentsOf: modelURL) == Data("legacy".utf8))
+        #expect(plan.requiresRuntimeValidation())
+        let loaded = try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { $0 }
+        #expect(loaded == plan.cacheDirectory)
+    }
+
     @Test("cancelled legacy validation preserves the offline cache")
     func cancelledLegacyValidationPreservesCache() async throws {
         let root = try makeTemporaryDirectory()
@@ -1534,7 +1621,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(tracker.waitUntilRequestStarts())
+        try #require(await tracker.waitUntilRequestStarts())
 
         let deletionToken = await ManagedASRModelDownloader.beginDeletion(
             modelID: plan.modelID,
@@ -1772,7 +1859,7 @@ struct ModelDownloadCoordinatorTests {
             maximumConcurrency: 1
         )
         let task = Task { try await coordinator.download(manifest, to: directory) }
-        #expect(tracker.waitUntilRequestStarts())
+        try #require(await tracker.waitUntilRequestStarts())
 
         await #expect(throws: ModelDownloadError.self) {
             try await coordinator.removeDownload(manifest, at: directory)
@@ -1786,8 +1873,8 @@ struct ModelDownloadCoordinatorTests {
         }
     }
 
-    @Test("cancelling one duplicate caller does not cancel the shared transfer")
-    func cancellingOneDuplicateCallerPreservesSharedTransfer() async throws {
+    @Test("cancelling one duplicate caller does not cancel the shared transfer", arguments: [false, true])
+    func cancellingOneDuplicateCallerPreservesSharedTransfer(cancelWhenUnobserved: Bool) async throws {
         let tracker = DownloadTestTracker()
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
@@ -1812,23 +1899,28 @@ struct ModelDownloadCoordinatorTests {
         let firstReturned = DownloadCompletionFlag()
         let first = Task {
             do {
-                try await coordinator.download(manifest, to: directory)
+                try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved)
             } catch {
                 firstReturned.markCompleted()
                 throw error
             }
             firstReturned.markCompleted()
         }
-        try await Task.sleep(for: .milliseconds(20))
-        let second = Task { try await coordinator.download(manifest, to: directory) }
+        try #require(await tracker.waitUntilRequestStarts())
+        let registered = DownloadCompletionFlag()
+        let second = Task {
+            try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved) { _ in
+                registered.markCompleted()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !registered.isCompleted && ContinuousClock.now < deadline { await Task.yield() }
+        #expect(registered.isCompleted)
         first.cancel()
 
-        try await Task.sleep(for: .milliseconds(20))
+        await #expect(throws: CancellationError.self) { try await first.value }
         #expect(firstReturned.isCompleted)
         try await second.value
-        await #expect(throws: CancellationError.self) {
-            try await first.value
-        }
         #expect(tracker.requestCount == 1)
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
     }
@@ -2058,7 +2150,7 @@ struct ModelDownloadCoordinatorTests {
             maximumConcurrency: 1
         )
         let task = Task { try await coordinator.download(manifest, to: directory) }
-        #expect(tracker.waitUntilRequestStarts())
+        try #require(await tracker.waitUntilRequestStarts())
         let partURL = directory.appendingPathComponent("model.bin.part")
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while !FileManager.default.fileExists(atPath: partURL.path),
@@ -2078,6 +2170,54 @@ struct ModelDownloadCoordinatorTests {
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
         try FileManager.default.removeItem(at: partURL)
         #expect(!FileManager.default.fileExists(atPath: partURL.path))
+    }
+
+    @Test("caller-owned assistant transfer stops when the last caller cancels")
+    func lastAssistantCallerCancellationStopsTransfer() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: Data(repeating: 0x43, count: 2 * 1024 * 1024),
+                  chunkSize: 4096, delay: 0.01, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "assistant-drafter", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/drafter")), expectedByteCount: 2 * 1024 * 1024)])
+        let task = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        try #require(await tracker.waitUntilRequestStarts())
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while tracker.activeCount > 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tracker.activeCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+    }
+
+    @Test("a new caller retries after cancellation instead of joining a canceled transfer")
+    func newCallerAfterCancellationStartsReplacement() async throws {
+        let tracker = DownloadTestTracker()
+        let data = Data(repeating: 0x44, count: 256 * 1024)
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: data, chunkSize: 4096, delay: 0.002, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "retry-after-cancel", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/retry")), expectedByteCount: Int64(data.count))])
+        let first = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        try #require(await tracker.waitUntilRequestStarts())
+        // No cancelAndWait: the replacement must itself drain a canceled writer.
+        await coordinator.cancel(modelID: manifest.id)
+        try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true)
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == data)
+        #expect(tracker.requestCount == 2)
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {

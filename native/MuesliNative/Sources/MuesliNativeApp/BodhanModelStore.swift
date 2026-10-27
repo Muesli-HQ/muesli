@@ -3,17 +3,18 @@ import CryptoKit
 import MuesliCore
 
 enum BodhanModel: String, CaseIterable, Sendable {
-    case core = "phequals/indic-transcribe-core-coreml"
-    case flex = "phequals/indic-transcribe-flex-coreml"
+    case core = "Muesli-HQ/indic-transcribe-core-coreml"
+    case flex = "Muesli-HQ/indic-transcribe-flex-coreml"
 
-    case coreInt8 = "phequals/indic-transcribe-core-coreml-int8"
-    case flexInt8 = "phequals/indic-transcribe-flex-coreml-int8"
+    case coreInt8 = "Muesli-HQ/indic-transcribe-core-coreml-int8"
+    case flexInt8 = "Muesli-HQ/indic-transcribe-flex-coreml-int8"
 
     var isInt8: Bool { self == .coreInt8 || self == .flexInt8 }
     var isCore: Bool { self == .core || self == .coreInt8 }
     var repository: String { isCore ? Self.core.rawValue : Self.flex.rawValue }
     var revision: String { isCore ? "65a3980ce14b240c3de15ce50c3d12986c413a33" : "226cf58626c3718fd9c2849e7ad6f522ecc432d6" }
-    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + (isInt8 ? " INT8" : " FP16") }
+    var tierName: String { isInt8 ? "Lite" : "Pro" }
+    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + " " + tierName }
     var mixedScript: Bool { !isCore }
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/\(rawValue.split(separator: "/").last!)")
