@@ -127,6 +127,7 @@ struct SettingsView: View {
 
     let appState: AppState
     let controller: MuesliController
+    @ObservedObject private var cotypist = CotypistSetup.shared
 
     private enum OpenAIConnectionTestState: Equatable {
         case idle
@@ -1978,6 +1979,10 @@ struct SettingsView: View {
 
             quilSettingsSection
 
+            if CotypistSetup.isAvailable {
+                cotypistSettingsSection
+            }
+
             settingsSection("Advanced") {
                 settingsRow("Paste shortcut", controlWidth: meetingControlWidth) {
                     PasteShortcutControl(controller: controller, appState: appState)
@@ -1998,6 +2003,43 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 dictationOCRContextRow
             }
+        }
+    }
+
+    /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
+    /// selects it, or opens Keyboard settings with a guide until the user has added it.
+    private var cotypistSettingsSection: some View {
+        settingsSection("Cotypist (experimental)") {
+            settingsRow("Typeahead suggestions") {
+                Toggle("Typeahead suggestions", isOn: Binding(
+                    get: { cotypist.state != .off },
+                    set: { cotypist.setOn($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .accessibilityLabel("Cotypist typeahead suggestions")
+            }
+            settingsDescription(cotypistStatus)
+            if cotypist.state == .addingInputSource {
+                compactActionButton("Show setup guide", systemImage: "keyboard") {
+                    cotypist.showGuide()
+                }
+                .padding(.horizontal, MuesliTheme.spacing16)
+                .padding(.bottom, MuesliTheme.spacing8)
+            }
+        }
+    }
+
+    private var cotypistStatus: String {
+        switch cotypist.state {
+        case .on:
+            "Suggests the next words as you type in any app. Tab accepts; keep typing to ignore."
+        case .addingInputSource:
+            cotypist.suggestsRelogin
+                ? "\(CotypistSetup.displayName) isn't listed yet. Log out and back in, then turn this on again."
+                : "Add \(CotypistSetup.displayName) in Keyboard settings. It turns on as soon as it's added."
+        case .off:
+            "Local typeahead in any app, through the \(CotypistSetup.displayName) input source."
         }
     }
 

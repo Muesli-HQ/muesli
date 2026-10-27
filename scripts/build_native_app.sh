@@ -420,6 +420,69 @@ fi
 
 bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
 
+# Cotypist (experimental, dev builds only): the typeahead input method lives inside the app and
+# is registered by Muesli at launch. It owns keys and the inline ghost; Muesli does the rest.
+if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
+  COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
+  COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"
+  mkdir -p "$COTYPIST_DIR/Contents/MacOS" "$COTYPIST_DIR/Contents/Resources"
+  xcrun clang -fobjc-arc -O2 -arch arm64 -mmacosx-version-min=14.2 \
+    -framework Cocoa -framework InputMethodKit \
+    "$ROOT/native/CotypistInputMethod/main.m" "$ROOT/native/CotypistInputMethod/CotypistController.m" \
+    -o "$COTYPIST_DIR/Contents/MacOS/MuesliCotypist"
+  sips -s format tiff -z 32 32 "$ROOT/assets/muesli.icns" --out "$COTYPIST_DIR/Contents/Resources/icon.tiff" >/dev/null
+  # The input mode's display name in System Settings and the input menu (otherwise its raw ID).
+  mkdir -p "$COTYPIST_DIR/Contents/Resources/en.lproj"
+  printf '"%s" = "%s";\n"%s" = "%s";\n"CFBundleName" = "%s";\n' \
+    "$COTYPIST_ID" "$APP_DISPLAY_NAME Cotypist" "$COTYPIST_ID.en" "$APP_DISPLAY_NAME Cotypist" "$APP_DISPLAY_NAME Cotypist" \
+    > "$COTYPIST_DIR/Contents/Resources/en.lproj/InfoPlist.strings"
+  cat > "$COTYPIST_DIR/Contents/Info.plist" <<COTYPIST_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleIdentifier</key><string>$COTYPIST_ID</string>
+  <key>CFBundleName</key><string>$APP_DISPLAY_NAME Cotypist</string>
+  <key>CFBundleDisplayName</key><string>$APP_DISPLAY_NAME Cotypist</string>
+  <key>CFBundleExecutable</key><string>MuesliCotypist</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>$APP_BUNDLE_VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$APP_SHORT_VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>14.2</string>
+  <key>LSBackgroundOnly</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>MuesliSupportDirectoryName</key><string>$APP_SUPPORT_DIR_NAME</string>
+  <key>InputMethodConnectionName</key><string>${COTYPIST_ID}_Connection</string>
+  <key>InputMethodServerControllerClass</key><string>CotypistController</string>
+  <key>TISInputSourceID</key><string>$COTYPIST_ID</string>
+  <key>TISIntendedLanguage</key><string>en</string>
+  <key>tsInputMethodCharacterRepertoireKey</key><array><string>Latn</string></array>
+  <key>tsInputMethodIconFileKey</key><string>icon.tiff</string>
+  <key>ComponentInputModeDict</key>
+  <dict>
+    <key>tsInputModeListKey</key>
+    <dict>
+      <key>$COTYPIST_ID.en</key>
+      <dict>
+        <key>TISInputSourceID</key><string>$COTYPIST_ID.en</string>
+        <key>TISIntendedLanguage</key><string>en</string>
+        <key>tsInputModeMenuIconFileKey</key><string>icon.tiff</string>
+        <key>tsInputModeAlternateMenuIconFileKey</key><string>icon.tiff</string>
+        <key>tsInputModePaletteIconFileKey</key><string>icon.tiff</string>
+        <key>tsInputModeDefaultStateKey</key><true/>
+        <key>tsInputModeIsVisibleKey</key><true/>
+        <key>tsInputModePrimaryInScriptKey</key><true/>
+        <key>tsInputModeScriptKey</key><string>smRoman</string>
+      </dict>
+    </dict>
+    <key>tsVisibleInputModeOrderedArrayKey</key><array><string>$COTYPIST_ID.en</string></array>
+  </dict>
+</dict>
+</plist>
+COTYPIST_PLIST
+fi
+
 # Replace existing app (no prompt — that's what this script is for)
 if [[ -d "$APP_DIR" ]]; then
   echo "Replacing $APP_DIR"
@@ -485,6 +548,11 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
+
+  COTYPIST_APP="$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
+  if [[ -d "$COTYPIST_APP" ]]; then
+    codesign --force --options runtime "$CODESIGN_TIMESTAMP" --sign "$SIGN_IDENTITY" "$COTYPIST_APP"
+  fi
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
   ENTITLEMENTS="${MUESLI_ENTITLEMENTS:-$ROOT/scripts/Muesli.entitlements}"
@@ -670,6 +738,10 @@ else
 
   if [[ -f "$APP_DIR/Contents/MacOS/muesli-cli" ]]; then
     codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/muesli-cli"
+  fi
+
+  if [[ -d "$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app" ]]; then
+    codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   fi
 
   # Sign the bundle last so the Info.plist binding / identity stick.
