@@ -4,7 +4,10 @@ This document is the contributor and coding-agent map of Muesli's local SQLite
 database. It explains ownership, relationships, sync boundaries, and the safe
 way to evolve the schema. The executable source of truth remains
 [`DictationStore.migrateIfNeeded()`](native/MuesliNative/Sources/MuesliCore/DictationStore.swift).
-Update this guide whenever that schema changes.
+That entry point also delegates to [MeetingChatSQL](native/MuesliNative/Sources/MuesliCore/MeetingChatSQL.swift)
+and [MeetingVideoStore](native/MuesliNative/Sources/MuesliCore/MeetingVideoStore.swift).
+Retrieval initializes its FTS index lazily, and `importGranola` creates import
+provenance on demand. Update this guide whenever these schemas change.
 
 ## Where the database lives
 
@@ -23,17 +26,20 @@ Do not edit a user's database directly while Muesli is running.
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
   a five-second busy timeout.
-- `dictations` and `meetings` are the two durable history roots. Timeline is a
-  query across these tables, not a separate table.
+- `dictations` and `meetings` are the timeline history roots. Chat threads are
+  separate durable records in `meeting_chat_sessions`; Timeline remains a query,
+  not a separate table.
 - History deletion is soft at first through `deleted_at`. Old tombstones are
   purged after the retention window so CloudKit can observe deletions.
 - Only the text-record subset of dictations and meetings participates in iCloud
   sync. A column living on one of those tables is not automatically a synced
   field.
 - People, folders, computer-use traces, live checkpoints, resume snapshots,
-  audio paths, destination-app attribution, and Insights caches are local-only.
-- There is no FTS table. Global search currently uses parameterized `LIKE`
-  queries over selected dictation, meeting, trace, and participant fields.
+  media paths and video records, chat history and memory, import provenance,
+  destination-app attribution, and Insights data are local-only.
+- Global search uses parameterized `LIKE` queries. Ask Meetings has a separate
+  FTS5 index, `meeting_chat_fts`, over revisioned meeting passages. Its FTS shadow
+  tables are SQLite-managed implementation details, not application records.
 - ISO-8601 strings are used for user-visible event times such as `timestamp` and
   `start_time`. Sync bookkeeping such as `updated_at` and `deleted_at` uses Unix
   time stored as `REAL`.
@@ -50,6 +56,16 @@ erDiagram
     meetings ||--o{ meeting_participants : "has local people"
     meetings ||--o{ meeting_transcript_checkpoints : "has live checkpoints"
     meetings ||--o| meeting_resume_snapshots : "has resume safety snapshot"
+    meetings ||--o{ meeting_video_clips : "owns local video"
+    meetings ||--o{ meeting_imports : "has import provenance"
+    dictations ||--o| bodhan_wbcs_measurements : "has speech measurement"
+
+    meeting_chat_sessions ||--o{ meeting_chat_turns : "orders exchanges"
+    meeting_chat_sessions ||--o{ meeting_chat_session_meetings : "anchors or selects"
+    meetings ||--o{ meeting_chat_session_meetings : "participates in chats"
+    meeting_chat_turns ||--o{ meeting_chat_dependencies : "depends on revisions"
+    meetings ||--o{ meeting_chat_dependencies : "supplies evidence"
+    meetings ||--o{ meeting_chat_passages : "indexes passages"
 
     insights_tokens ||--o| insights_token_totals : "has all-time totals"
     insights_tokens ||--o{ insights_daily_tokens : "has daily totals"
@@ -93,6 +109,8 @@ meeting, or iPhone meeting record.
   `note_only`, or `failed`)
 - Origin/type: `source` (`meeting`, `audio_import`, or `ios`)
 - Local files: `mic_audio_path`, `system_audio_path`, `saved_recording_path`
+- Local visual context: `visual_context` (serialized metadata; video files remain
+  outside SQLite)
 - Calendar snapshot: `calendar_event_id`, `calendar_occurrence_key`,
   `calendar_source`, `calendar_id`, `calendar_series_id`,
   `calendar_occurrence_start`
@@ -130,6 +148,73 @@ explicit local removals. This reconciliation is lifecycle/event-driven. The
 unreleased direct Google OAuth integration does not import or persist meeting
 participants; Google calendars exposed through macOS Calendar use this EventKit
 path.
+
+### Chat threads, memory, and retrieval
+
+A thread is independent of a meeting: one meeting can have multiple chats, and a
+chat can use multiple meetings. All chat tables are local-only. The full harness
+and context-budget policy is documented in [meeting chat architecture](docs/meeting-chat-architecture.md).
+
+| Table | Purpose and constraints |
+|---|---|
+| `meeting_chat_sessions` | UUID text `id`, JSON `body`, and `updated_at`. The body stores title, scope, anchor, history boundary, and optional rolling summary. |
+| `meeting_chat_session_meetings` | Many-to-many associations with role `anchor` or `selected`; composite key `(session_id, meeting_id, role)`, cascading foreign keys, and at most one anchor per session. |
+| `meeting_chat_turns` | UUID text `id`, session FK with cascade, ordinal, state, and JSON `body`; `(session_id, ordinal)` is unique. Body includes question, answer, captured scope, provider/model, attempt, citations, and optional editable draft. |
+| `meeting_chat_dependencies` | `(turn_id, meeting_id)` key, cascading foreign keys, and source revision. Tracks all disclosed or inherited evidence, not just citations shown in the answer. |
+| `meeting_chat_passages` | Rebuildable passage records: integer `seq`, unique passage `id`, meeting FK, revision, text, and serialized passage metadata. |
+| `meeting_chat_dirty_sources` | Meeting IDs awaiting index refresh, with cascading meeting FK. |
+| `meeting_chat_index_state` | Indexed revision, start time, and folder per meeting; cascading meeting FK. |
+| `meeting_chat_source_version` | Singleton row (`id = 1`) holding the source-mutation counter used to invalidate cached validation. |
+| `meeting_chat_fts` | Lazily created FTS5 retrieval index. Rebuilt from eligible meeting source passages; absent before first use is valid; retrieval has a lexical fallback when FTS is unavailable. |
+
+The JSON bodies are typed serialized records, not arbitrary extension fields.
+Keep SQL projections (`state`, `ordinal`, `updated_at`), relationship rows, and
+body encodings consistent through the store APIs. Adding model properties may
+require backward-compatible decoding even when no SQL column changes.
+
+Selection, anchoring, and evidence dependency are distinct. The anchor records
+where a chat started, selected rows describe explicit retrieval scope, and
+dependency rows record sources actually supplied to a turn. Folder/archive/date
+scope is stored in the session and captured separately for each turn. Removing
+a selection does not broaden an empty selection to the whole archive.
+
+Raw exchanges remain stored while older usable exchanges can be compacted into
+a rolling summary in the session body. That summary records covered-turn
+fingerprints and source revisions; it is portable across model switches.
+Provider tool transcripts and reasoning-summary UI state are transient, not
+additional durable chat tables. Unsent composer drafts are in-memory coordinator
+state; the persisted editable draft on a turn is a separate concept.
+
+Source mutation triggers and store validation work together. Meeting edits mark
+retrieval data dirty and bump the source version. Soft/hard deletion invalidates
+dependent answers, citation excerpts, and editable drafts and detaches meeting
+associations; it does not delete the entire chat. Inherited dependencies ensure
+follow-ups are invalidated too. Source and participant changes and changes to
+covered turns invalidate rolling memory; generated titles are also scrubbed
+when their evidence becomes invalid. Physical FK cascades alone are insufficient
+because citations and memory also live inside JSON bodies. Never bypass these
+paths with direct SQL writes to a user's database.
+
+### Local media and import provenance
+
+| Table | Purpose and deletion behavior |
+|---|---|
+| `meeting_video_clips` | Local video metadata: text `id`, kind, meeting FK with cascade, capture time, and JSON body containing media metadata/path. The video itself is a file. |
+| `meeting_video_cleanup` | Durable cleanup outbox (`id`, JSON body), intentionally independent of the meeting FK. Deletion triggers enqueue media metadata before the owning rows disappear, allowing deferred file cleanup. |
+| `meeting_imports` | Created lazily by `DictationStore.importGranola`. Key `(provider, document_id)` deduplicates imports; meeting FK cascades. Stores workspace, owner email, and import time locally. It need not exist in a database that has never imported Granola records. |
+
+Soft deletion queues video cleanup and removes clip rows; hard deletion queues
+cleanup before the meeting FK cascade. Import metadata is committed with its
+meeting and folder in one transaction. Re-imports preserve existing records,
+including tombstones, rather than overwriting user edits.
+
+### Speech-derived measurements
+
+`bodhan_wbcs_measurements` stores words-before-code-switch measurements from
+Bodhan speech windows: a dictation primary/FK, version, language-sample BLOB, and
+optional run-length BLOB. It survives later text edits because it describes the
+original speech. Deletion removes it. Unlike the Insights token caches, it cannot
+be reconstructed from edited transcript text; older dictations are not backfilled.
 
 ### Organization and state
 
@@ -182,8 +267,9 @@ but the resources themselves remain files or platform-managed secrets.
 
 ## How to evolve the schema safely
 
-1. Update the fresh-database `CREATE TABLE` definition in
-   `DictationStore.migrateIfNeeded()`.
+1. Update the owning migration's fresh-database definition (`DictationStore`,
+   `MeetingChatSQL`, or `MeetingVideoStore`; imports and retrieval have lazy
+   initialization paths).
 2. Add an idempotent upgrade path for existing databases. Existing Muesli code
    commonly attempts `ALTER TABLE ... ADD COLUMN` and tolerates only the known
    duplicate-column case.
@@ -209,13 +295,16 @@ audio startup and meeting lifecycle paths.
 
 ## Safe inspection
 
-Quit the relevant Muesli build first, copy the database plus its `-wal` and
-`-shm` companions when present, and inspect the copy:
+For schema-only inspection of a running app, open SQLite read-only and limit
+queries to schema metadata and integrity checks. Do not dump personal rows. For
+an offline snapshot, use SQLite's backup API to capture a consistent database
+(including WAL state); do not copy a live database and its sidecars separately.
+Alternatively quit the relevant app before copying it. Inspect the snapshot:
 
 ```bash
-sqlite3 "/path/to/copied-muesli.db" '.tables'
-sqlite3 "/path/to/copied-muesli.db" '.schema meetings'
-sqlite3 "/path/to/copied-muesli.db" 'PRAGMA foreign_key_check;'
+sqlite3 -readonly "/path/to/copied-muesli.db" '.tables'
+sqlite3 -readonly "/path/to/copied-muesli.db" '.schema meetings'
+sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreign_key_check;'
 ```
 
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
