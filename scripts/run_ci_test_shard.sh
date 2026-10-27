@@ -148,6 +148,7 @@ case "${shard}" in
       AudioQueueInputRecorderTests
       FallbackStreamingDictationRecorderTests
       MeetingCaptureShutdownTests
+      ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
