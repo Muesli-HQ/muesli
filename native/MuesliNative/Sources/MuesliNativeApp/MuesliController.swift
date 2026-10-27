@@ -520,6 +520,7 @@ public final class MuesliController: NSObject {
     /// session-identity gate. Replaced on the next meeting start.
     private var micEpisodeTelemetryGate = RecentMeetingIdentityGate()
     private var liveMeetingTranscriptGeneration: UUID?
+    private var lastRecordingTemplateSelection: (meetingID: Int64, template: MeetingTemplateSnapshot)?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     private var liveMeetingTitleCache: [Int64: String] = [:]
     private var liveManualNotesCache: [Int64: String] = [:]
@@ -6029,6 +6030,7 @@ public final class MuesliController: NSObject {
             selectedTemplateID: template.id, selectedTemplateName: template.name,
             selectedTemplateKind: template.kind, selectedTemplatePrompt: template.prompt
         )
+        lastRecordingTemplateSelection = (meetingID, template)
         scheduleICloudSyncAfterLocalChange()
         syncAppState()
     }
@@ -8443,7 +8445,19 @@ public final class MuesliController: NSObject {
 
     /// Freeze the choice and lock the picker synchronously, before stop awaits any work.
     func lockMeetingTemplateForProcessing(id: Int64) -> MeetingTemplateSnapshot? {
-        let template = (try? dictationStore.meeting(id: id)).map { meetingTemplateSnapshot(for: $0) }
+        // Keep the last successfully saved choice if the store becomes unavailable at Stop.
+        let savedSelection = lastRecordingTemplateSelection?.meetingID == id ? lastRecordingTemplateSelection?.template : nil
+        var template = savedSelection
+        do {
+            if let meeting = try dictationStore.meeting(id: id) {
+                template = meetingTemplateSnapshot(for: meeting)
+            }
+        } catch {
+            fputs("[meeting] failed to read template at Stop; retaining saved selection: \(error)\n", stderr)
+        }
+        if lastRecordingTemplateSelection?.meetingID == id {
+            lastRecordingTemplateSelection = nil
+        }
         updateMeetingStatusAndScheduleSync(id: id, status: .processing)
         return template
     }

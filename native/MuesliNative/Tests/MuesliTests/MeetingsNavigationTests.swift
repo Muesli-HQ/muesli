@@ -261,6 +261,38 @@ struct MeetingsNavigationTests {
         }
     }
 
+    @Test("Stop retains the last saved template when the database read fails", arguments: [false, true])
+    func recordingTemplateReadFailure(explicitAuto: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        let selectedID = explicitAuto ? MeetingTemplates.autoID : "custom-test"
+        try controller.selectRecordingTemplate(id: selectedID, meetingID: id)
+        // A rejected choice must not replace the last successfully saved selection.
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings RENAME TO unavailable_meetings", nil, nil, nil) == SQLITE_OK)
+        defer { sqlite3_exec(db, "ALTER TABLE unavailable_meetings RENAME TO meetings", nil, nil, nil) }
+        #expect(throws: (any Error).self) { _ = try store.meeting(id: id) }
+        // A different capture must never inherit this meeting's choice.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id + 1) == nil)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(frozen.id == selectedID)
+        if !explicitAuto { #expect(frozen.prompt == "Original prompt") }
+        // The fallback is consumed at Stop, not retained indefinitely.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id) == nil)
+    }
+
     @Test("a deleted template cannot silently replace a recording's selection")
     func recordingTemplateRejectsMissingChoice() throws {
         let store = try makeStore()

@@ -637,9 +637,28 @@ struct MeetingDetailView: View {
                                 }
                             }
                             .overlay(alignment: .topTrailing) {
-                                if hasNotesSelection && isManualNotesEditable {
-                                    compactFormattingToolbar.padding(6)
-                                        .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
+                                if isManualNotesEditable {
+                                    Group {
+                                        if hasNotesSelection {
+                                            compactFormattingToolbar
+                                        } else {
+                                            Menu {
+                                                Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
+                                                Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
+                                                Button("Bullet") { manualEditorCommand = MarkdownEditorCommand(kind: .bullet) }
+                                                Button("Checkbox") { manualEditorCommand = MarkdownEditorCommand(kind: .checkbox) }
+                                            } label: {
+                                                Image(systemName: "textformat")
+                                            }
+                                            .menuStyle(.borderlessButton)
+                                            .fixedSize()
+                                            .help("Format notes")
+                                            .accessibilityLabel("Format notes")
+                                        }
+                                    }
+                                    .padding(6)
+                                    .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
+                                    .padding(6)
                                 }
                             }
                         }

@@ -79,7 +79,8 @@ struct MeetingNotesInlineMarkdownTests {
         let textView = NSTextView(frame: .zero)
         textView.string = "Notes"
         var selected: Bool?
-        coordinator.onSelectionChange = { selected = $0 }
+        var publications = 0
+        coordinator.onSelectionChange = { selected = $0; publications += 1 }
         textView.setSelectedRange(NSRange(location: 0, length: 5))
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: textView))
         #expect(selected == nil) // No SwiftUI state writes during an AppKit update.
@@ -87,12 +88,19 @@ struct MeetingNotesInlineMarkdownTests {
             DispatchQueue.main.async { continuation.resume() }
         }
         #expect(selected == true)
+        textView.setSelectedRange(NSRange(location: 0, length: 3))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: textView))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(publications == 1)
         textView.setSelectedRange(NSRange(location: 5, length: 0))
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: textView))
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
         #expect(selected == false)
+        #expect(publications == 2)
     }
 
     @Test("the rich editor renders and round-trips inline Markdown")
@@ -145,6 +153,27 @@ struct MeetingNotesInlineMarkdownTests {
 
         #expect(textView.string == "Owner: Priya")
         #expect(coordinator.serializedMarkdown(from: textView) == "Owner: **Priya**")
+    }
+
+    @Test("list actions work at an empty note or blank-line caret", arguments: [false, true], [false, true])
+    @MainActor
+    func listActionsAtCaret(checkbox: Bool, blankLine: Bool) async {
+        let source = blankLine ? "Existing note\n" : ""
+        var markdown = source
+        let coordinator = MarkdownRichTextEditor.Coordinator(
+            text: Binding(get: { markdown }, set: { markdown = $0 }),
+            command: .constant(nil), onTextChange: nil
+        )
+        let textView = NSTextView(frame: .zero)
+        coordinator.apply(markdown: source, to: textView)
+        textView.setSelectedRange(NSRange(location: source.utf16.count, length: 0))
+        coordinator.schedule(MarkdownEditorCommand(kind: checkbox ? .checkbox : .bullet), in: textView)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(textView.string == source + (checkbox ? "☐ " : "• "))
+        #expect(markdown == source + (checkbox ? "- [ ] " : "- "))
+        #expect(textView.selectedRange().length == 0)
     }
 
     @Test("the bullet command transforms every selected line")
