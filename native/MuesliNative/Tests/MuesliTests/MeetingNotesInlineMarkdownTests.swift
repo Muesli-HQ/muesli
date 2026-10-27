@@ -70,6 +70,31 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(rendered("  indented note  ") == "  indented note  ")
     }
 
+    @Test("formatting visibility follows text selection and clears at the caret")
+    @MainActor
+    func formattingSelectionVisibility() async {
+        let coordinator = MarkdownRichTextEditor.Coordinator(
+            text: .constant("Notes"), command: .constant(nil), onTextChange: nil
+        )
+        let textView = NSTextView(frame: .zero)
+        textView.string = "Notes"
+        var selected: Bool?
+        coordinator.onSelectionChange = { selected = $0 }
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: textView))
+        #expect(selected == nil) // No SwiftUI state writes during an AppKit update.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(selected == true)
+        textView.setSelectedRange(NSRange(location: 5, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: textView))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(selected == false)
+    }
+
     @Test("the rich editor renders and round-trips inline Markdown")
     @MainActor
     func richEditorRendersAndRoundTripsInlineMarkdown() {

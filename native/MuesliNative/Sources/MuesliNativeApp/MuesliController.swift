@@ -509,6 +509,8 @@ public final class MuesliController: NSObject {
         guard let capture = meetingCapture, capture.session.capturePhase.isRecording else { return nil }
         return capture.session
     }
+    var activeMeetingStartedAt: Date? { activeMeetingSession?.startTime }
+
     private var activeMeetingID: Int64? {
         guard let capture = meetingCapture, !capture.session.capturePhase.isEnding else { return nil }
         return capture.id
