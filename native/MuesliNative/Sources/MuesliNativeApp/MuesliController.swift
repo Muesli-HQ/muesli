@@ -53,11 +53,19 @@ enum DictationBackendReadiness: Equatable {
 struct DictationBackendPreparationState {
     private(set) var generation = UUID()
     private(set) var readiness: DictationBackendReadiness = .preparing
+    private var task: Task<Void, Never>?
 
     mutating func begin(isHosted: Bool) -> UUID {
+        task?.cancel()
+        task = nil
         generation = UUID()
         readiness = isHosted ? .ready : .preparing
         return generation
+    }
+
+    mutating func track(_ task: Task<Void, Never>, for token: UUID) {
+        guard owns(token) else { task.cancel(); return }
+        self.task = task
     }
 
     func owns(_ token: UUID) -> Bool { generation == token }
@@ -1024,7 +1032,7 @@ public final class MuesliController: NSObject {
 
         if canRunMainApp {
             let preparation = beginDictationBackendPreparation()
-            Task { [weak self] in
+            let task = Task { [weak self] in
                 guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
                 let includesMeetings = self.config.resolvedOnboardingUseCase.includesMeetings
                 let ppOption = self.runtimePostProcessorOption()
@@ -1057,6 +1065,7 @@ public final class MuesliController: NSObject {
                     self.refreshUI()
                 }
             }
+            dictationBackendPreparation.track(task, for: preparation)
         }
 
         if !canRunMainApp {
@@ -1105,6 +1114,7 @@ public final class MuesliController: NSObject {
         }
     ) async {
         isShuttingDown = true
+        _ = dictationBackendPreparation.begin(isHosted: true)
         // AppDelegate's deadline must cover the entire discard, including video
         // finalization and database/file cleanup, not just the work after it.
         shutdownStep = "screen recording discard"
@@ -3138,7 +3148,7 @@ public final class MuesliController: NSObject {
             historyWindowController?.updateBackendLabel()
             return
         }
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             // Push the selected Nemotron 3.5 language before preload so the loaded
             // transcriber is conditioned on the right prompt_id.
@@ -3161,6 +3171,7 @@ public final class MuesliController: NSObject {
                 self.historyWindowController?.updateBackendLabel()
             }
         }
+        dictationBackendPreparation.track(task, for: preparation)
     }
 
     // MARK: - Dictation Provider
@@ -3193,7 +3204,7 @@ public final class MuesliController: NSObject {
     private func prepareSelectedLocalDictationBackend() {
         let preparation = beginDictationBackendPreparation()
         let option = selectedBackend
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
             let prepared = await self.prepareDictationBackend(option, preparation: preparation)
@@ -3211,6 +3222,7 @@ public final class MuesliController: NSObject {
                 self.historyWindowController?.updateBackendLabel()
             }
         }
+        dictationBackendPreparation.track(task, for: preparation)
     }
 
     // MARK: - OpenAI Dictation Configuration

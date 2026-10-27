@@ -23,6 +23,12 @@ Before publishing readiness, the GPU model transcribes one second of in-memory
 silence with a disposable decoder state. The result is discarded. This runs once
 per model load, consumes first-inference setup during preparation and propagates
 errors/cancellation before the manager is cached or a ready event is emitted.
+Switching models or dictation providers cancels the previous selection's preparation.
+FluidAudio also cancels superseded loads and checks request ownership before
+publishing a manager or readiness, including when Core ML finishes after
+cancellation. Deleting a model invalidates its matching pending load while
+preserving unrelated loaded or preparing models.
+
 Phonon has its own model card, separate from the Parakeet family; voice selection
 continues to derive choices from the existing catalog. The Fermion logo is the
 unmodified [official brand asset](https://www.fermionresearch.com/images/brand/newlogo.svg)

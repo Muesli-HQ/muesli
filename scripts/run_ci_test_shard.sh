@@ -78,6 +78,7 @@ case "${shard}" in
   dictation-transcription)
     filters=(
       FluidAudioTranscriberTests
+      FluidAudioModelLoadTests
       ParakeetModelPreparationTests
       Phonon25IntegrationTests
       AppleSpeechAnalyzerBackendTests

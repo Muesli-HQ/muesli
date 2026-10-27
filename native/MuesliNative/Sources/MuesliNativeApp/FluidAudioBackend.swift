@@ -5,8 +5,23 @@ import MuesliCore
 /// Native Swift transcription backend using FluidAudio's Parakeet TDT model
 /// running via Core ML with a model-specific encoder compute policy.
 actor FluidAudioTranscriber {
+    typealias ModelLoader = @Sendable (
+        String, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> AsrManager
+
     private var asrManager: AsrManager?
-    private var loadedModelID: String?
+    private(set) var loadedModelID: String?
+    private var loadGeneration = UUID()
+    private var pendingLoad: (generation: UUID, modelID: String, task: Task<AsrManager, Error>)?
+    private let modelLoader: ModelLoader
+
+    init(modelLoader: @escaping ModelLoader = { modelID, progress, progressSnapshot in
+        try await FluidAudioTranscriber.prepareModel(
+            modelID: modelID, progress: progress, progressSnapshot: progressSnapshot
+        )
+    }) {
+        self.modelLoader = modelLoader
+    }
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -29,7 +44,40 @@ actor FluidAudioTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        try Task.checkCancellation()
+        // Invalidate before the cache hit: selecting loaded A must supersede pending B.
+        cancelPendingLoad()
         if loadedModelID == modelID, asrManager != nil { return }
+        let generation = loadGeneration
+        let task = Task { try await modelLoader(modelID, progress, progressSnapshot) }
+        pendingLoad = (generation, modelID, task)
+        defer {
+            if pendingLoad?.generation == generation { pendingLoad = nil }
+        }
+        let manager = try await withTaskCancellationHandler(operation: {
+            try await task.value
+        }, onCancel: {
+            task.cancel()
+        })
+        // Core ML may finish an uncancellable operation after cancellation.
+        try Task.checkCancellation()
+        guard loadGeneration == generation, !task.isCancelled else { throw CancellationError() }
+        self.asrManager = manager
+        self.loadedModelID = modelID
+        let preparing = ModelDownloadProgress.preparing(
+            modelID: modelID,
+            message: ParakeetRuntimePolicy.preparingMessage(for: modelID)
+        )
+        progress?(1, nil)
+        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
+        fputs("[fluidaudio] models ready\n", stderr)
+    }
+
+    private static func prepareModel(
+        modelID: String,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws -> AsrManager {
         let version = FluidAudioModel.version(for: modelID)
 
         if ParakeetRuntimePolicy.requiresMacOS15(for: modelID), #unavailable(macOS 15) {
@@ -38,11 +86,12 @@ actor FluidAudioTranscriber {
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
         let plan = FluidAudioModel.plan(for: modelID)
         let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
-        let manager = try await ManagedASRModelDownloader.loadValidated(
+        return try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
             progressSnapshot: progressSnapshot
         ) { modelDirectory in
+            try Task.checkCancellation()
             let preparing = ModelDownloadProgress.preparing(
                 modelID: plan.modelID,
                 message: preparingMessage
@@ -61,6 +110,7 @@ actor FluidAudioTranscriber {
                     encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
                 )
             }
+            try Task.checkCancellation()
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return try await ParakeetRuntimePolicy.prepareLoadedModel(manager, for: plan.modelID) { candidate, samples in
@@ -68,15 +118,6 @@ actor FluidAudioTranscriber {
                 _ = try await candidate.transcribe(samples, decoderState: &state)
             }
         }
-        self.asrManager = manager
-        self.loadedModelID = modelID
-        let preparing = ModelDownloadProgress.preparing(
-            modelID: plan.modelID,
-            message: preparingMessage
-        )
-        progress?(1, nil)
-        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
-        fputs("[fluidaudio] models ready\n", stderr)
     }
 
     /// Transcribe a WAV file URL directly.
@@ -89,17 +130,28 @@ actor FluidAudioTranscriber {
         return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
     }
 
+    private func cancelPendingLoad() {
+        loadGeneration = UUID()
+        pendingLoad?.task.cancel()
+        pendingLoad = nil
+    }
+
     func shutdown() {
+        cancelPendingLoad()
         asrManager = nil
         loadedModelID = nil
     }
 
     func shutdown(ifLoadedModelID modelID: String) {
-        guard FluidAudioUnloadPolicy.shouldUnload(
+        if pendingLoad?.modelID == modelID { cancelPendingLoad() }
+        if FluidAudioUnloadPolicy.shouldUnload(
             loadedModelID: loadedModelID,
             deletingModelID: modelID
-        ) else { return }
-        shutdown()
+        ) {
+            // Deleting loaded A must not cancel an unrelated pending B.
+            asrManager = nil
+            loadedModelID = nil
+        }
     }
 }
 
