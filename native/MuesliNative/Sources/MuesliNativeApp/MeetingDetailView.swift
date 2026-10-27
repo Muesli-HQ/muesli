@@ -161,10 +161,6 @@ struct MeetingDetailView: View {
 
                     retranscriptionStatus(for: meeting)
 
-                    if meeting.status != .recording && meeting.status != .processing {
-                        HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
-                            .padding(.horizontal, 40).padding(.bottom, 8)
-                    }
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
@@ -179,8 +175,16 @@ struct MeetingDetailView: View {
                         .background(MuesliTheme.surfaceBorder)
 
                     content(for: meeting)
+                        .contentShape(Rectangle())
+                        .clipped()
                 }
                 .background(MuesliTheme.backgroundBase)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if meeting.status != .recording && meeting.status != .processing {
+                        MeetingChatView(appState: appState, controller: controller,
+                                        coordinator: controller.meetingChatCoordinator, embeddedMeetingID: meeting.id)
+                    }
+                }
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
                     if controller.canUseSummaryProvider(.openRouter) {

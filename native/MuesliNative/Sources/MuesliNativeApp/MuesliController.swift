@@ -5763,8 +5763,18 @@ public final class MuesliController: NSObject {
         appState.meetingsNavigationState = .document(id)
     }
 
+    func showMeetingChatIndex() {
+        showMeetingChat()
+        meetingChatCoordinator.showIndex()
+    }
+
     @discardableResult
     func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
+        // Meeting-specific entry must not clear selection while draft preparation
+        // is unavailable. Keep the current conversation and its scope intact.
+        if meetingID != nil {
+            guard !meetingChatCoordinator.isBusy, !meetingChatCoordinator.isUpdatingChat else { return nil }
+        }
         appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
         if let id = meetingID {
             let coordinator = meetingChatCoordinator
@@ -5778,7 +5788,9 @@ public final class MuesliController: NSObject {
                 coordinator.selectChat(id: session.id)
                 return nil
             }
-            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+            coordinator.showIndex()
+            coordinator.prepareMeetingDraft(id: id)
+            return nil
         }
         return nil
     }

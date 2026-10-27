@@ -178,6 +178,8 @@ struct SidebarView: View {
                     // rail must restore the browser, not leave a document open.
                     meetingsExpanded = true
                     controller.showMeetingsHome()
+                } else if tab == .meetingChat {
+                    controller.showMeetingChatIndex()
                 } else {
                     appState.selectedTab = tab
                 }
@@ -556,6 +558,8 @@ struct SidebarView: View {
             withAnimation(.easeInOut(duration: 0.15)) {
                 if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .meetingChat {
+                    controller.showMeetingChatIndex()
                 } else {
                     appState.selectedTab = tab
                 }
