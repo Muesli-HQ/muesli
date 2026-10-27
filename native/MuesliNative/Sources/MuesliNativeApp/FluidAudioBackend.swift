@@ -6,36 +6,37 @@ import MuesliCore
 /// running via Core ML with a model-specific encoder compute policy.
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
-    private var loadedVersion: AsrModelVersion?
+    private var loadedModelID: String?
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
-        case reduxRequiresMacOS15
+        case requiresMacOS15(String)
 
         var errorDescription: String? {
             switch self {
             case .notLoaded:
                 return "FluidAudio models not loaded. Call loadModels() first."
-            case .reduxRequiresMacOS15:
-                return "Parakeet Redux requires macOS 15 or later."
+            case .requiresMacOS15(let name):
+                return "\(name) requires macOS 15 or later."
             }
         }
     }
 
     /// Downloads models (if needed) and initializes the ASR manager.
-    /// - Parameter version: .v3 for multilingual (25 langs), .v2 for English-only
+    /// Identify weights independently of their shared FluidAudio decoder contract.
     func loadModels(
-        version: AsrModelVersion = .v3,
+        modelID: String = BackendOption.parakeetMultilingual.model,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
-        if loadedVersion == version, asrManager != nil { return }
+        if loadedModelID == modelID, asrManager != nil { return }
+        let version = FluidAudioModel.version(for: modelID)
 
-        if version == .redux, #unavailable(macOS 15) {
-            throw TranscriberError.reduxRequiresMacOS15
+        if ParakeetRuntimePolicy.requiresMacOS15(for: modelID), #unavailable(macOS 15) {
+            throw TranscriberError.requiresMacOS15(modelID == BackendOption.phonon25.model ? "Phonon-2.5" : "Parakeet Redux")
         }
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
-        let plan = FluidAudioModel.plan(for: version)
+        let plan = FluidAudioModel.plan(for: modelID)
         let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
@@ -48,17 +49,24 @@ actor FluidAudioTranscriber {
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let models = try await AsrModels.load(
-                from: modelDirectory,
-                version: version,
-                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
-            )
+            let models: AsrModels
+            if ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+                models = try AsrModels.loadLocal(
+                    from: modelDirectory, version: version,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            } else {
+                models = try await AsrModels.load(
+                    from: modelDirectory, version: version,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            }
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             return manager
         }
         self.asrManager = manager
-        self.loadedVersion = version
+        self.loadedModelID = modelID
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: preparingMessage
@@ -80,13 +88,13 @@ actor FluidAudioTranscriber {
 
     func shutdown() {
         asrManager = nil
-        loadedVersion = nil
+        loadedModelID = nil
     }
 
-    func shutdown(ifLoadedVersion version: AsrModelVersion) {
+    func shutdown(ifLoadedModelID modelID: String) {
         guard FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: loadedVersion,
-            deletingVersion: version
+            loadedModelID: loadedModelID,
+            deletingModelID: modelID
         ) else { return }
         shutdown()
     }
@@ -94,10 +102,10 @@ actor FluidAudioTranscriber {
 
 enum FluidAudioUnloadPolicy {
     static func shouldUnload(
-        loadedVersion: AsrModelVersion?,
-        deletingVersion: AsrModelVersion
+        loadedModelID: String?,
+        deletingModelID: String
     ) -> Bool {
-        loadedVersion == deletingVersion
+        loadedModelID == deletingModelID
     }
 }
 
@@ -108,10 +116,11 @@ enum FluidAudioModel {
         return modelID.contains("v2") ? .v2 : .v3
     }
 
-    static func plan(for version: AsrModelVersion) -> ManagedASRModelPlan {
-        switch version {
-        case .v2: return ManagedASRModelPlans.parakeetV2()
-        case .redux: return ManagedASRModelPlans.parakeetRedux()
+    static func plan(for modelID: String) -> ManagedASRModelPlan {
+        switch modelID {
+        case BackendOption.parakeetEnglish.model: return ManagedASRModelPlans.parakeetV2()
+        case BackendOption.parakeetRedux.model: return ManagedASRModelPlans.parakeetRedux()
+        case BackendOption.phonon25.model: return ManagedASRModelPlans.phonon25()
         default: return ManagedASRModelPlans.parakeetV3()
         }
     }

@@ -100,6 +100,7 @@ struct BackendOptionTests {
         "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
         arguments: [
             BackendOption.parakeetRedux,
+            BackendOption.phonon25,
             BackendOption.nemotron35Multilingual,
             BackendOption.qwen3Asr,
             BackendOption.cohereTranscribe,
@@ -175,6 +176,7 @@ struct BackendOptionTests {
         let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
         let options = BackendOption.compatibleOptions(currentOSVersion: version)
         #expect(options.contains(.parakeetRedux) == (major >= 15))
+        #expect(options.contains(.phonon25) == (major >= 15))
         #expect(options.contains(.appleSpeechAnalyzer) == (major >= 26 && BackendOption.all.contains(.appleSpeechAnalyzer)))
         #expect(options.contains(.parakeetUnified))
         #expect(options.contains(.parakeetMultilingual))
@@ -182,6 +184,7 @@ struct BackendOptionTests {
         #expect(options.allSatisfy { $0.isCompatible(currentOSVersion: version) })
         let variants = BackendOption.compatibleOptions(BackendOption.parakeetFamily, currentOSVersion: version)
         #expect(variants.contains(.parakeetRedux) == (major >= 15))
+        #expect(variants.contains(.phonon25) == (major >= 15))
     }
 
     @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
@@ -341,29 +344,55 @@ struct BackendOptionTests {
         ] {
             let resolved = FluidAudioModel.version(for: option.model)
             #expect(resolved == version)
-            let plan = FluidAudioModel.plan(for: resolved)
+            let plan = FluidAudioModel.plan(for: option.model)
             #expect(plan.modelID == option.model)
             #expect(plan.cacheDirectory == AsrModels.defaultCacheDirectory(for: version))
         }
-        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .v3, deletingVersion: .redux))
-        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .v3))
-        #expect(FluidAudioUnloadPolicy.shouldUnload(loadedVersion: .redux, deletingVersion: .redux))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetMultilingual.model, deletingModelID: BackendOption.parakeetRedux.model))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetRedux.model, deletingModelID: BackendOption.parakeetMultilingual.model))
+        #expect(FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetRedux.model, deletingModelID: BackendOption.parakeetRedux.model))
     }
 
     @Test("Parakeet deletion unloads only the matching runtime variant")
     func parakeetDeletionUnloadPolicy() {
         #expect(FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: .v2,
-            deletingVersion: .v2
+            loadedModelID: BackendOption.parakeetEnglish.model,
+            deletingModelID: BackendOption.parakeetEnglish.model
         ))
         #expect(!FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: .v3,
-            deletingVersion: .v2
+            loadedModelID: BackendOption.parakeetMultilingual.model,
+            deletingModelID: BackendOption.parakeetEnglish.model
         ))
         #expect(!FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: nil,
-            deletingVersion: .v3
+            loadedModelID: nil,
+            deletingModelID: BackendOption.parakeetMultilingual.model
         ))
+    }
+
+    @Test("Phonon has its own identity despite sharing the v3 decoder contract")
+    func phonon25RoutingAndDeletion() {
+        let phonon = BackendOption.phonon25
+        #expect(BackendOption.parakeetFamily.contains(phonon))
+        #expect(BackendOption.all.contains(phonon))
+        #expect(phonon.supportsMeetingTranscription)
+        #expect(phonon.supportsHostedDictationFallback)
+        #expect(!phonon.isStreamingDictationBackend)
+        #expect(!phonon.recommended)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(FluidAudioModel.version(for: phonon.model) == .v3)
+        #expect(FluidAudioModel.plan(for: phonon.model).modelID == phonon.model)
+        #expect(FluidAudioModel.plan(for: phonon.model).cacheDirectory != FluidAudioModel.plan(for: BackendOption.parakeetMultilingual.model).cacheDirectory)
+        let options: [BackendOption] = [.parakeetEnglish, .parakeetMultilingual, .parakeetRedux, .phonon25]
+        for loaded in options {
+            for deleted in options {
+                #expect(FluidAudioUnloadPolicy.shouldUnload(loadedModelID: loaded.model, deletingModelID: deleted.model) == (loaded == deleted))
+            }
+        }
+        let restored = BackendOption.resolveDownloaded(
+            backend: phonon.backend, model: phonon.model, fallback: .parakeetEnglish,
+            downloadedOptions: [phonon, .parakeetEnglish], currentOSVersion: Self.macOS14
+        )
+        #expect(restored == .parakeetEnglish)
     }
 
     @Test("Cohere uses cohere backend")

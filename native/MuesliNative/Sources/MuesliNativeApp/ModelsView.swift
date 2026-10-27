@@ -952,6 +952,12 @@ struct ModelsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
+            if selectedOption == .phonon25 {
+                Text("[Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5) · [Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
             if selectedOption == .parakeetRedux {
                 Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
                     .font(MuesliTheme.caption())
@@ -988,7 +994,7 @@ struct ModelsView: View {
                     .disabled(incompatibilityReason != nil)
                 }
 
-                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
+                Text("Filters writing script; Parakeet v2 ignores this setting.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
@@ -2019,11 +2025,10 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
-            let version = FluidAudioModel.version(for: option.model)
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
-                ifLoadedVersion: version
+                ifLoadedModelID: option.model
             )
-            let plan = FluidAudioModel.plan(for: version)
+            let plan = FluidAudioModel.plan(for: option.model)
             try plan.delete(fileManager: fm)
         case "parakeet-unified":
             await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
@@ -2087,7 +2092,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
-            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: option.model))
+            let plan = FluidAudioModel.plan(for: option.model)
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)

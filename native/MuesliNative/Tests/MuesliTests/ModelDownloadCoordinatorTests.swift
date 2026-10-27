@@ -1295,6 +1295,33 @@ struct ModelDownloadCoordinatorTests {
         #expect(v3.isAvailableLocally())
     }
 
+    @Test("Phonon GPU artifacts have a pinned revision and independent completeness/deletion")
+    func phonon25Artifacts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let phonon = ManagedASRModelPlans.phonon25(modelsRoot: root)
+        let v3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(phonon.repository == ParakeetRuntimePolicy.phonon25ModelID)
+        #expect(phonon.cacheDirectory.lastPathComponent == "phonon-2.5-gpu")
+        #expect(phonon.revision.count == 40)
+        #expect(phonon.selections[0].includedPaths == v3.selections[0].includedPaths)
+        for plan in [phonon, v3] {
+            for alternatives in plan.requiredArtifactAlternatives {
+                let file = plan.cacheDirectory.appendingPathComponent(alternatives[0])
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([1]).write(to: file)
+            }
+        }
+        #expect(phonon.isAvailableLocally())
+        let weights = phonon.cacheDirectory.appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: weights)
+        #expect(!phonon.isAvailableLocally())
+        try Data([1]).write(to: weights)
+        try phonon.delete()
+        #expect(!phonon.isAvailableLocally())
+        #expect(v3.isAvailableLocally())
+    }
+
     @Test("managed ASR plans require complete compiled artifacts")
     func managedASRPlanCompleteness() throws {
         let root = try makeTemporaryDirectory()

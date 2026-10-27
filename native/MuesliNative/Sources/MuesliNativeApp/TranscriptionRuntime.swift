@@ -228,8 +228,8 @@ actor TranscriptionCoordinator {
         await nativeGemmaReadinessInvalidated()
     }
 
-    func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
-        await fluidTranscriber.shutdown(ifLoadedVersion: version)
+    func unloadFluidAudioTranscriber(ifLoadedModelID modelID: String) async {
+        await fluidTranscriber.shutdown(ifLoadedModelID: modelID)
     }
 
     func unloadParakeetUnifiedTranscriber() async {
@@ -652,9 +652,8 @@ actor TranscriptionCoordinator {
 
         switch backend.backend {
         case "fluidaudio":
-            let version = FluidAudioModel.version(for: backend.model)
             try await fluidTranscriber.loadModels(
-                version: version,
+                modelID: backend.model,
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
