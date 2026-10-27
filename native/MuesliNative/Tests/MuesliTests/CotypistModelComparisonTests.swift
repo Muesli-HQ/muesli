@@ -12,7 +12,10 @@ import Testing
 /// MUESLI_COTYPIST_COMPARISON_REPORT=<output.json> enables it. Inputs:
 ///  - MUESLI_COTYPIST_COMPARISON_DB: a muesli.db to read dictations from (opened read-only);
 ///  - MUESLI_COTYPIST_BASE_MODEL / _INSTRUCT_MODEL / _DRAFTER: model directories;
-///  - MUESLI_COTYPIST_COMPARISON_SAMPLES (default 120 dictations, two cut points each).
+///  - MUESLI_COTYPIST_COMPARISON_SAMPLES (default 120 dictations, two cut points each);
+///  - MUESLI_COTYPIST_COMPARISON_SETUPS: comma-separated setups to run (default all);
+///  - MUESLI_COTYPIST_COMPARISON_GATE: first-word gate; a very low one (-100) records every
+///    suggestion with its confidence, so any gate can be scored from one run.
 /// Each cut point is a real prefix of the user's text; the rest of the text is what they went on
 /// to write. A setup runs exactly as Cotypist does — the same engine, gate and two stages — and is
 /// scored on what a user taking correct words one at a time would have accepted.
@@ -36,6 +39,7 @@ struct CotypistModelComparisonTests {
         let acceptedWords: Int
         let stage1Ms: Double
         let stage2Ms: Double?
+        var firstWordLogProb: Double?
     }
 
     struct Summary: Codable {
@@ -75,6 +79,9 @@ struct CotypistModelComparisonTests {
         let instructDir = URL(fileURLWithPath: try #require(Self.environment["MUESLI_COTYPIST_INSTRUCT_MODEL"]))
         let drafterDir = Self.environment["MUESLI_COTYPIST_DRAFTER"].map { URL(fileURLWithPath: $0) }
         let count = Int(Self.environment["MUESLI_COTYPIST_COMPARISON_SAMPLES"] ?? "") ?? 120
+        let setups = Self.environment["MUESLI_COTYPIST_COMPARISON_SETUPS"].map { Set($0.split(separator: ",").map(String.init)) }
+        var thresholds = CotypistShaper.Thresholds()
+        if let gate = Double(Self.environment["MUESLI_COTYPIST_COMPARISON_GATE"] ?? "") { thresholds.firstWord = gate }
 
         let samples = Self.samples(from: try Self.dictations(dbPath: dbPath, limit: count))
         print("[cotypist-eval] \(samples.count) samples")
@@ -83,12 +90,12 @@ struct CotypistModelComparisonTests {
         var outcomes: [String: [Outcome]] = [:]
         for (name, directory, format) in [("base-raw", baseDir, PromptFormat.raw),
                                           ("instruct-raw", instructDir, .raw),
-                                          ("instruct-chat", instructDir, .chat)] {
+                                          ("instruct-chat", instructDir, .chat)] where setups?.contains(name) ?? true {
             let engine = try await CotypistEngine(directory: directory)
             _ = try await engine.complete(prompt: "Thanks for the", maxTokens: 2, heal: " qui")
             var results: [Outcome] = []
             for sample in samples {
-                results.append(try await Self.run(sample, engine: engine, format: format))
+                results.append(try await Self.run(sample, engine: engine, format: format, thresholds: thresholds))
             }
             outcomes[name] = results
             let summary = Self.summarize(name, samples: samples, outcomes: results)
@@ -102,7 +109,7 @@ struct CotypistModelComparisonTests {
             let prompts = samples.filter { !$0.midWord }.prefix(60).map(\.prompt)
             for (name, directory, format) in [("base-raw", baseDir, PromptFormat.raw),
                                               ("instruct-raw", instructDir, .raw),
-                                              ("instruct-chat", instructDir, .chat)] {
+                                              ("instruct-chat", instructDir, .chat)] where setups?.contains(name) ?? true {
                 let summary = try await Self.measureMTP(name, target: directory, drafter: drafterDir,
                                                         prompts: prompts.map { Self.prompt($0, app: "", format: format) })
                 mtp.append(summary)
@@ -137,7 +144,8 @@ struct CotypistModelComparisonTests {
         }
     }
 
-    static func run(_ sample: Sample, engine: CotypistEngine, format: PromptFormat) async throws -> Outcome {
+    static func run(_ sample: Sample, engine: CotypistEngine, format: PromptFormat,
+                    thresholds: CotypistShaper.Thresholds = .init()) async throws -> Outcome {
         // As CotypistService.suggestion: split off a half-typed word, trim trailing spaces.
         var text = sample.prompt
         var heal: String?
@@ -150,10 +158,11 @@ struct CotypistModelComparisonTests {
 
         let first = try await engine.complete(prompt: prompt, maxTokens: 4, heal: heal)
         let stage1Ms = first.promptMs + first.decodeMs
-        let stage1 = CotypistShaper.shape(first, afterSpace: afterSpace, heal: heal, maxTokens: 4, firstWordOnly: true)
+        let stage1 = CotypistShaper.shape(first, afterSpace: afterSpace, heal: heal, maxTokens: 4, firstWordOnly: true, thresholds: thresholds)
         var shown: String?
+        var logprob: Double?
         switch stage1 {
-        case .success(let shaped): shown = shaped.text
+        case .success(let shaped): shown = shaped.text; logprob = shaped.firstWordLogProb
         case .failure(.firstWordIncomplete): break
         case .failure(let rejection):
             return Outcome(shown: nil, rejection: rejection.description, acceptedChars: 0, acceptedWords: 0, stage1Ms: stage1Ms, stage2Ms: nil)
@@ -161,15 +170,16 @@ struct CotypistModelComparisonTests {
         let full = try await engine.complete(prompt: prompt, maxTokens: 10, heal: heal)
         let stage2Ms = full.promptMs + full.decodeMs
         var rejection: String?
-        switch CotypistShaper.shape(full, afterSpace: afterSpace, heal: heal, maxTokens: 10, firstWordOnly: false) {
+        switch CotypistShaper.shape(full, afterSpace: afterSpace, heal: heal, maxTokens: 10, firstWordOnly: false, thresholds: thresholds) {
         case .success(let shaped):
+            logprob = logprob ?? shaped.firstWordLogProb
             // The helper extends the ghost only when the full suggestion continues the first word.
             if shown == nil || (shaped.text.hasPrefix(shown!) && shaped.text.count > shown!.count) { shown = shaped.text }
         case .failure(let failure): rejection = failure.description
         }
         let (chars, words) = Self.accepted(shown ?? "", truth: sample.truth)
         return Outcome(shown: shown, rejection: shown == nil ? rejection : nil, acceptedChars: chars, acceptedWords: words,
-                       stage1Ms: stage1Ms, stage2Ms: stage2Ms)
+                       stage1Ms: stage1Ms, stage2Ms: stage2Ms, firstWordLogProb: shown == nil ? nil : logprob)
     }
 
     /// What a user taking correct words one at a time (⌥→) would accept: whole words of the
