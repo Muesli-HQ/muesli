@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Foundation
+import MuesliCore
 
 /// Turning Cotypist on and off. "On" means the Cotypist input source is the active one.
 ///
@@ -23,7 +24,22 @@ final class CotypistSetup: ObservableObject {
     /// Guidance that took long enough to suggest the input-source cache needs a re-login.
     @Published private(set) var suggestsRelogin = false
 
-    static var isAvailable: Bool { Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true }
+    /// The typeahead model on this Mac. Turning Cotypist on downloads it when it's missing.
+    enum ModelState: Equatable {
+        case ready
+        case missing
+        case downloading(Double)
+        case failed(String)
+    }
+    @Published private(set) var modelState: ModelState = CotypistModel.isDownloaded ? .ready : .missing
+    private var modelDownload: Task<Void, Never>?
+
+    /// The build includes the input method (dev builds by default; see `MUESLI_INCLUDE_COTYPIST` in
+    /// build_native_app.sh). It's the one switch for the whole feature.
+    static var isAvailable: Bool { FileManager.default.fileExists(atPath: embeddedInputMethodURL.path) }
+    static var embeddedInputMethodURL: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/Input Methods/MuesliCotypist.app")
+    }
 
     static var inputModeID: String { (Bundle.main.bundleIdentifier ?? "com.muesli.app") + ".inputmethod.Cotypist.en" }
     static var displayName: String { "\(AppIdentity.displayName) Cotypist" }
@@ -56,6 +72,7 @@ final class CotypistSetup: ObservableObject {
     }
 
     func turnOn() {
+        downloadModelIfNeeded()
         rememberPreviousSource()
         if Self.selectCotypist() {
             finishGuidance()
@@ -92,6 +109,33 @@ final class CotypistSetup: ObservableObject {
             state = .on
         } else if state != .addingInputSource {
             state = .off
+        }
+    }
+
+    // MARK: - Model
+
+    /// Downloads the pinned model through the shared, resumable, SHA-256-verified downloader.
+    func downloadModelIfNeeded() {
+        guard modelDownload == nil else { return }
+        guard !CotypistModel.isDownloaded else { modelState = .ready; return }
+        modelState = .downloading(0)
+        modelDownload = Task { @MainActor [weak self] in
+            do {
+                try await ModelDownloadCoordinator.shared.download(
+                    CotypistModel.release.manifest(id: CotypistModel.repoID), to: CotypistModel.directory
+                ) { progress in
+                    let fraction = progress.fractionCompleted ?? 0
+                    Task { @MainActor in
+                        if case .downloading = self?.modelState { self?.modelState = .downloading(fraction) }
+                    }
+                }
+                self?.modelState = CotypistModel.isDownloaded ? .ready : .failed("The download didn't complete.")
+            } catch is CancellationError {
+                self?.modelState = .missing
+            } catch {
+                self?.modelState = .failed(error.localizedDescription)
+            }
+            self?.modelDownload = nil
         }
     }
 

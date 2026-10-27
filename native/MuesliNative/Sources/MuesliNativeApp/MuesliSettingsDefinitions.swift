@@ -367,11 +367,27 @@ extension MuesliController {
             if !self.config.enableScreenContext { return "Enable app context first." }
             return CGPreflightScreenCaptureAccess() ? nil : "Grant Screen Recording in System Settings to enable screen OCR context."
         })
-        // Cotypist (experimental): its Settings section and input method exist on dev builds only.
+        // Cotypist (experimental): its Settings section and input method exist only in builds that bundle it.
+        // On only once the Cotypist input source is selected. Turning it on before the user has added
+        // the input source opens Keyboard settings with a guide, and says so instead of claiming "On".
         add("cotypist_enabled", "Cotypist typeahead suggestions", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
-            read: { _ in CotypistSetup.shared.state == .off ? "off" : "on" },
-            unavailable: { $0 == "on" && !CotypistSetup.isAvailable ? "Cotypist is only in development builds." : nil }) { value in
+            read: { _ in CotypistSetup.shared.state == .on ? "on" : "off" },
+            unavailable: { $0 == "on" && !CotypistSetup.isAvailable ? "Cotypist isn't included in this build." : nil }) { value in
             CotypistSetup.shared.setOn(value == "on")
+            if value == "on", CotypistSetup.shared.state == .addingInputSource {
+                throw MuesliSettings.Failure.rejected(
+                    "Add \(CotypistSetup.displayName) in Keyboard settings to finish turning Cotypist on. It turns on as soon as it's added.")
+            }
+        }
+        for app in CotypistQuietApps.candidates(quiet: config.cotypistDisabledApps) {
+            add(CotypistQuietApps.settingID(app.bundleID), "Cotypist quiet in \(app.name)",
+                [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+                read: { $0.cotypistDisabledApps.contains(app.bundleID) ? "on" : "off" }) { value in
+                self.updateConfig { config in
+                    config.cotypistDisabledApps.removeAll { $0 == app.bundleID }
+                    if value == "on" { config.cotypistDisabledApps.append(app.bundleID) }
+                }
+            }
         }
         menu("cotypist_length", "Cotypist suggestion length", CotypistSuggestionLength.allCases,
              \.cotypistSuggestionLength, title: \.label)

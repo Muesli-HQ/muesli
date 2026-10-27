@@ -817,9 +817,9 @@ public final class MuesliController: NSObject {
     func start() {
         hasStarted = true
         MuesliController.current = self
-        // Cotypist (experimental, dev builds only): serve the embedded typeahead input method.
-        if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true {
-            CotypistService.shared.isScreenCaptureAllowed = { [weak self] in self?.activeMeetingSession == nil }
+        // Cotypist (experimental): serve the embedded typeahead input method when the build has one.
+        if CotypistSetup.isAvailable {
+            CotypistService.shared.isScreenCaptureAllowed = { [weak self] in self?.meetingCapture == nil }
             CotypistService.shared.config = { [weak self] in self?.config ?? AppConfig() }
             CotypistService.shared.store = dictationStore
             CotypistService.shared.onAccepted = { [weak self] in self?.scheduleCotypistTimelineRefresh() }

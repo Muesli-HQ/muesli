@@ -56,8 +56,9 @@ enum CotypistShaper {
         var text = ""
         for (index, word) in words.prefix(firstWordOnly ? 1 : thresholds.maxWords).enumerated() {
             let isLast = index == words.count - 1
-            // The last generated word may be cut off mid-word unless the model stopped by itself.
-            if isLast && !stoppedByModel && index > 0 && !firstWordOnly { break }
+            // The last generated word may be cut off mid-word unless the model stopped by itself,
+            // the first one included: Tab must never insert half a word.
+            if isLast && !stoppedByModel && !firstWordOnly { break }
             if index > 0 && word.logprob / Double(max(word.count, 1)) < thresholds.trim { break }
             text += word.text
             if let last = word.text.last, ".!?".contains(last) { break }

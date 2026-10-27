@@ -2020,6 +2020,10 @@ struct SettingsView: View {
                 }
                 .padding(.bottom, MuesliTheme.spacing12)
             }
+            if cotypist.modelState != .ready {
+                cotypistModelRow
+                    .padding(.bottom, MuesliTheme.spacing12)
+            }
             if cotypist.state == .on {
                 cotypistKeyHints
                     .padding(.bottom, MuesliTheme.spacing12)
@@ -2070,6 +2074,43 @@ struct SettingsView: View {
         case .off:
             "Local typeahead in every app, running on this Mac."
         }
+    }
+
+    /// The typeahead model, until it's on this Mac: its size, download progress, or what went wrong.
+    private var cotypistModelRow: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "cpu")
+                .font(.system(size: 14))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Typeahead model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                switch cotypist.modelState {
+                case .downloading(let fraction):
+                    ProgressView(value: fraction).tint(MuesliTheme.accent)
+                    Text("Downloading… \(Int(fraction * 100))% of \(CotypistModel.release.downloadSizeLabel)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                case .failed(let message):
+                    Text("Download failed: \(message)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.recording)
+                        .lineLimit(2)
+                default:
+                    Text("Gemma 4 E2B, \(CotypistModel.release.downloadSizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            switch cotypist.modelState {
+            case .missing, .failed:
+                compactActionButton("Download", systemImage: "arrow.down.circle") { cotypist.downloadModelIfNeeded() }
+            default:
+                EmptyView()
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
     }
 
     /// The keys, shown once Cotypist is on.
@@ -2124,18 +2165,9 @@ struct SettingsView: View {
 
     // MARK: Cotypist quiet apps
 
-    /// Installed apps people usually keep Cotypist out of: password managers, and editors with
-    /// their own completions.
-    private static let cotypistRecommendedQuietApps = [
-        "com.1password.1password", "com.bitwarden.desktop", "com.apple.Passwords",
-        "com.apple.dt.Xcode", "com.microsoft.VSCode", "com.todesktop.230313mzl4w4u92", "dev.zed.Zed",
-    ]
-
     private var cotypistQuietApps: some View {
         let quiet = appState.config.cotypistDisabledApps
-        let recommended = Self.cotypistRecommendedQuietApps.filter {
-            !quiet.contains($0) && NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
-        }
+        let recommended = CotypistQuietApps.recommended(excluding: quiet)
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             settingsRow("Quiet in these apps", description: "Cotypist won't suggest anything in apps you add here.") {
                 cotypistAddAppMenu(excluding: quiet)
@@ -2190,7 +2222,7 @@ struct SettingsView: View {
     }
 
     private func cotypistQuietAppChip(_ bundleID: String) -> some View {
-        let name = Self.appName(bundleID: bundleID)
+        let name = CotypistQuietApps.name(of: bundleID)
         return HStack(spacing: MuesliTheme.spacing8) {
             cotypistAppIcon(bundleID, size: 20)
             Text(name)
@@ -2199,7 +2231,7 @@ struct SettingsView: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
             Button {
-                controller.updateConfig { $0.cotypistDisabledApps.removeAll { $0 == bundleID } }
+                controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "off")
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
@@ -2221,9 +2253,9 @@ struct SettingsView: View {
     }
 
     private func cotypistRecommendedAppButton(_ bundleID: String) -> some View {
-        let name = Self.appName(bundleID: bundleID)
+        let name = CotypistQuietApps.name(of: bundleID)
         return Button {
-            controller.updateConfig { $0.cotypistDisabledApps.append(bundleID) }
+            controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on")
         } label: {
             HStack(spacing: 5) {
                 cotypistAppIcon(bundleID, size: 14)
@@ -2247,17 +2279,17 @@ struct SettingsView: View {
     /// Open apps first, then any app from the Applications folder.
     private func cotypistAddAppMenu(excluding quiet: [String]) -> some View {
         Menu {
-            let running = cotypistAppChoices(excluding: quiet)
+            let running = CotypistQuietApps.running(excluding: quiet)
             if !running.isEmpty {
                 Section("Open apps") {
                     ForEach(running, id: \.bundleID) { app in
                         Button {
-                            controller.updateConfig { $0.cotypistDisabledApps.append(app.bundleID) }
+                            controller.setSettingFromUI(CotypistQuietApps.settingID(app.bundleID), value: "on")
                         } label: {
                             Label {
                                 Text(app.name)
                             } icon: {
-                                if let icon = Self.menuIcon(bundleID: app.bundleID) { Image(nsImage: icon) }
+                                if let icon = CotypistQuietApps.menuIcon(of: app.bundleID) { Image(nsImage: icon) }
                             }
                         }
                     }
@@ -2300,18 +2332,9 @@ struct SettingsView: View {
         }
     }
 
-    /// Open apps with windows, for the "Add app" menu.
-    private func cotypistAppChoices(excluding quiet: [String]) -> [(name: String, bundleID: String)] {
-        NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
-            .compactMap { app in app.bundleIdentifier.map { (name: app.localizedName ?? $0, bundleID: $0) } }
-            .filter { !quiet.contains($0.bundleID) && $0.bundleID != Bundle.main.bundleIdentifier }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
     @ViewBuilder
     private func cotypistAppIcon(_ bundleID: String, size: CGFloat) -> some View {
-        if let icon = Self.appIcon(bundleID: bundleID) {
+        if let icon = CotypistQuietApps.icon(of: bundleID) {
             Image(nsImage: icon).resizable().scaledToFit().frame(width: size, height: size)
         } else {
             Image(systemName: "app.dashed")
@@ -2320,21 +2343,6 @@ struct SettingsView: View {
         }
     }
 
-    private static func appName(bundleID: String) -> String {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return "Unknown app" }
-        return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
-    }
-
-    private static func appIcon(bundleID: String) -> NSImage? {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
-    }
-
-    /// Menus draw images at their own size: a 16-point copy.
-    private static func menuIcon(bundleID: String) -> NSImage? {
-        guard let icon = appIcon(bundleID: bundleID)?.copy() as? NSImage else { return nil }
-        icon.size = NSSize(width: 16, height: 16)
-        return icon
-    }
 
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {

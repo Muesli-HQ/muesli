@@ -10,12 +10,16 @@ import Testing
 /// Opt-in comparison of Cotypist model setups on the user's own writing. Not part of normal runs.
 ///
 /// MUESLI_COTYPIST_COMPARISON_REPORT=<output.json> enables it. Inputs:
-///  - MUESLI_COTYPIST_COMPARISON_DB: a muesli.db to read dictations from (opened read-only);
+///  - the synthetic corpus below by default; MUESLI_COTYPIST_COMPARISON_DB=<muesli.db> instead reads
+///    the user's own dictations, read-only, for a local-only evaluation;
+///  - MUESLI_COTYPIST_COMPARISON_INCLUDE_TEXT=1 adds per-sample prompts, continuations and
+///    suggestions to the report. With a user database that is private text: never commit or share it.
 ///  - MUESLI_COTYPIST_BASE_MODEL / _INSTRUCT_MODEL / _DRAFTER: model directories;
 ///  - MUESLI_COTYPIST_COMPARISON_SAMPLES (default 120 dictations, two cut points each);
 ///  - MUESLI_COTYPIST_COMPARISON_SETUPS: comma-separated setups to run (default all);
-///  - MUESLI_COTYPIST_COMPARISON_GATE: first-word gate; a very low one (-100) records every
-///    suggestion with its confidence, so any gate can be scored from one run.
+///  - MUESLI_COTYPIST_COMPARISON_GATE: one first-word gate for every sample, replacing the app's
+///    Balanced gates; a very low one (-100) records every suggestion with its confidence, so any
+///    gate can be scored from one run.
 /// Each cut point is a real prefix of the user's text; the rest of the text is what they went on
 /// to write. A setup runs exactly as Cotypist does — the same engine, gate and two stages — and is
 /// scored on what a user taking correct words one at a time would have accepted.
@@ -74,16 +78,17 @@ struct CotypistModelComparisonTests {
     func compare() async throws {
         guard let reportPath = Self.environment["MUESLI_COTYPIST_COMPARISON_REPORT"] else { return }
         if let path = Self.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
-        let dbPath = try #require(Self.environment["MUESLI_COTYPIST_COMPARISON_DB"])
         let baseDir = URL(fileURLWithPath: try #require(Self.environment["MUESLI_COTYPIST_BASE_MODEL"]))
         let instructDir = URL(fileURLWithPath: try #require(Self.environment["MUESLI_COTYPIST_INSTRUCT_MODEL"]))
         let drafterDir = Self.environment["MUESLI_COTYPIST_DRAFTER"].map { URL(fileURLWithPath: $0) }
         let count = Int(Self.environment["MUESLI_COTYPIST_COMPARISON_SAMPLES"] ?? "") ?? 120
         let setups = Self.environment["MUESLI_COTYPIST_COMPARISON_SETUPS"].map { Set($0.split(separator: ",").map(String.init)) }
-        var thresholds = CotypistShaper.Thresholds()
-        if let gate = Double(Self.environment["MUESLI_COTYPIST_COMPARISON_GATE"] ?? "") { thresholds.firstWord = gate }
+        let gate = Double(Self.environment["MUESLI_COTYPIST_COMPARISON_GATE"] ?? "")
+        let includeText = Self.environment["MUESLI_COTYPIST_COMPARISON_INCLUDE_TEXT"] == "1"
 
-        let samples = Self.samples(from: try Self.dictations(dbPath: dbPath, limit: count))
+        let texts = try Self.environment["MUESLI_COTYPIST_COMPARISON_DB"].map { try Self.dictations(dbPath: $0, limit: count) }
+            ?? Self.syntheticCorpus.map { (text: $0, app: "") }
+        let samples = Self.samples(from: texts)
         print("[cotypist-eval] \(samples.count) samples")
 
         var summaries: [Summary] = []
@@ -95,6 +100,9 @@ struct CotypistModelComparisonTests {
             _ = try await engine.complete(prompt: "Thanks for the", maxTokens: 2, heal: " qui")
             var results: [Outcome] = []
             for sample in samples {
+                // The app's Balanced gates unless one gate is given for the run.
+                let thresholds = CotypistShaper.Thresholds(
+                    firstWord: gate ?? CotypistFrequency.balanced.firstWordGate(midWord: sample.midWord))
                 results.append(try await Self.run(sample, engine: engine, format: format, thresholds: thresholds))
             }
             outcomes[name] = results
@@ -121,12 +129,13 @@ struct CotypistModelComparisonTests {
         struct Report: Codable {
             let summaries: [Summary]
             let mtp: [MTPSummary]
-            let samples: [Sample]
-            let outcomes: [String: [Outcome]]
+            let samples: [Sample]?
+            let outcomes: [String: [Outcome]]?
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Report(summaries: summaries, mtp: mtp, samples: samples, outcomes: outcomes))
+        try encoder.encode(Report(summaries: summaries, mtp: mtp,
+                                  samples: includeText ? samples : nil, outcomes: includeText ? outcomes : nil))
             .write(to: URL(fileURLWithPath: reportPath))
     }
 
@@ -205,6 +214,41 @@ struct CotypistModelComparisonTests {
     }
 
     // MARK: - Samples
+
+    /// Synthetic typing in the registers Cotypist sees: email, chat, notes, code review, prompts to a
+    /// coding agent and Hindi-English mixing. Written for this test; no user data.
+    static let syntheticCorpus = [
+        "Thanks for sending the quarterly numbers over. I will take a look this afternoon and get back to you with any questions before the review on Thursday.",
+        "Hi team, just a reminder that the offsite is next Friday. Please fill in the travel form by Wednesday so we can book the hotel rooms in time.",
+        "Can you check whether the build is still failing on main? I think the flaky test in the sync suite is back after yesterday's merge.",
+        "Sounds good to me. Let's ship it behind the feature flag first and turn it on for everyone once we have a week of crash data.",
+        "I am running about ten minutes late for the call, please start without me and I will join as soon as I can.",
+        "The new onboarding flow looks great overall, but the permissions step still feels long. Could we move the screen recording request to the end?",
+        "Please add a test for the empty state and make sure the error message tells the user what to do next instead of just saying something went wrong.",
+        "Let me know if you have any questions about the contract. Happy to jump on a quick call tomorrow morning if that is easier for you.",
+        "We decided to keep the existing database schema and add a new table for the history instead of changing the dictation records.",
+        "Refactor the settings view so every toggle goes through the shared catalog, then run the settings tests and fix anything that breaks.",
+        "Fix the crash when the user closes the window during a download. The task should be cancelled and the partial file removed.",
+        "Thanks again for the intro. I would love to learn more about how your team handles releases and what tooling you use for notarization.",
+        "The meeting notes are in the shared folder. The main action items are to finalise the pricing page and to send the beta invites by Monday.",
+        "Could you review my pull request when you get a chance? It mostly touches the timeline view and the storage layer, nothing risky.",
+        "Kal ki meeting mein hum pricing ke baare mein baat karenge, so please bring the latest numbers and the competitor comparison.",
+        "Main abhi office se nikal raha hoon, I will call you once I reach home and we can go through the document together.",
+        "Yeh feature bahut useful hai but the latency is still too high on older machines, we need to profile it before the release.",
+        "Happy birthday! Hope you have a wonderful day and a great year ahead. Let's catch up over dinner when you are back in town.",
+        "I have attached the updated design files. The main change is the new empty state and a simpler layout for the settings page.",
+        "Before we merge this, can we double check that the migration works on a database created by the previous release?",
+        "Write a short summary of the changes in this branch and list anything that still needs manual testing before the release.",
+        "The customer reported that dictation stops working after the laptop wakes from sleep. I could reproduce it twice on my machine.",
+        "We should move the heavy work off the main thread, cache the results, and only refresh them when the document actually changes.",
+        "Looking forward to seeing everyone at the conference next week. I will be presenting on Wednesday afternoon in the main hall.",
+        "Please make sure the release notes mention the new keyboard shortcut and the fix for the calendar notifications.",
+        "Honestly I think the simpler option is better here. It is easier to test, easier to explain, and we can always add more later.",
+        "Thanks for the quick turnaround on this. The fix works on my side and the dashboard numbers look correct again.",
+        "Can we push the standup to eleven tomorrow? I have a dentist appointment in the morning and will not make it on time.",
+        "The model download should show progress, allow cancelling, and verify the checksum before the files are moved into place.",
+        "Just checking in to see if you had a chance to look at the proposal. Let me know if anything needs to change on our side.",
+    ]
 
     static func dictations(dbPath: String, limit: Int) throws -> [(text: String, app: String)] {
         var db: OpaquePointer?

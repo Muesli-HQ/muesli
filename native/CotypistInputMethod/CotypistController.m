@@ -27,18 +27,29 @@ static const NSTimeInterval kBoundaryDelay = 0.06;
 static NSTimeInterval sMidWordDelay = 0.5;
 static const NSUInteger kContextChars = 1500;
 
-// Diagnostics for the experiment: request outcomes and timings only, never typed text.
+// Diagnostics for the experiment: request outcomes and timings only, never typed text. Written on
+// a serial queue so a key never waits on the disk; the file starts over past 1 MB.
+static const unsigned long long kLogLimit = 1 << 20;
+
 static void HelperLog(NSString *format, ...) {
     va_list args;
     va_start(args, format);
     NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    NSString *path = [@"~/Library/Logs/MuesliCotypist.log" stringByExpandingTildeInPath];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-    [handle seekToEndOfFile];
-    [handle writeData:[[NSString stringWithFormat:@"%@ %@\n", [NSDate date], line] dataUsingEncoding:NSUTF8StringEncoding]];
-    [handle closeFile];
+    NSData *data = [[NSString stringWithFormat:@"%@ %@\n", [NSDate date], line] dataUsingEncoding:NSUTF8StringEncoding];
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("com.muesli.cotypist.log", DISPATCH_QUEUE_SERIAL); });
+    dispatch_async(queue, ^{
+        NSString *path = [@"~/Library/Logs/MuesliCotypist.log" stringByExpandingTildeInPath];
+        NSFileManager *files = [NSFileManager defaultManager];
+        if ([[files attributesOfItemAtPath:path error:nil] fileSize] > kLogLimit) [files removeItemAtPath:path error:nil];
+        if (![files fileExistsAtPath:path]) [files createFileAtPath:path contents:nil attributes:nil];
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        [handle seekToEndOfFile];
+        [handle writeData:data];
+        [handle closeFile];
+    });
 }
 
 #pragma mark - Muesli socket
@@ -119,6 +130,8 @@ static void TellMuesli(NSDictionary *message) {
     if (event.type == NSEventTypeFlagsChanged) return NO;
     _generation++;
     if (event.type == NSEventTypeLeftMouseDown) {
+        // A click may move the caret: the keystroke record no longer ends where typing resumes.
+        [_typed setString:@""];
         [self finishShown:@"dismissed"];
         [self clearGhost:sender];
         return NO;
@@ -264,7 +277,7 @@ static NSUInteger NextWordLength(NSString *text) {
             self->_shown = [@{@"app": bundleID ?: @"", @"trigger": trigger, @"text": firstText,
                               @"source": one[@"source"] ?: @"", @"first_ms": @(round((CFAbsoluteTimeGetCurrent() - triggeredAt) * 1000)),
                               @"first_word_logprob": one[@"firstWordLogProb"] ?: @0} mutableCopy];
-        } else if (![one[@"rejection"] isEqual:@"first word not complete yet"]) {
+        } else if (![one[@"retryFull"] boolValue]) {
             return;  // the gate said no (or Muesli isn't there): don't spend a second request
         }
         if ([one[@"complete"] boolValue]) return;  // one-word suggestions: nothing more to fetch

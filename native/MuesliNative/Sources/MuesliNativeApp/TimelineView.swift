@@ -386,7 +386,7 @@ private struct TimelineCotypistRow: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                 }
                 .buttonStyle(.plain)
-                .help("Copy accepted text")
+                .help("Copy the sentences with the accepted text")
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 12))

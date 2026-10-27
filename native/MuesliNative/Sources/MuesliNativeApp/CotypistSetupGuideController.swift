@@ -68,6 +68,7 @@ final class CotypistSetupGuideController {
         guard panel == nil else { return }
         let panel = NSPanel(contentRect: CGRect(origin: .zero, size: CotypistSetupGuideLayout.size),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false  // `panel` keeps its own reference
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false

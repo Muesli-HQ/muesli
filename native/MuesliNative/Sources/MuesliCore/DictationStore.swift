@@ -458,10 +458,11 @@ public final class DictationStore {
 
     // MARK: - Cotypist
 
-    /// Cotypist typeahead history, local only. `cotypist_suggestions` has one row per suggestion
-    /// shown: the suggestion, what was accepted, and the sentence it continued (`context_before`);
-    /// `cotypist_sessions` groups accepted suggestions by app into runs for the timeline. Session
-    /// columns are named like the dictation ones so timeline filters apply to both.
+    /// Cotypist typeahead history, local only (see database-schema.md). `cotypist_suggestions` has
+    /// one row per suggestion shown: the suggestion and what was accepted of it, plus the sentence
+    /// it continued (`context_before`) for accepted suggestions only. `cotypist_sessions` groups
+    /// accepted suggestions by app into runs for the timeline; its columns are named like the
+    /// dictation ones so timeline filters apply to both.
     private func migrateCotypist(db: OpaquePointer?) throws {
         try exec("""
         CREATE TABLE IF NOT EXISTS cotypist_sessions (
@@ -491,15 +492,25 @@ public final class DictationStore {
             first_ms INTEGER,
             full_ms INTEGER,
             context_source TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL DEFAULT ''
+            model TEXT NOT NULL DEFAULT '',
+            context_before TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_cotypist_suggestions_session ON cotypist_suggestions(session_id);
         CREATE INDEX IF NOT EXISTS idx_cotypist_suggestions_timestamp ON cotypist_suggestions(timestamp);
         """, db: db)
-        if sqlite3_exec(db, "ALTER TABLE cotypist_suggestions ADD COLUMN context_before TEXT NOT NULL DEFAULT ''", nil, nil, nil) != SQLITE_OK {
-            // Column may already exist.
+        // Databases from before `context_before` existed. A duplicate column is the normal result.
+        if sqlite3_exec(db, "ALTER TABLE cotypist_suggestions ADD COLUMN context_before TEXT NOT NULL DEFAULT ''", nil, nil, nil) != SQLITE_OK,
+           !String(cString: sqlite3_errmsg(db)).contains("duplicate column name") {
+            throw lastError(db)
         }
+        // Early development builds kept the user's sentence for suggestions that weren't taken.
+        try exec("UPDATE cotypist_suggestions SET context_before = '' WHERE accepted_text = '' AND context_before <> ''", db: db)
     }
+
+    /// Suggestions that weren't taken are kept this long, and at most this many, for tuning;
+    /// accepted ones live as long as their timeline session.
+    public static let cotypistUnacceptedRetention: TimeInterval = 90 * 24 * 60 * 60
+    public static let cotypistUnacceptedLimit = 5_000
 
     /// A quiet spell this long in an app ends its Cotypist session.
     public static let cotypistSessionGap: TimeInterval = 10 * 60
@@ -545,8 +556,10 @@ public final class DictationStore {
                 bindOptionalDouble(event.fullMs.map(Double.init), at: 13, statement: statement)
                 bindCotypistText(event.contextSource, at: 14, statement: statement)
                 bindCotypistText(event.model, at: 15, statement: statement)
-                bindCotypistText(event.contextBefore, at: 16, statement: statement)
+                // The user's own sentence is kept only where the timeline shows it.
+                bindCotypistText(accepted ? event.contextBefore : "", at: 16, statement: statement)
             })
+            try pruneUnacceptedCotypistSuggestions(now: event.date, db: db)
             try exec("COMMIT", db: db)
             return sessionID
         } catch {
@@ -561,13 +574,31 @@ public final class DictationStore {
         return try cotypistSession(id: id, db: db)
     }
 
+    /// Removes a session and every suggestion recorded in it, text included. Cotypist history is
+    /// local-only with no sync tombstones, so removal is immediate.
     public func deleteCotypistSession(id: Int64) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        try withStatement("UPDATE cotypist_sessions SET deleted_at = ? WHERE id = ?", db: db, bind: { statement in
-            sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
-            sqlite3_bind_int64(statement, 2, id)
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            for sql in ["DELETE FROM cotypist_suggestions WHERE session_id = ?", "DELETE FROM cotypist_sessions WHERE id = ?"] {
+                try withStatement(sql, db: db, bind: { sqlite3_bind_int64($0, 1, id) })
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private func pruneUnacceptedCotypistSuggestions(now: Date, db: OpaquePointer?) throws {
+        try withStatement("DELETE FROM cotypist_suggestions WHERE accepted_text = '' AND timestamp < ?", db: db, bind: {
+            bindCotypistText(formatISODate(now.addingTimeInterval(-Self.cotypistUnacceptedRetention)), at: 1, statement: $0)
         })
+        try withStatement("""
+        DELETE FROM cotypist_suggestions WHERE accepted_text = '' AND id NOT IN
+            (SELECT id FROM cotypist_suggestions WHERE accepted_text = '' ORDER BY id DESC LIMIT ?)
+        """, db: db, bind: { sqlite3_bind_int($0, 1, Int32(Self.cotypistUnacceptedLimit)) })
     }
 
     private func openCotypistSession(bundleID: String, at date: Date, db: OpaquePointer?) throws -> Int64? {

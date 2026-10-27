@@ -14,6 +14,20 @@ enum CotypistModel {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/muesli/models/typeahead/gemma-4-e2b-4bit/\(revision)")
     }
+
+    /// Every file at the pinned revision, with sizes and SHA-256 (the LFS hashes Hugging Face
+    /// publishes for the weights and tokenizer), for the shared resumable, verified download.
+    static let release = ManagedCleanupModel(repoID, revision, [
+        ("model.safetensors", 3_581_101_896, "1b75a001977eeadfe0c82eabde23d470530c311b6a8c279a3c2382aafc2a2d5b"),
+        ("model.safetensors.index.json", 230_329, "a8aa7359c747a0d59368dbff9a1029da86bda139ccc0ae1f1e938db75de7d5ce"),
+        ("config.json", 5_955, "61b3440401f0dc0a1c0c63f9bcf1ef65eb4e564f083a772e3904de5a2b45d1a5"),
+        ("generation_config.json", 181, "de16fa1d777387d5fe6df54a9565d9c0f1213f7b31f2a2cf44805e27686d9c7c"),
+        ("processor_config.json", 902, "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8"),
+        ("tokenizer.json", 32_170_070, "12bac982b793c44b03d52a250a9f0d0b666813da566b910c24a6da0695fd11e6"),
+        ("tokenizer_config.json", 1_498, "e8ca2612e1e9cd7f258aee62c053050019adc92b14a9b3a015c6ec8715b6a2e4"),
+    ])
+
+    static var isDownloaded: Bool { release.isPresent(at: directory) }
 }
 
 struct CotypistToken: Sendable { let text: String; let logprob: Double }

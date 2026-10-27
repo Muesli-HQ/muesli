@@ -28,6 +28,13 @@ struct CotypistShaperTests {
         #expect(CotypistFrequency.balanced.firstWordGate(midWord: true) < CotypistFrequency.balanced.firstWordGate(midWord: false))
     }
 
+    @Test("never shows a first word the token budget cut off")
+    func truncatedFirstWord() {
+        // One long word filling the whole budget: stage 1 asks for stage 2, which must not show it either.
+        let raw = completion((0..<10).map { ($0 == 0 ? " anti" : "dis", -0.1) })
+        #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false) == .failure(.empty))
+    }
+
     @Test("rejects a first word below the gate")
     func gate() {
         let raw = completion([(" payment", -3.5), (" now", -0.5)])

@@ -1,5 +1,6 @@
 import Foundation
 import MuesliCore
+import SQLite3
 import Testing
 @testable import MuesliNativeApp
 
@@ -58,6 +59,39 @@ struct CotypistHistoryTests {
 
         try store.deleteCotypistSession(id: id)
         #expect(try store.timelineEntries(limit: 10).map(\.id) == ["dictation:1"])
+    }
+
+    @Test("keeps the user's sentence only for accepted suggestions, removes it with the session, prunes old untaken ones")
+    func privacy() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-cotypist-test-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        // Old enough to fall outside retention, and not taken: pruned by the next write.
+        _ = try store.recordCotypistSuggestion(event("stale", before: "private draft ", outcome: .ignored,
+                                                     at: -DictationStore.cotypistUnacceptedRetention - 60))
+        let id = try #require(try store.recordCotypistSuggestion(event("the next word", accepted: "the next word",
+                                                                       before: "It can predict ", outcome: .accepted, at: 0)))
+        _ = try store.recordCotypistSuggestion(event("maybe", before: "a sentence I typed ", outcome: .ignored, at: 5))
+
+        func rows() throws -> [(String, String)] {
+            var db: OpaquePointer?
+            sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil)
+            defer { sqlite3_close(db) }
+            var statement: OpaquePointer?
+            sqlite3_prepare_v2(db, "SELECT suggestion_text, context_before FROM cotypist_suggestions ORDER BY id", -1, &statement, nil)
+            defer { sqlite3_finalize(statement) }
+            var result: [(String, String)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append((String(cString: sqlite3_column_text(statement, 0)), String(cString: sqlite3_column_text(statement, 1))))
+            }
+            return result
+        }
+        #expect(try rows().map(\.0) == ["the next word", "maybe"])
+        #expect(try rows().map(\.1) == ["It can predict ", ""])
+
+        try store.deleteCotypistSession(id: id)
+        #expect(try rows().isEmpty)
+        #expect(try store.cotypistSession(id: id) == nil)
     }
 
     @Test("keeps the sentence being written, up to the caret")

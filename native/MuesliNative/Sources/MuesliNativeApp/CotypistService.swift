@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon
 import Foundation
 import MuesliCore
+import Security
 
 /// Cotypist (experimental): local typeahead delivered through an input method.
 ///
@@ -17,7 +18,8 @@ final class CotypistService {
     static let shared = CotypistService()
 
     /// Set by MuesliController: screenshots conflict with meeting system-audio capture (SCStream).
-    var isScreenCaptureAllowed: () -> Bool = { true }
+    /// Closed until the controller says otherwise.
+    var isScreenCaptureAllowed: () -> Bool = { false }
     /// Set by MuesliController: the user's Cotypist settings, read on every request.
     var config: () -> AppConfig = { AppConfig() }
     /// Set by MuesliController: where suggestion outcomes are recorded.
@@ -27,8 +29,9 @@ final class CotypistService {
 
     private var server: CotypistSocketServer?
     private var engineTask: Task<CotypistEngine, Error>?
-    /// Screen OCR per app, refreshed in the background through the dictation context plumbing.
-    private var screenText: [String: (text: String, at: Date)] = [:]
+    /// Screen OCR per app with the document it was read from, refreshed in the background through
+    /// the dictation context plumbing. Used only while that document is still the focused one.
+    private var screenText: [String: (text: String, at: Date, document: String?)] = [:]
     private var screenInFlight: Set<String> = []
     /// The text before the caret for recent suggestions, keyed by app and suggestion text, so an
     /// outcome can be recorded with the sentence it completed.
@@ -53,24 +56,23 @@ final class CotypistService {
 
     /// Installs the embedded input method into ~/Library/Input Methods and registers it. Text Input
     /// Sources only discovers input methods there, and System Settings doesn't list one reached
-    /// through a symlink, so it's a copy (about 100 KB), refreshed when the app's build changes.
+    /// through a symlink, so it's a copy (about 100 KB), refreshed when the app's build or signature
+    /// changes. The copy is registered only if its code signature is valid and matches the
+    /// embedded helper's designated requirement (same signer as this build).
     /// Enabling and selecting stay with the user: macOS doesn't persist an input source enabled
     /// from code, and refuses programmatic selection of a third-party one.
     private func registerInputSource() {
         let fileManager = FileManager.default
-        let embedded = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/Input Methods/MuesliCotypist.app")
+        let embedded = CotypistSetup.embeddedInputMethodURL
         guard fileManager.fileExists(atPath: embedded.path) else { log("input method not bundled"); return }
         let folder = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Input Methods")
         let installed = folder.appendingPathComponent("\(AppIdentity.displayName) Cotypist.app")
         let executable = "Contents/MacOS/MuesliCotypist"
         let isSymlink = (try? fileManager.destinationOfSymbolicLink(atPath: installed.path)) != nil
-        let upToDate = !isSymlink && fileManager.contentsEqual(
-            atPath: embedded.appendingPathComponent(executable).path,
-            andPath: installed.appendingPathComponent(executable).path
-        ) && fileManager.contentsEqual(
-            atPath: embedded.appendingPathComponent("Contents/Info.plist").path,
-            andPath: installed.appendingPathComponent("Contents/Info.plist").path
-        )
+        let upToDate = !isSymlink && [executable, "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"].allSatisfy {
+            fileManager.contentsEqual(atPath: embedded.appendingPathComponent($0).path,
+                                      andPath: installed.appendingPathComponent($0).path)
+        }
         if !upToDate {
             do {
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -84,8 +86,24 @@ final class CotypistService {
             let helperID = (Bundle.main.bundleIdentifier ?? "com.muesli.app") + ".inputmethod.Cotypist"
             NSRunningApplication.runningApplications(withBundleIdentifier: helperID).forEach { $0.forceTerminate() }
         }
+        guard Self.hasValidSignature(installed, likeEmbedded: embedded) else {
+            log("input method copy failed signature validation; not registered")
+            return
+        }
         let status = TISRegisterInputSource(installed as CFURL)
         log("registered input method (status \(status), \(upToDate ? "up to date" : "installed"))")
+    }
+
+    /// The installed copy's signature is intact and satisfies the embedded helper's designated
+    /// requirement, so a modified or foreign bundle at that path is never registered.
+    private static func hasValidSignature(_ installed: URL, likeEmbedded embedded: URL) -> Bool {
+        var embeddedCode: SecStaticCode?, installedCode: SecStaticCode?, requirement: SecRequirement?
+        guard SecStaticCodeCreateWithPath(embedded as CFURL, [], &embeddedCode) == errSecSuccess, let embeddedCode,
+              SecCodeCopyDesignatedRequirement(embeddedCode, [], &requirement) == errSecSuccess,
+              SecStaticCodeCreateWithPath(installed as CFURL, [], &installedCode) == errSecSuccess, let installedCode
+        else { return false }
+        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate)
+        return SecStaticCodeCheckValidity(installedCode, flags, requirement) == errSecSuccess
     }
 
     // MARK: - Requests
@@ -114,12 +132,13 @@ final class CotypistService {
         let afterSpace = request["afterSpace"] as? Bool ?? false
         let firstWordOnly = request["firstWordOnly"] as? Bool ?? false
         if config.cotypistDisabledApps.contains(bundleID) { return ["rejection": "off in this app"] }
+        guard CotypistModel.isDownloaded else { return ["rejection": "model not downloaded"] }
         if midWord && !config.cotypistCompleteWords { return ["rejection": "completing words is off"] }
         let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate(midWord: midWord),
                                                    maxWords: config.cotypistSuggestionLength.maxWords)
 
-        var (fieldText, source) = context(bundleID: bundleID, field: request["field"] as? String,
-                                          typed: request["typed"] as? String ?? "")
+        var (fieldText, source, document) = await context(bundleID: bundleID, field: request["field"] as? String,
+                                                          typed: request["typed"] as? String ?? "")
         guard !fieldText.isEmpty else { return ["rejection": "no context", "source": source] }
         let textBeforeCaret = fieldText
 
@@ -134,10 +153,13 @@ final class CotypistService {
         // the same document. Only when the field itself says little, and never where the context
         // already carries the conversation (an agent prompt in a terminal).
         var prompt = fieldText.trimmingCharacters(in: .whitespaces)
-        if config.cotypistUseScreenContext { refreshScreenIfNeeded(bundleID: bundleID) }
-        if config.cotypistUseScreenContext, prompt.count < 200, source != "agent-prompt", let screen = screenText[bundleID]?.text, !screen.isEmpty {
-            prompt = screen + "\n\n" + prompt
-            source += "+ocr"
+        if config.cotypistUseScreenContext, prompt.count < 200, source != "agent-prompt" {
+            if document == nil { document = await Self.focused().documentIdentifier }
+            refreshScreenIfNeeded(bundleID: bundleID, document: document)
+            if let screen = screenText[bundleID], screen.document == document, !screen.text.isEmpty {
+                prompt = screen.text + "\n\n" + prompt
+                source += "+ocr"
+            }
         }
         guard prompt.count >= 3 else { return ["rejection": "too little context", "source": source] }
 
@@ -155,7 +177,8 @@ final class CotypistService {
                 return timing.merging(["text": shaped.text, "firstWordLogProb": shaped.firstWordLogProb,
                                        "complete": complete]) { $1 }
             case .failure(let rejection):
-                return timing.merging(["rejection": rejection.description]) { $1 }
+                // `retryFull`: the first word ran past the first stage's budget; the full request may finish it.
+                return timing.merging(["rejection": rejection.description, "retryFull": rejection == .firstWordIncomplete]) { $1 }
             }
         } catch {
             return ["rejection": "engine: \(error.localizedDescription)", "source": source]
@@ -181,32 +204,44 @@ final class CotypistService {
     /// The text before the caret: the field's own text when the client hands it over; otherwise the
     /// dictation context capture (Accessibility, read further back) — for a terminal, Claude Code's
     /// prompt box plus the conversation above it when it's on screen; else the helper's keystrokes.
-    private func context(bundleID: String, field: String?, typed: String) -> (String, String) {
-        if let field, !field.isEmpty { return (field, "field") }
-        let captured = DictationContextCapture.capture(allowTitleFallback: false, maxDocumentChars: 1500)
-        let document = captured.bundleID == bundleID ? captured.documentContext : ""
-        if let prompt = CotypistAgentPrompt.context(screen: document) { return (prompt, "agent-prompt") }
-        if !document.isEmpty { return (document, "accessibility") }
+    /// Also returns the focused document's identity when it was read, for binding screen OCR to it.
+    private func context(bundleID: String, field: String?, typed: String) async -> (String, String, String?) {
+        if let field, !field.isEmpty { return (field, "field", nil) }
+        let captured = await Self.focused()
+        let text = captured.bundleID == bundleID ? captured.documentContext : ""
+        if let prompt = CotypistAgentPrompt.context(screen: text) { return (prompt, "agent-prompt", captured.documentIdentifier) }
+        if !text.isEmpty { return (text, "accessibility", captured.documentIdentifier) }
         // Why the fallback: permission, the frontmost app, how much text it exposed (lengths only).
-        return (typed, "keystrokes(ax=\(AXIsProcessTrusted()) front=\(captured.bundleID) text=\(captured.documentContext.count))")
+        return (typed, "keystrokes(ax=\(AXIsProcessTrusted()) front=\(captured.bundleID) text=\(captured.documentContext.count))",
+                captured.documentIdentifier)
     }
 
-    /// Refreshes screen OCR for `bundleID` off the typing path, at most every 20 s, through the same
-    /// capture dictation uses: OCR only when it belongs to the focused app and document, and never
-    /// while a meeting records (screenshots break its system-audio capture).
-    private func refreshScreenIfNeeded(bundleID: String) {
+    /// The focused app's text before the caret and its document identity (window title when it has
+    /// no document), read through Accessibility off the main actor: a slow app can't stall Muesli.
+    private static func focused() async -> DictationContext {
+        await Task.detached(priority: .userInitiated) {
+            DictationContextCapture.capture(allowTitleFallback: true, maxDocumentChars: 1500)
+        }.value
+    }
+
+    /// Refreshes screen OCR for `bundleID` off the typing path through the same capture dictation
+    /// uses: when the focused document changed, else at most every 20 s. OCR only when it belongs
+    /// to the focused app and document, and never while a meeting records (screenshots break its
+    /// system-audio capture).
+    private func refreshScreenIfNeeded(bundleID: String, document: String?) {
+        let cached = screenText[bundleID]
         guard !bundleID.isEmpty, !screenInFlight.contains(bundleID),
-              Date().timeIntervalSince(screenText[bundleID]?.at ?? .distantPast) > 20 else { return }
+              cached == nil || cached?.document != document || Date().timeIntervalSince(cached!.at) > 20 else { return }
         screenInFlight.insert(bundleID)
         Task { @MainActor in
             let captured = await DictationContextCapture.capture(
                 includeScreenOCR: true,
                 shouldCaptureScreenOCR: { await MainActor.run { CotypistService.shared.isScreenCaptureAllowed() } },
-                allowTitleFallback: false
+                allowTitleFallback: true
             )
             screenInFlight.remove(bundleID)
             let text = captured.bundleID == bundleID ? Self.promptReadyScreenText(captured.ocrText) : ""
-            screenText[bundleID] = (text, Date())
+            screenText[bundleID] = (text, Date(), captured.documentIdentifier)
             log("OCR app=\(bundleID) \(text.count) chars")  // lengths only: on-screen text isn't the user's own
         }
     }
@@ -249,11 +284,14 @@ final class CotypistService {
         let key = Self.contextKey(app: message["app"] as? String ?? "", suggestion: message["text"] as? String ?? "")
         let before = recentContexts.last { $0.key == key }?.before ?? ""
         guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before)) else { return }
-        do {
-            try store.recordCotypistSuggestion(event)
-            if !event.acceptedText.isEmpty { onAccepted() }
-        } catch {
-            log("could not record suggestion: \(error)")
+        // A SQLite write transaction: off the main actor, which only hears back to refresh the timeline.
+        Task.detached(priority: .utility) {
+            do {
+                try store.recordCotypistSuggestion(event)
+                if !event.acceptedText.isEmpty { await MainActor.run { CotypistService.shared.onAccepted() } }
+            } catch {
+                fputs("[cotypist] could not record suggestion: \(error)\n", stderr)
+            }
         }
     }
 

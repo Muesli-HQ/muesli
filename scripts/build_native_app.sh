@@ -420,9 +420,16 @@ fi
 
 bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
 
-# Cotypist (experimental, dev builds only): the typeahead input method lives inside the app and
-# is registered by Muesli at launch. It owns keys and the inline ghost; Muesli does the rest.
-if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
+# Cotypist (experimental): the typeahead input method lives inside the app and is registered by
+# Muesli at launch. It owns keys and the inline ghost; Muesli does the rest. Muesli enables the
+# feature only when this helper is bundled, so this flag is the single switch. Dev bundle IDs get
+# it by default; a public release opts in with MUESLI_INCLUDE_COTYPIST=1 and then goes through the
+# same Developer ID signing, hardened runtime, timestamp and notarization as the app.
+INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-}"
+if [[ -z "$INCLUDE_COTYPIST" ]]; then
+  [[ "$BUNDLE_ID" == com.muesli.dev* ]] && INCLUDE_COTYPIST=1 || INCLUDE_COTYPIST=0
+fi
+if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"
   mkdir -p "$COTYPIST_DIR/Contents/MacOS" "$COTYPIST_DIR/Contents/Resources"
@@ -551,7 +558,19 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
 
   COTYPIST_APP="$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   if [[ -d "$COTYPIST_APP" ]]; then
+    # Nested code is signed before the app. Notarization rejects nested executables without
+    # hardened runtime or a secure timestamp, so check both here rather than at the notary.
     codesign --force --options runtime "$CODESIGN_TIMESTAMP" --sign "$SIGN_IDENTITY" "$COTYPIST_APP"
+    codesign --verify --strict --verbose=2 "$COTYPIST_APP"
+    COTYPIST_SIGNATURE="$(codesign -dvv "$COTYPIST_APP" 2>&1)"
+    if ! grep -q "flags=.*runtime" <<<"$COTYPIST_SIGNATURE"; then
+      echo "ERROR: Cotypist input method is not signed with hardened runtime." >&2
+      exit 1
+    fi
+    if [[ "$CODESIGN_TIMESTAMP" != "--timestamp=none" ]] && ! grep -q "^Timestamp=" <<<"$COTYPIST_SIGNATURE"; then
+      echo "ERROR: Cotypist input method signature has no secure timestamp." >&2
+      exit 1
+    fi
   fi
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
