@@ -2203,12 +2203,16 @@ enum CotypistFrequency: String, Codable, CaseIterable {
         }
     }
 
-    /// Minimum log-probability of the first suggested word.
-    var firstWordGate: Double {
-        switch self {
-        case .fewer: -2.0
-        case .balanced: -3.0
-        case .more: -4.0
+    /// Minimum log-probability of the first suggested word. Calibrated on users' own writing
+    /// (CotypistModelComparisonTests): after a word, looser gates mostly add wrong suggestions;
+    /// completing a half-typed word is right far more often, so it can be looser.
+    func firstWordGate(midWord: Bool) -> Double {
+        switch (self, midWord) {
+        case (.fewer, _): -1.0
+        case (.balanced, false): -1.5
+        case (.balanced, true): -2.0
+        case (.more, false): -2.5
+        case (.more, true): -3.0
         }
     }
 }

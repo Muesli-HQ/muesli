@@ -115,7 +115,7 @@ final class CotypistService {
         let firstWordOnly = request["firstWordOnly"] as? Bool ?? false
         if config.cotypistDisabledApps.contains(bundleID) { return ["rejection": "off in this app"] }
         if midWord && !config.cotypistCompleteWords { return ["rejection": "completing words is off"] }
-        let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate,
+        let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate(midWord: midWord),
                                                    maxWords: config.cotypistSuggestionLength.maxWords)
 
         var (fieldText, source) = context(bundleID: bundleID, field: request["field"] as? String,

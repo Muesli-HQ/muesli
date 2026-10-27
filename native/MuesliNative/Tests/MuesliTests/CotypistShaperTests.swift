@@ -19,11 +19,13 @@ struct CotypistShaperTests {
     @Test("suggestion length and frequency settings set the word limit and the gate")
     func settings() throws {
         let raw = completion([(" file", -2.5), (" to", -0.5), (" you", -0.4), (" in", -0.3), (" a", -0.2)])
-        let phrase = CotypistShaper.Thresholds(firstWord: CotypistFrequency.balanced.firstWordGate,
+        let phrase = CotypistShaper.Thresholds(firstWord: CotypistFrequency.more.firstWordGate(midWord: false),
                                                maxWords: CotypistSuggestionLength.phrase.maxWords)
         #expect(try CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: phrase).get().text == "file to you")
-        let fewer = CotypistShaper.Thresholds(firstWord: CotypistFrequency.fewer.firstWordGate)
-        #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: fewer) == .failure(.lowConfidence(-2.5)))
+        let balanced = CotypistShaper.Thresholds(firstWord: CotypistFrequency.balanced.firstWordGate(midWord: false))
+        #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: balanced) == .failure(.lowConfidence(-2.5)))
+        // Completing a half-typed word allows a looser gate than starting a new one.
+        #expect(CotypistFrequency.balanced.firstWordGate(midWord: true) < CotypistFrequency.balanced.firstWordGate(midWord: false))
     }
 
     @Test("rejects a first word below the gate")
