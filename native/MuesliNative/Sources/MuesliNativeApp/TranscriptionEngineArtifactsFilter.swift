@@ -105,12 +105,69 @@ struct TranscriptionEngineArtifactsFilter {
         return stripPromptLeakage(from: stripped)
     }
 
+    /// The final pass runs after cleanup and custom-word expansion, which may
+    /// deliberately introduce Markdown, paragraphs, tabs, or aligned columns.
+    /// Remove annotations only; ASR whitespace/prompt normalization belongs to
+    /// the initial pass and must not flatten the user's formatted output here.
+    static func applyPreservingLayout(_ text: String) -> String {
+        var result = removeMatchesPreservingLayout(decoratedCue, from: text) {
+            cueLabels.contains(cueBody($0))
+        }
+        for pattern in artifactPatterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            result = removeMatchesPreservingLayout(expression, from: result)
+        }
+        if result != text {
+            if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "" }
+        }
+        return result
+    }
+
+    /// Repair whitespace at the removed annotation only. Newlines and spacing
+    /// elsewhere, including indentation on the affected line, stay byte-for-byte.
+    private static func removeMatchesPreservingLayout(
+        _ expression: NSRegularExpression,
+        from text: String,
+        matching predicate: (String) -> Bool = { _ in true }
+    ) -> String {
+        let source = text as NSString
+        let result = NSMutableString(string: text)
+        let matches = expression.matches(in: text, range: NSRange(location: 0, length: source.length))
+        for match in matches.reversed() where predicate(source.substring(with: match.range)) {
+            var start = match.range.location
+            var end = NSMaxRange(match.range)
+            while start > 0, isHorizontalSpace(result.character(at: start - 1)) { start -= 1 }
+            while end < result.length, isHorizontalSpace(result.character(at: end)) { end += 1 }
+            let atLineStart = start == 0 || isLineBreak(result.character(at: start - 1))
+            let atLineEnd = end == result.length || isLineBreak(result.character(at: end))
+            let beforePunctuation = end < result.length && ",.;:!?".utf16.contains(result.character(at: end))
+            let replacement: String
+            if atLineStart && !atLineEnd {
+                replacement = result.substring(with: NSRange(location: start, length: match.range.location - start))
+            } else if atLineEnd || beforePunctuation {
+                replacement = ""
+            } else {
+                replacement = " "
+            }
+            result.replaceCharacters(in: NSRange(location: start, length: end - start), with: replacement)
+        }
+        return result as String
+    }
+
+    private static func isHorizontalSpace(_ character: unichar) -> Bool {
+        character == 0x20 || character == 0x09
+    }
+
+    private static func isLineBreak(_ character: unichar) -> Bool {
+        character == 0x0A || character == 0x0D
+    }
+
     /// Applies `apply(_:)` to each segment's text and drops segments left empty.
     /// Meeting transcripts are built from segments, so they need the same cleanup as the joined text.
-    static func apply(to segments: [SpeechSegment]) -> [SpeechSegment] {
+    static func apply(to segments: [SpeechSegment], preservingLayout: Bool = false) -> [SpeechSegment] {
         segments.compactMap { segment in
-            let text = apply(segment.text)
-            guard !text.isEmpty else { return nil }
+            let text = preservingLayout ? applyPreservingLayout(segment.text) : apply(segment.text)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return text == segment.text ? segment : SpeechSegment(start: segment.start, end: segment.end, text: text)
         }
     }

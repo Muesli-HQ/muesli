@@ -168,6 +168,142 @@ struct LiveDictationTextTargetTests {
         }
     }
 
+    @Test func audioCapturedBeforeTargetIsHandedOffInExactSampleOrder() {
+        let audio = BufferedDictationCaptureAudio()
+        let received = CapturedAudioSamples()
+        audio.append([1, 2])
+        audio.append([3])
+        #expect(audio.attach { received.append($0) })
+        audio.append([4, 5])
+        #expect(received.values == [1, 2, 3, 4, 5])
+    }
+
+    @Test func captureAudioOverflowDisablesLiveSessionWithoutPassingAPartialPrefix() {
+        let audio = BufferedDictationCaptureAudio()
+        let received = CapturedAudioSamples()
+        audio.append([Float](repeating: 1, count: 48_000))
+        audio.append([2])
+        #expect(!audio.attach { received.append($0) })
+        #expect(received.values.isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func slowAccessibilityReadDoesNotBlockMainActorAndHasWallDeadline() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let started = AsyncStream<Void>.makeStream()
+        let read = Task {
+            await worker.run(timeout: 0.04) {
+                started.continuation.yield(())
+                gate.wait()
+                return 42
+            }
+        }
+        for await _ in started.stream { break }
+        // This line runs on MainActor while the AX worker is still blocked.
+        let mainActorProgress = true
+        deadline.expire()
+        let value = await read.value
+        #expect(mainActorProgress)
+        #expect(value == nil)
+        let queued = Task { await worker.run(timeout: 0.02) { 17 } }
+        while !deadline.hasPending { await Task.yield() }
+        deadline.expire()
+        #expect(await queued.value == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func expiredAccessibilityOperationCannotAuthorizeALateSetter() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        let started = AsyncStream<Void>.makeStream()
+        let finished = AsyncStream<Bool>.makeStream()
+        let operation = Task {
+            await worker.run(timeout: 0.04) { mayProceed in
+                started.continuation.yield(())
+                gate.wait()
+                let canWrite = mayProceed()
+                finished.continuation.yield(canWrite)
+                return canWrite
+            }
+        }
+        for await _ in started.stream { break }
+        deadline.expire()
+        #expect(await operation.value == nil)
+        gate.signal()
+        for await canWrite in finished.stream { #expect(!canWrite); break }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancelledAccessibilityOperationRevokesSetterBeforeReadReturns() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        let started = AsyncStream<Void>.makeStream()
+        let finished = AsyncStream<Bool>.makeStream()
+        let operation = Task {
+            await worker.run(timeout: 30) { mayProceed in
+                started.continuation.yield(())
+                gate.wait()
+                let canWrite = mayProceed()
+                finished.continuation.yield(canWrite)
+                return canWrite
+            }
+        }
+        for await _ in started.stream { break }
+        operation.cancel()
+        #expect(await operation.value == nil)
+        gate.signal()
+        for await canWrite in finished.stream { #expect(!canWrite); break }
+    }
+
+    @Test(arguments: [false, true])
+    func asyncReadCannotAuthorizeWritesAfterCancellationOrFocusDeparture(cancel: Bool) async throws {
+        let editor = Editor()
+        var access = editor.access
+        let synchronous = access
+        var resumeRead: CheckedContinuation<Void, Never>?
+        access.asyncOperations = .init(snapshot: {
+            await withCheckedContinuation { resumeRead = $0 }
+            return synchronous.snapshot()
+        }, focusStatus: { synchronous.focusStatus() },
+        select: { range, _ in synchronous.select(range) },
+        replaceSelection: { text, _ in synchronous.replaceSelection(text) },
+        placeholderEvidence: { synchronous.placeholderEvidence() })
+        access.asyncOperations?.currentProcessStatus = { editor.focused ? .focused : .departed("focus_changed") }
+        let target = try #require(LiveDictationTextTarget(access: access))
+        let update = Task { await target.update(text: "late words") }
+        while resumeRead == nil { await Task.yield() }
+        if cancel { target.cancel() } else { editor.focused = false }
+        resumeRead?.resume()
+        #expect(await update.value == false)
+        #expect(editor.selections == 0)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func asynchronousSnapshotStillRejectsChangedCaretBeforePaste() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        var access = editor.access
+        let synchronous = access
+        access.asyncOperations = .init(snapshot: {
+            await Task.yield()
+            editor.selection = NSRange(location: 0, length: 0)
+            return synchronous.snapshot()
+        }, focusStatus: { synchronous.focusStatus() },
+        select: { range, _ in synchronous.select(range) },
+        replaceSelection: { text, _ in synchronous.replaceSelection(text) },
+        placeholderEvidence: { synchronous.placeholderEvidence() })
+        let target = try #require(LiveDictationTextTarget(access: access))
+        #expect(await target.update(text: "words") == false)
+        #expect(target.isSuspended)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
     @Test(arguments: [false, true])
     func temporaryAccessibilityPausesWithoutWritingThenVerifiesOriginalSnapshot(snapshotFailure: Bool) async throws {
         let editor = Editor()
@@ -1831,4 +1967,29 @@ struct LiveDictationTextTargetTests {
         #expect(editor.selections == 1)
     }
 
+}
+
+private final class ManualAXDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time: TimeInterval = 0
+    private var pending: [@Sendable () -> Void] = []
+    var now: TimeInterval { lock.withLock { time } }
+    var hasPending: Bool { lock.withLock { !pending.isEmpty } }
+    func schedule(_ operation: @escaping @Sendable () -> Void) { lock.withLock { pending.append(operation) } }
+    func expire() {
+        let operations = lock.withLock {
+            time += 60
+            let operations = pending
+            pending.removeAll()
+            return operations
+        }
+        operations.forEach { $0() }
+    }
+}
+
+private final class CapturedAudioSamples: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Float] = []
+    var values: [Float] { lock.withLock { storage } }
+    func append(_ values: [Float]) { lock.withLock { storage.append(contentsOf: values) } }
 }

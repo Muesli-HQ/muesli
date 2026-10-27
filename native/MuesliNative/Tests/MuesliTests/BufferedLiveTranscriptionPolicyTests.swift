@@ -1,9 +1,105 @@
 import Foundation
+import FluidAudio
+import WhisperKit
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Buffered live transcription eligibility and settings")
 struct BufferedLiveTranscriptionPolicyTests {
+    @Test("Parakeet reloads the requested dictation model after meeting preload for final and preview decoding")
+    func parakeetRequestedModelAfterMeetingPreload() async throws {
+        let loads = BufferedBackendLoadRecorder()
+        let transcriber = FluidAudioTranscriber(modelLoader: { version, _, _ in
+            let count = await loads.record(String(describing: version))
+            // Empty managers keep this test entirely offline. The sentinel on
+            // reload proves selection happens before touching either decoder.
+            if count > 2 { throw BufferedBackendLoadRecorder.Failure.requestedReload }
+            return AsrManager(config: .default)
+        })
+        try await transcriber.loadModels(version: .v3)
+        try await transcriber.loadModels(version: .v3)
+        try await transcriber.loadModels(version: .v2)
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await transcriber.transcribe(wavURL: URL(fileURLWithPath: "/unused.wav"), expectedVersion: .v3)
+        }
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await transcriber.transcribePreview(samples: [0], expectedVersion: .v3)
+        }
+        #expect(await loads.values == ["v3", "v2", "v3", "v3"])
+        await transcriber.shutdown()
+    }
+
+    @Test("Whisper reloads the requested dictation model after meeting preload for final and preview decoding")
+    func whisperRequestedModelAfterMeetingPreload() async throws {
+        let loads = BufferedBackendLoadRecorder()
+        let transcriber = WhisperKitTranscriber(modelLoader: { name, _, _ in
+            let count = await loads.record(name)
+            if count > 2 { throw BufferedBackendLoadRecorder.Failure.requestedReload }
+            return try await WhisperKit(WhisperKitConfig(prewarm: false, load: false, download: false))
+        })
+        try await transcriber.loadModel(modelName: "tiny")
+        try await transcriber.loadModel(modelName: "tiny")
+        try await transcriber.loadModel(modelName: "large-v3")
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await transcriber.transcribe(wavURL: URL(fileURLWithPath: "/unused.wav"), expectedModel: "tiny")
+        }
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await transcriber.transcribePreview(samples: [0], expectedModel: "tiny")
+        }
+        #expect(await loads.values == ["tiny", "large-v3", "tiny", "tiny"])
+        await transcriber.shutdown()
+    }
+
+    @Test("Cancelled preview requests do not reload models and release the decode permit")
+    func cancelledPreviewsDoNotReload() async {
+        let loads = BufferedBackendLoadRecorder()
+        let parakeet = FluidAudioTranscriber(modelLoader: { version, _, _ in
+            _ = await loads.record(String(describing: version))
+            throw BufferedBackendLoadRecorder.Failure.requestedReload
+        })
+        let whisper = WhisperKitTranscriber(modelLoader: { name, _, _ in
+            _ = await loads.record(name)
+            throw BufferedBackendLoadRecorder.Failure.requestedReload
+        })
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await #expect(throws: CancellationError.self) {
+                _ = try await parakeet.transcribePreview(samples: [0], expectedVersion: .v3)
+            }
+            await #expect(throws: CancellationError.self) {
+                _ = try await whisper.transcribePreview(samples: [0], expectedModel: "tiny")
+            }
+        }
+        await cancelled.value
+        #expect(await loads.values.isEmpty)
+        // These calls must acquire the permits released by cancelled requests.
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await parakeet.transcribePreview(samples: [0], expectedVersion: .v3)
+        }
+        await #expect(throws: BufferedBackendLoadRecorder.Failure.requestedReload) {
+            _ = try await whisper.transcribePreview(samples: [0], expectedModel: "tiny")
+        }
+        #expect(await loads.values == ["v3", "tiny"])
+    }
+
+    @Test("Parakeet adapters defer text alignment mismatches without dropping recognized words", arguments: [false, true])
+    func parakeetAlignmentDeferral(unified: Bool) throws {
+        let align = unified ? ParakeetUnifiedTranscriber.previewWindow : FluidAudioTranscriber.previewWindow
+        let words: [BufferedTranscriptionWord] = [.init(text: "hello", start: 0, end: 0.5, confidence: 0.9)]
+        #expect(throws: BufferedTranscriptionPreviewDeferral.textAlignmentMismatch) {
+            _ = try align("hello world", words)
+        }
+        #expect(throws: BufferedTranscriptionPreviewDeferral.textAlignmentMismatch) {
+            _ = try align("hello", [])
+        }
+        let valid = try align("hello", words)
+        #expect(valid.text == "hello")
+        #expect(valid.words == words)
+        let empty = try align("", [])
+        #expect(empty.text.isEmpty)
+        #expect(empty.words.isEmpty)
+    }
+
     @Test("Whisper previews use one decode attempt while preserving language and final decode policy",
           arguments: [WhisperKitLanguage.auto, .tamil])
     func whisperPreviewDecodePolicy(language: WhisperKitLanguage) {
@@ -180,5 +276,15 @@ struct BufferedLiveTranscriptionPolicyTests {
         #expect(!restored.resolvedMeetingLiveCaptionBackend.producesFinalTranscript)
         config.enableBufferedLiveDictation = false
         #expect(config.enableLiveStreamingPartials)
+    }
+}
+
+private actor BufferedBackendLoadRecorder {
+    enum Failure: Error, Equatable { case requestedReload }
+    private(set) var values: [String] = []
+
+    func record(_ value: String) -> Int {
+        values.append(value)
+        return values.count
     }
 }

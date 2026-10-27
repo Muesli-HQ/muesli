@@ -92,7 +92,15 @@ actor ParakeetUnifiedTranscriber {
         let result = try await asrManager.transcribeWithTimings(samples)
         try Task.checkCancellation()
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings)
-        return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
+        return try Self.previewWindow(text: result.text, words: words)
+    }
+
+    static func previewWindow(text: String, words: [BufferedTranscriptionWord]) throws -> BufferedTranscriptionWindow {
+        do {
+            return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+        } catch BufferedTranscriptionSession.Failure.invalidTimings {
+            throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
+        }
     }
 
     func shutdown() async {

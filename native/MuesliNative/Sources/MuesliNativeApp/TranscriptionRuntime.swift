@@ -1084,7 +1084,7 @@ actor TranscriptionCoordinator {
             ) ?? removeFillersWithLogging(result)
             TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
                                                 detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
-            let final = removeArtifacts(applyCustomWords(result, customWords: customWords))
+            let final = removeArtifacts(applyCustomWords(result, customWords: customWords), preservingLayout: true)
             TranscriptCleanupDebugLogger.append(
                 status: "dictation_final", cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId, asrBackend: backend.backend,
@@ -1274,9 +1274,11 @@ actor TranscriptionCoordinator {
         removeFillers(removeArtifacts(result))
     }
 
-    private func removeArtifacts(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
-        let filtered = TranscriptionEngineArtifactsFilter.apply(result.text)
-        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments)
+    private func removeArtifacts(_ result: SpeechTranscriptionResult, preservingLayout: Bool = false) -> SpeechTranscriptionResult {
+        let filtered = preservingLayout
+            ? TranscriptionEngineArtifactsFilter.applyPreservingLayout(result.text)
+            : TranscriptionEngineArtifactsFilter.apply(result.text)
+        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments, preservingLayout: preservingLayout)
         return SpeechTranscriptionResult(text: filtered, segments: segments)
     }
 

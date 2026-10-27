@@ -21,11 +21,21 @@ initial plan and chronological implementation notes below.
   and selection. Temporary Accessibility read failures pause delivery; genuine
   focus changes, edits, and cursor movement revoke it. Codex uses acknowledged,
   bounded plain-text pastes, including verified empty-placeholder handling.
+  Native Accessibility IPC runs on a serial background worker with deadline and
+  cancellation checks. Recording starts while capture is pending; a bounded PCM
+  prefix transfers in order after capture succeeds. Staged clipboard text is
+  marked transient/concealed and limited to the current host; restoring the
+  original clipboard preserves its original representations.
 - Stopping drains the unfinished tail and reuses the streamed transcript. Live
   dictation does not automatically retranscribe the whole recording. Confidence,
   agreement, and spelling-revision evidence are retained for diagnostics rather
   than triggering a full-recording retry. A bounded finalization deadline and
   retained audio/partial-text recovery handle incomplete coverage or decoder failure.
+  Recovery copies live in `Dictation Recovery/<session UUID>/` inside the active
+  app's Application Support directory. The recovery alert's “Show Recording”
+  action opens that folder. Audio and partial text remain until the user removes
+  the folder in Finder; there is no automatic retention sweep. A failed recovery
+  copy leaves the original recording at the location shown in the alert.
 - Optional cleanup and dictionary processing still run after recognition. Final
   insertion uses one guarded replacement of the changed text; losing ownership
   preserves the result in history instead of risking an unrelated field.

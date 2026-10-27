@@ -541,6 +541,8 @@ public final class MuesliController: NSObject {
         let parakeetLanguage: ParakeetLanguage
     }
     private var bufferedDictationContext: BufferedDictationContext?
+    private var bufferedCaptureTask: Task<Void, Never>?
+    private var bufferedCaptureID: UUID?
     private var finalizingBufferedTarget: (id: UUID, target: LiveDictationTextTarget)?
     private var cleanupWarmupTask: Task<Void, Never>?
     private var cleanupWarmupTraceID: UUID?
@@ -11365,16 +11367,38 @@ public final class MuesliController: NSObject {
               currentDictationOutputMode == .paste,
               !isDictationTestMode else { return }
         let previewTrace = currentDictationLatencyTrace
-        guard let target = LiveDictationTextTarget.capture(onDiagnostic: { [weak self] reason in
-            self?.markDictationLatency("buffered_target:\(reason)", trace: previewTrace)
-        }) else {
-            statusBarController?.setStatus("Live updates unavailable here; text will paste when you stop")
-            return
-        }
         let id = UUID()
         let backend = selectedBackend
         let whisperLanguage = config.resolvedWhisperLanguage
         let parakeetLanguage = config.resolvedParakeetLanguage
+        guard let captureApplication = NSWorkspace.shared.frontmostApplication else { return }
+        let pendingAudio = BufferedDictationCaptureAudio()
+        bufferedCaptureID = id
+        dictationAudioSessionManager.onAudioBuffer = { samples in pendingAudio.append(samples) }
+        // Capture runs concurrently with recorder startup. Preserve initial PCM
+        // while bounded AX capture is pending, then hand it off in sample order.
+        bufferedCaptureTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let target = await LiveDictationTextTarget.capture(application: captureApplication, onDiagnostic: { [weak self] reason in
+                self?.markDictationLatency("buffered_target:\(reason)", trace: previewTrace)
+            })
+            guard !Task.isCancelled, self.bufferedCaptureID == id else { target?.cancel(); return }
+            self.bufferedCaptureTask = nil
+            self.bufferedCaptureID = nil
+            guard let target else {
+                self.dictationAudioSessionManager.onAudioBuffer = nil
+                self.statusBarController?.setStatus("Live updates unavailable here; text will paste when you stop")
+                return
+            }
+            self.completeBufferedDictationCapture(target: target, id: id, backend: backend,
+                whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage,
+                pendingAudio: pendingAudio, previewTrace: previewTrace)
+        }
+    }
+
+    private func completeBufferedDictationCapture(target: LiveDictationTextTarget, id: UUID,
+        backend: BackendOption, whisperLanguage: WhisperKitLanguage, parakeetLanguage: ParakeetLanguage,
+        pendingAudio: BufferedDictationCaptureAudio, previewTrace: DictationLatencyTraceToken?) {
         let delivery = BufferedDictationPreviewDelivery(deliver: { update in
             await target.update(committedText: update.committedText, tail: update.tail)
         }, onResult: { [weak self] update, accepted in
@@ -11422,16 +11446,29 @@ public final class MuesliController: NSObject {
                 id: id, session: session, target: target, delivery: delivery, backend: backend,
                 whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage
             )
-            dictationAudioSessionManager.onAudioBuffer = { samples in session.enqueue(samples) }
+            guard pendingAudio.attach({ session.enqueue($0) }) else {
+                cancelBufferedDictation()
+                dictationAudioSessionManager.onAudioBuffer = nil
+                statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
+                return
+            }
             markDictationLatency("buffered_preview_started", trace: previewTrace)
         } catch {
             markDictationLatency("buffered_preview_start_failed", trace: previewTrace)
+            dictationAudioSessionManager.onAudioBuffer = nil
             target.cancel()
             statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
         }
     }
 
+    private func cancelBufferedDictationCapture() {
+        bufferedCaptureID = nil
+        bufferedCaptureTask?.cancel()
+        bufferedCaptureTask = nil
+    }
+
     private func cancelBufferedDictation() {
+        cancelBufferedDictationCapture()
         bufferedDictationContext?.delivery.close()
         bufferedDictationContext?.session.cancel()
         bufferedDictationContext?.target.cancel()
@@ -12009,6 +12046,7 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         hostedSession: (any HostedDictationSession)?
     ) {
+        cancelBufferedDictationCapture()
         let liveContext = bufferedDictationContext
         bufferedDictationContext = nil
         liveContext?.delivery.close()
@@ -12700,4 +12738,34 @@ func selectCurrentOrNearbyCachedCalendarEvent(
                 calendarOccurrence: $0.resolvedCalendarOccurrence
             )
         }
+}
+
+/// Keeps recorder startup independent of AX while preserving the exact PCM
+/// prefix. Capture is bounded; overflow disables live insertion instead of
+/// pretending a partial stream covers the recording.
+final class BufferedDictationCaptureAudio: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private var consume: (@Sendable ([Float]) -> Void)?
+    private var overflowed = false
+
+    func append(_ values: [Float]) {
+        lock.withLock {
+            if let consume { consume(values); return }
+            guard !overflowed, samples.count + values.count <= 16000 * 3 else {
+                overflowed = true; samples.removeAll(); return
+            }
+            samples.append(contentsOf: values)
+        }
+    }
+
+    func attach(_ consume: @escaping @Sendable ([Float]) -> Void) -> Bool {
+        lock.withLock {
+            guard !overflowed else { return false }
+            consume(samples)
+            samples.removeAll()
+            self.consume = consume
+            return true
+        }
+    }
 }

@@ -7,6 +7,31 @@ import Testing
 struct LiveDictationFinalPasteTests {
     private typealias Paste = LiveDictationFinalPaste
 
+    @Test("native staging excludes dictated text from clipboard history and restores original flavors")
+    func nativeClipboardPrivacy() async throws {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let original = NSPasteboardItem()
+        #expect(original.setString("original clipboard", forType: .string))
+        #expect(original.setData(Data([1, 2, 3]), forType: .init("com.muesli.test-binary")))
+        #expect(board.writeObjects([original]))
+        let access = Paste.nativeAccess(board: board)
+        let saved = try #require(await access.snapshot())
+        let staged = access.stage("private dictation", saved.generation)
+        #expect(staged.succeeded)
+        let owner = try #require(staged.ownership)
+        #expect(access.owns(owner))
+        #expect(board.string(forType: .string) == "private dictation")
+        for type in ["org.nspasteboard.TransientType", "org.nspasteboard.ConcealedType"] {
+            #expect(board.data(forType: .init(type)) == Data())
+        }
+        #expect(access.restore(saved, owner))
+        let restored = try #require(await access.snapshot())
+        #expect(restored.items == saved.items)
+        #expect(board.data(forType: .init("org.nspasteboard.TransientType")) == nil)
+        #expect(board.data(forType: .init("org.nspasteboard.ConcealedType")) == nil)
+    }
+
     @Test("snapshot preserves every item and representation, including empty binary data")
     func completeSnapshot() {
         let original = FakeClipboard.original

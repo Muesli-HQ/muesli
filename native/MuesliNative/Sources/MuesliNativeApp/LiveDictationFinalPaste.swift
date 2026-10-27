@@ -180,13 +180,13 @@ enum LiveDictationFinalPaste {
     }
 
     @MainActor
-    private static func nativeAccess() -> Access {
-        let board = NSPasteboard.general
+    static func nativeAccess(board: NSPasteboard = .general) -> Access {
+        let boardName = board.name
         return Access(snapshot: {
             // NSPasteboardItem providers may synchronously perform IPC or fetch
             // promised data. Neither they nor their objects cross to MainActor.
             await Task.detached(priority: .userInitiated) {
-                let source = NSPasteboard.general
+                let source = NSPasteboard(name: boardName)
                 var sourceItems: [NSPasteboardItem] = []
                 return materialize(generation: { source.changeCount }, items: {
                     if let items = source.pasteboardItems {
@@ -202,8 +202,10 @@ enum LiveDictationFinalPaste {
             let marker = Data(UUID().uuidString.utf8)
             let item = NSPasteboardItem()
             guard item.setString(text, forType: .string), item.setData(marker, forType: ownershipType),
+                  item.setData(Data(), forType: .init("org.nspasteboard.TransientType")),
+                  item.setData(Data(), forType: .init("org.nspasteboard.ConcealedType")),
                   board.changeCount == expected else { return .init(succeeded: false, ownership: nil) }
-            let cleared = Ownership(generation: board.clearContents(), marker: nil)
+            let cleared = Ownership(generation: board.prepareForNewContents(with: .currentHostOnly), marker: nil)
             guard board.changeCount == cleared.generation else { return .init(succeeded: false, ownership: nil) }
             let written = board.writeObjects([item])
             let staged = Ownership(generation: board.changeCount, marker: marker)

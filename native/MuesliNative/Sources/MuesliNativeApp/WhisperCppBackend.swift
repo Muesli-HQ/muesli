@@ -6,6 +6,12 @@ import MuesliCore
 actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
+    typealias ModelLoader = (String, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> WhisperKit
+    private let modelLoader: ModelLoader
+
+    init(modelLoader: ModelLoader? = nil) {
+        self.modelLoader = modelLoader ?? Self.makeWhisperKit
+    }
     private var decodeBusy = false
     private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -29,8 +35,28 @@ actor WhisperKitTranscriber {
     ) async throws {
         await acquireDecode()
         defer { releaseDecode() }
+        try await loadModelForDecode(modelName: modelName, progress: progress, progressSnapshot: progressSnapshot)
+    }
+
+    /// The caller holds the decode permit across model selection and inference.
+    private func loadModelForDecode(
+        modelName: String,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         try Task.checkCancellation()
         if loadedModel == modelName, whisperKit != nil { return }
+        let loadedWhisperKit = try await modelLoader(modelName, progress, progressSnapshot)
+        try Task.checkCancellation()
+        whisperKit = loadedWhisperKit
+        loadedModel = modelName
+    }
+
+    private static func makeWhisperKit(
+        modelName: String,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws -> WhisperKit {
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
         let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
@@ -56,9 +82,8 @@ actor WhisperKitTranscriber {
             return try await WhisperKit(config)
         }
 
-        whisperKit = loadedWhisperKit
-        loadedModel = modelName
         fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
+        return loadedWhisperKit
     }
 
     /// Transcribe a 16kHz mono WAV file.
@@ -72,7 +97,7 @@ actor WhisperKitTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        if let expectedModel, loadedModel != expectedModel { throw TranscriberError.notLoaded }
+        if let expectedModel { try await loadModelForDecode(modelName: expectedModel) }
         guard let whisperKit else { throw TranscriberError.notLoaded }
         guard let loadedModel else { throw TranscriberError.notLoaded }
 
@@ -92,7 +117,8 @@ actor WhisperKitTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        guard let whisperKit, loadedModel == expectedModel else { throw TranscriberError.notLoaded }
+        try await loadModelForDecode(modelName: expectedModel)
+        guard let whisperKit else { throw TranscriberError.notLoaded }
         let options = Self.makePreviewDecodeOptions(language: language, modelName: expectedModel)
         let originalSeeker = whisperKit.segmentSeeker
         whisperKit.segmentSeeker = WhisperPreviewSegmentSeeker()

@@ -7,6 +7,12 @@ import MuesliCore
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
     private var loadedVersion: AsrModelVersion?
+    typealias ModelLoader = (AsrModelVersion, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> AsrManager
+    private let modelLoader: ModelLoader
+
+    init(modelLoader: ModelLoader? = nil) {
+        self.modelLoader = modelLoader ?? Self.makeManager
+    }
     // Swift actors are reentrant across Core ML awaits. Share one permit across
     // previews, final decoding, loading and unloading of this model instance.
     private var decodeBusy = false
@@ -35,8 +41,29 @@ actor FluidAudioTranscriber {
     ) async throws {
         await acquireDecode()
         defer { releaseDecode() }
+        try await loadModelsForDecode(version: version, progress: progress, progressSnapshot: progressSnapshot)
+    }
+
+    /// Called only while holding the decode permit, so another session cannot
+    /// replace the selected model between preparation and inference.
+    private func loadModelsForDecode(
+        version: AsrModelVersion,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         try Task.checkCancellation()
         if loadedVersion == version, asrManager != nil { return }
+        let manager = try await modelLoader(version, progress, progressSnapshot)
+        try Task.checkCancellation()
+        asrManager = manager
+        loadedVersion = version
+    }
+
+    private static func makeManager(
+        version: AsrModelVersion,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws -> AsrManager {
 
         if version == .redux, #unavailable(macOS 15) {
             throw TranscriberError.reduxRequiresMacOS15
@@ -64,8 +91,6 @@ actor FluidAudioTranscriber {
             try await manager.loadModels(models)
             return manager
         }
-        self.asrManager = manager
-        self.loadedVersion = version
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: preparingMessage
@@ -73,6 +98,7 @@ actor FluidAudioTranscriber {
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[fluidaudio] models ready\n", stderr)
+        return manager
     }
 
     /// Transcribe a WAV file URL directly.
@@ -84,7 +110,7 @@ actor FluidAudioTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        if let expectedVersion, loadedVersion != expectedVersion { throw TranscriberError.notLoaded }
+        if let expectedVersion { try await loadModelsForDecode(version: expectedVersion) }
         guard let asrManager else { throw TranscriberError.notLoaded }
         let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
@@ -97,13 +123,24 @@ actor FluidAudioTranscriber {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        guard loadedVersion == expectedVersion, let asrManager else { throw TranscriberError.notLoaded }
+        try await loadModelsForDecode(version: expectedVersion)
+        guard let asrManager else { throw TranscriberError.notLoaded }
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
                                                     language: language.flatMap(Language.init(rawValue:)))
         try Task.checkCancellation()
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings ?? [])
-        return try BufferedTranscriptionWindow.aligned(text: result.text, words: words)
+        return try Self.previewWindow(text: result.text, words: words)
+    }
+
+    static func previewWindow(text: String, words: [BufferedTranscriptionWord]) throws -> BufferedTranscriptionWindow {
+        do {
+            return try BufferedTranscriptionWindow.aligned(text: text, words: words)
+        } catch BufferedTranscriptionSession.Failure.invalidTimings {
+            // Text/token disagreement can recover when the next window supplies
+            // more context. Decoder errors remain fatal and never reach here.
+            throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
+        }
     }
 
     func shutdown() async {
