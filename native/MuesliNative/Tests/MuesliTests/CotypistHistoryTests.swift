@@ -64,7 +64,7 @@ struct CotypistHistoryTests {
         #expect(try store.timelineEntries(limit: 10).map(\.id) == ["dictation:1"])
     }
 
-    @Test("keeps the user's sentence only for accepted suggestions, removes it with the session, prunes old untaken ones")
+    @Test("keeps the user's sentence and app only for accepted suggestions, removes them with the session, prunes old untaken ones")
     func privacy() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-cotypist-test-\(UUID().uuidString).db")
         let store = DictationStore(databaseURL: url)
@@ -78,27 +78,56 @@ struct CotypistHistoryTests {
         let otherApp = try #require(try store.recordCotypistSuggestion(event("elsewhere", accepted: "elsewhere", before: "In Codex ",
                                                                              outcome: .accepted, app: "com.openai.codex", at: 6)))
 
-        func rows() throws -> [(String, String)] {
+        func rows() throws -> [(String, String, String)] {
             var db: OpaquePointer?
             sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil)
             defer { sqlite3_close(db) }
             var statement: OpaquePointer?
-            sqlite3_prepare_v2(db, "SELECT suggestion_text, context_before FROM cotypist_suggestions ORDER BY id", -1, &statement, nil)
+            sqlite3_prepare_v2(db, "SELECT suggestion_text, context_before, target_app_bundle_id || target_app_name FROM cotypist_suggestions ORDER BY id",
+                               -1, &statement, nil)
             defer { sqlite3_finalize(statement) }
-            var result: [(String, String)] = []
+            var result: [(String, String, String)] = []
             while sqlite3_step(statement) == SQLITE_ROW {
-                result.append((String(cString: sqlite3_column_text(statement, 0)), String(cString: sqlite3_column_text(statement, 1))))
+                result.append((String(cString: sqlite3_column_text(statement, 0)), String(cString: sqlite3_column_text(statement, 1)),
+                               String(cString: sqlite3_column_text(statement, 2))))
             }
             return result
         }
         #expect(try rows().map(\.0) == ["the next word", "maybe", "elsewhere"])
         #expect(try rows().map(\.1) == ["It can predict ", "", "In Codex "])
+        #expect(try rows().map(\.2) == ["com.apple.NotesNotes", "", "com.openai.codexCodex"])
 
         // Removing one session removes its rows and text, and nothing from another app's session.
         try store.deleteCotypistSession(id: id)
         #expect(try rows().map(\.0) == ["elsewhere"])
         #expect(try store.cotypistSession(id: id) == nil)
         #expect(try store.cotypistSession(id: otherApp)?.acceptances.map(\.text) == ["elsewhere"])
+    }
+
+    @Test("an upgraded database forgets the app of suggestions that weren't taken")
+    func scrubsUntakenApps() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-cotypist-test-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        _ = try store.recordCotypistSuggestion(event("kept", accepted: "kept", outcome: .accepted, at: 0))
+        var db: OpaquePointer?
+        sqlite3_open(url.path, &db)
+        // As an older build wrote it: an untaken suggestion with its app.
+        let inserted = sqlite3_exec(db, """
+            INSERT INTO cotypist_suggestions (timestamp, target_app_name, target_app_bundle_id, trigger, suggestion_text, outcome)
+            VALUES ('2026-10-01T00:00:00Z', 'Signal', 'org.whispersystems.signal-desktop', 'boundary', 'later', 'ignored')
+            """, nil, nil, nil)
+        sqlite3_close(db)
+        #expect(inserted == SQLITE_OK)
+        try store.migrateIfNeeded()
+        sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil)
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT outcome, target_app_bundle_id || target_app_name FROM cotypist_suggestions ORDER BY id", -1, &statement, nil)
+        defer { sqlite3_finalize(statement) }
+        var apps: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW { apps.append(String(cString: sqlite3_column_text(statement, 1))) }
+        #expect(apps == ["com.apple.NotesNotes", ""])
     }
 
     @Test("prunes old untaken suggestions without waiting for a new one")

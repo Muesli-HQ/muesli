@@ -263,7 +263,8 @@ static NSUInteger NextWordLength(NSString *text) {
     } else if (selection.length > 0) {
         return;  // a selection: typing would replace it, nothing to continue
     }
-    HelperLog(@"request app=%@ field=%lu typed=%lu midWord=%d", bundleID, (unsigned long)field.length, (unsigned long)_typed.length, _midWord);
+    // No app here: which app the user types in is kept only for suggestions they accept.
+    HelperLog(@"request field=%lu typed=%lu midWord=%d", (unsigned long)field.length, (unsigned long)_typed.length, _midWord);
     NSDictionary *base = @{
         @"type": @"suggest",
         @"app": bundleID ?: @"",
@@ -336,6 +337,7 @@ static NSUInteger NextWordLength(NSString *text) {
     record[@"type"] = @"outcome";
     record[@"outcome"] = accepted.length && ![outcome isEqual:@"accepted"] ? @"partial" : outcome;
     record[@"accepted"] = accepted;
+    if (accepted.length) HelperLog(@"%@ app=%@ chars=%lu", record[@"outcome"], record[@"app"], (unsigned long)accepted.length);
     TellMuesli(record);
     _shown = nil;
 }

@@ -264,6 +264,10 @@ Local-only: neither table has sync identity or participates in iCloud sync.
 - `context_before` is the user's own text: the sentence the suggestion continued,
   at most about 120 characters. It is stored only for accepted and partial
   suggestions, the ones the timeline shows; it is blank otherwise.
+- `target_app_name` and `target_app_bundle_id` are likewise stored only for accepted
+  and partial suggestions. A suggestion that wasn't taken keeps no app; one shown
+  while an app's session is open (started by an accepted suggestion) counts toward
+  that session's "shown" total through `session_id`.
 - `session_id` is set when an app's session is open (see below); `NULL` otherwise
 - Retention: rows with nothing accepted are pruned after 90 days and capped at the
   newest 5,000. Accepted rows live as long as their session.

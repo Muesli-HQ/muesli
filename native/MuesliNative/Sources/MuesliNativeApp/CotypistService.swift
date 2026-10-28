@@ -290,7 +290,7 @@ final class CotypistService {
             screenInFlight.remove(bundleID)
             let text = captured.bundleID == bundleID ? Self.promptReadyScreenText(captured.ocrText) : ""
             screenText[bundleID] = (text, Date(), captured.documentIdentifier)
-            log("OCR app=\(bundleID) \(text.count) chars")  // lengths only: on-screen text isn't the user's own
+            log("OCR \(text.count) chars")  // lengths only, and no app: that's kept only for accepted suggestions
         }
     }
 

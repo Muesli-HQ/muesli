@@ -503,6 +503,11 @@ public final class DictationStore {
            !String(cString: sqlite3_errmsg(db)).contains("duplicate column name") {
             throw lastError(db)
         }
+        // Rows written before untaken suggestions stopped keeping their app.
+        try exec("""
+        UPDATE cotypist_suggestions SET target_app_name = '', target_app_bundle_id = ''
+        WHERE outcome NOT IN ('accepted', 'partial') AND (target_app_name <> '' OR target_app_bundle_id <> '')
+        """, db: db)
         // Early development builds kept the user's sentence for suggestions that weren't taken.
         try exec("UPDATE cotypist_suggestions SET context_before = '' WHERE accepted_text = '' AND context_before <> ''", db: db)
         // Retention holds even when no new suggestions arrive to trigger pruning.
@@ -553,8 +558,9 @@ public final class DictationStore {
             """, db: db, bind: { statement in
                 bindCotypistText(formatISODate(event.date), at: 1, statement: statement)
                 if let sessionID { sqlite3_bind_int64(statement, 2, sessionID) } else { sqlite3_bind_null(statement, 2) }
-                bindCotypistText(event.appName, at: 3, statement: statement)
-                bindCotypistText(event.appBundleID, at: 4, statement: statement)
+                // Which app the user typed in is kept only for suggestions they took.
+                bindCotypistText(accepted ? event.appName : "", at: 3, statement: statement)
+                bindCotypistText(accepted ? event.appBundleID : "", at: 4, statement: statement)
                 bindCotypistText(event.trigger, at: 5, statement: statement)
                 bindCotypistText(event.suggestionText, at: 6, statement: statement)
                 bindCotypistText(event.acceptedText, at: 7, statement: statement)
