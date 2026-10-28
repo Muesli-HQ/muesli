@@ -36,12 +36,22 @@ final class CotypistService {
     /// The text before the caret for recent suggestions, keyed by app and suggestion text, so an
     /// outcome can be recorded with the sentence it completed.
     private var recentContexts: [(key: String, before: String)] = []
+    private let requests = CotypistRequestLedger()
 
     static var socketURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist.sock") }
 
+    private var retentionTimer: Timer?
+
     func start() {
         guard server == nil else { return }
-        registerInputSource()
+        Task.detached(priority: .utility) { Self.installInputSource() }
+        let timer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
+            Task { @MainActor in
+                guard let store = CotypistService.shared.store else { return }
+                Task.detached(priority: .background) { try? store.pruneCotypistHistory() }
+            }
+        }
+        retentionTimer = timer
         do {
             server = try CotypistSocketServer(path: Self.socketURL.path) { [weak self] request in
                 await self?.handle(request) ?? [:]
@@ -61,7 +71,9 @@ final class CotypistService {
     /// embedded helper's designated requirement (same signer as this build).
     /// Enabling and selecting stay with the user: macOS doesn't persist an input source enabled
     /// from code, and refuses programmatic selection of a third-party one.
-    private func registerInputSource() {
+    /// Runs off the main actor: it copies a bundle and validates a code signature.
+    nonisolated static func installInputSource() {
+        func log(_ message: String) { fputs("[cotypist] \(message)\n", stderr) }
         let fileManager = FileManager.default
         let embedded = CotypistSetup.embeddedInputMethodURL
         guard fileManager.fileExists(atPath: embedded.path) else { log("input method not bundled"); return }
@@ -86,7 +98,7 @@ final class CotypistService {
             let helperID = (Bundle.main.bundleIdentifier ?? "com.muesli.app") + ".inputmethod.Cotypist"
             NSRunningApplication.runningApplications(withBundleIdentifier: helperID).forEach { $0.forceTerminate() }
         }
-        guard Self.hasValidSignature(installed, likeEmbedded: embedded) else {
+        guard hasValidSignature(installed, likeEmbedded: embedded) else {
             log("input method copy failed signature validation; not registered")
             return
         }
@@ -96,7 +108,7 @@ final class CotypistService {
 
     /// The installed copy's signature is intact and satisfies the embedded helper's designated
     /// requirement, so a modified or foreign bundle at that path is never registered.
-    private static func hasValidSignature(_ installed: URL, likeEmbedded embedded: URL) -> Bool {
+    nonisolated private static func hasValidSignature(_ installed: URL, likeEmbedded embedded: URL) -> Bool {
         var embeddedCode: SecStaticCode?, installedCode: SecStaticCode?, requirement: SecRequirement?
         guard SecStaticCodeCreateWithPath(embedded as CFURL, [], &embeddedCode) == errSecSuccess, let embeddedCode,
               SecCodeCopyDesignatedRequirement(embeddedCode, [], &requirement) == errSecSuccess,
@@ -131,7 +143,10 @@ final class CotypistService {
         let midWord = request["midWord"] as? Bool ?? false
         let afterSpace = request["afterSpace"] as? Bool ?? false
         let firstWordOnly = request["firstWordOnly"] as? Bool ?? false
+        let isCurrent = requests.note(client: request["client"] as? String, generation: (request["generation"] as? NSNumber)?.intValue)
         if config.cotypistDisabledApps.contains(bundleID) { return ["rejection": "off in this app"] }
+        // The app reported the caret at the very start: nothing comes before it to continue.
+        if request["caretAtStart"] as? Bool == true { return ["rejection": "caret at start"] }
         guard CotypistModel.isDownloaded else { return ["rejection": "model not downloaded"] }
         if midWord && !config.cotypistCompleteWords { return ["rejection": "completing words is off"] }
         let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate(midWord: midWord),
@@ -155,10 +170,13 @@ final class CotypistService {
         var prompt = fieldText.trimmingCharacters(in: .whitespaces)
         if config.cotypistUseScreenContext, prompt.count < 200, source != "agent-prompt" {
             if document == nil { document = await Self.focused().documentIdentifier }
-            refreshScreenIfNeeded(bundleID: bundleID, document: document)
-            if let screen = screenText[bundleID], screen.document == document, !screen.text.isEmpty {
-                prompt = screen.text + "\n\n" + prompt
-                source += "+ocr"
+            // Only with a known document: without one, OCR from another tab or chat could slip in.
+            if let document {
+                refreshScreenIfNeeded(bundleID: bundleID, document: document)
+                if let screen = screenText[bundleID], screen.document == document, !screen.text.isEmpty {
+                    prompt = screen.text + "\n\n" + prompt
+                    source += "+ocr"
+                }
             }
         }
         guard prompt.count >= 3 else { return ["rejection": "too little context", "source": source] }
@@ -166,7 +184,7 @@ final class CotypistService {
         do {
             let engine = try await loadEngine()
             let maxTokens = firstWordOnly ? 4 : 10
-            let completion = try await engine.complete(prompt: prompt, maxTokens: maxTokens, heal: heal)
+            let completion = try await engine.complete(prompt: prompt, maxTokens: maxTokens, heal: heal, isCurrent: isCurrent)
             let timing: [String: Any] = ["source": source, "modelMs": Int(completion.promptMs + completion.decodeMs)]
             switch CotypistShaper.shape(completion, afterSpace: afterSpace, heal: heal, maxTokens: maxTokens,
                                         firstWordOnly: firstWordOnly, thresholds: thresholds) {
@@ -180,6 +198,8 @@ final class CotypistService {
                 // `retryFull`: the first word ran past the first stage's budget; the full request may finish it.
                 return timing.merging(["rejection": rejection.description, "retryFull": rejection == .firstWordIncomplete]) { $1 }
             }
+        } catch is CancellationError {
+            return ["rejection": "superseded", "source": source]
         } catch {
             return ["rejection": "engine: \(error.localizedDescription)", "source": source]
         }
@@ -225,13 +245,15 @@ final class CotypistService {
     }
 
     /// Refreshes screen OCR for `bundleID` off the typing path through the same capture dictation
-    /// uses: when the focused document changed, else at most every 20 s. OCR only when it belongs
-    /// to the focused app and document, and never while a meeting records (screenshots break its
-    /// system-audio capture).
-    private func refreshScreenIfNeeded(bundleID: String, document: String?) {
+    /// uses: every 20 s for the same document, and sooner — but not more than every 4 s — when the
+    /// focused document changes (a window title that keeps changing can't trigger OCR per
+    /// keystroke). OCR only when it belongs to the focused app and document, and never while a
+    /// meeting records (screenshots break its system-audio capture).
+    private func refreshScreenIfNeeded(bundleID: String, document: String) {
         let cached = screenText[bundleID]
+        let age = Date().timeIntervalSince(cached?.at ?? .distantPast)
         guard !bundleID.isEmpty, !screenInFlight.contains(bundleID),
-              cached == nil || cached?.document != document || Date().timeIntervalSince(cached!.at) > 20 else { return }
+              age > (cached?.document == document ? 20 : 4) else { return }
         screenInFlight.insert(bundleID)
         Task { @MainActor in
             let captured = await DictationContextCapture.capture(
@@ -392,5 +414,28 @@ enum CotypistAgentPrompt {
     static func isPrompt(_ line: String) -> Bool {
         let characters = Array(line.prefix(2))
         return characters.count == 2 && characters[0] == "❯" && (characters[1] == " " || characters[1] == "\u{00A0}")
+    }
+}
+
+/// The newest keystroke generation seen from each helper client. Requests from a client carry its
+/// generation; once a newer one arrives, older requests still queued or running are superseded.
+final class CotypistRequestLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: [String: Int] = [:]
+
+    /// Records a request and returns whether it is still the newest from its client. Requests
+    /// without a client (older helpers, tests) are always current.
+    func note(client: String?, generation: Int?) -> @Sendable () -> Bool {
+        guard let client, let generation else { return { true } }
+        lock.lock()
+        latest[client] = max(latest[client] ?? generation, generation)
+        if latest.count > 64 { latest = latest.filter { $0.key == client } }
+        lock.unlock()
+        return { [weak self] in
+            guard let self else { return false }
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return (self.latest[client] ?? generation) <= generation
+        }
     }
 }

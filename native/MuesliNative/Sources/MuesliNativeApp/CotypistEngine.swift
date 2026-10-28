@@ -50,23 +50,30 @@ private final class CotypistState: @unchecked Sendable {
     var vocab: CotypistVocabulary?
 }
 
-/// Each token's surface text (SentencePiece `▁` / byte-level `Ġ` as a space), indexed by first
-/// character — what token healing needs to keep generation consistent with a typed prefix.
+/// Each token's surface text, indexed by first character — what token healing needs to keep
+/// generation consistent with a typed prefix. Handles both vocabularies Cotypist's models use:
+/// SentencePiece (`▁` for a space, `<0x0A>` byte fallback; Gemma) and GPT-2 byte-level BPE
+/// (every byte mapped to a printable character, `Ġ` space and `Ċ` newline; Qwen).
 private final class CotypistVocabulary: @unchecked Sendable {
     let pieces: [String]
-    /// Tokens that are or contain a line break (including the byte-fallback `<0x0A>`).
+    /// Tokens that are or contain a line break.
     let newlines: [Int]
     private let byFirst: [Character: [Int]]
 
     init(tokenizer: any MLXLMCommon.Tokenizer, size: Int) {
+        var raws = [String?](repeating: nil, count: size)
+        for id in 0..<size { raws[id] = tokenizer.convertIdToToken(id) }
+        // Byte-level vocabularies spell a leading space as `Ġ` in thousands of tokens.
+        let byteLevel = raws.lazy.prefix(50_000).filter { $0?.hasPrefix("\u{0120}") == true }.count > 1_000
         var pieces = [String](repeating: "", count: size)
         var newlines: [Int] = []
         var byFirst: [Character: [Int]] = [:]
         for id in 0..<size {
-            guard let raw = tokenizer.convertIdToToken(id) else { continue }
-            if raw.contains("\n") || raw == "<0x0A>" || raw == "<0x0D>" { newlines.append(id) }
+            guard let raw = raws[id] else { continue }
+            if raw == "<0x0A>" || raw == "<0x0D>" { newlines.append(id); continue }
             guard !(raw.hasPrefix("<") && raw.hasSuffix(">")) else { continue }
-            let piece = raw.replacingOccurrences(of: "\u{2581}", with: " ").replacingOccurrences(of: "\u{0120}", with: " ")
+            let piece = byteLevel ? Self.decodeByteLevel(raw) : raw.replacingOccurrences(of: "\u{2581}", with: " ")
+            if piece.contains("\n") || piece.contains("\r") { newlines.append(id) }
             guard let first = piece.first else { continue }
             pieces[id] = piece
             byFirst[first, default: []].append(id)
@@ -74,6 +81,27 @@ private final class CotypistVocabulary: @unchecked Sendable {
         self.pieces = pieces
         self.newlines = newlines
         self.byFirst = byFirst
+    }
+
+    /// GPT-2's byte-to-character table, inverted: printable bytes map to themselves and the rest
+    /// to U+0100 onwards, in order.
+    private static let byteLevelBytes: [Character: UInt8] = {
+        var printable = Array(UInt8(33)...UInt8(126)) + Array(UInt8(161)...UInt8(172)) + Array(UInt8(174)...UInt8(255))
+        var table: [Character: UInt8] = [:]
+        for byte in printable { table[Character(Unicode.Scalar(byte))] = byte }
+        var next: UInt32 = 256
+        for byte in UInt8(0)...UInt8(255) where !printable.contains(byte) {
+            table[Character(Unicode.Scalar(next)!)] = byte
+            next += 1
+            printable.append(byte)
+        }
+        return table
+    }()
+
+    /// A byte-level token's text. A token holding part of a multi-byte character decodes with a
+    /// replacement character, which no typed text starts with, so it simply never matches.
+    private static func decodeByteLevel(_ raw: String) -> String {
+        String(decoding: raw.compactMap { byteLevelBytes[$0] }, as: UTF8.self)
     }
 
     /// Tokens that keep the output consistent with `remaining`: they finish it or are a prefix of it.
@@ -101,9 +129,13 @@ actor CotypistEngine {
     /// Continues `prompt`. `heal`: text the user already typed past the end of `prompt` (a
     /// half-written word); the first tokens are constrained to reproduce it, so the model completes
     /// the word rather than guessing across a broken token boundary. The content starts with `heal`.
-    func complete(prompt: String, maxTokens: Int, heal: String? = nil) async throws -> CotypistCompletion {
+    /// `isCurrent` is checked before and during inference: a request overtaken by newer typing
+    /// stops with `CancellationError` rather than holding the engine.
+    func complete(prompt: String, maxTokens: Int, heal: String? = nil,
+                  isCurrent: @escaping @Sendable () -> Bool = { true }) async throws -> CotypistCompletion {
         let state = self.state
         return try await container.perform { context in
+            guard isCurrent() else { throw CancellationError() }
             let start = Date()
             let ids = context.tokenizer.encode(text: prompt, addSpecialTokens: true)
             guard ids.count >= 2 else {
@@ -142,6 +174,7 @@ actor CotypistEngine {
             var stop = CotypistCompletion.Stop.limit
             var remaining = heal ?? ""
             for _ in 0..<(maxTokens + (heal == nil ? 0 : 6)) {
+                guard isCurrent() else { throw CancellationError() }
                 let logits = context.model(MLXArray([Int32(next)]).reshaped(1, 1), cache: state.cache)
                 state.tokens.append(next)
                 let last = logits[0, -1].asType(.float32)

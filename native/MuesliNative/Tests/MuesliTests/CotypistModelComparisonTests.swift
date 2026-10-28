@@ -14,7 +14,10 @@ import Testing
 ///    the user's own dictations, read-only, for a local-only evaluation;
 ///  - MUESLI_COTYPIST_COMPARISON_INCLUDE_TEXT=1 adds per-sample prompts, continuations and
 ///    suggestions to the report. With a user database that is private text: never commit or share it.
+///    Per-sample scores (confidence, acceptance, latency) are always included, without text.
 ///  - MUESLI_COTYPIST_BASE_MODEL / _INSTRUCT_MODEL / _DRAFTER: model directories;
+///  - MUESLI_COTYPIST_COMPARISON_MODELS="name=/path;name=/path": base models to compare on raw
+///    text instead of the base/instruct setups (candidate typeahead models);
 ///  - MUESLI_COTYPIST_COMPARISON_SAMPLES (default 120 dictations, two cut points each);
 ///  - MUESLI_COTYPIST_COMPARISON_SETUPS: comma-separated setups to run (default all);
 ///  - MUESLI_COTYPIST_COMPARISON_GATE: one first-word gate for every sample, replacing the app's
@@ -78,8 +81,17 @@ struct CotypistModelComparisonTests {
     func compare() async throws {
         guard let reportPath = Self.environment["MUESLI_COTYPIST_COMPARISON_REPORT"] else { return }
         if let path = Self.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
-        let baseDir = URL(fileURLWithPath: try #require(Self.environment["MUESLI_COTYPIST_BASE_MODEL"]))
-        let instructDir = URL(fileURLWithPath: try #require(Self.environment["MUESLI_COTYPIST_INSTRUCT_MODEL"]))
+        let baseDir = URL(fileURLWithPath: Self.environment["MUESLI_COTYPIST_BASE_MODEL"] ?? CotypistModel.directory.path)
+        let instructDir = Self.environment["MUESLI_COTYPIST_INSTRUCT_MODEL"].map { URL(fileURLWithPath: $0) }
+        let candidates: [(String, URL, PromptFormat)]? = Self.environment["MUESLI_COTYPIST_COMPARISON_MODELS"].map { list in
+            list.split(separator: ";").compactMap { entry in
+                let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+                return parts.count == 2 ? (parts[0], URL(fileURLWithPath: parts[1]), .raw) : nil
+            }
+        }
+        var defaultRuns: [(String, URL, PromptFormat)] = [("base-raw", baseDir, .raw)]
+        if let instructDir { defaultRuns += [("instruct-raw", instructDir, .raw), ("instruct-chat", instructDir, .chat)] }
+        let runs = candidates ?? defaultRuns
         let drafterDir = Self.environment["MUESLI_COTYPIST_DRAFTER"].map { URL(fileURLWithPath: $0) }
         let count = Int(Self.environment["MUESLI_COTYPIST_COMPARISON_SAMPLES"] ?? "") ?? 120
         let setups = Self.environment["MUESLI_COTYPIST_COMPARISON_SETUPS"].map { Set($0.split(separator: ",").map(String.init)) }
@@ -93,9 +105,7 @@ struct CotypistModelComparisonTests {
 
         var summaries: [Summary] = []
         var outcomes: [String: [Outcome]] = [:]
-        for (name, directory, format) in [("base-raw", baseDir, PromptFormat.raw),
-                                          ("instruct-raw", instructDir, .raw),
-                                          ("instruct-chat", instructDir, .chat)] where setups?.contains(name) ?? true {
+        for (name, directory, format) in runs where setups?.contains(name) ?? true {
             let engine = try await CotypistEngine(directory: directory)
             _ = try await engine.complete(prompt: "Thanks for the", maxTokens: 2, heal: " qui")
             var results: [Outcome] = []
@@ -115,9 +125,7 @@ struct CotypistModelComparisonTests {
         var mtp: [MTPSummary] = []
         if let drafterDir {
             let prompts = samples.filter { !$0.midWord }.prefix(60).map(\.prompt)
-            for (name, directory, format) in [("base-raw", baseDir, PromptFormat.raw),
-                                              ("instruct-raw", instructDir, .raw),
-                                              ("instruct-chat", instructDir, .chat)] where setups?.contains(name) ?? true {
+            for (name, directory, format) in runs where setups?.contains(name) ?? true {
                 let summary = try await Self.measureMTP(name, target: directory, drafter: drafterDir,
                                                         prompts: prompts.map { Self.prompt($0, app: "", format: format) })
                 mtp.append(summary)
@@ -126,15 +134,33 @@ struct CotypistModelComparisonTests {
             }
         }
 
+        /// Per-sample scores without any text, always written, so other gates can be scored later.
+        struct Score: Codable {
+            let midWord: Bool
+            let shown: Bool
+            let acceptedChars: Int
+            let acceptedWords: Int
+            let firstWordLogProb: Double?
+            let stage1Ms: Double
+            let stage2Ms: Double?
+        }
         struct Report: Codable {
             let summaries: [Summary]
             let mtp: [MTPSummary]
+            let scores: [String: [Score]]
             let samples: [Sample]?
             let outcomes: [String: [Outcome]]?
         }
+        let scores = outcomes.mapValues { results in
+            zip(samples, results).map { sample, outcome in
+                Score(midWord: sample.midWord, shown: outcome.shown != nil, acceptedChars: outcome.acceptedChars,
+                      acceptedWords: outcome.acceptedWords, firstWordLogProb: outcome.firstWordLogProb,
+                      stage1Ms: outcome.stage1Ms, stage2Ms: outcome.stage2Ms)
+            }
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Report(summaries: summaries, mtp: mtp,
+        try encoder.encode(Report(summaries: summaries, mtp: mtp, scores: scores,
                                   samples: includeText ? samples : nil, outcomes: includeText ? outcomes : nil))
             .write(to: URL(fileURLWithPath: reportPath))
     }

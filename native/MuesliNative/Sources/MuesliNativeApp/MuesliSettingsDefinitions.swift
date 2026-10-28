@@ -382,7 +382,9 @@ extension MuesliController {
         for app in CotypistQuietApps.candidates(quiet: config.cotypistDisabledApps) {
             add(CotypistQuietApps.settingID(app.bundleID), "Cotypist quiet in \(app.name)",
                 [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
-                read: { $0.cotypistDisabledApps.contains(app.bundleID) ? "on" : "off" }) { value in
+                read: { $0.cotypistDisabledApps.contains(app.bundleID) ? "on" : "off" },
+                // App names and bundle IDs are private: voice sees one group until it inspects it.
+                discovery: .init(id: "cotypist_quiet_apps", label: "Keep Cotypist quiet in an app")) { value in
                 self.updateConfig { config in
                     config.cotypistDisabledApps.removeAll { $0 == app.bundleID }
                     if value == "on" { config.cotypistDisabledApps.append(app.bundleID) }

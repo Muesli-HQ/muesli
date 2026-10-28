@@ -37,7 +37,7 @@ final class CotypistSetup: ObservableObject {
     /// The build includes the input method (dev builds by default; see `MUESLI_INCLUDE_COTYPIST` in
     /// build_native_app.sh). It's the one switch for the whole feature.
     static var isAvailable: Bool { FileManager.default.fileExists(atPath: embeddedInputMethodURL.path) }
-    static var embeddedInputMethodURL: URL {
+    nonisolated static var embeddedInputMethodURL: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Library/Input Methods/MuesliCotypist.app")
     }
 

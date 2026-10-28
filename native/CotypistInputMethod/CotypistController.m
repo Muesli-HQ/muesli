@@ -117,6 +117,7 @@ static void TellMuesli(NSDictionary *message) {
     CFAbsoluteTime _triggeredAt;
     NSMutableDictionary *_shown;  // outcome record for the suggestion on screen
     NSMutableString *_acceptedSoFar;  // words of it taken one at a time
+    NSString *_clientID;              // this controller, so Muesli can drop its superseded requests
     // What the user typed into the current field — context for clients that hand input methods no
     // text (cmux/Ghostty) when Muesli can't read the screen either.
     NSMutableString *_typed;
@@ -258,6 +259,12 @@ static NSUInteger NextWordLength(NSString *text) {
         @"typed": [_typed copy] ?: @"",
         @"midWord": @(_midWord),
         @"afterSpace": @(_afterSpace),
+        @"client": _clientID ?: (_clientID = [NSUUID UUID].UUIDString),
+        @"generation": @(_generation),
+        // The caret at the start of a field that has text: nothing comes before it, and Muesli
+        // mustn't fall back to reading the whole field. Apps that expose no text (terminals)
+        // report length 0 and keep the keystroke fallback.
+        @"caretAtStart": @(selection.location == 0 && [client respondsToSelector:@selector(length)] && [client length] > 0),
     };
     NSUInteger generation = _generation;
     CFAbsoluteTime triggeredAt = _triggeredAt;

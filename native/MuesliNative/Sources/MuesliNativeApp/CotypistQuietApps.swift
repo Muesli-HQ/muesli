@@ -1,9 +1,9 @@
 import AppKit
 
 /// Apps Cotypist can be kept quiet in. Each candidate is a finite on/off setting in the shared
-/// catalog (`cotypist_quiet_app.<bundle ID>`), so Settings and voice change the list through the
-/// same validated path. Candidates are the apps already quiet, recommended apps that are
-/// installed, and open apps with windows.
+/// catalog (`cotypist_quiet_app.<bundle ID>`, grouped for voice discovery), so Settings and voice
+/// change the list through the same validated path. Candidates are the apps already quiet,
+/// apps just chosen in the file picker, recommended apps that are installed, and open apps.
 @MainActor
 enum CotypistQuietApps {
     struct App: Equatable {
@@ -22,10 +22,13 @@ enum CotypistQuietApps {
         "com.apple.dt.Xcode", "com.microsoft.VSCode", "com.todesktop.230313mzl4w4u92", "dev.zed.Zed",
     ]
 
+    /// Apps chosen in Settings' file picker, so they become settings before they're applied.
+    static var chosen: [String] = []
+
     static func candidates(quiet: [String]) -> [App] {
         var seen = Set<String>()
         var apps: [App] = []
-        for bundleID in quiet + recommended(excluding: []) + running(excluding: []).map(\.bundleID)
+        for bundleID in quiet + chosen + recommended(excluding: []) + running(excluding: []).map(\.bundleID)
         where seen.insert(bundleID).inserted {
             apps.append(App(bundleID: bundleID, name: name(of: bundleID)))
         }

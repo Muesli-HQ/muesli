@@ -94,6 +94,29 @@ struct CotypistHistoryTests {
         #expect(try store.cotypistSession(id: id) == nil)
     }
 
+    @Test("prunes old untaken suggestions without waiting for a new one")
+    func pruneWithoutWrites() throws {
+        let store = try makeStore()
+        _ = try store.recordCotypistSuggestion(event("stale", outcome: .ignored, at: 0))
+        let session = try #require(try store.recordCotypistSuggestion(event("kept", accepted: "kept", outcome: .accepted, at: 1)))
+        try store.pruneCotypistHistory(now: Date(timeIntervalSince1970: 1_790_000_000 + DictationStore.cotypistUnacceptedRetention + 60))
+        // The untaken suggestion is gone; the accepted one stays with its session.
+        #expect(try store.cotypistSession(id: session)?.suggestionsShown == 1)
+    }
+
+    @Test("a newer request from the same helper supersedes older ones; other helpers are unaffected")
+    func supersededRequests() {
+        let ledger = CotypistRequestLedger()
+        let first = ledger.note(client: "notes", generation: 4)
+        let other = ledger.note(client: "codex", generation: 1)
+        #expect(first())
+        let second = ledger.note(client: "notes", generation: 5)
+        #expect(!first())
+        #expect(second())
+        #expect(other())
+        #expect(ledger.note(client: nil, generation: nil)())
+    }
+
     @Test("keeps the sentence being written, up to the caret")
     @MainActor
     func sentenceContext() {

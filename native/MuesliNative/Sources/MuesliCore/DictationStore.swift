@@ -505,6 +505,16 @@ public final class DictationStore {
         }
         // Early development builds kept the user's sentence for suggestions that weren't taken.
         try exec("UPDATE cotypist_suggestions SET context_before = '' WHERE accepted_text = '' AND context_before <> ''", db: db)
+        // Retention holds even when no new suggestions arrive to trigger pruning.
+        try pruneUnacceptedCotypistSuggestions(now: Date(), db: db)
+    }
+
+    /// Applies the retention for suggestions that weren't taken. Runs at startup, after each
+    /// recorded suggestion and daily while Cotypist is running.
+    public func pruneCotypistHistory(now: Date = Date()) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try pruneUnacceptedCotypistSuggestions(now: now, db: db)
     }
 
     /// Suggestions that weren't taken are kept this long, and at most this many, for tuning;

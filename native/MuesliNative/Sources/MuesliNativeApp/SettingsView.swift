@@ -2325,10 +2325,8 @@ struct SettingsView: View {
         panel.begin { response in
             guard response == .OK else { return }
             let chosen = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }.filter { !quiet.contains($0) }
-            guard !chosen.isEmpty else { return }
-            controller.updateConfig { config in
-                for id in chosen where !config.cotypistDisabledApps.contains(id) { config.cotypistDisabledApps.append(id) }
-            }
+            CotypistQuietApps.chosen.append(contentsOf: chosen)
+            for bundleID in chosen { controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on") }
         }
     }
 
