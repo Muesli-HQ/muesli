@@ -220,6 +220,13 @@ struct DictationAudioRouteControllerTests {
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == nil)
     }
 
+    @Test("closed lid reports the built-in mic as unavailable")
+    func closedLidReportsBuiltInMicUnavailable() {
+        let inspector = CoreAudioDeviceInspector(isLidClosed: { true })
+
+        #expect(inspector.builtInInputDeviceID() == nil)
+    }
+
     @Test("user selected microphone overrides automatic route policy")
     func userSelectedMicrophoneOverridesAutomaticRoutePolicy() {
         let inspector = FakeCoreAudioDeviceInspector(
