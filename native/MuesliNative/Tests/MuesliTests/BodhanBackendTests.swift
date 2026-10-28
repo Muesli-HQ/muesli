@@ -7,15 +7,36 @@ import Testing
 
 @Suite("Bodhan compatibility and languages")
 struct BodhanBackendTests {
+    @Test("streamed language metadata accounts for decoder-skipped silence")
+    func streamingMetadataAcrossSilence() async {
+        let metadata = BodhanPreviewMetadata()
+        let session = BufferedTranscriptionSession(decodeWithoutTimings: { audio in
+            metadata.append(.init(startSeconds: 0, endSeconds: Double(audio.count) / 16000,
+                languageCode: "ta", wasAutoDetected: true))
+            return "தமிழ்"
+        }, measurement: { text in
+            metadata.measurement(text: text, modelID: BodhanModel.flex.rawValue, outputMode: .mixed)
+        }, onSilentAudio: { metadata.advanceSilentAudio(samples: $0) },
+        onUpdate: { _ in }, onFailure: { Issue.record("Unexpected stream failure: \($0)") })
+        session.enqueue(Array(repeating: 0.2, count: 32_000)
+            + Array(repeating: 0, count: 32_000) + Array(repeating: 0.2, count: 8_000))
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        let measurement = session.bodhanMeasurement(for: result.text)
+        #expect(measurement?.languageSamples.map(\.startSeconds) == [0, 4])
+        #expect(measurement?.languageSamples.map(\.endSeconds) == [2, 4.5])
+    }
+
     @Test("streaming metadata retains absolute language spans and computes switches over the full transcript")
     func previewMetadata() {
         let metadata = BodhanPreviewMetadata()
         metadata.append(.init(startSeconds: 0, endSeconds: 2, languageCode: "ta", wasAutoDetected: true))
+        metadata.advanceSilentAudio(samples: 32_000)
         metadata.append(.init(startSeconds: 0, endSeconds: 0.5, languageCode: "en", wasAutoDetected: false))
         let text = "தமிழ் this is English தமிழ்"
         let mixed = metadata.measurement(text: text, modelID: BodhanModel.flex.rawValue, outputMode: .mixed)
-        #expect(mixed.languageSamples.map(\.startSeconds) == [0, 2])
-        #expect(mixed.languageSamples.map(\.endSeconds) == [2, 2.5])
+        #expect(mixed.languageSamples.map(\.startSeconds) == [0, 4])
+        #expect(mixed.languageSamples.map(\.endSeconds) == [2, 4.5])
         #expect(mixed.languageSamples.map(\.languageCode) == ["ta", "en"])
         #expect(mixed.languageSamples.map(\.wasAutoDetected) == [true, false])
         #expect(mixed.runLengths == WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text))

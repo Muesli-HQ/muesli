@@ -14,6 +14,11 @@ final class BodhanPreviewMetadata: @unchecked Sendable {
     private var samples: [BodhanLanguageSample] = []
     private var endSeconds = 0.0
 
+    func advanceSilentAudio(samples count: Int) {
+        lock.lock(); defer { lock.unlock() }
+        endSeconds += Double(count) / 16000
+    }
+
     func append(_ sample: BodhanLanguageSample) {
         lock.lock(); defer { lock.unlock() }
         let end = endSeconds + sample.endSeconds - sample.startSeconds

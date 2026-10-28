@@ -296,6 +296,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
     }
 
+    private let onSilentAudio: @Sendable (Int) -> Void
     private let measurement: (@Sendable (String) -> BodhanWBCSMeasurement)?
     func bodhanMeasurement(for text: String) -> BodhanWBCSMeasurement? { measurement?(text) }
 
@@ -304,6 +305,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         decode: (@Sendable ([Float]) async throws -> BufferedTranscriptionWindow)? = nil,
         decodeWithoutTimings: (@Sendable ([Float]) async throws -> String)? = nil,
         measurement: (@Sendable (String) -> BodhanWBCSMeasurement)? = nil,
+        onSilentAudio: @escaping @Sendable (Int) -> Void = { _ in },
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void,
         onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
@@ -315,6 +317,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         precondition(configuration.maximumBufferedSamples >= configuration.windowSamples)
         precondition(configuration.maximumRecoveryWindowSamples >= configuration.windowSamples)
         precondition(configuration.maximumTimestampDrift > 0 && configuration.maximumTimestampDrift.isFinite)
+        self.onSilentAudio = onSilentAudio
         self.measurement = measurement
         self.configuration = configuration
         precondition(decode != nil || decodeWithoutTimings != nil)
@@ -484,6 +487,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                         let decodeMilliseconds = Int((ProcessInfo.processInfo.systemUptime - decodeStarted) * 1_000)
                         onDiagnostic("continuity_decode:audioMs=\(snapshot.audio.count / 16):decodeMs=\(decodeMilliseconds):final=\(snapshot.final)")
                         guard !state.closed else { return }
+                        if rms <= Double(configuration.silenceRMS) { onSilentAudio(snapshot.audio.count) }
                         acceptContinuity(text, snapshot: snapshot)
                     }
                     continue

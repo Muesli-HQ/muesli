@@ -158,7 +158,7 @@ actor TranscriptionCoordinator {
                     onLanguageSample: { metadata.append($0) })
             }, measurement: { text in
                 metadata.measurement(text: text, modelID: backend.model, outputMode: bodhanOutputMode)
-            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+            }, onSilentAudio: { metadata.advanceSilentAudio(samples: $0) }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         if backend.backend == "whisper" {
             let transcriber = whisperTranscriber
