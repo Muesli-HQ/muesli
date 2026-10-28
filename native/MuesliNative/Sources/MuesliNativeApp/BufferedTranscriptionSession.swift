@@ -220,6 +220,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var audio: [Float] = []
         var offset = 0
         var lastDecodedEnd = 0
+        // Frozen at commitment, never revised by a later lexical hypothesis.
+        var committedAudioThrough = 0
+        var continuity = false
+        var alignmentDeferrals = 0
+        var lastCommitSnapshotEnd = 0
         // No audio is owned at session start, including a word timed at (0, 0).
         var ownedUntil: Double?
         var committedText = ""
@@ -262,6 +267,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private var drainTask: (id: UUID, task: Task<Void, Never>)?
     private let configuration: Configuration
     private let decode: @Sendable ([Float]) async throws -> BufferedTranscriptionWindow
+    private let decodeWithoutTimings: (@Sendable ([Float]) async throws -> String)?
     private let onUpdate: @Sendable (BufferedTranscriptionUpdate) -> Void
     private let onFailure: @Sendable (Error) -> Void
     private let onDiagnostic: @Sendable (String) -> Void
@@ -290,6 +296,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     init(
         configuration: Configuration = .init(),
         decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow,
+        decodeWithoutTimings: (@Sendable ([Float]) async throws -> String)? = nil,
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void,
         onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
@@ -303,6 +310,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         precondition(configuration.maximumTimestampDrift > 0 && configuration.maximumTimestampDrift.isFinite)
         self.configuration = configuration
         self.decode = decode
+        self.decodeWithoutTimings = decodeWithoutTimings
         self.onUpdate = onUpdate
         self.onFailure = onFailure
         self.onDiagnostic = onDiagnostic
@@ -380,8 +388,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
 
     private func startIfNeeded() {
         guard !state.running, !state.closed else { return }
-        guard state.finishing || state.audio.count >= configuration.minimumSamples else { return }
-        guard state.finishing || state.offset + state.audio.count - state.lastDecodedEnd >= configuration.updateSamples else { return }
+        let minimum = state.continuity ? continuityChunkSamples : configuration.minimumSamples
+        guard state.finishing || state.audio.count >= minimum else { return }
+        guard state.finishing || state.continuity || state.offset + state.audio.count - state.lastDecodedEnd >= configuration.updateSamples else { return }
         state.running = true
         let id = UUID()
         // This runs under lock, so a new task cannot reach snapshot()/close()
@@ -401,8 +410,22 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         synchronized {
             guard !state.closed else { state.running = false; return nil }
             if state.finishing && state.audio.isEmpty {
-                close(reason: state.receivedSamples == 0 ? .noAudio : .incompleteCoverage)
+                if state.continuity && state.receivedSamples > 0 && state.decodedThroughSample == state.receivedSamples {
+                    state.finalText = state.committedText
+                    close()
+                } else {
+                    close(reason: state.receivedSamples == 0 ? .noAudio : .incompleteCoverage)
+                }
                 return nil
+            }
+            if state.continuity {
+                guard state.finishing || state.audio.count >= continuityChunkSamples else {
+                    state.running = false
+                    return nil
+                }
+                let count = min(state.audio.count, continuityChunkSamples)
+                return Snapshot(audio: Array(state.audio.prefix(count)), offset: state.offset,
+                                final: state.finishing && count == state.audio.count)
             }
             let end = state.offset + state.audio.count
             if !state.finishing && (state.audio.count < configuration.minimumSamples || end - state.lastDecodedEnd < configuration.updateSamples) {
@@ -414,6 +437,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             if state.recovering && state.offset + count <= state.lastDecodedEnd {
                 if state.finishing {
                     onDiagnostic("ownership_recovery_exhausted:finish_without_new_audio")
+                    if !state.closed, beginContinuity(snapshotEnd: state.lastDecodedEnd) { return snapshot() }
                     if !state.closed { fail(Failure.ownershipUnresolved) }
                 } else {
                     state.running = false
@@ -428,6 +452,31 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     private func drain() async {
         while let snapshot = snapshot() {
             do {
+                if synchronized({ state.continuity }), let decodeWithoutTimings {
+                    let decodeStarted = ProcessInfo.processInfo.systemUptime
+                    let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
+                    let text: String
+                    if rms <= Double(configuration.silenceRMS) {
+                        text = ""
+                    } else {
+                        let canDecode = synchronized {
+                            guard !state.closed else { return false }
+                            state.decodeCount += 1
+                            return true
+                        }
+                        guard canDecode else { return }
+                        try Task.checkCancellation()
+                        text = try await decodeWithoutTimings(snapshot.audio)
+                    }
+                    synchronized {
+                        guard !state.closed else { return }
+                        let decodeMilliseconds = Int((ProcessInfo.processInfo.systemUptime - decodeStarted) * 1_000)
+                        onDiagnostic("continuity_decode:audioMs=\(snapshot.audio.count / 16):decodeMs=\(decodeMilliseconds):final=\(snapshot.final)")
+                        guard !state.closed else { return }
+                        acceptContinuity(text, snapshot: snapshot)
+                    }
+                    continue
+                }
                 let decodeStarted = ProcessInfo.processInfo.systemUptime
                 let rms = sqrt(snapshot.audio.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, snapshot.audio.count)))
                 let result: BufferedTranscriptionWindow
@@ -457,11 +506,17 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                     } catch let recovery as AlignmentRecovery {
                         state = checkpoint
                         deferAlignment(recovery, snapshot: snapshot)
+                    } catch Failure.invalidTimings where decodeWithoutTimings != nil {
+                        state = checkpoint
+                        deferAlignment(AlignmentRecovery(reason: .unusablePreview), snapshot: snapshot)
                     }
                 }
             } catch let deferral as BufferedTranscriptionPreviewDeferral {
                 synchronized {
                     guard !state.closed else { return }
+                    // Untimed decoding has no recoverable timing contract. A
+                    // decoder violating that contract must not spin on one chunk.
+                    if state.continuity { fail(deferral); return }
                     onDiagnostic("preview_deferred:\(deferral.rawValue)")
                     guard !state.closed else { return }
                     deferAlignment(AlignmentRecovery(reason: .unusablePreview), snapshot: snapshot)
@@ -561,6 +616,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 }
             }
         }
+        if decodeWithoutTimings != nil, !snapshot.final, commitCount == 0, !words.isEmpty,
+           snapshot.offset + snapshot.audio.count - state.lastCommitSnapshotEnd >= configuration.rightContextSamples + 2 * configuration.updateSamples {
+            throw AlignmentRecovery(reason: .noRollProgress, agreementTail: words)
+        }
         onDiagnostic("commit_policy:mature=\(matureCount):agreed=\(agreementCount):confirmed=\(confirmedCount):stableSeam=\(stableSeamCount):committed=\(commitCount):pending=\(words.count - commitCount):zeroAnchorHeld=\(zeroAnchorHeld):initialGroupHeld=\(proposedCount - zeroAnchorHeld - commitCount):roll=\(rolls)")
         guard !state.closed else { return }
         var retainFrom = base + duration
@@ -575,6 +634,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             let next = words.dropFirst(commitCount).first
             let ownedUntil = try ownershipBoundary(after: last, before: next)
             state.ownedUntil = ownedUntil
+            state.committedAudioThrough = max(state.committedAudioThrough,
+                min(snapshot.offset + snapshot.audio.count, Int(ownedUntil * 16_000)))
+            state.lastCommitSnapshotEnd = snapshot.offset + snapshot.audio.count
             // Keep the last owned word available as a timing anchor at rollover,
             // including when a long word starts before the usual left context.
             retainFrom = min(ownedUntil, next?.start ?? ownedUntil,
@@ -669,6 +731,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             // would block the existing absolute-time ownership path forever.
             state.committedAnchors.removeAll { $0.start < newBase }
         }
+        state.alignmentDeferrals = 0
         if state.recovering {
             state.recovering = false
             state.recoveryCandidate = nil
@@ -887,6 +950,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         let eligibleAnchors = state.committedAnchors.filter { $0.start >= Double(snapshot.offset) / 16_000 }.count
         onDiagnostic("ownership_recovery:\(recovery.reason.rawValue):samples=\(snapshot.audio.count):originSamples=\(snapshot.offset):anchorCount=\(state.committedAnchors.count):eligibleAnchorCount=\(eligibleAnchors)")
         guard !state.closed else { return }
+        state.alignmentDeferrals += 1
+        if (state.alignmentDeferrals >= 2 || snapshot.final || snapshot.audio.count >= recoveryWindowLimit),
+           beginContinuity(snapshotEnd: snapshot.offset + snapshot.audio.count) {
+            return
+        }
         if snapshot.final || snapshot.audio.count >= recoveryWindowLimit {
             onDiagnostic("ownership_recovery_exhausted:\(snapshot.final ? "final" : "window_limit")")
             guard !state.closed else { return }
@@ -897,6 +965,62 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         // Consumers keep their visible prefix/draft and continue accepting audio.
         state.revision += 1
         onUpdate(.init(committedText: state.committedText, tail: state.lastPresentedTail, revision: state.revision))
+    }
+
+    // A small non-overlapping segment is the continuity unit, not an utterance.
+    // It adds no punctuation or endpoint decisions and runs through pauses.
+    private var continuityChunkSamples: Int { min(configuration.windowSamples, 2 * configuration.updateSamples) }
+
+    private func beginContinuity(snapshotEnd: Int) -> Bool {
+        guard decodeWithoutTimings != nil, !state.closed else { return false }
+        // Use the fence captured when text was committed, not a later guess at
+        // where revised words ended. Never skip unowned audio to catch up.
+        let frontier = max(state.offset, min(state.committedAudioThrough, snapshotEnd))
+        let discard = frontier - state.offset
+        guard discard <= state.audio.count else { return false }
+        state.audio.removeFirst(discard)
+        state.offset = frontier
+        state.decodedThroughSample = frontier
+        state.lastDecodedEnd = frontier
+        state.continuity = true
+        state.recovering = false
+        state.committedAnchors = []
+        state.previousTail = []
+        state.previousTailReuseAgreement = []
+        state.followingAnchor = nil
+        state.recoveryCandidate = nil
+        state.lastPublishedTail = ""
+        state.lastPresentedTail = ""
+        state.presentation = WhisperPreviewPresentation()
+        state.reuseQuality.recordConcern(.committedTranscriptChanged)
+        onDiagnostic("continuity_started:frontierSamples=\(frontier):retainedSamples=\(state.audio.count)")
+        return true
+    }
+
+    private func acceptContinuity(_ text: String, snapshot: Snapshot) {
+        // The decoder saw exactly this disjoint PCM segment. Word timings and
+        // earlier lexical revisions cannot gate its delivery or sample coverage.
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            state.committedText += join([BufferedTranscriptionWord(text: trimmed, start: 0, end: 0)], after: state.committedText)
+        } else {
+            state.reuseQuality.recordConcern(.unverifiedEmptyAudio)
+        }
+        state.audio.removeFirst(snapshot.audio.count)
+        state.offset = snapshot.offset + snapshot.audio.count
+        state.committedAudioThrough = state.offset
+        state.lastDecodedEnd = state.offset
+        state.decodedThroughSample = state.offset
+        state.lastCommitSnapshotEnd = state.offset
+        state.revision += 1
+        onDiagnostic("continuity_chunk:samples=\(snapshot.audio.count):throughSamples=\(state.offset):characters=\(trimmed.utf16.count)")
+        guard !state.closed else { return }
+        onUpdate(.init(committedText: state.committedText, tail: "", revision: state.revision))
+        if snapshot.final, !state.closed {
+            guard state.decodedThroughSample == state.receivedSamples else { close(reason: .incompleteCoverage); return }
+            state.finalText = state.committedText
+            close()
+        }
     }
 
     /// Quality evidence is independent of the live prefix-commit policy. An

@@ -149,12 +149,19 @@ actor TranscriptionCoordinator {
                 try await transcriber.transcribePreview(
                     samples: samples, language: whisperLanguage, expectedModel: expectedModel
                 )
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel,
+                    requiresWordTimings: false
+                ).text
             }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         if backend == .parakeetUnified {
             let transcriber = parakeetUnifiedTranscriber
             return BufferedTranscriptionSession(decode: { samples in
                 try await transcriber.transcribePreview(samples: samples)
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(samples: samples, requiresWordTimings: false).text
             }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         let transcriber = fluidTranscriber
@@ -164,6 +171,11 @@ actor TranscriptionCoordinator {
                 samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
                 expectedVersion: version
             )
+        }, decodeWithoutTimings: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: version, requiresWordTimings: false
+            ).text
         }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
     }
     private var _qwen3Transcriber: Any?

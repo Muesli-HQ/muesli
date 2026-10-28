@@ -80,6 +80,7 @@ case "${shard}" in
     filters=(
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
+      BufferedTranscriptionContinuityTests
       BufferedAdapterConfidenceTests
       BufferedDictationFinalizerTests
       BufferedDictationRecoveryTests

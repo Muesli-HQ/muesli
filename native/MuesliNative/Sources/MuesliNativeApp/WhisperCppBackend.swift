@@ -115,7 +115,8 @@ actor WhisperKitTranscriber {
     }
 
     func transcribePreview(
-        samples: [Float], language: WhisperKitLanguage = .defaultLanguage, expectedModel: String
+        samples: [Float], language: WhisperKitLanguage = .defaultLanguage, expectedModel: String,
+        requiresWordTimings: Bool = true
     ) async throws -> BufferedTranscriptionWindow {
         await acquireDecode()
         defer { releaseDecode() }
@@ -124,13 +125,17 @@ actor WhisperKitTranscriber {
         // never download or repair a cache as a side effect of live captions.
         try await loadModelForDecode(modelName: expectedModel, allowDownload: false)
         guard let whisperKit else { throw TranscriberError.notLoaded }
-        let options = Self.makePreviewDecodeOptions(language: language, modelName: expectedModel)
+        let options = Self.makePreviewDecodeOptions(language: language, modelName: expectedModel,
+                                                    requiresWordTimings: requiresWordTimings)
         let originalSeeker = whisperKit.segmentSeeker
-        whisperKit.segmentSeeker = WhisperPreviewSegmentSeeker()
+        if requiresWordTimings { whisperKit.segmentSeeker = WhisperPreviewSegmentSeeker() }
         defer { whisperKit.segmentSeeker = originalSeeker }
         let results: [TranscriptionResult] = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         try Task.checkCancellation()
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        // The continuity path owns disjoint PCM chunks. Word alignment is not
+        // required to append that chunk's text and must not block its delivery.
+        guard requiresWordTimings else { return .init(text: text, words: []) }
         let words = Self.previewWords(from: results.flatMap(\.segments).flatMap { $0.words ?? [] })
         return try Self.previewWindow(text: text, words: words, sampleCount: samples.count)
     }
@@ -142,9 +147,10 @@ actor WhisperKitTranscriber {
         }
     }
 
-    static func makePreviewDecodeOptions(language: WhisperKitLanguage, modelName: String) -> DecodingOptions {
+    static func makePreviewDecodeOptions(language: WhisperKitLanguage, modelName: String,
+                                        requiresWordTimings: Bool = true) -> DecodingOptions {
         var options = makeDecodeOptions(language: language, modelName: modelName)
-        options.wordTimestamps = true
+        options.wordTimestamps = requiresWordTimings
         // A preview gets another hypothesis as new audio arrives. Re-sampling
         // the same uncertain window up to six times stalls that feedback loop.
         // Final transcription retains its normal quality-oriented fallbacks.

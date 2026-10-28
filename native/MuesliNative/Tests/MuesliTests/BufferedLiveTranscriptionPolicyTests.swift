@@ -118,6 +118,27 @@ struct BufferedLiveTranscriptionPolicyTests {
         }
     }
 
+    @Test("Whisper continuity decoding skips alignment without changing language or adding retries",
+          arguments: [WhisperKitLanguage.auto, .tamil])
+    func whisperContinuityDecodePolicy(language: WhisperKitLanguage) {
+        for model in ["tiny", "tiny.en", "large-v3-v20240930_626MB"] {
+            let timed = WhisperKitTranscriber.makePreviewDecodeOptions(language: language, modelName: model)
+            let untimed = WhisperKitTranscriber.makePreviewDecodeOptions(
+                language: language, modelName: model, requiresWordTimings: false)
+            #expect(!untimed.wordTimestamps)
+            #expect(untimed.temperatureFallbackCount == 0)
+            #expect(untimed.language == timed.language)
+            #expect(untimed.detectLanguage == timed.detectLanguage)
+            if model.hasSuffix(".en") {
+                #expect(untimed.language == nil && !untimed.detectLanguage)
+            } else if language == .auto {
+                #expect(untimed.detectLanguage)
+            } else {
+                #expect(untimed.language == "ta")
+            }
+        }
+    }
+
     @Test("Whisper preview validation preserves timed Tamil, punctuation, and whitespace")
     func whisperPreviewPreservesValidScriptAndTiming() throws {
         let text = "வணக்கம் உலகம்."

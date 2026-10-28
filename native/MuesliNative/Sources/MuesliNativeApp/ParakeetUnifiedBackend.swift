@@ -86,11 +86,16 @@ actor ParakeetUnifiedTranscriber {
         return (text, processingTime)
     }
 
-    func transcribePreview(samples: [Float]) async throws -> BufferedTranscriptionWindow {
+    func transcribePreview(samples: [Float], requiresWordTimings: Bool = true) async throws -> BufferedTranscriptionWindow {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
         guard let asrManager else { throw TranscriberError.notLoaded }
+        if !requiresWordTimings {
+            let text = try await asrManager.transcribe(samples)
+            try Task.checkCancellation()
+            return .init(text: text, words: [])
+        }
         let result = try await asrManager.transcribeWithTimings(samples)
         try Task.checkCancellation()
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings)

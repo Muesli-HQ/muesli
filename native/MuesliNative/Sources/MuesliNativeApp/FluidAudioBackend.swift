@@ -121,7 +121,8 @@ actor FluidAudioTranscriber {
     }
 
     func transcribePreview(
-        samples: [Float], language: String? = nil, expectedVersion: AsrModelVersion = .v3
+        samples: [Float], language: String? = nil, expectedVersion: AsrModelVersion = .v3,
+        requiresWordTimings: Bool = true
     ) async throws -> BufferedTranscriptionWindow {
         await acquireDecode()
         defer { releaseDecode() }
@@ -134,6 +135,7 @@ actor FluidAudioTranscriber {
         let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
                                                     language: language.flatMap(Language.init(rawValue:)))
         try Task.checkCancellation()
+        guard requiresWordTimings else { return .init(text: result.text, words: []) }
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings ?? [])
         return try Self.previewWindow(text: result.text, words: words)
     }
