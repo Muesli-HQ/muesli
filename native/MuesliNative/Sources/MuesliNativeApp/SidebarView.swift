@@ -132,6 +132,12 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        let _ = appState.config
+        return sidebarContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    @ViewBuilder
+    private var sidebarContent: some View {
         if isCollapsed {
             collapsedSidebar
         } else {
@@ -609,47 +615,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var darkModeToggle: some View {
-        let isDark = appState.config.darkMode
-        HStack(spacing: 2) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig { $0.darkMode = false }
-                }
-            } label: {
-                Image(systemName: "sun.max.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(!isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                    .frame(width: 28, height: 22)
-                    .contentShape(Rectangle())
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(!isDark ? MuesliTheme.surfaceSelected : Color.clear)
-                    )
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig { $0.darkMode = true }
-                }
-            } label: {
-                Image(systemName: "moon.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                    .frame(width: 28, height: 22)
-                    .contentShape(Rectangle())
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(isDark ? MuesliTheme.surfaceSelected : Color.clear)
-                    )
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .fill(MuesliTheme.backgroundRaised)
-        )
+        MuesliSettingControl(controller: controller, id: "appearance", compactAppearance: true)
         .padding(.horizontal, sidebarRowOuterPadding)
         .padding(.leading, sidebarRowHorizontalPadding)
         .padding(.bottom, MuesliTheme.spacing4)

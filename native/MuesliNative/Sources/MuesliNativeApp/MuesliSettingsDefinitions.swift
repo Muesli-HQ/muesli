@@ -178,7 +178,7 @@ extension MuesliController {
 
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
-        toggle("dark_mode", "Dark mode", \.darkMode)
+        menu("appearance", "Appearance", AppAppearanceMode.allCases, \.appearanceMode, title: { $0.label })
         toggle("sound", "Sound effects", \.soundEnabled)
         toggle("quill_sound", "Quill sounds", \.quilSoundEnabled)
         toggle("pause_media", "Pause media during dictation", \.pauseMediaDuringDictation)

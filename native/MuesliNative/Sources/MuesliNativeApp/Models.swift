@@ -2132,6 +2132,34 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum AppAppearanceMode: String, CaseIterable {
+    case light, system, dark
+
+    var label: String {
+        switch self {
+        case .light: "Light"
+        case .system: "Follow System"
+        case .dark: "Dark"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .light: "sun.max"
+        case .system: "desktopcomputer"
+        case .dark: "moon"
+        }
+    }
+
+    var appearanceName: NSAppearance.Name? {
+        switch self {
+        case .light: .aqua
+        case .system: nil
+        case .dark: .darkAqua
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -2184,6 +2212,15 @@ struct AppConfig: Codable {
     var diarizeMicrophoneAudio: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
+    var followSystemAppearance: Bool = false
+    // Retain dark_mode for older configurations; following the system is opt-in.
+    var appearanceMode: AppAppearanceMode {
+        get { followSystemAppearance ? .system : (darkMode ? .dark : .light) }
+        set {
+            followSystemAppearance = newValue == .system
+            if newValue != .system { darkMode = newValue == .dark }
+        }
+    }
     var enableDoubleTapDictation: Bool = true
     /// Only applies when the dictation shortcut is a key combination.
     var dictationCombinationActivation: HotkeyMonitor.CombinationActivation = .pushToTalk
@@ -2352,6 +2389,7 @@ struct AppConfig: Codable {
         case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
+        case followSystemAppearance = "follow_system_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case dictationCombinationActivation = "dictation_combination_activation"
         case pasteShortcut = "paste_shortcut"
@@ -2547,6 +2585,7 @@ struct AppConfig: Codable {
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        followSystemAppearance = (try? c.decode(Bool.self, forKey: .followSystemAppearance)) ?? defaults.followSystemAppearance
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation

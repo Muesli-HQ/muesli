@@ -262,6 +262,10 @@ treated as the authoritative source for dictation or meeting history.
 - OAuth credentials and tokens
 - Logs and diagnostic bundles
 
+Appearance stays in the local app configuration: `follow_system_appearance` defaults
+to `false` for older files; when enabled, macOS controls the theme. The existing
+`dark_mode` value retains the explicit Light/Dark preference. Neither is synced.
+
 Database rows may hold local paths or references to some of these resources,
 but the resources themselves remain files or platform-managed secrets.
 

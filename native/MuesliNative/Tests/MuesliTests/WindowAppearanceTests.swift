@@ -11,12 +11,89 @@ struct WindowAppearanceTests {
 
     @Test("dark mode maps to the dark AppKit appearance")
     func darkModeMapsToDarkAqua() {
-        #expect(RecentHistoryWindowController.appearanceName(for: true) == .darkAqua)
+        #expect(AppAppearanceMode.dark.appearanceName == .darkAqua)
     }
 
     @Test("light mode maps to the light AppKit appearance")
     func lightModeMapsToAqua() {
-        #expect(RecentHistoryWindowController.appearanceName(for: false) == .aqua)
+        #expect(AppAppearanceMode.light.appearanceName == .aqua)
+    }
+
+    @Test("system appearance clears AppKit overrides")
+    func systemAppearanceInherits() {
+        #expect(AppAppearanceMode.system.appearanceName == nil)
+    }
+
+    @Test("legacy appearance preferences retain their selected theme", arguments: [true, false])
+    func legacyAppearance(dark: Bool) throws {
+        let data = Data("{\"dark_mode\":\(dark)}".utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(config.appearanceMode == (dark ? .dark : .light))
+    }
+
+    @Test("system choice persists and explicit themes clear it")
+    func appearanceRoundTrip() throws {
+        var config = AppConfig()
+        for mode in [AppAppearanceMode.system, .light, .system, .dark] {
+            config.appearanceMode = mode
+            let saved = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+            #expect(saved.appearanceMode == mode)
+            #expect(saved.followSystemAppearance == (mode == .system))
+        }
+    }
+
+    @Test("appearance uses the shared settings executor and persists each choice")
+    func appearanceSetting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let setting = try #require(controller.settingsDefinitions().first { $0.id == "appearance" })
+        #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark"])
+        let originalAppearance = NSApp?.appearance
+        defer { NSApp?.appearance = originalAppearance }
+        for mode in [AppAppearanceMode.light, .dark, .system] {
+            try await controller.applySetting("appearance", value: mode.rawValue)
+            #expect(controller.appState.config.appearanceMode == mode)
+            #expect(configStore.load().appearanceMode == mode)
+            if let app = NSApp { #expect(app.appearance?.name == mode.appearanceName) }
+        }
+    }
+
+    @Test("live dashboard releases explicit appearance when switching to System")
+    func liveDashboardReturnsToSystem() async throws {
+        let app = NSApplication.shared
+        let originalAppearance = app.appearance
+        defer { app.appearance = originalAppearance }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+        // Avoid the Timeline's first-run bridge onboarding and its telemetry in this UI fixture.
+        controller.appState.selectedTab = .shortcuts
+        let dashboard = RecentHistoryWindowController(store: store, controller: controller)
+        dashboard.show()
+        defer { dashboard.close() }
+        let window = try #require(dashboard.presentationWindow)
+        for mode in [AppAppearanceMode.light, .system, .dark, .system] {
+            try await controller.applySetting("appearance", value: mode.rawValue)
+            dashboard.applyThemeAppearance()
+            // Let SwiftUI commit its appearance preferences to the actual hosting window.
+            try await Task.sleep(for: .milliseconds(200))
+            window.contentView?.layoutSubtreeIfNeeded()
+            #expect(window.appearance?.name == mode.appearanceName)
+            let expected = mode.appearanceName ?? app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            #expect(window.contentView?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == expected)
+        }
     }
 
     @Test("dashboard can shrink beside a call window")
