@@ -137,7 +137,7 @@ final class CotypistSetup: ObservableObject {
 
     /// Downloads a model through the shared, resumable, SHA-256-verified downloader.
     func download(_ model: CotypistModel) {
-        guard modelDownloads[model] == nil else { return }
+        guard Self.isAvailable, modelDownloads[model] == nil else { return }
         guard !model.isDownloaded else { modelStates[model] = .ready; return }
         guard let release = model.release else { modelStates[model] = .unavailable; return }
         modelStates[model] = .downloading(0)

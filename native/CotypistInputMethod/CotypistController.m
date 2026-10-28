@@ -234,7 +234,9 @@ static NSUInteger NextWordLength(NSString *text) {
             [_typed setString:@""];
             return;
     }
-    if (mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) return;
+    // Shortcuts can change the text without typing it (⌘V, ⌘X, ⌃U, ⌃W, ⌃K): the record no longer
+    // matches what's before the caret.
+    if (mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) { [_typed setString:@""]; return; }
     NSString *chars = event.characters;
     if (chars.length && [chars characterAtIndex:0] >= 0x20) [_typed appendString:chars];
 }

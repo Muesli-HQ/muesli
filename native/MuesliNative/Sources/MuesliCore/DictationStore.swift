@@ -974,6 +974,43 @@ public final class DictationStore {
         return applications
     }
 
+    /// The timeline's application filter choices: apps with dictations or with Cotypist sessions.
+    public func timelineTargetApplications() throws -> [DictationTargetApplication] {
+        var applications = try dictationTargetApplications()
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        SELECT target_app_name, NULLIF(TRIM(target_app_bundle_id), '')
+        FROM cotypist_sessions
+        WHERE id IN (
+            SELECT MAX(id)
+            FROM cotypist_sessions
+            WHERE deleted_at IS NULL
+              AND TRIM(target_app_name) <> ''
+            GROUP BY COALESCE(
+                NULLIF(TRIM(target_app_bundle_id), ''),
+                'name:' || LOWER(TRIM(target_app_name))
+            )
+        )
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var seen = Set(applications.map(\.id))
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let application = DictationTargetApplication(
+                name: stringColumn(statement, index: 0),
+                bundleID: optionalStringColumn(statement, index: 1)
+            )
+            if seen.insert(application.id).inserted { applications.append(application) }
+        }
+        return applications.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     public func dictation(id: Int64) throws -> DictationRecord? {
         let db = try openDatabase()
         defer { sqlite3_close(db) }

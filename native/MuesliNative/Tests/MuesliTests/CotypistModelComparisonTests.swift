@@ -15,6 +15,8 @@ import Testing
 ///  - MUESLI_COTYPIST_COMPARISON_INCLUDE_TEXT=1 adds per-sample prompts, continuations and
 ///    suggestions to the report. With a user database that is private text: never commit or share it.
 ///    Per-sample scores (confidence, acceptance, latency) are always included, without text.
+///    The console prints only aggregate scores, never text. Results from a user database still
+///    describe private writing: keep the report and the console output local; never commit or share them.
 ///  - MUESLI_COTYPIST_BASE_MODEL / _INSTRUCT_MODEL / _DRAFTER: model directories;
 ///  - MUESLI_COTYPIST_COMPARISON_MODELS="name=/path;name=/path": base models to compare on raw
 ///    text instead of the base/instruct setups (candidate typeahead models);

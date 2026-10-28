@@ -275,6 +275,8 @@ final class AppState {
     var dictationOriginFilter: RecordOriginFilter = .all
     var dictationApplicationFilter: DictationTargetApplication?
     var dictationTargetApplications: [DictationTargetApplication] = []
+    /// Dictation apps plus apps with Cotypist sessions.
+    var timelineTargetApplications: [DictationTargetApplication] = []
     var hasMoreDictations: Bool = true
     var meetingOriginFilter: RecordOriginFilter = .all
 

@@ -54,8 +54,12 @@ final class CotypistService {
                 Task.detached(priority: .background) { try? store.pruneCotypistHistory() }
             }
         }
+        guard let helper = Self.helperRequirement(CotypistSetup.embeddedInputMethodURL) else {
+            log("socket server not started: no signed input method in this build")
+            return
+        }
         do {
-            server = try CotypistSocketServer(path: Self.socketURL.path) { [weak self] request in
+            server = try CotypistSocketServer(path: Self.socketURL.path, peerRequirement: helper) { [weak self] request in
                 await self?.handle(request) ?? [:]
             }
             log("listening on \(Self.socketURL.path)")
@@ -111,13 +115,22 @@ final class CotypistService {
     /// The installed copy's signature is intact and satisfies the embedded helper's designated
     /// requirement, so a modified or foreign bundle at that path is never registered.
     nonisolated private static func hasValidSignature(_ installed: URL, likeEmbedded embedded: URL) -> Bool {
-        var embeddedCode: SecStaticCode?, installedCode: SecStaticCode?, requirement: SecRequirement?
-        guard SecStaticCodeCreateWithPath(embedded as CFURL, [], &embeddedCode) == errSecSuccess, let embeddedCode,
-              SecCodeCopyDesignatedRequirement(embeddedCode, [], &requirement) == errSecSuccess,
+        var installedCode: SecStaticCode?
+        guard let requirement = helperRequirement(embedded),
               SecStaticCodeCreateWithPath(installed as CFURL, [], &installedCode) == errSecSuccess, let installedCode
         else { return false }
         let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate)
         return SecStaticCodeCheckValidity(installedCode, flags, requirement) == errSecSuccess
+    }
+
+    /// The embedded helper's designated requirement: what the installed copy, and any process
+    /// talking to the socket, must satisfy.
+    nonisolated static func helperRequirement(_ embedded: URL) -> SecRequirement? {
+        var embeddedCode: SecStaticCode?, requirement: SecRequirement?
+        guard SecStaticCodeCreateWithPath(embedded as CFURL, [], &embeddedCode) == errSecSuccess, let embeddedCode,
+              SecCodeCopyDesignatedRequirement(embeddedCode, [], &requirement) == errSecSuccess
+        else { return nil }
+        return requirement
     }
 
     // MARK: - Requests
@@ -228,7 +241,7 @@ final class CotypistService {
     /// After the user picks a model: load it now, while they're in Settings, not on their next keystroke.
     func modelChanged() {
         let model = config().cotypistModel
-        guard model.isDownloaded, engineModel != model else { return }
+        guard CotypistSetup.isAvailable, model.isDownloaded, engineModel != model else { return }
         Task { _ = try? await loadEngine(model) }
     }
 
@@ -437,6 +450,9 @@ enum CotypistAgentPrompt {
 final class CotypistRequestLedger: @unchecked Sendable {
     private let lock = NSLock()
     private var latest: [String: Int] = [:]
+    /// When each client last sent a request, for evicting the least recently active one.
+    private var lastSeen: [String: UInt64] = [:]
+    private var clock: UInt64 = 0
 
     /// Records a request and returns whether it is still the newest from its client. Requests
     /// without a client (older helpers, tests) are always current.
@@ -444,7 +460,13 @@ final class CotypistRequestLedger: @unchecked Sendable {
         guard let client, let generation else { return { true } }
         lock.lock()
         latest[client] = max(latest[client] ?? generation, generation)
-        if latest.count > 64 { latest = latest.filter { $0.key == client } }
+        clock += 1
+        lastSeen[client] = clock
+        // One helper per app that has had a text field focused: forget the least recently active.
+        if latest.count > 64, let oldest = lastSeen.min(by: { $0.value < $1.value })?.key {
+            latest[oldest] = nil
+            lastSeen[oldest] = nil
+        }
         lock.unlock()
         return { [weak self] in
             guard let self else { return false }

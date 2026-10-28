@@ -1,19 +1,28 @@
 import Foundation
+import Security
 
 /// A Unix-domain socket server for the Cotypist input-method helper: one JSON object per line
 /// in, one JSON object per line out, one request per connection. The socket lives in the app's
-/// support directory (owner-only permissions), so only this user's processes can reach it.
+/// support directory (owner-only permissions), so only this user's processes can reach it, and
+/// each connection is served only if the process on the other end satisfies `peerRequirement`
+/// (the bundled helper's designated requirement). Other processes of this user can't borrow
+/// Muesli's Accessibility and screen access through it.
 final class CotypistSocketServer: @unchecked Sendable {
     typealias Handler = @Sendable ([String: Any]) async -> [String: Any]
 
     private let path: String
     private let handler: Handler
+    private let peerRequirement: SecRequirement
     private let listenFD: Int32
     private let acceptSource: DispatchSourceRead
     private let queue = DispatchQueue(label: "muesli.cotypist.socket", attributes: .concurrent)
+    /// Helper processes already verified, by PID and PID version (a reused PID gets a new version).
+    private let verifiedPeers = NSLock()
+    private var verified: Set<[Int32]> = []
 
-    init(path: String, handler: @escaping Handler) throws {
+    init(path: String, peerRequirement: SecRequirement, handler: @escaping Handler) throws {
         self.path = path
+        self.peerRequirement = peerRequirement
         self.handler = handler
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -50,7 +59,12 @@ final class CotypistSocketServer: @unchecked Sendable {
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         var noSigPipe: Int32 = 1
         setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-        queue.async { [handler] in
+        queue.async { [self, handler] in
+            guard isTrustedPeer(client) else {
+                fputs("[cotypist] refused a connection from a process that isn't the Cotypist helper\n", stderr)
+                close(client)
+                return
+            }
             guard let request = Self.readLine(client) else { close(client); return }
             Task {
                 let response = await handler(request)
@@ -60,6 +74,24 @@ final class CotypistSocketServer: @unchecked Sendable {
                 close(client)
             }
         }
+    }
+
+    /// The connected process is the signed Cotypist helper: its audit token (not its PID, which
+    /// can be reused) resolves to running code that satisfies the helper's designated requirement.
+    private func isTrustedPeer(_ fd: Int32) -> Bool {
+        var token = audit_token_t()
+        var length = socklen_t(MemoryLayout<audit_token_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 else { return false }
+        // PID and PID version: what libbsm's audit_token_to_pid/_pidversion read, without linking it.
+        let process = [Int32(bitPattern: token.val.5), Int32(bitPattern: token.val.7)]
+        if verifiedPeers.withLock({ verified.contains(process) }) { return true }
+        let tokenData = withUnsafeBytes(of: &token) { Data($0) }
+        var code: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributeAudit: tokenData] as CFDictionary, [], &code) == errSecSuccess,
+              let code, SecCodeCheckValidity(code, [], peerRequirement) == errSecSuccess
+        else { return false }
+        verifiedPeers.withLock { _ = verified.insert(process) }
+        return true
     }
 
     private static func readLine(_ fd: Int32) -> [String: Any]? {

@@ -79,9 +79,9 @@ struct TimelineView: View {
                 get: { appState.timelineOriginFilter },
                 set: { controller.filterTimeline(origin: $0) }
             ))
-            if !appState.dictationTargetApplications.isEmpty || appState.timelineApplicationFilter != nil {
+            if !appState.timelineTargetApplications.isEmpty || appState.timelineApplicationFilter != nil {
                 TargetApplicationFilterMenu(
-                    applications: appState.dictationTargetApplications,
+                    applications: appState.timelineTargetApplications,
                     selection: appState.timelineApplicationFilter,
                     onSelect: { controller.filterTimeline(application: $0) }
                 )

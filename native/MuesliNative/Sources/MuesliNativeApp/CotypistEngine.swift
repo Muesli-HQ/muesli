@@ -280,6 +280,11 @@ actor CotypistEngine {
             var tokens: [CotypistToken] = []
             var stop = CotypistCompletion.Stop.limit
             var remaining = heal ?? ""
+            // Byte-level tokens can split a character (CJK, emoji) across tokens. Text is emitted only
+            // once it decodes whole; until then the tokens' log-probabilities add up here.
+            var emitted = ""
+            var pendingLogprob = 0.0
+            var pendingTokens = 0
             for _ in 0..<(maxTokens + (heal == nil ? 0 : 6)) {
                 guard isCurrent() else { throw CancellationError() }
                 let logits = context.model(MLXArray([Int32(next)]).reshaped(1, 1), cache: state.cache)
@@ -318,12 +323,24 @@ actor CotypistEngine {
                 let logprob = logprobs[token].item(Double.self) - log(1 - lineBreakMass) - healNorm
                 if eos.contains(token) { stop = .endOfText; break }
                 // Decode against everything so far so multi-byte characters come out whole.
-                let before = context.tokenizer.decode(tokenIds: generated, skipSpecialTokens: true)
-                let after = context.tokenizer.decode(tokenIds: generated + [token], skipSpecialTokens: true)
-                let piece = String(after.dropFirst(before.count))
+                let text = context.tokenizer.decode(tokenIds: generated + [token], skipSpecialTokens: true)
+                if text.hasSuffix("\u{FFFD}") {
+                    // UTF-8 needs at most four bytes: anything longer isn't going to complete.
+                    pendingTokens += 1
+                    if pendingTokens >= 4 { break }
+                    pendingLogprob += logprob
+                    generated.append(token)
+                    next = token
+                    continue
+                }
+                // Unicode scalars, not Characters: a combining mark would merge into the previous Character.
+                let piece = String(String.UnicodeScalarView(text.unicodeScalars.dropFirst(emitted.unicodeScalars.count)))
                 if piece.contains("\n") { stop = .newline; break }
                 generated.append(token)
-                tokens.append(CotypistToken(text: piece, logprob: logprob))
+                tokens.append(CotypistToken(text: piece, logprob: logprob + pendingLogprob))
+                emitted = text
+                pendingLogprob = 0
+                pendingTokens = 0
                 next = token
             }
             return CotypistCompletion(tokens: tokens, stop: stop, promptMs: promptMs,

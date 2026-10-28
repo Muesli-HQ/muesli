@@ -56,6 +56,9 @@ struct CotypistHistoryTests {
         let notes = try store.timelineEntries(limit: 10, targetApplication: DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes"))
         #expect(notes.map(\.id) == ["cotypist:\(id)"])
         #expect(try store.timelineEntries(limit: 10, origin: .fromIPhone).isEmpty)
+        // Notes has only Cotypist history: a timeline filter choice, not a dictation one.
+        #expect(try store.dictationTargetApplications().map(\.name) == ["Codex"])
+        #expect(try store.timelineTargetApplications().map(\.name) == ["Codex", "Notes"])
 
         try store.deleteCotypistSession(id: id)
         #expect(try store.timelineEntries(limit: 10).map(\.id) == ["dictation:1"])
@@ -119,6 +122,44 @@ struct CotypistHistoryTests {
         #expect(second())
         #expect(other())
         #expect(ledger.note(client: nil, generation: nil)())
+    }
+
+    @Test("with many helpers, forgets the least recently active one, not the others")
+    func ledgerEviction() {
+        let ledger = CotypistRequestLedger()
+        let first = ledger.note(client: "notes", generation: 4)
+        for index in 0..<63 { _ = ledger.note(client: "app\(index)", generation: 1) }
+        _ = ledger.note(client: "notes", generation: 5)
+        _ = ledger.note(client: "one more", generation: 1)  // 65 helpers: app0 is forgotten
+        #expect(!first())
+    }
+
+    @Test("a build without the input method refuses every Cotypist setting and downloads nothing")
+    @MainActor
+    func settingsNeedTheBundledHelper() async throws {
+        #expect(!CotypistSetup.isAvailable)  // the test runner bundles no helper
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+        let changes = ["cotypist_enabled": "on", "cotypist_model": CotypistModel.qwen35_2b.rawValue,
+                       "cotypist_length": CotypistSuggestionLength.allCases.last!.rawValue,
+                       "cotypist_frequency": CotypistFrequency.allCases.last!.rawValue,
+                       "cotypist_complete_words": controller.config.cotypistCompleteWords ? "off" : "on",
+                       "cotypist_word_pause": CotypistWordPause.allCases.last!.rawValue,
+                       "cotypist_screen_context": controller.config.cotypistUseScreenContext ? "off" : "on"]
+        let before = controller.config
+        for (id, value) in changes {
+            await #expect(throws: (any Error).self, "\(id)") { try await controller.applySetting(id, value: value) }
+        }
+        #expect(controller.config.cotypistModel == before.cotypistModel)
+        #expect(controller.config.cotypistCompleteWords == before.cotypistCompleteWords)
+        CotypistSetup.shared.download(.qwen35_2b)
+        if case .downloading = CotypistSetup.shared.state(of: .qwen35_2b) { Issue.record("started a download") }
     }
 
     @Test("keeps the sentence being written, up to the caret")

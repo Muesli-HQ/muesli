@@ -168,9 +168,10 @@ extension MuesliController {
             }
         }
         func menu<T: RawRepresentable>(_ id: String, _ label: String, _ options: [T],
-                                      _ key: WritableKeyPath<AppConfig, T>, title: (T) -> String) where T.RawValue == String {
+                                      _ key: WritableKeyPath<AppConfig, T>, title: (T) -> String,
+                                      unavailable: @escaping (String) -> String? = { _ in nil }) where T.RawValue == String {
             add(id, label, options.map { Choice(id: $0.rawValue, label: title($0)) },
-                read: { $0[keyPath: key].rawValue }) { value in
+                read: { $0[keyPath: key].rawValue }, unavailable: unavailable) { value in
                 guard let option = options.first(where: { $0.rawValue == value }) else { return }
                 self.updateConfig { $0[keyPath: key] = option }
             }
@@ -368,11 +369,13 @@ extension MuesliController {
             return CGPreflightScreenCaptureAccess() ? nil : "Grant Screen Recording in System Settings to enable screen OCR context."
         })
         // Cotypist (experimental): its Settings section and input method exist only in builds that bundle it.
+        // Builds without it refuse every Cotypist change, so nothing (a model download included) runs there.
+        let cotypistMissing: String? = CotypistSetup.isAvailable ? nil : "Cotypist isn't included in this build."
         // On only once the Cotypist input source is selected. Turning it on before the user has added
         // the input source opens Keyboard settings with a guide, and says so instead of claiming "On".
         add("cotypist_enabled", "Cotypist typeahead suggestions", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
             read: { _ in CotypistSetup.shared.state == .on ? "on" : "off" },
-            unavailable: { $0 == "on" && !CotypistSetup.isAvailable ? "Cotypist isn't included in this build." : nil }) { value in
+            unavailable: { $0 == "on" ? cotypistMissing : nil }) { value in
             CotypistSetup.shared.setOn(value == "on")
             if value == "on", CotypistSetup.shared.state == .addingInputSource {
                 throw MuesliSettings.Failure.rejected(
@@ -384,7 +387,8 @@ extension MuesliController {
                 [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
                 read: { $0.cotypistDisabledApps.contains(app.bundleID) ? "on" : "off" },
                 // App names and bundle IDs are private: voice sees one group until it inspects it.
-                discovery: .init(id: "cotypist_quiet_apps", label: "Keep Cotypist quiet in an app")) { value in
+                discovery: .init(id: "cotypist_quiet_apps", label: "Keep Cotypist quiet in an app"),
+                unavailable: { _ in cotypistMissing }) { value in
                 self.updateConfig { config in
                     config.cotypistDisabledApps.removeAll { $0 == app.bundleID }
                     if value == "on" { config.cotypistDisabledApps.append(app.bundleID) }
@@ -394,6 +398,7 @@ extension MuesliController {
         add("cotypist_model", "Cotypist model", CotypistModel.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
             read: { $0.cotypistModel.rawValue },
             unavailable: { value in
+                if let cotypistMissing { return cotypistMissing }
                 guard let model = CotypistModel(rawValue: value) else { return "Unknown Cotypist model." }
                 return CotypistSetup.shared.state(of: model) == .unavailable ? "\(model.label) isn't available to download yet." : nil
             }) { value in
@@ -403,18 +408,20 @@ extension MuesliController {
             CotypistService.shared.modelChanged()
         }
         menu("cotypist_length", "Cotypist suggestion length", CotypistSuggestionLength.allCases,
-             \.cotypistSuggestionLength, title: \.label)
+             \.cotypistSuggestionLength, title: \.label, unavailable: { _ in cotypistMissing })
         add("cotypist_frequency", "Cotypist suggestion frequency",
             CotypistFrequency.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
-            read: { $0.cotypistFrequency.rawValue }, presentation: .discreteSlider) { value in
+            read: { $0.cotypistFrequency.rawValue }, presentation: .discreteSlider,
+            unavailable: { _ in cotypistMissing }) { value in
             guard let frequency = CotypistFrequency(rawValue: value) else { return }
             self.updateConfig { $0.cotypistFrequency = frequency }
         }
-        toggle("cotypist_complete_words", "Cotypist finishes half-typed words", \.cotypistCompleteWords)
+        toggle("cotypist_complete_words", "Cotypist finishes half-typed words", \.cotypistCompleteWords,
+               unavailable: { _ in cotypistMissing })
         menu("cotypist_word_pause", "Cotypist pause before completing a word", CotypistWordPause.allCases,
-             \.cotypistWordPause, title: \.label)
+             \.cotypistWordPause, title: \.label, unavailable: { _ in cotypistMissing })
         toggle("cotypist_screen_context", "Cotypist uses on-screen text", \.cotypistUseScreenContext,
-               unavailable: { $0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil })
+               unavailable: { cotypistMissing ?? ($0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil) })
 
         add("dictation_provider", "Dictation provider", DictationProvider.allCases.map { .init(id: $0.rawValue, label: $0.label) },
             read: { $0.dictationProvider }) { value in

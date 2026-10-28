@@ -1472,7 +1472,7 @@ public final class MuesliController: NSObject {
         case let .models(category):
             showModels(category: category)
         case .timelineApplications:
-            guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
+            guard (try? dictationStore.timelineTargetApplications().isEmpty) == false else {
                 completeFeatureTour()
                 return
             }
@@ -1581,6 +1581,7 @@ public final class MuesliController: NSObject {
         appState.dictationRows = rows
         appState.hasMoreDictations = rows.count >= appState.dictationPageSize
         appState.dictationTargetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
+        appState.timelineTargetApplications = (try? dictationStore.timelineTargetApplications()) ?? []
         appState.meetingRows = (try? dictationStore.recentMeetings(
             limit: 200,
             folderID: appState.selectedFolderID,
