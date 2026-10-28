@@ -5,6 +5,20 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    /// Static appearance choices shared by the sidebar and full settings catalog.
+    /// Does not enumerate models, calendars, or their availability on disk.
+    func appearanceDefinition() -> MuesliSetting {
+        MuesliSetting(
+            id: "appearance", label: "Appearance",
+            choices: AppAppearanceMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.appearanceMode.rawValue },
+            unavailable: { _ in nil },
+            apply: { value in
+                guard let mode = AppAppearanceMode(rawValue: value) else { return }
+                self.updateConfig { $0.appearanceMode = mode }
+            })
+    }
+
     /// The menu and voice executor share the same persisted mode and controller
     /// validation. Only the manual menu may prepare a missing chord by capture.
     private func recordingModeDefinition(capturedShortcut: HotkeyConfig?) -> MuesliSetting {
@@ -178,7 +192,7 @@ extension MuesliController {
 
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
-        toggle("dark_mode", "Dark mode", \.darkMode)
+        settings.append(appearanceDefinition())
         toggle("sound", "Sound effects", \.soundEnabled)
         toggle("quill_sound", "Quill sounds", \.quilSoundEnabled)
         toggle("pause_media", "Pause media during dictation", \.pauseMediaDuringDictation)

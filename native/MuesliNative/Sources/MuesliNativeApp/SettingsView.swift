@@ -2252,8 +2252,8 @@ struct SettingsView: View {
             }
 
             settingsSection("Appearance") {
-                settingsRow("Dark mode") {
-                    settingsControl("dark_mode")
+                settingsRow("Theme") {
+                    settingsControl("appearance")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {

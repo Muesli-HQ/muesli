@@ -1876,9 +1876,7 @@ public final class MuesliController: NSObject {
         // NSApplication is ever created. Touching it there traps and takes the whole test
         // bundle down, so bind it rather than forcing it.
         if let app = NSApp {
-            app.appearance = NSAppearance(
-                named: RecentHistoryWindowController.appearanceName(for: config.darkMode)
-            )
+            app.appearance = config.appearanceMode.appearanceName.flatMap { NSAppearance(named: $0) }
         }
         historyWindowController?.applyThemeAppearance()
     }
