@@ -821,6 +821,7 @@ public final class MuesliController: NSObject {
         if CotypistSetup.isAvailable {
             CotypistService.shared.isScreenCaptureAllowed = { [weak self] in self?.meetingCapture == nil }
             CotypistService.shared.config = { [weak self] in self?.config ?? AppConfig() }
+            CotypistSetup.shared.selectedModel = { [weak self] in self?.config.cotypistModel ?? .defaultModel }
             CotypistService.shared.store = dictationStore
             CotypistService.shared.onAccepted = { [weak self] in self?.scheduleCotypistTimelineRefresh() }
             CotypistService.shared.start()

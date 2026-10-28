@@ -391,6 +391,17 @@ extension MuesliController {
                 }
             }
         }
+        add("cotypist_model", "Cotypist model", CotypistModel.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.cotypistModel.rawValue },
+            unavailable: { value in
+                guard let model = CotypistModel(rawValue: value) else { return "Unknown Cotypist model." }
+                return CotypistSetup.shared.state(of: model) == .unavailable ? "\(model.label) isn't available to download yet." : nil
+            }) { value in
+            guard let model = CotypistModel(rawValue: value) else { return }
+            self.updateConfig { $0.cotypistModel = model }
+            CotypistSetup.shared.download(model)
+            CotypistService.shared.modelChanged()
+        }
         menu("cotypist_length", "Cotypist suggestion length", CotypistSuggestionLength.allCases,
              \.cotypistSuggestionLength, title: \.label)
         add("cotypist_frequency", "Cotypist suggestion frequency",

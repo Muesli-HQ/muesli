@@ -2202,19 +2202,6 @@ enum CotypistFrequency: String, Codable, CaseIterable {
         case .more: "More often"
         }
     }
-
-    /// Minimum log-probability of the first suggested word. Calibrated on users' own writing
-    /// (CotypistModelComparisonTests): after a word, looser gates mostly add wrong suggestions;
-    /// completing a half-typed word is right far more often, so it can be looser.
-    func firstWordGate(midWord: Bool) -> Double {
-        switch (self, midWord) {
-        case (.fewer, _): -1.0
-        case (.balanced, false): -1.5
-        case (.balanced, true): -2.0
-        case (.more, false): -2.5
-        case (.more, true): -3.0
-        }
-    }
 }
 
 /// How long a pause inside a word before Cotypist completes it.
@@ -2407,6 +2394,7 @@ struct AppConfig: Codable {
     var cotypistDisabledApps: [String] = []
     /// Read on-screen text (OCR) as extra context when the field itself says little.
     var cotypistUseScreenContext: Bool = true
+    var cotypistModel: CotypistModel = .defaultModel
     var useCoreAudioTap: Bool = true
     /// Enables the explicitly selected live meeting transcription mode.
     var enableLiveStreamingPartials: Bool = false
@@ -2575,6 +2563,7 @@ struct AppConfig: Codable {
         case cotypistWordPause = "cotypist_word_pause"
         case cotypistDisabledApps = "cotypist_disabled_apps"
         case cotypistUseScreenContext = "cotypist_use_screen_context"
+        case cotypistModel = "cotypist_model"
         case useCoreAudioTap = "use_core_audio_tap"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
@@ -2860,6 +2849,7 @@ struct AppConfig: Codable {
         cotypistWordPause = (try? c.decode(CotypistWordPause.self, forKey: .cotypistWordPause)) ?? defaults.cotypistWordPause
         cotypistDisabledApps = (try? c.decode([String].self, forKey: .cotypistDisabledApps)) ?? defaults.cotypistDisabledApps
         cotypistUseScreenContext = (try? c.decode(Bool.self, forKey: .cotypistUseScreenContext)) ?? defaults.cotypistUseScreenContext
+        cotypistModel = (try? c.decode(CotypistModel.self, forKey: .cotypistModel)) ?? defaults.cotypistModel
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
         enableLiveStreamingPartials = (try? c.decode(Bool.self, forKey: .enableLiveStreamingPartials)) ?? defaults.enableLiveStreamingPartials
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend

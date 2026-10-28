@@ -19,13 +19,28 @@ struct CotypistShaperTests {
     @Test("suggestion length and frequency settings set the word limit and the gate")
     func settings() throws {
         let raw = completion([(" file", -2.5), (" to", -0.5), (" you", -0.4), (" in", -0.3), (" a", -0.2)])
-        let phrase = CotypistShaper.Thresholds(firstWord: CotypistFrequency.more.firstWordGate(midWord: false),
+        let phrase = CotypistShaper.Thresholds(firstWord: CotypistModel.gemma4E2B.firstWordGate(.more, midWord: false),
                                                maxWords: CotypistSuggestionLength.phrase.maxWords)
         #expect(try CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: phrase).get().text == "file to you")
-        let balanced = CotypistShaper.Thresholds(firstWord: CotypistFrequency.balanced.firstWordGate(midWord: false))
+        let balanced = CotypistShaper.Thresholds(firstWord: CotypistModel.gemma4E2B.firstWordGate(.balanced, midWord: false))
         #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false, thresholds: balanced) == .failure(.lowConfidence(-2.5)))
-        // Completing a half-typed word allows a looser gate than starting a new one.
-        #expect(CotypistFrequency.balanced.firstWordGate(midWord: true) < CotypistFrequency.balanced.firstWordGate(midWord: false))
+        // Completing a half-typed word allows a looser gate than starting a new one; Fewer is stricter than More.
+        for model in CotypistModel.allCases {
+            #expect(model.firstWordGate(.balanced, midWord: true) <= model.firstWordGate(.balanced, midWord: false))
+            #expect(model.firstWordGate(.fewer, midWord: false) > model.firstWordGate(.more, midWord: false))
+        }
+    }
+
+    @Test("every model has a pinned, hashed download with its weights first; one is recommended and the default")
+    func modelCatalog() throws {
+        for model in CotypistModel.allCases {
+            let release = try #require(model.release, "\(model.label) has no download")
+            #expect(release.revision == model.revision && release.revision.count == 40)
+            #expect(release.modelFilename == "model.safetensors")
+            #expect(release.files.allSatisfy { $0.sha256?.count == 64 && ($0.expectedByteCount ?? 0) > 0 })
+            #expect(model.directory.path.hasSuffix("/" + model.revision))
+        }
+        #expect(CotypistModel.allCases.filter(\.isRecommended) == [CotypistModel.defaultModel])
     }
 
     @Test("never shows a first word the token budget cut off")

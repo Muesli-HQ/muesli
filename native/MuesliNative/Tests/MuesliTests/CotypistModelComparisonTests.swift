@@ -81,7 +81,7 @@ struct CotypistModelComparisonTests {
     func compare() async throws {
         guard let reportPath = Self.environment["MUESLI_COTYPIST_COMPARISON_REPORT"] else { return }
         if let path = Self.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
-        let baseDir = URL(fileURLWithPath: Self.environment["MUESLI_COTYPIST_BASE_MODEL"] ?? CotypistModel.directory.path)
+        let baseDir = URL(fileURLWithPath: Self.environment["MUESLI_COTYPIST_BASE_MODEL"] ?? CotypistModel.defaultModel.directory.path)
         let instructDir = Self.environment["MUESLI_COTYPIST_INSTRUCT_MODEL"].map { URL(fileURLWithPath: $0) }
         let candidates: [(String, URL, PromptFormat)]? = Self.environment["MUESLI_COTYPIST_COMPARISON_MODELS"].map { list in
             list.split(separator: ";").compactMap { entry in
@@ -112,7 +112,7 @@ struct CotypistModelComparisonTests {
             for sample in samples {
                 // The app's Balanced gates unless one gate is given for the run.
                 let thresholds = CotypistShaper.Thresholds(
-                    firstWord: gate ?? CotypistFrequency.balanced.firstWordGate(midWord: sample.midWord))
+                    firstWord: gate ?? CotypistModel.gemma4E2B.firstWordGate(.balanced, midWord: sample.midWord))
                 results.append(try await Self.run(sample, engine: engine, format: format, thresholds: thresholds))
             }
             outcomes[name] = results

@@ -6,28 +6,135 @@ import MLXLMCommon
 /// Cotypist's typeahead model: a base (not instruction-tuned) model continuing the user's text,
 /// greedily, with per-token log-probabilities for gating and a prompt cache that survives
 /// between requests so typing forward only processes the new tokens.
-enum CotypistModel {
-    /// mlx-community/gemma-4-e2b-4bit — base Gemma 4 E2B, pinned by revision like Muesli's other models.
-    static let repoID = "mlx-community/gemma-4-e2b-4bit"
-    static let revision = "a280baf4aece348bd0f561ca43b9d47cc66d8498"
-    static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/muesli/models/typeahead/gemma-4-e2b-4bit/\(revision)")
+/// The typeahead models Cotypist can run: base (not instruction-tuned) models, 4-bit MLX, each
+/// pinned by revision and benchmarked on real writing (CotypistModelComparisonTests).
+enum CotypistModel: String, Codable, CaseIterable, Identifiable, Sendable {
+    case qwen35_0_8b = "qwen3.5-0.8b-base"
+    case qwen35_2b = "qwen3.5-2b-base"
+    case gemma4E2B = "gemma-4-e2b-base"
+
+    /// The model selected when nothing else is: the recommended one.
+    static let defaultModel: CotypistModel = .qwen35_0_8b
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .qwen35_0_8b: "Qwen 3.5 0.8B"
+        case .qwen35_2b: "Qwen 3.5 2B"
+        case .gemma4E2B: "Gemma 4 E2B"
+        }
     }
 
-    /// Every file at the pinned revision, with sizes and SHA-256 (the LFS hashes Hugging Face
-    /// publishes for the weights and tokenizer), for the shared resumable, verified download.
-    static let release = ManagedCleanupModel(repoID, revision, [
-        ("model.safetensors", 3_581_101_896, "1b75a001977eeadfe0c82eabde23d470530c311b6a8c279a3c2382aafc2a2d5b"),
-        ("model.safetensors.index.json", 230_329, "a8aa7359c747a0d59368dbff9a1029da86bda139ccc0ae1f1e938db75de7d5ce"),
-        ("config.json", 5_955, "61b3440401f0dc0a1c0c63f9bcf1ef65eb4e564f083a772e3904de5a2b45d1a5"),
-        ("generation_config.json", 181, "de16fa1d777387d5fe6df54a9565d9c0f1213f7b31f2a2cf44805e27686d9c7c"),
-        ("processor_config.json", 902, "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8"),
-        ("tokenizer.json", 32_170_070, "12bac982b793c44b03d52a250a9f0d0b666813da566b910c24a6da0695fd11e6"),
-        ("tokenizer_config.json", 1_498, "e8ca2612e1e9cd7f258aee62c053050019adc92b14a9b3a015c6ec8715b6a2e4"),
-    ])
+    /// The best balance of speed, accuracy and size in testing on real writing.
+    var isRecommended: Bool { self == .qwen35_0_8b }
 
-    static var isDownloaded: Bool { release.isPresent(at: directory) }
+    var summary: String {
+        switch self {
+        case .qwen35_0_8b: "As accurate as Gemma on real writing at a ninth of the size, and about twice as fast."
+        case .qwen35_2b: "The most accurate in testing, at about Gemma's speed and a third of its size."
+        case .gemma4E2B: "Cotypist's first model. Accurate, but the largest and slowest of the three."
+        }
+    }
+
+    var logo: String {
+        switch self {
+        case .qwen35_0_8b, .qwen35_2b: "qwen-logo"
+        case .gemma4E2B: "google-logo"
+        }
+    }
+
+    /// Where the 4-bit weights are downloaded from, pinned by revision. The Qwen repositories hold
+    /// Muesli's MLX conversions of the unmodified `Qwen/Qwen3.5-*-Base` checkpoints (Apache 2.0;
+    /// source revisions in their model cards).
+    var repoID: String {
+        switch self {
+        case .qwen35_0_8b: "Muesli-HQ/qwen35-0.8b-base-cotypist-mlx-4bit"
+        case .qwen35_2b: "Muesli-HQ/qwen35-2b-base-cotypist-mlx-4bit"
+        case .gemma4E2B: "mlx-community/gemma-4-e2b-4bit"
+        }
+    }
+
+    var revision: String {
+        switch self {
+        case .qwen35_0_8b: "5e47c2ac8c821c9e8f677063fc18bfc55a6a0eef"
+        case .qwen35_2b: "2434da7449586e5e676ce03f5f34008e5df85ba8"
+        case .gemma4E2B: "a280baf4aece348bd0f561ca43b9d47cc66d8498"
+        }
+    }
+
+    private var folder: String {
+        switch self {
+        case .qwen35_0_8b: "qwen3.5-0.8b-base-4bit"
+        case .qwen35_2b: "qwen3.5-2b-base-4bit"
+        case .gemma4E2B: "gemma-4-e2b-4bit"
+        }
+    }
+
+    var directory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/muesli/models/typeahead/\(folder)/\(revision)")
+    }
+
+    /// Every file the runtime needs at the pinned revision, with its size and SHA-256 (matching
+    /// what Hugging Face serves), for the shared resumable, verified download. `nil` would mark a
+    /// model with no published home yet ("Coming soon").
+    var release: ManagedCleanupModel? {
+        switch self {
+        case .qwen35_0_8b:
+            ManagedCleanupModel(repoID, revision, [
+                ("model.safetensors", 424_026_782, "8d7883bce060432705aa0e48e8743babd47d7c3d6ca89e8d63574549b52ea3ad"),
+                ("model.safetensors.index.json", 60_784, "d95a2e17af08ab870498266088eccee4d0a012338c604465ae7df24b976c488e"),
+                ("config.json", 2_625, "919d818806acc6093475afcccc40b4c27deb509ef1508ba940c71c9b3ce83ab5"),
+                ("tokenizer.json", 19_989_339, "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f"),
+                ("tokenizer_config.json", 1_505, "ce915a484ffe99d34d38a925d07e291d43846c241431304512c7fadb9287d168"),
+            ])
+        case .qwen35_2b:
+            ManagedCleanupModel(repoID, revision, [
+                ("model.safetensors", 1_059_404_951, "cdafd8bae44b62e95217e5003e11fb17f84c8a288a16b21f61697a14737ed004"),
+                ("model.safetensors.index.json", 60_786, "3b2dffa510d1d73decdbc12d5e1bc7d6a9f7b2deb631bfd84238a1f8fc4e0fd1"),
+                ("config.json", 2_625, "8893a91e9b7763d7b94c6db181f5b7c79c6f4881a69cefb11549eefcab1823bf"),
+                ("tokenizer.json", 19_989_339, "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f"),
+                ("tokenizer_config.json", 1_505, "ce915a484ffe99d34d38a925d07e291d43846c241431304512c7fadb9287d168"),
+            ])
+        case .gemma4E2B:
+            ManagedCleanupModel(repoID, revision, [
+                ("model.safetensors", 3_581_101_896, "1b75a001977eeadfe0c82eabde23d470530c311b6a8c279a3c2382aafc2a2d5b"),
+                ("model.safetensors.index.json", 230_329, "a8aa7359c747a0d59368dbff9a1029da86bda139ccc0ae1f1e938db75de7d5ce"),
+                ("config.json", 5_955, "61b3440401f0dc0a1c0c63f9bcf1ef65eb4e564f083a772e3904de5a2b45d1a5"),
+                ("generation_config.json", 181, "de16fa1d777387d5fe6df54a9565d9c0f1213f7b31f2a2cf44805e27686d9c7c"),
+                ("processor_config.json", 902, "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8"),
+                ("tokenizer.json", 32_170_070, "12bac982b793c44b03d52a250a9f0d0b666813da566b910c24a6da0695fd11e6"),
+                ("tokenizer_config.json", 1_498, "e8ca2612e1e9cd7f258aee62c053050019adc92b14a9b3a015c6ec8715b6a2e4"),
+            ])
+        }
+    }
+
+    /// The download size of the 4-bit model.
+    var sizeLabel: String { release?.downloadSizeLabel ?? "" }
+
+    var isDownloaded: Bool {
+        if let release { return release.isPresent(at: directory) }
+        return ["config.json", "model.safetensors", "tokenizer.json"].allSatisfy {
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+        }
+    }
+
+    /// Minimum log-probability of the first suggested word, per model: each model's confidence is
+    /// on its own scale, so each is calibrated separately on real writing.
+    func firstWordGate(_ frequency: CotypistFrequency, midWord: Bool) -> Double {
+        // Calibrated separately per model on 600 cut points of real dictations
+        // (CotypistModelComparisonTests). All three land on the same values: Balanced keeps about
+        // 90–100% of the characters saved while cutting wrong suggestions by about 40%.
+        // A model that calibrates differently gets its own cases here.
+        switch (frequency, midWord) {
+        case (.fewer, _): -1.0
+        case (.balanced, false): -1.5
+        case (.balanced, true): -2.0
+        case (.more, false): -2.5
+        case (.more, true): -3.0
+        }
+    }
 }
 
 struct CotypistToken: Sendable { let text: String; let logprob: Double }
@@ -120,7 +227,7 @@ actor CotypistEngine {
     private let container: ModelContainer
     private let state = CotypistState()
 
-    init(directory: URL = CotypistModel.directory) async throws {
+    init(directory: URL = CotypistModel.defaultModel.directory) async throws {
         // The text-only Gemma class: faster than the multimodal one when no MTP drafter is used
         // (the Gemma drafters on disk are matched to the instruct model, not this base model).
         container = try await LLMModelFactory.shared.loadContainer(from: directory, using: CleanupHFTokenizerLoader())

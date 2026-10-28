@@ -24,15 +24,30 @@ final class CotypistSetup: ObservableObject {
     /// Guidance that took long enough to suggest the input-source cache needs a re-login.
     @Published private(set) var suggestsRelogin = false
 
-    /// The typeahead model on this Mac. Turning Cotypist on downloads it when it's missing.
+    /// A typeahead model on this Mac. Turning Cotypist on downloads the selected one when it's
+    /// missing; the Models tab downloads, selects and deletes any of them.
     enum ModelState: Equatable {
         case ready
         case missing
+        /// Not downloadable yet: the 4-bit conversion has no published, pinned home.
+        case unavailable
         case downloading(Double)
         case failed(String)
     }
-    @Published private(set) var modelState: ModelState = CotypistModel.isDownloaded ? .ready : .missing
-    private var modelDownload: Task<Void, Never>?
+    /// Set by MuesliController: the model the user selected.
+    var selectedModel: () -> CotypistModel = { .defaultModel }
+    @Published private(set) var modelStates: [CotypistModel: ModelState] = Dictionary(
+        uniqueKeysWithValues: CotypistModel.allCases.map { ($0, CotypistSetup.diskState($0)) })
+    private var modelDownloads: [CotypistModel: Task<Void, Never>] = [:]
+
+    /// The selected model's state, for Settings.
+    var modelState: ModelState { state(of: selectedModel()) }
+
+    func state(of model: CotypistModel) -> ModelState { modelStates[model] ?? Self.diskState(model) }
+
+    private static func diskState(_ model: CotypistModel) -> ModelState {
+        model.isDownloaded ? .ready : (model.release == nil ? .unavailable : .missing)
+    }
 
     /// The build includes the input method (dev builds by default; see `MUESLI_INCLUDE_COTYPIST` in
     /// build_native_app.sh). It's the one switch for the whole feature.
@@ -114,29 +129,44 @@ final class CotypistSetup: ObservableObject {
 
     // MARK: - Model
 
-    /// Downloads the pinned model through the shared, resumable, SHA-256-verified downloader.
-    func downloadModelIfNeeded() {
-        guard modelDownload == nil else { return }
-        guard !CotypistModel.isDownloaded else { modelState = .ready; return }
-        modelState = .downloading(0)
-        modelDownload = Task { @MainActor [weak self] in
+    /// Downloads the selected model when it's missing.
+    func downloadModelIfNeeded() { download(selectedModel()) }
+
+    /// Downloads a model through the shared, resumable, SHA-256-verified downloader.
+    func download(_ model: CotypistModel) {
+        guard modelDownloads[model] == nil else { return }
+        guard !model.isDownloaded else { modelStates[model] = .ready; return }
+        guard let release = model.release else { modelStates[model] = .unavailable; return }
+        modelStates[model] = .downloading(0)
+        modelDownloads[model] = Task { @MainActor [weak self] in
             do {
                 try await ModelDownloadCoordinator.shared.download(
-                    CotypistModel.release.manifest(id: CotypistModel.repoID), to: CotypistModel.directory
+                    release.manifest(id: "cotypist-" + model.rawValue), to: model.directory
                 ) { progress in
                     let fraction = progress.fractionCompleted ?? 0
                     Task { @MainActor in
-                        if case .downloading = self?.modelState { self?.modelState = .downloading(fraction) }
+                        if case .downloading = self?.modelStates[model] { self?.modelStates[model] = .downloading(fraction) }
                     }
                 }
-                self?.modelState = CotypistModel.isDownloaded ? .ready : .failed("The download didn't complete.")
+                self?.modelStates[model] = model.isDownloaded ? .ready : .failed("The download didn't complete.")
             } catch is CancellationError {
-                self?.modelState = .missing
+                self?.modelStates[model] = Self.diskState(model)
             } catch {
-                self?.modelState = .failed(error.localizedDescription)
+                self?.modelStates[model] = .failed(error.localizedDescription)
             }
-            self?.modelDownload = nil
+            self?.modelDownloads[model] = nil
         }
+    }
+
+    func cancelDownload(_ model: CotypistModel) {
+        modelDownloads[model]?.cancel()
+    }
+
+    /// Removes a model's files. The selected model stays: Cotypist would have nothing to run.
+    func delete(_ model: CotypistModel) {
+        guard model != selectedModel(), modelDownloads[model] == nil else { return }
+        try? FileManager.default.removeItem(at: model.directory)
+        modelStates[model] = Self.diskState(model)
     }
 
     // MARK: - Guidance

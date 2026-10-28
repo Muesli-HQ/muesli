@@ -29,6 +29,8 @@ final class CotypistService {
 
     private var server: CotypistSocketServer?
     private var engineTask: Task<CotypistEngine, Error>?
+    /// The model `engineTask` loads; another selection replaces the engine and frees the old one.
+    private var engineModel: CotypistModel?
     /// Screen OCR per app with the document it was read from, refreshed in the background through
     /// the dictation context plumbing. Used only while that document is still the focused one.
     private var screenText: [String: (text: String, at: Date, document: String?)] = [:]
@@ -147,9 +149,10 @@ final class CotypistService {
         if config.cotypistDisabledApps.contains(bundleID) { return ["rejection": "off in this app"] }
         // The app reported the caret at the very start: nothing comes before it to continue.
         if request["caretAtStart"] as? Bool == true { return ["rejection": "caret at start"] }
-        guard CotypistModel.isDownloaded else { return ["rejection": "model not downloaded"] }
+        let model = config.cotypistModel
+        guard model.isDownloaded else { return ["rejection": "model not downloaded"] }
         if midWord && !config.cotypistCompleteWords { return ["rejection": "completing words is off"] }
-        let thresholds = CotypistShaper.Thresholds(firstWord: config.cotypistFrequency.firstWordGate(midWord: midWord),
+        let thresholds = CotypistShaper.Thresholds(firstWord: model.firstWordGate(config.cotypistFrequency, midWord: midWord),
                                                    maxWords: config.cotypistSuggestionLength.maxWords)
 
         var (fieldText, source, document) = await context(bundleID: bundleID, field: request["field"] as? String,
@@ -182,7 +185,7 @@ final class CotypistService {
         guard prompt.count >= 3 else { return ["rejection": "too little context", "source": source] }
 
         do {
-            let engine = try await loadEngine()
+            let engine = try await loadEngine(model)
             let maxTokens = firstWordOnly ? 4 : 10
             let completion = try await engine.complete(prompt: prompt, maxTokens: maxTokens, heal: heal, isCurrent: isCurrent)
             let timing: [String: Any] = ["source": source, "modelMs": Int(completion.promptMs + completion.decodeMs)]
@@ -205,18 +208,27 @@ final class CotypistService {
         }
     }
 
-    private func loadEngine() async throws -> CotypistEngine {
-        if let engineTask { return try await engineTask.value }
+    private func loadEngine(_ model: CotypistModel) async throws -> CotypistEngine {
+        if let engineTask, engineModel == model { return try await engineTask.value }
+        engineTask?.cancel()
+        engineModel = model
         let task = Task { () throws -> CotypistEngine in
             let start = Date()
-            let engine = try await CotypistEngine()
+            let engine = try await CotypistEngine(directory: model.directory)
             // Warm the kernels and the healing vocabulary so the first real suggestion isn't the slow one.
             _ = try await engine.complete(prompt: "Thanks for the", maxTokens: 2, heal: " qui")
-            await MainActor.run { self.log(String(format: "engine ready in %.1fs", Date().timeIntervalSince(start))) }
+            await MainActor.run { self.log(String(format: "engine ready (%@) in %.1fs", model.rawValue, Date().timeIntervalSince(start))) }
             return engine
         }
         engineTask = task
-        do { return try await task.value } catch { engineTask = nil; throw error }
+        do { return try await task.value } catch { if engineModel == model { engineTask = nil; engineModel = nil }; throw error }
+    }
+
+    /// After the user picks a model: load it now, while they're in Settings, not on their next keystroke.
+    func modelChanged() {
+        let model = config().cotypistModel
+        guard model.isDownloaded, engineModel != model else { return }
+        Task { _ = try? await loadEngine(model) }
     }
 
     // MARK: - Context
@@ -305,7 +317,8 @@ final class CotypistService {
     private func record(_ message: [String: Any]) {
         let key = Self.contextKey(app: message["app"] as? String ?? "", suggestion: message["text"] as? String ?? "")
         let before = recentContexts.last { $0.key == key }?.before ?? ""
-        guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before)) else { return }
+        guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before),
+                                                model: config().cotypistModel.rawValue) else { return }
         // A SQLite write transaction: off the main actor, which only hears back to refresh the timeline.
         Task.detached(priority: .utility) {
             do {
@@ -346,7 +359,8 @@ final class CotypistService {
         return "…" + tail[word...]
     }
 
-    static func event(from message: [String: Any], contextBefore: String = "", date: Date = Date()) -> CotypistSuggestionEvent? {
+    static func event(from message: [String: Any], contextBefore: String = "", model: String = CotypistModel.defaultModel.rawValue,
+                      date: Date = Date()) -> CotypistSuggestionEvent? {
         guard let text = message["text"] as? String, !text.isEmpty,
               let outcome = CotypistSuggestionEvent.Outcome(rawValue: message["outcome"] as? String ?? "") else { return nil }
         let bundleID = message["app"] as? String ?? ""
@@ -364,7 +378,7 @@ final class CotypistService {
             firstMs: int("first_ms"),
             fullMs: int("full_ms"),
             contextSource: message["source"] as? String ?? "",
-            model: CotypistModel.repoID
+            model: model
         )
     }
 

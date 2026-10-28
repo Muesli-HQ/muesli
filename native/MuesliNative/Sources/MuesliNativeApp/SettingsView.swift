@@ -2036,6 +2036,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var cotypistOptions: some View {
         Divider().background(MuesliTheme.surfaceBorder)
+        cotypistModelLine
+        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Suggestion length", description: "How far ahead each suggestion reaches.") {
             settingsControl("cotypist_length")
         }
@@ -2076,27 +2078,32 @@ struct SettingsView: View {
         }
     }
 
-    /// The typeahead model, until it's on this Mac: its size, download progress, or what went wrong.
+    /// The selected typeahead model, until it's on this Mac: its size, download progress, or what
+    /// went wrong. Models › Cotypist has the full choice.
     private var cotypistModelRow: some View {
-        HStack(spacing: MuesliTheme.spacing12) {
+        let model = appState.config.cotypistModel
+        return HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: "cpu")
                 .font(.system(size: 14))
                 .foregroundStyle(MuesliTheme.accent)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Typeahead model")
+                Text("Typeahead model: \(model.label)")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(MuesliTheme.textPrimary)
                 switch cotypist.modelState {
                 case .downloading(let fraction):
                     ProgressView(value: fraction).tint(MuesliTheme.accent)
-                    Text("Downloading… \(Int(fraction * 100))% of \(CotypistModel.release.downloadSizeLabel)")
+                    Text("Downloading… \(Int(fraction * 100))% of \(model.sizeLabel)")
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                 case .failed(let message):
                     Text("Download failed: \(message)")
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.recording)
                         .lineLimit(2)
+                case .unavailable:
+                    Text("Coming soon. Choose another model in Models.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                 default:
-                    Text("Gemma 4 E2B, \(CotypistModel.release.downloadSizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
+                    Text("\(model.sizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                 }
             }
@@ -2105,12 +2112,27 @@ struct SettingsView: View {
             case .missing, .failed:
                 compactActionButton("Download", systemImage: "arrow.down.circle") { cotypist.downloadModelIfNeeded() }
             default:
-                EmptyView()
+                compactActionButton("Models", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
             }
         }
         .padding(MuesliTheme.spacing12)
         .background(MuesliTheme.surfacePrimary.opacity(0.4))
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    /// The model in use, with a way to change it, once Cotypist is set up.
+    private var cotypistModelLine: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Text("Model")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Spacer()
+            Text(appState.config.cotypistModel.label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            compactActionButton("Change", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+        }
+        .frame(minHeight: 32)
     }
 
     /// The keys, shown once Cotypist is on.
