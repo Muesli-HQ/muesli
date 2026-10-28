@@ -335,7 +335,13 @@ actor CotypistEngine {
                 }
                 // Unicode scalars, not Characters: a combining mark would merge into the previous Character.
                 let piece = String(String.UnicodeScalarView(text.unicodeScalars.dropFirst(emitted.unicodeScalars.count)))
-                if piece.contains("\n") { stop = .newline; break }
+                if let newline = piece.firstIndex(of: "\n") {
+                    // Keep what comes before the line break (".\n" still ends the sentence with ".").
+                    let head = String(piece[..<newline])
+                    if !head.isEmpty { tokens.append(CotypistToken(text: head, logprob: logprob + pendingLogprob)) }
+                    stop = .newline
+                    break
+                }
                 generated.append(token)
                 tokens.append(CotypistToken(text: piece, logprob: logprob + pendingLogprob))
                 emitted = text
