@@ -3,6 +3,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 import MuesliCore
+import MuesliNativeApp
 import WhisperKit
 
 enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
@@ -21,6 +22,14 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
+    case appleSpeech = "apple-speech"
+    case cohere = "cohere-transcribe"
+    case bodhanCore = "bodhan-core"
+    case bodhanFlex = "bodhan-flex"
+    case bodhanCoreInt8 = "bodhan-core-int8"
+    case bodhanFlexInt8 = "bodhan-flex-int8"
+    case gemma4E2B = "gemma4-e2b"
+    case gemma4E4B = "gemma4-e4b"
     case whisperTiny = "whisper-tiny"
     case whisperTinyEnglish = "whisper-tiny-english"
     case whisperSmall = "whisper-small"
@@ -35,7 +44,8 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .parakeetV3, .phonon25: return .v3
         case .parakeetV2: return .v2
         case .parakeetRedux: return .redux
-        case .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
+        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+             .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
              .whisperLargeTurbo:
@@ -52,11 +62,19 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+             .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
     }
 
+    var nativeModel: NativeFileTranscriptionModel? {
+        NativeFileTranscriptionModel(rawValue: rawValue)
+    }
+
+    static var modelHelp: String {
+        "Transcription model: " + allCases.map(\.rawValue).joined(separator: ", ") + "."
+    }
 }
 
 struct TranscribeJSONPayload: Encodable {
@@ -112,7 +130,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-redux, phonon-2.5, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
+    @Option(name: .long, help: ArgumentHelp(TranscribeModel.modelHelp))
     var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -626,10 +644,13 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
     var nemotron35: AudioTranscribing = Nemotron35CLITranscriber()
     var whisper: AudioTranscribing = WhisperCLITranscriber()
+    var native: AudioTranscribing = NativeModelsCLITranscriber()
 
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
+        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
+            transcriber = native
         case .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25: transcriber = batch
         case .parakeetUnified: transcriber = parakeetUnified
         case .parakeetEou320ms: transcriber = streaming
@@ -642,6 +663,29 @@ struct RoutingAudioTranscriber: AudioTranscribing {
             transcriber = whisper
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, progress: progress)
+    }
+}
+
+/// Uses the app's shipping implementations rather than duplicating their model
+/// downloads, Apple asset reservations, CoreML/MLX policy or bounded file replay.
+struct NativeModelsCLITranscriber: AudioTranscribing {
+    var transcribeFile: (URL, NativeFileTranscriptionModel, @escaping (String) -> Void) async throws -> String = {
+        try await NativeFileTranscriber.transcribe(wavURL: $0, model: $1, progress: $2)
+    }
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        guard let nativeModel = model.nativeModel else {
+            throw CLIError.invalidInput("\(model.rawValue) is not an app-native transcription model.")
+        }
+        let text: String
+        do {
+            text = try await transcribeFile(wavURL, nativeModel, progress)
+        } catch let error as NativeFileTranscriptionError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Choose a different --model, or use a compatible Mac and macOS version.")
+        }
+        // The pipeline retains the decoded source file's full duration.
+        return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 }
 
@@ -929,8 +973,7 @@ actor WhisperCLITranscriber: AudioTranscribing {
 /// 320ms chunks, simulating how the live meeting-caption path consumes audio in
 /// the app. This is the same model, chunk size, and cache directory as
 /// `MeetingLiveCaptionModelStore`/`ParakeetEOUMeetingPartialEngine` in the app
-/// target (`MeetingStreamingPartialSession.swift`) — that code lives in an
-/// executable target the CLI cannot link, so this reimplements the same call
+/// target (`MeetingStreamingPartialSession.swift`). File replay uses the call
 /// pattern directly against FluidAudio's public streaming API rather than
 /// duplicating the app's internal session/tail-state machinery, which the CLI
 /// does not need. If a user already downloaded the model via the app's live
