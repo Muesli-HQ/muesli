@@ -7,6 +7,21 @@ import Testing
 /// index so a successful transcript cannot conceal dropped or replayed audio.
 @Suite("Buffered transcription continuity", .timeLimit(.minutes(1)))
 struct BufferedTranscriptionContinuityTests {
+    @Test("independent Korean chunks retain word spaces without spacing Han text", arguments: [
+        ["오늘은", "좋은 날입니다", "오늘은 좋은 날입니다"],
+        ["안녕하세요.", "오늘은 맑아요", "안녕하세요. 오늘은 맑아요"],
+        ["你好", "世界", "你好世界"]
+    ])
+    func independentChunkWordSeparators(parts: [String]) async {
+        let session = BufferedTranscriptionSession(decodeWithoutTimings: { audio in
+            ContinuityPCM.range(audio).lowerBound == 0 ? parts[0] : parts[1]
+        }, onUpdate: { _ in }, onFailure: { Issue.record("Unexpected stream failure: \($0)") })
+        session.enqueue(ContinuityPCM.samples(0..<64_000))
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == parts[2])
+    }
+
     @Test("continuity preserves the prior recognized tail until replacement coverage completes", arguments: [0, 1, 2, 3])
     func continuityRecoveryPreservesPriorTail(outcome: Int) async throws {
         let output = ContinuityOutput()

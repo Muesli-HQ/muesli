@@ -1201,9 +1201,10 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
 
     private static func usesWordSpaces(_ scalar: Unicode.Scalar) -> Bool {
         guard CharacterSet.alphanumerics.contains(scalar) else { return false }
-        // Han, kana, hangul, Thai, Lao, Khmer and Myanmar retain decoder spacing.
+        // Han, kana, Thai, Lao, Khmer and Myanmar retain decoder spacing.
+        // Korean uses word spaces, including between independently decoded clips.
         let value = scalar.value
-        return !((0x2E80...0x9FFF).contains(value) || (0xAC00...0xD7AF).contains(value)
+        return !((0x2E80...0x9FFF).contains(value)
             || (0xF900...0xFAFF).contains(value) || (0x20000...0x323AF).contains(value)
             || (0x0E00...0x0EFF).contains(value) || (0x1000...0x109F).contains(value)
             || (0x1780...0x17FF).contains(value))
