@@ -37,7 +37,7 @@ final class CotypistService {
     private var screenInFlight: Set<String> = []
     /// The text before the caret for recent suggestions, keyed by the suggestion's ID (sent with the
     /// reply and returned with its outcome), so an outcome is recorded with the sentence it completed.
-    private var recentContexts: [(id: String, before: String)] = []
+    private var recentContexts: [(id: String, before: String, model: CotypistModel)] = []
     private let requests = CotypistRequestLedger()
 
     static var socketURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist.sock") }
@@ -47,13 +47,13 @@ final class CotypistService {
     func start() {
         guard server == nil else { return }
         Task.detached(priority: .utility) { Self.installInputSource() }
-        let timer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
+        retentionTimer?.invalidate()  // `start()` runs again if the socket failed last time
+        retentionTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
             Task { @MainActor in
                 guard let store = CotypistService.shared.store else { return }
                 Task.detached(priority: .background) { try? store.pruneCotypistHistory() }
             }
         }
-        retentionTimer = timer
         do {
             server = try CotypistSocketServer(path: Self.socketURL.path) { [weak self] request in
                 await self?.handle(request) ?? [:]
@@ -193,7 +193,7 @@ final class CotypistService {
                                         firstWordOnly: firstWordOnly, thresholds: thresholds) {
             case .success(let shaped):
                 let id = UUID().uuidString
-                remember(before: textBeforeCaret, id: id)
+                remember(before: textBeforeCaret, id: id, model: model)
                 // With one-word suggestions the first stage is the whole suggestion.
                 let complete = firstWordOnly && thresholds.maxWords == 1
                 return timing.merging(["text": shaped.text, "firstWordLogProb": shaped.firstWordLogProb,
@@ -317,9 +317,10 @@ final class CotypistService {
     /// continued (the user's own text, kept to that one sentence, in the local database only).
     private func record(_ message: [String: Any]) {
         let id = message["id"] as? String
-        let before = recentContexts.last { $0.id == id }?.before ?? ""
+        let suggested = recentContexts.last { $0.id == id }
+        let before = suggested?.before ?? ""
         guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before),
-                                                model: config().cotypistModel.rawValue) else { return }
+                                                model: (suggested?.model ?? config().cotypistModel).rawValue) else { return }
         // A SQLite write transaction: off the main actor, which only hears back to refresh the timeline.
         Task.detached(priority: .utility) {
             do {
@@ -331,8 +332,9 @@ final class CotypistService {
         }
     }
 
-    private func remember(before: String, id: String) {
-        recentContexts.append((id, before))
+    /// The model is the one that made the suggestion, even if the user switches before the outcome.
+    private func remember(before: String, id: String, model: CotypistModel) {
+        recentContexts.append((id, before, model))
         if recentContexts.count > 32 { recentContexts.removeFirst(recentContexts.count - 32) }
     }
 

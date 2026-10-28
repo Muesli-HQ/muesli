@@ -72,6 +72,8 @@ struct CotypistHistoryTests {
         let id = try #require(try store.recordCotypistSuggestion(event("the next word", accepted: "the next word",
                                                                        before: "It can predict ", outcome: .accepted, at: 0)))
         _ = try store.recordCotypistSuggestion(event("maybe", before: "a sentence I typed ", outcome: .ignored, at: 5))
+        let otherApp = try #require(try store.recordCotypistSuggestion(event("elsewhere", accepted: "elsewhere", before: "In Codex ",
+                                                                             outcome: .accepted, app: "com.openai.codex", at: 6)))
 
         func rows() throws -> [(String, String)] {
             var db: OpaquePointer?
@@ -86,12 +88,14 @@ struct CotypistHistoryTests {
             }
             return result
         }
-        #expect(try rows().map(\.0) == ["the next word", "maybe"])
-        #expect(try rows().map(\.1) == ["It can predict ", ""])
+        #expect(try rows().map(\.0) == ["the next word", "maybe", "elsewhere"])
+        #expect(try rows().map(\.1) == ["It can predict ", "", "In Codex "])
 
+        // Removing one session removes its rows and text, and nothing from another app's session.
         try store.deleteCotypistSession(id: id)
-        #expect(try rows().isEmpty)
+        #expect(try rows().map(\.0) == ["elsewhere"])
         #expect(try store.cotypistSession(id: id) == nil)
+        #expect(try store.cotypistSession(id: otherApp)?.acceptances.map(\.text) == ["elsewhere"])
     }
 
     @Test("prunes old untaken suggestions without waiting for a new one")

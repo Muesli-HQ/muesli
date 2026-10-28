@@ -106,13 +106,15 @@ struct CotypistModelComparisonTests {
         var summaries: [Summary] = []
         var outcomes: [String: [Outcome]] = [:]
         for (name, directory, format) in runs where setups?.contains(name) ?? true {
+            // The app's gates for this model; Gemma's for directories that aren't a catalog model.
+            let model = CotypistModel.allCases.first { $0.directory.standardizedFileURL == directory.standardizedFileURL } ?? .gemma4E2B
             let engine = try await CotypistEngine(directory: directory)
             _ = try await engine.complete(prompt: "Thanks for the", maxTokens: 2, heal: " qui")
             var results: [Outcome] = []
             for sample in samples {
                 // The app's Balanced gates unless one gate is given for the run.
                 let thresholds = CotypistShaper.Thresholds(
-                    firstWord: gate ?? CotypistModel.gemma4E2B.firstWordGate(.balanced, midWord: sample.midWord))
+                    firstWord: gate ?? model.firstWordGate(.balanced, midWord: sample.midWord))
                 results.append(try await Self.run(sample, engine: engine, format: format, thresholds: thresholds))
             }
             outcomes[name] = results
