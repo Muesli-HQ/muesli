@@ -47,6 +47,112 @@ struct MuesliCLITests {
         }
     }
 
+    @Test("every app transcription model has a CLI choice and matching model identity")
+    func appModelCatalogParity() throws {
+        let existing: [TranscribeModel: BackendOption] = [
+            .parakeetV3: .parakeetMultilingual, .parakeetV2: .parakeetEnglish,
+            .parakeetRedux: .parakeetRedux, .phonon25: .phonon25,
+            .parakeetUnified: .parakeetUnified, .senseVoice: .senseVoiceSmall,
+            .qwen3Asr: .qwen3Asr, .nemotron35: .nemotron35Multilingual,
+            .whisperTiny: .whisperTiny, .whisperTinyEnglish: .whisperTinyEnglish,
+            .whisperSmall: .whisperSmall, .whisperSmallEnglish: .whisperSmallEnglish,
+            .whisperMediumEnglish: .whisperMediumEnglish, .whisperLargeTurbo: .whisperLargeTurbo,
+        ]
+        let native = TranscribeModel.allCases.compactMap(\.nativeModel)
+        let appModelIDs = Set(BackendOption.catalog(appleSpeechAvailable: true).all.map(\.model))
+        let cliModelIDs = Set(existing.values.map(\.model) + native.map(\.modelID))
+        #expect(cliModelIDs == appModelIDs, "App/CLI transcription catalogs have drifted")
+        // EOU is a meeting-caption helper, advertised in addition to the model cards.
+        #expect(existing.count + native.count + 1 == TranscribeModel.allCases.count)
+        #expect(Set(native) == Set(NativeFileTranscriptionModel.allCases))
+        for model in TranscribeModel.allCases {
+            let parsed = try TranscribeCommand.parse(["recording.wav", "--model", model.rawValue])
+            #expect(parsed.model == model)
+            #expect(TranscribeCommand.helpMessage().contains(model.rawValue))
+        }
+    }
+
+    @Test("native CLI routing preserves model identity, audio URL, progress and raw text")
+    func nativeModelRouting() async throws {
+        let wavURL = URL(fileURLWithPath: "/tmp/native-model-routing.wav")
+        for native in NativeFileTranscriptionModel.allCases {
+            let model = try #require(TranscribeModel(rawValue: native.rawValue))
+            var called = false
+            var messages: [String] = []
+            let adapter = NativeModelsCLITranscriber(transcribeFile: { url, selected, progress in
+                #expect(url == wavURL)
+                #expect(selected == native)
+                called = true
+                progress("ready")
+                return "Raw transcription for \(selected.rawValue)"
+            })
+            let router = RoutingAudioTranscriber(native: adapter)
+            let result = try await router.transcribe(wavURL: wavURL, model: model, progress: { messages.append($0) })
+            #expect(called)
+            #expect(messages == ["ready"])
+            #expect(result.text == "Raw transcription for \(native.rawValue)")
+            #expect(result.durationSeconds == nil) // Pipeline uses decoded file duration.
+            #expect(model.asrModelVersion == nil)
+            #expect(model.whisperKitModelName == nil)
+        }
+    }
+
+    @Test("native CLI adapter propagates cancellation and rejects non-native models")
+    func nativeAdapterErrors() async throws {
+        let adapter = NativeModelsCLITranscriber(transcribeFile: { _, _, _ in throw CancellationError() })
+        await #expect(throws: CancellationError.self) {
+            try await adapter.transcribe(wavURL: URL(fileURLWithPath: "/tmp/audio.wav"), model: .appleSpeech, progress: { _ in })
+        }
+        await #expect(throws: CLIError.self) {
+            try await adapter.transcribe(wavURL: URL(fileURLWithPath: "/tmp/audio.wav"), model: .parakeetV3, progress: { _ in })
+        }
+    }
+
+    @Test("cancelled native file requests stop before file access or model preparation")
+    func cancelledNativeFileRequest() async {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await NativeFileTranscriber.transcribe(
+                wavURL: URL(fileURLWithPath: "/nonexistent/audio.wav"), model: .appleSpeech,
+                progress: { _ in Issue.record("Cancelled request must not prepare models") }
+            )
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test("native file models share the app's OS compatibility rules")
+    func nativeModelCompatibility() {
+        let mac14 = OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)
+        let mac15 = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        let mac26 = OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        for model in NativeFileTranscriptionModel.allCases {
+            #expect(model.unavailabilityReason(currentOSVersion: mac14) != nil)
+            #expect((model.unavailabilityReason(currentOSVersion: mac15) == nil) == (model != .appleSpeech))
+            #expect(model.unavailabilityReason(currentOSVersion: mac26) == nil)
+        }
+    }
+
+    @Test("Apple Speech transcribes WAV and M4A through the CLI pipeline",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_APPLE_SPEECH_FIXTURE_DIR"] != nil))
+    func appleSpeechFileIntegration() async throws {
+        let root = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["MUESLI_APPLE_SPEECH_FIXTURE_DIR"]))
+        for name in ["speech.wav", "speech.m4a"] {
+            let pipeline = MuesliAudioTranscriptionPipeline()
+            let result = try await pipeline.run(request: .init(
+                sourceURL: root.appendingPathComponent(name), model: .appleSpeech,
+                title: nil, summarize: false, saveMeeting: false
+            ), context: CLIContext(dbPath: root.appendingPathComponent("unused.db").path, supportDir: root.path))
+            #expect(!result.transcript.isEmpty)
+            #expect(result.durationSeconds > 0)
+            #expect(result.model == .appleSpeech)
+            #expect(result.savedMeetingID == nil)
+            let json = try #require(JSONSerialization.jsonObject(with: encodedJSON(TranscribeJSONPayload(result))) as? [String: Any])
+            #expect(json["model"] as? String == "apple-speech")
+            #expect(json["transcript"] as? String == result.transcript)
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("unused.db").path))
+    }
+
     @Test("explicit db path overrides support directory resolution")
     func cliContextUsesExplicitDatabasePath() {
         let context = CLIContext(

@@ -106,6 +106,8 @@ muesli-cli meetings get 42 # Replace 42 with an ID from the list
 muesli-cli transcribe interview.m4a --format json
 ```
 
+All transcription models in the app are also available through `transcribe --model`, including `apple-speech` (macOS 26 and compatible hardware), `cohere-transcribe`, `bodhan-core`, `bodhan-core-int8`, `bodhan-flex`, `bodhan-flex-int8`, `gemma4-e2b`, and `gemma4-e4b` (macOS 15+). Use `muesli-cli transcribe --help` for the full list. Downloads reuse the app’s model caches; Apple manages its own language assets. Apple Speech uses the system language, Cohere defaults to English, and Bodhan defaults to Hindi. Gemma retains its experimental status.
+
 Data commands return JSON; file transcription returns plain text unless another format is requested. The `meetings update-notes` command replaces formatted notes while preserving the raw transcript. Use `spec` to check commands supported by your installed version.
 
 See the [CLI quickstart](https://muesli.works/docs/), [coding agent guide](https://muesli.works/docs/agents/), and [full CLI reference](https://muesli.works/docs/cli/) for write-back, dictionaries, output formats, and troubleshooting. The repository's [agent skill](skills/muesli-agent/SKILL.md) provides reusable instructions.
