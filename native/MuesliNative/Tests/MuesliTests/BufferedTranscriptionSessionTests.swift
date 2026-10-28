@@ -4,6 +4,112 @@ import Testing
 
 @Suite("Buffered transcription")
 struct BufferedTranscriptionSessionTests {
+    @Test("edited context does not guess an unsupported or ambiguous owned endpoint",
+          arguments: ["missing_context", "moved_endpoint", "zero_endpoint", "split_endpoint", "unequal_split_endpoint", "short_split_tail", "overlapping_endpoint", "changed_following", "moved_following"])
+    func revisedOwnedTokenSequenceRequiresUniqueBoundary(change: String) async {
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let initial: [BufferedTranscriptionWord] = [
+            .init(text: "we", start: 2.0, end: 2.2),
+            .init(text: "worked", start: 2.2, end: 2.6),
+            .init(text: "weekly", start: 3.0, end: 4.0)
+        ] + (change.hasSuffix("following") ? [.init(text: "next", start: 5.2, end: 5.8)] : [])
+        var revised: [BufferedTranscriptionWord] = [
+            .init(text: change == "missing_context" ? "they" : "we", start: 2.0, end: 2.2),
+            .init(text: "all", start: 2.2, end: 2.25),
+            .init(text: "worked", start: 2.25, end: 2.6),
+            .init(text: "daily", start: 3.0, end: 4.0),
+            .init(text: "next", start: 7.0, end: 7.5)
+        ]
+        if change == "changed_following" { revised[4] = .init(text: "later", start: 5.2, end: 5.8) }
+        if change == "moved_following" { revised[4] = .init(text: "next", start: 5.6, end: 5.8) }
+        if change == "moved_endpoint" { revised[3] = .init(text: "daily", start: 4.5, end: 5.0) }
+        if change == "zero_endpoint" { revised[3] = .init(text: "daily", start: 3.5, end: 3.5) }
+        if ["split_endpoint", "unequal_split_endpoint", "short_split_tail"].contains(change) {
+            let split = change == "split_endpoint" ? 3.5 : change == "unequal_split_endpoint" ? 3.6 : 3.9
+            revised[3] = .init(text: "day", start: 3.0, end: split)
+            revised.insert(.init(text: "lee", start: split, end: 4.0), at: 4)
+        }
+        if change == "overlapping_endpoint" {
+            revised.insert(.init(text: "daily", start: 3.1, end: 4.0), at: 4)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(initial), window(initial), window(revised)])
+        var config = BufferedTranscriptionSession.Configuration.whisper
+        config.windowSamples = 15 * 16_000
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 6 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let stable = await updates.next()
+        #expect(stable?.committedText == "we worked weekly")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == stable?.committedText)
+        #expect(!output.diagnostics.contains("ownership_realigned:edited_context"))
+        session.cancel()
+    }
+
+    @Test("Whisper token insertion and endpoint correction preserve committed words and resume new speech",
+          arguments: [false, true], [false, true])
+    func revisedOwnedTokenSequenceResumes(deleteContextWord: Bool, hasFollowingAnchor: Bool) async {
+        // Reduced from captured Turbo hypotheses, with the absolute PCM origin
+        // removed. The new "I" and Daly -> daily must not strand the live stream.
+        let initial: [BufferedTranscriptionWord] = [
+            .init(text: "who", start: 2.56, end: 2.68),
+            .init(text: "worked", start: 2.68, end: 2.92),
+            .init(text: "with", start: 2.92, end: 3.16),
+            .init(text: "Daly.", start: 3.16, end: 3.94)
+        ] + (hasFollowingAnchor ? [.init(text: "There's", start: 5.20, end: 5.26)] : [])
+        var revised: [BufferedTranscriptionWord] = [
+            .init(text: "who", start: 2.56, end: 2.70),
+            .init(text: "I", start: 2.70, end: 2.72),
+            .init(text: "worked", start: 2.72, end: 2.98),
+            .init(text: "with", start: 2.98, end: 3.06),
+            .init(text: "daily.", start: 3.06, end: 3.64),
+            .init(text: "There's", start: 7.20, end: 7.26),
+            .init(text: "a", start: 7.26, end: 7.30),
+            .init(text: "few", start: 7.30, end: 7.46),
+            .init(text: "things.", start: 7.46, end: 7.94)
+        ]
+        if hasFollowingAnchor {
+            for index in 5..<revised.count {
+                let word = revised[index]
+                revised[index] = .init(text: word.text, start: word.start - 2, end: word.end - 2)
+            }
+        }
+        if deleteContextWord { revised.removeAll { $0.text == "with" } }
+        func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
+            .init(text: words.map(\.text).joined(separator: " "), words: words)
+        }
+        let output = BufferedPreviewOutput()
+        let decoder = BufferedWindowSequence([window(initial), window(initial), window(revised), window(revised)])
+        var config = BufferedTranscriptionSession.Configuration.whisper
+        config.windowSamples = 15 * 16_000 // keep these reduced hypotheses at one PCM origin
+        let session = BufferedTranscriptionSession(configuration: config, decode: { await decoder.decode($0) },
+            onUpdate: { output.update($0) }, onFailure: { output.fail($0) }, onDiagnostic: { output.diagnostic($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        session.enqueue(Array(repeating: 0.2, count: 6 * 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        #expect(await updates.next()?.committedText == "who worked with Daly.")
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        _ = await updates.next()
+        session.enqueue(Array(repeating: 0.2, count: 16_000))
+        let progressed = await updates.next()
+        let expected = "who worked with Daly. There's a few" + (hasFollowingAnchor ? " things." : "")
+        #expect(progressed?.committedText == expected)
+        let result = await session.finishForReuse()
+        #expect(result.canReuse)
+        #expect(result.text == "who worked with Daly. There's a few things.")
+        #expect(output.failures == 0)
+        #expect(output.diagnostics.contains("ownership_realigned:edited_context"))
+        #expect(!output.diagnostics.contains { $0.contains("ownership_recovery:") })
+        assertMonotonicCommittedPrefixes(output.values)
+    }
+
     @Test("Whisper closes a mature prefix at a stable ordered seam before the physical rollover", arguments: [
         "none", "followingSpelling", "followingStart", "followingEnd", "endpointStart", "endpointEnd",
         "zeroEndpoint", "zeroFollowing", "missingFollowing", "shiftedIndex"

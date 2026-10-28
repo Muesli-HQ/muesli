@@ -752,6 +752,13 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
                 if let index = candidates.first { matchedIndex = index; break }
             }
         }
+        if matchedIndex == nil, configuration.lexicalAgreement {
+            matchedIndex = revisedBoundary(in: words, anchors: anchors, following: state.followingAnchor)
+            if matchedIndex != nil {
+                state.reuseQuality.recordConcern(.committedTranscriptChanged)
+                onDiagnostic("ownership_realigned:edited_context")
+            }
+        }
         if matchedIndex == nil {
             // A permanently revised lexical anchor can still identify the same
             // audio seam. Require a unique ordered onset alignment and agreement
@@ -811,6 +818,58 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.ownedUntil = try ownershipBoundary(after: lastCurrent,
                                                before: words.dropFirst(matchedIndex + 1).first)
         return matchedIndex + 1
+    }
+
+    /// Match the occurrence around a revised endpoint without requiring equal
+    /// token counts. A timed longest common subsequence tolerates insertions and
+    /// deletions inside the already-owned context. It never edits visible text.
+    /// Two unchanged context words and a unique overlapping endpoint are needed;
+    /// neither confidence nor the spelling of that endpoint gates progress.
+    private func revisedBoundary(in words: [BufferedTranscriptionWord],
+                                 anchors: [BufferedTranscriptionWord],
+                                 following: BufferedTranscriptionWord?) -> Int? {
+        guard anchors.count >= 3, let last = anchors.last, last.end > last.start else { return nil }
+        let context = Array(anchors.dropLast())
+        // scores[j] is the longest ordered, lexical/timed match between the
+        // context and words before j. Gaps represent decoder token revisions.
+        var scores = Array(repeating: 0, count: words.count + 1)
+        for anchor in context {
+            var next = Array(repeating: 0, count: words.count + 1)
+            for j in words.indices {
+                if anchorIdentity(anchor.text) == anchorIdentity(words[j].text),
+                   abs(anchor.start - words[j].start) <= configuration.maximumTimestampDrift {
+                    next[j + 1] = max(scores[j] + 1, max(scores[j + 1], next[j]))
+                } else {
+                    next[j + 1] = max(scores[j + 1], next[j])
+                }
+            }
+            scores = next
+        }
+        let oldCenter = (last.start + last.end) / 2
+        let candidates = words.indices.filter { index in
+            let current = words[index]
+            let center = (current.start + current.end) / 2
+            // Mutual interior overlap excludes a neighboring short token and
+            // partial split tokens. Onset proximity alone confused "with" and
+            // "daily" after "who worked with Daly" became "who I worked with daily".
+            guard scores[index] >= 2, current.end > current.start,
+                  current.start < oldCenter, oldCenter < current.end,
+                  last.start < center, center < last.end else { return false }
+            return true
+        }
+        // Do not choose the closest timestamp or the highest-confidence word
+        // when repeated/overlapping occurrences support multiple boundaries.
+        guard candidates.count == 1, let index = candidates.first else { return nil }
+        let next = words.dropFirst(index + 1).first
+        if let following {
+            guard let next, anchorIdentity(next.text) == anchorIdentity(following.text),
+                  abs(next.start - following.start) <= configuration.maximumTimestampDrift else { return nil }
+        }
+        // Without an independently known following word, a token still inside
+        // the old endpoint's span may be the rest of a split owned word.
+        // Do not emit it again as new speech, even for an unequal token split.
+        if let next, next.start < words[index].end || (following == nil && next.start < last.end) { return nil }
+        return index
     }
 
     private var recoveryWindowLimit: Int {
