@@ -83,7 +83,7 @@ extension MuesliController {
             guard response == .OK, let url = panel.url,
                   let bundleID = Bundle(url: url)?.bundleIdentifier else { return }
             onChoose(bundleID,
-                FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
+                (FileManager.default.displayName(atPath: url.path) as NSString).deletingPathExtension)
         }
     }
 

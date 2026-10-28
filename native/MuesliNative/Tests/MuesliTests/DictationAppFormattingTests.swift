@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import MuesliCore
 import Testing
+import TelemetryDeck
 @testable import MuesliNativeApp
 
 @Suite("App-specific dictation formatting")
@@ -10,6 +11,8 @@ struct DictationAppFormattingTests {
         ("Hey Sam.", "hey sam"), ("Are you coming?", "are you coming?"),
         ("Great!", "great!"), ("Wait...", "wait..."), ("Wait…", "wait…"),
         ("Hello.\n", "hello\n"), ("One. Two.", "one. two"),
+        ("Hello.  ", "hello  "), ("\"Hello.\"", "\"hello.\""), ("(Hello.)", "(hello.)"),
+        ("İSTANBUL.", "i\u{307}stanbul"),
         ("API URL: https://EXAMPLE.com/Path.", "api url: https://example.com/path"),
         ("ÉTÉ. Привет. 你好。", "été. привет. 你好。"), ("", ""), (".", "."),
     ])
@@ -26,8 +29,163 @@ struct DictationAppFormattingTests {
         #expect(DictationAppFormattingRule.apply("Hi.", bundleID: "net.whatsapp.WhatsApp", rules: rules) == "hi")
         for id in [nil, "com.apple.mail", "net.whatsapp.WhatsApp.fake"] {
             #expect(DictationAppFormattingRule.apply("Hi.", bundleID: id, rules: rules) == "Hi.")
+            #expect(!DictationAppFormattingRule.shouldBufferStreaming(bundleID: id, rules: rules))
         }
+        #expect(DictationAppFormattingRule.shouldBufferStreaming(bundleID: "net.whatsapp.WhatsApp", rules: rules))
+        #expect(!DictationAppFormattingRule.shouldBufferStreaming(bundleID: "unchanged", rules:
+            [.init(bundleID: "unchanged", appName: "Unchanged")]))
     }
+
+    #if DEBUG
+    @MainActor
+    private static let disabledTelemetry: Void = {
+        // Production initializes telemetry in AppDelegate. Controller failure
+        // callbacks also report diagnostics, but tests must never send analytics.
+        let config = TelemetryDeck.Config(appID: "00000000-0000-0000-0000-000000000000")
+        config.analyticsDisabled = true
+        TelemetryDeck.initialize(config: config)
+    }()
+
+    @MainActor
+    private func streamingFixture() throws -> (URL, DictationStore, ConfigStore, MuesliController, NSPasteboard) {
+        _ = Self.disabledTelemetry
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try database.migrateIfNeeded()
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.enableDictionaryCorrectionPrompts = true
+        config.dictationAppFormattingRules = [.init(bundleID: "start.app", appName: "Start", formatting: .lowercaseChat)]
+        if let recipientID = NSRunningApplication.current.bundleIdentifier {
+            config.dictationAppFormattingRules.append(.init(bundleID: recipientID, appName: "Recipient", formatting: .lowercaseChat))
+        }
+        store.save(config)
+        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: database, configStore: store)
+        let board = NSPasteboard(name: .init("muesli-streaming-\(UUID())"))
+        board.setString("original clipboard", forType: .string)
+        return (directory, database, store, controller, board)
+    }
+
+    @Test("Only the starting app controls buffering, even after focus or settings change", arguments: [true, false])
+    @MainActor
+    func streamingRouting(buffered: Bool) async throws {
+        let (directory, database, store, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var typed = ""
+        var pasted = ""
+        var monitored: [String] = []
+        controller.dictationOutputTestHooks = .init(pasteboard: board, typeText: { typed += $0 },
+            dispatchPaste: { _ in pasted += board.string(forType: .string) ?? ""; return true },
+            monitorCorrections: { monitored.append($0) })
+        let id = controller.startStreamingFormattingForTesting(bundleID: buffered ? "start.app" : "unruled.app")
+        controller.receiveStreamingFormattingForTesting("Hello", sessionID: id)
+        controller.updateConfig { $0.dictationAppFormattingRules = [] }
+        controller.receiveStreamingFormattingForTesting("Hello.", sessionID: id)
+        #expect(typed == (buffered ? "" : "Hello."))
+        let expected = buffered ? DictationAppFormattingRule.apply("Hello.",
+            bundleID: NSRunningApplication.current.bundleIdentifier,
+            rules: [.init(bundleID: NSRunningApplication.current.bundleIdentifier ?? "", appName: "Recipient", formatting: .lowercaseChat)]) : "Hello."
+        if buffered {
+            await withCheckedContinuation { continuation in
+                controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+                controller.finishStreamingFormattingForTesting("Hello.", sessionID: id)
+            }
+            #expect(pasted == expected + " ")
+            #expect(monitored == [expected])
+        } else {
+            controller.finishStreamingFormattingForTesting("Hello.", sessionID: id)
+            #expect(pasted.isEmpty)
+            #expect(monitored.isEmpty)
+        }
+        controller.receiveStreamingFormattingForTesting("Late words.", sessionID: id)
+        controller.finishStreamingFormattingForTesting("Duplicate.", sessionID: id)
+        let records = try database.recentDictations()
+        #expect(records.count == 1)
+        #expect(records.first?.rawText == expected)
+        #expect(store.load().dictationAppFormattingRules.isEmpty)
+        #expect(board.string(forType: .string) == "original clipboard")
+    }
+
+    @Test("Buffered failure recovers once; failed paste preserves raw history and newer clipboard", arguments: ["success", "ownership", "dispatch"])
+    @MainActor
+    func streamingFailure(outcome: String) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        controller.updateConfig { $0.enableAutomaticDiagnosticIssuePrompts = true }
+        var deliveries = 0
+        var monitored: [String] = []
+        var warnings: [String] = []
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: {
+            if outcome == "ownership" { board.clearContents(); board.setString("new copy", forType: .string) }
+            return .current
+        }, typeText: { _ in Issue.record("Buffered text must not type live") },
+            dispatchPaste: { _ in deliveries += 1; return outcome != "dispatch" },
+            monitorCorrections: { monitored.append($0) }, warning: { warnings.append($0) })
+        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
+        controller.receiveStreamingFormattingForTesting("Partial words.", sessionID: id)
+        await withCheckedContinuation { continuation in
+            controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+            controller.finishStreamingFormattingForTesting("", sessionID: id, failure: true)
+            // Stop completion, repeated failure and late partial must not recover twice.
+            controller.finishStreamingFormattingForTesting("Duplicate.", sessionID: id)
+            controller.finishStreamingFormattingForTesting("", sessionID: id, failure: true)
+            controller.receiveStreamingFormattingForTesting("Late partial.", sessionID: id)
+        }
+        let records = try database.recentDictations()
+        #expect(records.count == 1)
+        if outcome == "success" {
+            let expected = NSRunningApplication.current.bundleIdentifier == nil ? "Partial words." : "partial words"
+            #expect(records.first?.rawText == expected)
+            #expect(monitored == [expected])
+            #expect(warnings == ["Streaming stopped early. Partial dictation recovered."])
+        } else {
+            #expect(records.first?.rawText == "Partial words.")
+            #expect(records.first?.targetAppBundleID == nil)
+            #expect(monitored.isEmpty)
+            #expect(warnings == ["Dictation wasn't pasted. Find it in History."])
+        }
+        #expect(deliveries == (outcome == "ownership" ? 0 : 1))
+        #expect(controller.appState.pendingDiagnosticIncident == nil)
+        #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
+    }
+
+    @Test("Buffered stop retains the spoken unlock and an unruled recipient's original text")
+    @MainActor
+    func bufferedUnlock() async throws {
+        let (directory, database, store, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var pasted = ""
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            dispatchPaste: { _ in pasted = board.string(forType: .string) ?? ""; return true })
+        let phrase = "I solemnly swear that I am up to no good."
+        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
+        controller.receiveStreamingFormattingForTesting(phrase, sessionID: id)
+        await withCheckedContinuation { continuation in
+            controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+            controller.finishStreamingFormattingForTesting(phrase, sessionID: id)
+        }
+        #expect(store.load().maraudersMapUnlocked)
+        #expect(pasted == phrase + " ")
+        #expect(try database.recentDictations().first?.rawText == phrase)
+    }
+
+    @Test("Voice notes never buffer for app rules or insert text")
+    @MainActor
+    func streamingVoiceNote() throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        controller.dictationOutputTestHooks = .init(pasteboard: board,
+            typeText: { _ in Issue.record("Voice note typed") },
+            dispatchPaste: { _ in Issue.record("Voice note pasted"); return false })
+        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        controller.receiveStreamingFormattingForTesting("Voice note.", sessionID: id)
+        controller.finishStreamingFormattingForTesting("Voice note.", sessionID: id)
+        #expect(try database.recentDictations().first?.rawText == "Voice note.")
+        #expect(board.string(forType: .string) == "original clipboard")
+    }
+    #endif
 
     @Test("Old configs preserve output; rules and setup dismissal round trip")
     func persistence() throws {

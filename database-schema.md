@@ -38,6 +38,15 @@ rule detaches its template identity; deleting a template preserves already
 applied app formatting. These preferences are local-only and add no SQLite,
 CloudKit or CLI fields.
 
+Streaming dictation buffers only when the app active at recording start has an
+active formatting rule. That delivery mode and the rule snapshots remain fixed
+for the session: buffered text uses the final recipient's rule, while live text
+is never rewritten after an app switch. On a buffered runtime failure, the
+available partial transcript goes through the same paste completion path.
+Successful dispatches store formatted text; failed dispatches retain the original
+transcript without target-app attribution, and notify the user to find it in
+History. Dictionary correction monitoring starts only after a successful paste.
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use

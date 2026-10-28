@@ -55,6 +55,13 @@ struct DictationAppFormattingRule: Codable, Equatable, Identifiable, Sendable {
     static func activeRules(_ rules: [Self]) -> [Self] {
         rules.filter { !$0.bundleID.isEmpty && $0.formatting != .unchanged }
     }
+
+    /// Lock the streaming delivery mode at recording start. A live session cannot
+    /// retroactively format text already typed if focus later moves to another app.
+    static func shouldBufferStreaming(bundleID: String?, rules: [Self]) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return false }
+        return rules.contains { $0.bundleID == bundleID && $0.formatting != .unchanged }
+    }
 }
 
 /// Templates are reusable starting points. Each app retains its own formatting snapshot.

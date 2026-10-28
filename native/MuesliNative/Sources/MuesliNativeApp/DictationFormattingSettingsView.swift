@@ -127,7 +127,7 @@ struct DictationFormattingSettingsView: View {
             Text("Templates format your words after transcription and optional cleanup. They do not rewrite your wording or tone. Browser rules apply to every website in that browser.")
                 .font(.caption).foregroundStyle(.secondary)
             if !DictationAppFormattingRule.activeRules(appState.config.dictationAppFormattingRules).isEmpty {
-                Text("Live streaming dictation is inserted when you stop, so these rules can be applied to the final text. Apps without a rule keep their original formatting.")
+                Text("Live dictation waits until you stop only when recording starts in an app with a formatting rule. Buffered text uses the receiving app's rule. Sessions started in other apps stay live and keep their original formatting, even if you switch apps.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
