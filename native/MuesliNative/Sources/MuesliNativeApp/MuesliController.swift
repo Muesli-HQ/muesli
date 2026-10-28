@@ -27,6 +27,20 @@ private struct DictationLatencyTraceToken: Sendable {
     let startedAt: Date
 }
 
+#if DEBUG
+/// Keep controller regression tests off the system clipboard, keyboard and AX tree.
+@MainActor
+struct DictationOutputTestHooks {
+    var pasteboard: NSPasteboard
+    var targetApplication: () -> NSRunningApplication? = { .current }
+    var typeText: (String) -> Void = { _ in }
+    var dispatchPaste: (PasteShortcut) -> Bool = { _ in true }
+    var monitorCorrections: (String) -> Void = { _ in }
+    var warning: (String) -> Void = { _ in }
+    var settled: () -> Void = {}
+}
+#endif
+
 enum DictationBackendReadiness: Equatable {
     case preparing
     case ready
@@ -53,11 +67,19 @@ enum DictationBackendReadiness: Equatable {
 struct DictationBackendPreparationState {
     private(set) var generation = UUID()
     private(set) var readiness: DictationBackendReadiness = .preparing
+    private var task: Task<Void, Never>?
 
     mutating func begin(isHosted: Bool) -> UUID {
+        task?.cancel()
+        task = nil
         generation = UUID()
         readiness = isHosted ? .ready : .preparing
         return generation
+    }
+
+    mutating func track(_ task: Task<Void, Never>, for token: UUID) {
+        guard owns(token) else { task.cancel(); return }
+        self.task = task
     }
 
     func owns(_ token: UUID) -> Bool { generation == token }
@@ -181,9 +203,12 @@ enum MeetingSummaryPersistenceError: Error, LocalizedError {
 
 enum MeetingTemplateSelectionError: Error, LocalizedError {
     case templateNoLongerExists
+    case recordingEnded
 
     var errorDescription: String? {
         switch self {
+        case .recordingEnded:
+            return "The template is locked once recording stops."
         case .templateNoLongerExists:
             return "That template no longer exists. Choose another template and try again."
         }
@@ -506,6 +531,8 @@ public final class MuesliController: NSObject {
         guard let capture = meetingCapture, capture.session.capturePhase.isRecording else { return nil }
         return capture.session
     }
+    var activeMeetingStartedAt: Date? { activeMeetingSession?.startTime }
+
     private var activeMeetingID: Int64? {
         guard let capture = meetingCapture, !capture.session.capturePhase.isEnding else { return nil }
         return capture.id
@@ -515,6 +542,7 @@ public final class MuesliController: NSObject {
     /// session-identity gate. Replaced on the next meeting start.
     private var micEpisodeTelemetryGate = RecentMeetingIdentityGate()
     private var liveMeetingTranscriptGeneration: UUID?
+    private var lastRecordingTemplateSelection: (meetingID: Int64, template: MeetingTemplateSnapshot)?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     private var liveMeetingTitleCache: [Int64: String] = [:]
     private var liveManualNotesCache: [Int64: String] = [:]
@@ -607,6 +635,11 @@ public final class MuesliController: NSObject {
     private var openWindowCount = 0
     private var capturedDictationContext: DictationContext?
     private var capturedDictationCorrectionTargetApp: DictationCorrectionTargetApp?
+    private var capturedDictationFormattingRules: [DictationAppFormattingRule] = []
+    private var buffersStreamingDictation = false
+    #if DEBUG
+    var dictationOutputTestHooks: DictationOutputTestHooks?
+    #endif
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -1037,7 +1070,7 @@ public final class MuesliController: NSObject {
 
         if canRunMainApp {
             let preparation = beginDictationBackendPreparation()
-            Task { [weak self] in
+            let task = Task { [weak self] in
                 guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
                 let includesMeetings = self.config.resolvedOnboardingUseCase.includesMeetings
                 let ppOption = self.runtimePostProcessorOption()
@@ -1070,6 +1103,7 @@ public final class MuesliController: NSObject {
                     self.refreshUI()
                 }
             }
+            dictationBackendPreparation.track(task, for: preparation)
         }
 
         if !canRunMainApp {
@@ -1096,8 +1130,13 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// The step `shutdown()` is in, so a quit that overruns its deadline can say what it waited on.
+    private(set) var shutdownStep = "not started"
+
     func cancelMeetingRetranscriptionsForShutdown() async {
         isShuttingDown = true
+        shutdownStep = "retranscription tasks"
+
         // Suspend asynchronously (never block the main thread) until retry
         // cancellation and its deferred state cleanup finish. Do this before
         // tearing down any shared resources those jobs may still access.
@@ -1106,7 +1145,23 @@ public final class MuesliController: NSObject {
         for task in retranscriptionTasks { await task.value }
     }
 
-    func shutdown() async {
+    func shutdown(
+        discardScreenRecording: (@MainActor () async -> Void)? = nil,
+        cleanupAudioDevices: @escaping @Sendable () -> Void = {
+            CoreAudioSystemRecorder.cleanupStaleDevices()
+        }
+    ) async {
+        isShuttingDown = true
+        _ = dictationBackendPreparation.begin(isHosted: true)
+        // AppDelegate's deadline must cover the entire discard, including video
+        // finalization and database/file cleanup, not just the work after it.
+        shutdownStep = "screen recording discard"
+        if let discardScreenRecording {
+            await discardScreenRecording()
+        } else {
+            await visualMemory.stopRecording(discard: true)
+        }
+        discardMeetingStateForTermination()
         await cancelMeetingRetranscriptionsForShutdown()
         systemPermissionGuideController.dismiss()
         if let dataDidChangeObserver {
@@ -1146,6 +1201,7 @@ public final class MuesliController: NSObject {
         pendingComputerUseStopStartedAt = nil
         let attendeePersistenceTasks = calendarAttendeePersistenceTasks.values.map(\.task)
         calendarAttendeePersistenceTasks.removeAll()
+        shutdownStep = "calendar attendee persistence"
         for task in attendeePersistenceTasks {
             _ = await task.value
         }
@@ -1173,11 +1229,22 @@ public final class MuesliController: NSObject {
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
+        shutdownStep = "iCloud sync engine"
         await syncEngineCancellationTask?.value
         nativeRecordingGate.invalidate()
+        shutdownStep = "transcription coordinator"
         await transcriptionCoordinator.shutdown()
+        shutdownStep = "audio device cleanup"
         indicator.close()
-        CoreAudioSystemRecorder.cleanupStaleDevices()
+        // CoreAudio may block in a driver. Keep both MainActor and Swift's
+        // cooperative executor free so the termination deadline can reply.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                cleanupAudioDevices()
+                continuation.resume()
+            }
+        }
+        shutdownStep = "finished"
     }
 
     func recentDictations() -> [DictationRecord] {
@@ -1841,9 +1908,7 @@ public final class MuesliController: NSObject {
         // NSApplication is ever created. Touching it there traps and takes the whole test
         // bundle down, so bind it rather than forcing it.
         if let app = NSApp {
-            app.appearance = NSAppearance(
-                named: RecentHistoryWindowController.appearanceName(for: config.darkMode)
-            )
+            app.appearance = config.appearanceMode.appearanceName.flatMap { NSAppearance(named: $0) }
         }
         historyWindowController?.applyThemeAppearance()
     }
@@ -3068,6 +3133,13 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func verifySavedDictationFormattingTemplate(_ template: DictationFormattingTemplate) throws {
+        let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath()))
+        guard saved.dictationFormattingTemplates.contains(template) else {
+            throw MuesliSettings.Failure.rejected("The template could not be saved. Check your settings before restarting.")
+        }
+    }
+
     func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
         if dictationToggleShortcut != nil,
            id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
@@ -3119,7 +3191,7 @@ public final class MuesliController: NSObject {
             historyWindowController?.updateBackendLabel()
             return
         }
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             // Push the selected Nemotron 3.5 language before preload so the loaded
             // transcriber is conditioned on the right prompt_id.
@@ -3142,6 +3214,7 @@ public final class MuesliController: NSObject {
                 self.historyWindowController?.updateBackendLabel()
             }
         }
+        dictationBackendPreparation.track(task, for: preparation)
     }
 
     // MARK: - Dictation Provider
@@ -3175,7 +3248,7 @@ public final class MuesliController: NSObject {
     private func prepareSelectedLocalDictationBackend() {
         let preparation = beginDictationBackendPreparation()
         let option = selectedBackend
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
             let prepared = await self.prepareDictationBackend(option, preparation: preparation)
@@ -3193,6 +3266,7 @@ public final class MuesliController: NSObject {
                 self.historyWindowController?.updateBackendLabel()
             }
         }
+        dictationBackendPreparation.track(task, for: preparation)
     }
 
     // MARK: - OpenAI Dictation Configuration
@@ -5767,8 +5841,18 @@ public final class MuesliController: NSObject {
         appState.meetingsNavigationState = .document(id)
     }
 
+    func showMeetingChatIndex() {
+        showMeetingChat()
+        meetingChatCoordinator.showIndex()
+    }
+
     @discardableResult
     func showMeetingChat(meetingID: Int64? = nil) -> Task<Void, Never>? {
+        // Meeting-specific entry must not clear selection while draft preparation
+        // is unavailable. Keep the current conversation and its scope intact.
+        if meetingID != nil {
+            guard !meetingChatCoordinator.isBusy, !meetingChatCoordinator.isUpdatingChat else { return nil }
+        }
         appState.searchQuery = ""; appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil
         if let id = meetingID {
             let coordinator = meetingChatCoordinator
@@ -5782,7 +5866,9 @@ public final class MuesliController: NSObject {
                 coordinator.selectChat(id: session.id)
                 return nil
             }
-            return Task { await coordinator.createChat(scope: .init(selection: .meetings([id]))) }
+            coordinator.showIndex()
+            coordinator.prepareMeetingDraft(id: id)
+            return nil
         }
         return nil
     }
@@ -5898,7 +5984,7 @@ public final class MuesliController: NSObject {
     }
 
     @objc func quitApp() {
-        NSApplication.shared.terminate(nil)
+        ApplicationTermination.request()
     }
 
     @objc func copyRecentDictation(_ sender: NSMenuItem) {
@@ -5978,6 +6064,25 @@ public final class MuesliController: NSObject {
     func resummarize(meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
         let templateSnapshot = meetingTemplateSnapshot(for: meeting)
         resummarize(meeting: meeting, using: templateSnapshot, summaryConfig: summaryConfig, completion: completion)
+    }
+
+    /// Save a per-meeting choice without generating notes or changing the default.
+    func selectRecordingTemplate(id: String, meetingID: Int64) throws {
+        guard !isShuttingDown, !isStoppingMeetingRecording,
+              let meeting = try dictationStore.meeting(id: meetingID), meeting.status == .recording else {
+            throw MeetingTemplateSelectionError.recordingEnded
+        }
+        guard let template = MeetingTemplates.resolveExactSnapshot(id: id, customTemplates: config.customMeetingTemplates) else {
+            throw MeetingTemplateSelectionError.templateNoLongerExists
+        }
+        try dictationStore.updateMeetingSummary(
+            id: meetingID, title: meeting.title, formattedNotes: meeting.formattedNotes,
+            selectedTemplateID: template.id, selectedTemplateName: template.name,
+            selectedTemplateKind: template.kind, selectedTemplatePrompt: template.prompt
+        )
+        lastRecordingTemplateSelection = (meetingID, template)
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
     }
 
     func applyMeetingTemplate(id: String, to meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -6971,10 +7076,9 @@ public final class MuesliController: NSObject {
                 guard let self else { return }
                 self.isPresentingMeetingTerminationConfirmation = false
                 guard response == .alertSecondButtonReturn else { return }
-                await self.visualMemory.stopRecording(discard: true)
-                self.discardMeetingStateForTermination()
-                self.isTerminatingAfterMeetingConfirmation = true
-                NSApp.terminate(nil)
+                ApplicationTermination.request { [weak self] in
+                    self?.isTerminatingAfterMeetingConfirmation = true
+                }
             }
         }
         if !didPresent {
@@ -8389,6 +8493,25 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
+    /// Freeze the choice and lock the picker synchronously, before stop awaits any work.
+    func lockMeetingTemplateForProcessing(id: Int64) -> MeetingTemplateSnapshot? {
+        // Keep the last successfully saved choice if the store becomes unavailable at Stop.
+        let savedSelection = lastRecordingTemplateSelection?.meetingID == id ? lastRecordingTemplateSelection?.template : nil
+        var template = savedSelection
+        do {
+            if let meeting = try dictationStore.meeting(id: id) {
+                template = meetingTemplateSnapshot(for: meeting)
+            }
+        } catch {
+            fputs("[meeting] failed to read template at Stop; retaining saved selection: \(error)\n", stderr)
+        }
+        if lastRecordingTemplateSelection?.meetingID == id {
+            lastRecordingTemplateSelection = nil
+        }
+        updateMeetingStatusAndScheduleSync(id: id, status: .processing)
+        return template
+    }
+
     func stopMeetingRecording() {
         meetingRecordingHotkeyMonitor.cancelToggleMode()
         guard let sessionToStop = activeMeetingSession else { return }
@@ -8400,12 +8523,13 @@ public final class MuesliController: NSObject {
         meetingEndTimer = nil
         meetingNotification.close()
         let liveMeetingID = meetingCapture?.id
+        var selectedTemplate: MeetingTemplateSnapshot?
         // Only this capture session's explicit screen recording grants retention.
         let hasScreenRecording = visualMemory.hasRecording(in: sessionToStop.screenRecordingSessionID)
         if let liveMeetingID {
             flushCachedMeetingManualNotes(id: liveMeetingID, sync: false)
             flushCachedMeetingTitle(id: liveMeetingID)
-            updateMeetingStatusAndScheduleSync(id: liveMeetingID, status: .processing)
+            selectedTemplate = lockMeetingTemplateForProcessing(id: liveMeetingID)
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
@@ -8446,7 +8570,7 @@ public final class MuesliController: NSObject {
             do {
                 sessionToStop.flushScreenRecordingAudio()
                 await self.visualMemory.stopRecording()
-                let stopped = try await sessionToStop.stop { url, error in
+                let stopped = try await sessionToStop.stop(template: selectedTemplate) { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
                     let shouldSave = await Self.shouldRetainMeetingRecording(
                         policy: self.config.meetingRecordingSavePolicy,
@@ -10087,7 +10211,6 @@ public final class MuesliController: NSObject {
                     PasteController.paste(
                         text: replacement,
                         shortcut: configSnapshot.pasteShortcut,
-                        requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: { snapshot.isTargetStillFocused() },
                         dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
@@ -11548,6 +11671,8 @@ public final class MuesliController: NSObject {
     private func clearCapturedDictationSessionContext() {
         capturedDictationContext = nil
         capturedDictationCorrectionTargetApp = nil
+        capturedDictationFormattingRules = []
+        buffersStreamingDictation = false
     }
 
     private func dictationTargetApp(
@@ -11611,6 +11736,7 @@ public final class MuesliController: NSObject {
         guard config.enableBufferedLiveDictation,
               selectedDictationProvider == .local,
               selectedBackend.supportsBufferedLiveTranscription,
+              !buffersStreamingDictation,
               currentDictationOutputMode == .paste,
               !isDictationTestMode else { return }
         let previewTrace = currentDictationLatencyTrace
@@ -11786,10 +11912,65 @@ public final class MuesliController: NSObject {
     var hostedDictationSessionPresenceForTesting: (recording: Bool, finalizing: Bool) {
         (hostedDictationSession != nil, finalizingHostedDictationSession != nil)
     }
+
+    func startStreamingFormattingForTesting(bundleID: String?, voiceNote: Bool = false) -> UUID {
+        clearCapturedDictationSessionContext()
+        currentDictationOutputMode = voiceNote ? .voiceNote : .paste
+        captureDictationFormatting(targetBundleID: bundleID)
+        let id = UUID()
+        isNemotron35Streaming = true
+        nemotron35StreamingSessionID = id
+        previousStreamText = ""
+        dictationStartedAt = Date()
+        return id
+    }
+
+    func receiveStreamingFormattingForTesting(_ text: String, sessionID: UUID) {
+        receiveNemotronStreamingPartial(text, sessionID: sessionID)
+    }
+
+    func finishStreamingFormattingForTesting(_ text: String, sessionID: UUID, failure: Bool = false) {
+        if failure {
+            handleNemotronStreamingRuntimeFailure(error: NSError(domain: "SyntheticStreamingFailure", code: 1), sessionID: sessionID)
+        } else {
+            finishNemotronStreamingStop(finalText: text, startedAt: dictationStartedAt ?? Date(), sessionID: sessionID)
+        }
+    }
+
+    func finishStandardFormattingForTesting(_ text: String) {
+        completeDictationPaste(text: text, duration: 1, appContext: "", startedAt: Date(),
+            formattingRules: config.dictationAppFormattingRules, backend: "synthetic",
+            bodhanMeasurement: nil,
+            transcriptionModel: DictationModelIdentity(backend: "synthetic", model: "test", name: "Test"),
+            latencyTrace: nil)
+    }
     #endif
 
     private func captureDictationCorrectionTargetApp() {
         capturedDictationCorrectionTargetApp = currentDictationTargetApp()
+        captureDictationFormatting(targetBundleID: capturedDictationCorrectionTargetApp?.bundleID)
+    }
+
+    private func captureDictationFormatting(targetBundleID: String?) {
+        capturedDictationFormattingRules = isDictationTestMode ? []
+            : DictationAppFormattingRule.activeRules(config.dictationAppFormattingRules)
+        buffersStreamingDictation = currentDictationOutputMode == .paste
+            && DictationAppFormattingRule.shouldBufferStreaming(
+                bundleID: targetBundleID, rules: capturedDictationFormattingRules)
+    }
+
+    private func receiveNemotronStreamingPartial(_ fullText: String, sessionID: UUID) {
+        guard isNemotron35Streaming, nemotron35StreamingSessionID == sessionID else { return }
+        let delta = String(fullText.dropFirst(previousStreamText.count))
+        previousStreamText = fullText
+        guard !delta.isEmpty, currentDictationOutputMode == .paste, !buffersStreamingDictation else { return }
+        #if DEBUG
+        if let hooks = dictationOutputTestHooks {
+            hooks.typeText(delta)
+            return
+        }
+        #endif
+        PasteController.typeText(delta)
     }
 
     private func handleStart() {
@@ -11856,15 +12037,7 @@ public final class MuesliController: NSObject {
                 controller.onPartialText = { [weak self] fullText in
                     guard let self else { return }
                     DispatchQueue.main.async {
-                        guard self.isNemotron35Streaming, self.nemotron35StreamingSessionID == sessionID else { return }
-                        let delta = String(fullText.dropFirst(self.previousStreamText.count))
-                        fputs("[muesli-native] streaming partial: +\"\(delta)\" (total \(fullText.count) chars)\n", stderr)
-                        if !delta.isEmpty {
-                            self.previousStreamText = fullText
-                            if self.currentDictationOutputMode != .voiceNote {
-                                PasteController.typeText(delta)
-                            }
-                        }
+                        self.receiveNemotronStreamingPartial(fullText, sessionID: sessionID)
                     }
                 }
                 controller.onFailure = { [weak self] error in
@@ -11917,13 +12090,29 @@ public final class MuesliController: NSObject {
     private func handleNemotronStreamingRuntimeFailure(error: Error, sessionID: UUID) {
         guard isNemotron35Streaming, nemotron35StreamingSessionID == sessionID else { return }
         fputs("[muesli-native] Nemotron streaming failed: \(error)\n", stderr)
+        let hasBufferedPartial = buffersStreamingDictation
+            && !previousStreamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if !isDictationTestMode {
             recordDiagnosticIncident(
                 kind: .streamingDictationRuntimeFailed,
                 stage: .nemotronStreamingRuntime,
                 backend: selectedBackend,
-                error: error
+                error: error,
+                // Opening the diagnostic window would steal focus from the
+                // recipient before recovery pastes. Completion shows a notice.
+                promptUser: !hasBufferedPartial
             )
+        }
+        // Recover the buffered partial before clearing session state. The failure
+        // callback has already stopped audio; normal completion invalidates the
+        // session ID so a queued stop or late partial cannot paste it twice.
+        if hasBufferedPartial {
+            dictationAudioSessionManager.endExternalSession(reason: "nemotron-runtime-failed")
+            indicator.setToggleDictation(false, config: config)
+            finishNemotronStreamingStop(finalText: previousStreamText,
+                startedAt: dictationStartedAt ?? Date(), sessionID: sessionID, recoveredAfterFailure: true)
+            dictationStartedAt = nil
+            return
         }
         isNemotron35Streaming = false
         _streamingDictationController = nil
@@ -12209,13 +12398,15 @@ public final class MuesliController: NSObject {
     private func finishNemotronStreamingStop(
         finalText: String,
         startedAt: Date,
-        sessionID: UUID?
+        sessionID: UUID?,
+        recoveredAfterFailure: Bool = false
     ) {
         guard isNemotron35Streaming, nemotron35StreamingSessionID == sessionID else {
             fputs("[muesli-native] ignoring stale Nemotron stop completion\n", stderr)
             return
         }
-        let hadStreamingInsertion = currentDictationOutputMode == .paste && !previousStreamText.isEmpty
+        let hadStreamingInsertion = currentDictationOutputMode == .paste
+            && !buffersStreamingDictation && !previousStreamText.isEmpty
         isNemotron35Streaming = false
         _streamingDictationController = nil
         nemotron35StreamingSessionID = nil
@@ -12223,7 +12414,8 @@ public final class MuesliController: NSObject {
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         let outputMode = currentDictationOutputMode
         fputs("[muesli-native] Nemotron streaming stop, got \(finalText.count) chars\n", stderr)
-        let cleaned = FillerWordFilter.apply(finalText)
+        // Preserve every recovered word; a failed session may end mid-phrase.
+        let cleaned = (recoveredAfterFailure ? finalText : FillerWordFilter.apply(finalText))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
             isPasteOutput: outputMode == .paste,
@@ -12235,7 +12427,21 @@ public final class MuesliController: NSObject {
             ? currentDictationTargetApp() ?? capturedDictationCorrectionTargetApp
             : nil
 
+        // The unlock applies to both live and buffered delivery.
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
+
+        if outputMode == .paste, buffersStreamingDictation, !cleaned.isEmpty {
+            // This completion function is exclusive to the Nemotron 3.5 controller.
+            // Pass its identity explicitly to the shared, backend-agnostic paste path.
+            completeDictationPaste(text: cleaned, duration: duration,
+                appContext: capturedDictationCorrectionTargetApp?.appContext ?? "", startedAt: startedAt,
+                formattingRules: capturedDictationFormattingRules,
+                backend: BackendOption.nemotron35Multilingual.backend, bodhanMeasurement: nil,
+                transcriptionModel: DictationModelIdentity(backend: BackendOption.nemotron35Multilingual.backend,
+                    model: BackendOption.nemotron35Multilingual.model, name: BackendOption.nemotron35Multilingual.label),
+                latencyTrace: currentDictationLatencyTrace, recoveredAfterFailure: recoveredAfterFailure)
+            return
+        }
 
         if !cleaned.isEmpty {
             _ = try? dictationStore.insertDictation(
@@ -12264,6 +12470,107 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
 
+    /// One completion path for standard and buffered streaming dictation. Failed
+    /// dispatches save the original transcript without claiming an app received it.
+    /// Recovery messages reflect the insert result; only dispatched text starts correction monitoring.
+    private func completeDictationPaste(
+        text: String,
+        duration: TimeInterval,
+        appContext: String,
+        startedAt: Date,
+        formattingRules: [DictationAppFormattingRule],
+        backend: String,
+        bodhanMeasurement: BodhanWBCSMeasurement?,
+        transcriptionModel: DictationModelIdentity,
+        latencyTrace: DictationLatencyTraceToken?,
+        recoveredAfterFailure: Bool = false
+    ) {
+        var preparedText = text
+        var completionTargetApp: DictationCorrectionTargetApp?
+        var didDispatchPaste = false
+        var pasteboard = NSPasteboard.general
+        var targetProvider: @MainActor () -> NSRunningApplication? = { NSWorkspace.shared.frontmostApplication }
+        var simulatePaste: (@MainActor (PasteShortcut) -> Bool)?
+        #if DEBUG
+        // Snapshot the hooks just like the session preferences; late completion
+        // must not accidentally use another test session's callbacks.
+        let hooks = dictationOutputTestHooks
+        if let hooks {
+            pasteboard = hooks.pasteboard
+            targetProvider = hooks.targetApplication
+            simulatePaste = hooks.dispatchPaste
+        }
+        #endif
+        PasteController.paste(text: text, appendDictationSentenceSpace: true,
+            prepareTextForTarget: { text, app in
+                DictationAppFormattingRule.apply(text, bundleID: app?.bundleIdentifier, rules: formattingRules)
+            }, onTextPrepared: { preparedText = $0 }, pasteboard: pasteboard,
+            shortcut: config.pasteShortcut,
+            targetApplicationProvider: targetProvider, simulatePasteAction: simulatePaste,
+            onPasteFinished: { [weak self] app in
+                guard let self else { return }
+                completionTargetApp = didDispatchPaste ? self.dictationTargetApp(from: app) : nil
+                self.releaseStandardDictationState()
+                if didDispatchPaste {
+                    if !recoveredAfterFailure { self.indicator.showDictationCompletion() }
+                    if self.config.enableDictionaryCorrectionPrompts {
+                        #if DEBUG
+                        if let hooks { hooks.monitorCorrections(preparedText) }
+                        else {
+                            self.startDictationCorrectionMonitoring(text: preparedText,
+                                appContext: appContext, targetApp: completionTargetApp)
+                        }
+                        #else
+                        self.startDictationCorrectionMonitoring(text: preparedText,
+                            appContext: appContext, targetApp: completionTargetApp)
+                        #endif
+                    }
+                }
+                self.markDictationLatency("user_visible_completion", trace: latencyTrace)
+            }, onClipboardSettled: { [weak self] in
+                guard let self else { return }
+                let didPersist = self.finishStandardDictationBookkeeping(
+                    text: didDispatchPaste ? preparedText : text, duration: duration,
+                    appContext: appContext, startedAt: startedAt, outputMode: .paste,
+                    targetApp: completionTargetApp, backend: backend,
+                    bodhanMeasurement: bodhanMeasurement, transcriptionModel: transcriptionModel)
+                let warning: String?
+                if !didPersist {
+                    warning = didDispatchPaste
+                        ? "Dictation was pasted, but could not be saved to History."
+                        : "Dictation wasn't pasted and could not be saved to History."
+                } else if !didDispatchPaste {
+                    warning = "Dictation wasn't pasted. Find it in History."
+                } else {
+                    warning = recoveredAfterFailure ? "Streaming stopped early. Partial dictation recovered." : nil
+                }
+                if let warning {
+                    #if DEBUG
+                    if let hooks { hooks.warning(warning) }
+                    else { self.indicator.showWarning(warning, icon: "!", duration: 4) }
+                    #else
+                    self.indicator.showWarning(warning, icon: "!", duration: 4)
+                    #endif
+                }
+                self.finishDictationLatencyTrace("bookkeeping_completed", trace: latencyTrace)
+                #if DEBUG
+                hooks?.settled()
+                #endif
+            }, onLifecycleEvent: { [weak self] event in
+                if event == .pasteDispatched { didDispatchPaste = true }
+                self?.markDictationLatency("paste_\(event.rawValue)", trace: latencyTrace)
+            })
+    }
+
+    private func startDictationCorrectionMonitoring(text: String, appContext: String,
+                                                    targetApp: DictationCorrectionTargetApp?) {
+        // The opt-in monitor schedules its first AX poll after 100 ms, leaving
+        // clipboard restoration unblocked while capturing immediate edits.
+        dictationCorrectionMonitor.start(originalText: text, appContext: appContext, targetApp: targetApp) { [weak self] suggestion in
+            self?.addDictionarySuggestion(suggestion)
+        }
+    }
+
     /// Releases the user-visible dictation state immediately after Cmd+V. Keep this path
     /// bounded so the main actor remains available for clipboard restoration.
     private func releaseStandardDictationState() {
@@ -12277,6 +12584,8 @@ public final class MuesliController: NSObject {
     /// For paste output, runs only once the pasteboard has either been restored or superseded
     /// by a newer copy. Persistence and dashboard queries therefore cannot lengthen transcript
     /// ownership of the clipboard or the visible Transcribing state.
+    /// Returns whether the History insert succeeded so recovery messages describe
+    /// an actual saved record, even when clipboard delivery and persistence differ.
     @discardableResult
     private func finishStandardDictationBookkeeping(
         text: String,
@@ -12300,7 +12609,7 @@ public final class MuesliController: NSObject {
             bodhanMeasurement: bodhanMeasurement,
             transcriptionModel: transcriptionModel
         )
-        scheduleICloudSyncAfterLocalChange()
+        if savedID != nil { scheduleICloudSyncAfterLocalChange() }
         statusBarController?.refresh()
         if let historyWindowController {
             // reload() already calls syncAppState(); do not repeat the full query set.
@@ -12387,6 +12696,7 @@ public final class MuesliController: NSObject {
         let parakeetTranscriptionLanguage = liveContext?.parakeetLanguage ?? config.resolvedParakeetLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
+        let formattingRules = capturedDictationFormattingRules
         let startingTargetApp = capturedDictationCorrectionTargetApp
         let storageContext = capturedContext.map { DictationContextCapture.formatForStorage($0) }
             ?? startingTargetApp?.appContext
@@ -12591,62 +12901,11 @@ public final class MuesliController: NSObject {
                         }
                         self.finishDictationLatencyTrace("buffered_live_completed", trace: completionLatencyTrace)
                     } else if outputMode == .paste {
-                        var completionTargetApp: DictationCorrectionTargetApp?
-                        var didDispatchPaste = false
-                        PasteController.paste(
-                            text: text,
-                            appendDictationSentenceSpace: true,
-                            shortcut: self.config.pasteShortcut,
-                            requireStagedClipboardOwnership: true,
-                            onPasteFinished: { [weak self] targetApplication in
-                                guard let self else { return }
-                                let targetApp = self.dictationTargetApp(from: targetApplication)
-                                completionTargetApp = targetApp
-                                self.releaseStandardDictationState()
-                                if didDispatchPaste { self.indicator.showDictationCompletion() }
-                                if self.config.enableDictionaryCorrectionPrompts {
-                                    // This opt-in monitor only schedules its first Accessibility
-                                    // poll after 100 ms, so starting it here captures immediate
-                                    // edits without blocking the clipboard restoration timer.
-                                    self.dictationCorrectionMonitor.start(
-                                        originalText: text,
-                                        appContext: storageContext,
-                                        targetApp: targetApp
-                                    ) { [weak self] suggestion in
-                                        self?.addDictionarySuggestion(suggestion)
-                                    }
-                                }
-                                self.markDictationLatency(
-                                    "user_visible_completion",
-                                    trace: completionLatencyTrace
-                                )
-                            },
-                            onClipboardSettled: { [weak self] in
-                                guard let self else { return }
-                                self.finishStandardDictationBookkeeping(
-                                    text: text,
-                                    duration: duration,
-                                    appContext: storageContext,
-                                    startedAt: startedAt,
-                                    outputMode: outputMode,
-                                    targetApp: completionTargetApp,
-                                    backend: completionBackend,
-                                    bodhanMeasurement: bodhanMeasurement,
-                                    transcriptionModel: completionModel
-                                )
-                                self.finishDictationLatencyTrace(
-                                    "bookkeeping_completed",
-                                    trace: completionLatencyTrace
-                                )
-                            },
-                            onLifecycleEvent: { [weak self] event in
-                                if event == .pasteDispatched { didDispatchPaste = true }
-                                self?.markDictationLatency(
-                                    "paste_\(event.rawValue)",
-                                    trace: completionLatencyTrace
-                                )
-                            }
-                        )
+                        self.completeDictationPaste(text: text, duration: duration,
+                            appContext: storageContext, startedAt: startedAt,
+                            formattingRules: formattingRules, backend: completionBackend,
+                            bodhanMeasurement: bodhanMeasurement, transcriptionModel: completionModel,
+                            latencyTrace: completionLatencyTrace)
                     } else {
                         self.releaseStandardDictationState()
                         self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
@@ -12795,6 +13054,9 @@ public final class MuesliController: NSObject {
 
         fputs("[muesli-native] Marauder's Map unlocked!\n", stderr)
         updateConfig { $0.maraudersMapUnlocked = true }
+        #if DEBUG
+        if dictationOutputTestHooks != nil { return }
+        #endif
         SoundController.playMaraudersMapUnlock()
         indicator.showWarning("Mischief Managed", icon: "\u{26A1}", duration: 3.0)
         startMaraudersMapMonitoring()

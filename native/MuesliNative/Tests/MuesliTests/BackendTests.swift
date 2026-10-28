@@ -29,8 +29,14 @@ struct WhisperKitTranscriberTests {
 @Suite("FluidAudioTranscriber")
 struct FluidAudioTranscriberTests {
 
-    @Test("Only Redux bypasses ANE encoder compilation")
+    @Test("Phonon uses the GPU encoder while existing models retain their policy")
     func reduxEncoderComputePolicy() {
+        let phonon = ManagedASRModelPlans.phonon25()
+        #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: phonon.modelID) == .cpuAndGPU)
+        #expect(ParakeetRuntimePolicy.usesLocalComponents(for: phonon.modelID))
+        #expect(ParakeetRuntimePolicy.requiresMacOS15(for: phonon.modelID))
+        #expect(ParakeetRuntimePolicy.preparingMessage(for: phonon.modelID) == "Preparing Phonon-2.5...")
+        #expect(!ParakeetRuntimePolicy.usesLocalComponents(for: ManagedASRModelPlans.parakeetV3().modelID))
         let redux = ManagedASRModelPlans.parakeetRedux()
         #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: redux.modelID) == .cpuOnly)
         for modelID in [

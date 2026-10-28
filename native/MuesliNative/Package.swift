@@ -104,11 +104,17 @@ let package = Package(
             name: "MuesliCLI",
             dependencies: [
                 "MuesliCore",
+                "MuesliNativeApp",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
             ],
-            path: "Sources/MuesliCLI"
+            path: "Sources/MuesliCLI",
+            // The shared app runtimes add framework dependencies. Xcode app
+            // packaging places them beside Resources, rather than the CLI.
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+            ]
         ),
         .target(
             name: "AudioGraphExceptionBridge",

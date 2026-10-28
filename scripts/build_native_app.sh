@@ -340,6 +340,7 @@ cp "$ROOT/assets/cohere.png" "$STAGED_APP_DIR/Contents/Resources/cohere-logo.png
 cp "$ROOT/assets/Qwen_logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/qwen-logo.png"
 cp "$ROOT/assets/superwhisper-logo.png" "$STAGED_APP_DIR/Contents/Resources/superwhisper-logo.png"
 cp "$ROOT/assets/bodhan-logo.png" "$STAGED_APP_DIR/Contents/Resources/bodhan-logo.png"
+cp "$ROOT/assets/fermion-logo.svg" "$STAGED_APP_DIR/Contents/Resources/fermion-logo.svg"
 cp "$ROOT/assets/google-logo.svg" "$STAGED_APP_DIR/Contents/Resources/google-logo.svg"
 cp "$ROOT/assets/x-logo.png" "$STAGED_APP_DIR/Contents/Resources/x-logo.png"
 cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin-logo.png"

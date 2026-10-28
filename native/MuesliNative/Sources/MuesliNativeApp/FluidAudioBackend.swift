@@ -5,115 +5,160 @@ import MuesliCore
 /// Native Swift transcription backend using FluidAudio's Parakeet TDT model
 /// running via Core ML with a model-specific encoder compute policy.
 actor FluidAudioTranscriber {
+    typealias ModelLoader = @Sendable (
+        String, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> AsrManager
+
     private var asrManager: AsrManager?
-    private var loadedVersion: AsrModelVersion?
-    typealias ModelLoader = (AsrModelVersion, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> AsrManager
+    private(set) var loadedModelID: String?
+    private var loadGeneration = UUID()
+    private struct PendingLoad {
+        let generation: UUID
+        let modelID: String
+        let allowDownload: Bool
+        let task: Task<AsrManager, Error>
+        var waiters: Set<UUID>
+    }
+    private var pendingLoad: PendingLoad?
     private let modelLoader: ModelLoader
 
-    init(modelLoader: ModelLoader? = nil) {
-        self.modelLoader = modelLoader ?? Self.makeManager
+    init(modelLoader: @escaping ModelLoader = { modelID, allowDownload, progress, progressSnapshot in
+        try await FluidAudioTranscriber.prepareModel(
+            modelID: modelID, allowDownload: allowDownload, progress: progress, progressSnapshot: progressSnapshot
+        )
+    }) {
+        self.modelLoader = modelLoader
     }
-    // Swift actors are reentrant across Core ML awaits. Share one permit across
-    // previews, final decoding, loading and unloading of this model instance.
+
     private var decodeBusy = false
     private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
-        case reduxRequiresMacOS15
+        case requiresMacOS15(String)
 
         var errorDescription: String? {
             switch self {
             case .notLoaded:
                 return "FluidAudio models not loaded. Call loadModels() first."
-            case .reduxRequiresMacOS15:
-                return "Parakeet Redux requires macOS 15 or later."
+            case .requiresMacOS15(let name):
+                return "\(name) requires macOS 15 or later."
             }
         }
     }
 
     /// Downloads models (if needed) and initializes the ASR manager.
-    /// - Parameter version: .v3 for multilingual (25 langs), .v2 for English-only
+    /// Identify weights independently of their shared FluidAudio decoder contract.
     func loadModels(
-        version: AsrModelVersion = .v3,
-        progress: ((Double, String?) -> Void)? = nil,
-        progressSnapshot: ModelDownloadProgressHandler? = nil
-    ) async throws {
-        await acquireDecode()
-        defer { releaseDecode() }
-        try await loadModelsForDecode(version: version, progress: progress, progressSnapshot: progressSnapshot)
-    }
-
-    /// Called only while holding the decode permit, so another session cannot
-    /// replace the selected model between preparation and inference.
-    private func loadModelsForDecode(
-        version: AsrModelVersion,
+        modelID: String = BackendOption.parakeetMultilingual.model,
         allowDownload: Bool = true,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
-        if loadedVersion == version, asrManager != nil { return }
-        let manager = try await modelLoader(version, allowDownload, progress, progressSnapshot)
+        let callerID = UUID()
+        let operation: PendingLoad
+        if var pending = pendingLoad, pending.modelID == modelID, pending.allowDownload == allowDownload {
+            // Independent dictation/meeting callers can share the same preparation.
+            pending.waiters.insert(callerID)
+            pendingLoad = pending
+            operation = pending
+            progressSnapshot?(.preparing(modelID: modelID,
+                message: ParakeetRuntimePolicy.preparingMessage(for: modelID)))
+        } else {
+            // Invalidate before the cache hit: selecting loaded A supersedes pending B.
+            cancelPendingLoad()
+            if loadedModelID == modelID, asrManager != nil { return }
+            let task = Task { try await modelLoader(modelID, allowDownload, progress, progressSnapshot) }
+            operation = PendingLoad(generation: loadGeneration, modelID: modelID,
+                allowDownload: allowDownload, task: task, waiters: [callerID])
+            pendingLoad = operation
+        }
+        defer { removeWaiter(callerID, generation: operation.generation) }
+        let manager = try await withTaskCancellationHandler(operation: {
+            try await operation.task.value
+        }, onCancel: {
+            // Cancellation detaches this caller; another caller may still need the model.
+            Task { await self.removeWaiter(callerID, generation: operation.generation) }
+        })
+        // Core ML may finish an uncancellable operation after cancellation.
         try Task.checkCancellation()
-        asrManager = manager
-        loadedVersion = version
+        guard loadGeneration == operation.generation, !operation.task.isCancelled else { throw CancellationError() }
+        self.asrManager = manager
+        self.loadedModelID = modelID
+        let preparing = ModelDownloadProgress.preparing(
+            modelID: modelID,
+            message: ParakeetRuntimePolicy.preparingMessage(for: modelID)
+        )
+        progress?(1, nil)
+        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
+        fputs("[fluidaudio] models ready\n", stderr)
     }
 
-    private static func makeManager(
-        version: AsrModelVersion,
+    func loadModels(version: AsrModelVersion) async throws {
+        try await loadModels(modelID: FluidAudioModel.modelID(for: version))
+    }
+
+    private static func prepareModel(
+        modelID: String,
         allowDownload: Bool,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?
     ) async throws -> AsrManager {
+        let version = FluidAudioModel.version(for: modelID)
 
-        if version == .redux, #unavailable(macOS 15) {
-            throw TranscriberError.reduxRequiresMacOS15
+        if ParakeetRuntimePolicy.requiresMacOS15(for: modelID), #unavailable(macOS 15) {
+            throw TranscriberError.requiresMacOS15(modelID == BackendOption.phonon25.model ? "Phonon-2.5" : "Parakeet Redux")
         }
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
-        let plan = FluidAudioModel.plan(for: version)
+        let plan = FluidAudioModel.plan(for: modelID)
         let preparingMessage = ParakeetRuntimePolicy.preparingMessage(for: plan.modelID)
-        let manager = try await ManagedASRModelDownloader.loadValidated(
+        return try await ManagedASRModelDownloader.loadValidated(
             plan,
             allowDownload: allowDownload,
             progress: progress,
             progressSnapshot: progressSnapshot
         ) { modelDirectory in
+            try Task.checkCancellation()
             let preparing = ModelDownloadProgress.preparing(
                 modelID: plan.modelID,
                 message: preparingMessage
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let models = try await AsrModels.load(
-                from: modelDirectory,
-                version: version,
-                encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
-            )
+            let models: AsrModels
+            if ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+                models = try AsrModels.loadLocal(
+                    from: modelDirectory, version: version,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            } else {
+                models = try await AsrModels.load(
+                    from: modelDirectory, version: version,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            }
+            try Task.checkCancellation()
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
-            return manager
+            return try await ParakeetRuntimePolicy.prepareLoadedModel(manager, for: plan.modelID) { candidate, samples in
+                var state = TdtDecoderState.make(decoderLayers: await candidate.decoderLayerCount)
+                _ = try await candidate.transcribe(samples, decoderState: &state)
+            }
         }
-        let preparing = ModelDownloadProgress.preparing(
-            modelID: plan.modelID,
-            message: preparingMessage
-        )
-        progress?(1, nil)
-        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
-        fputs("[fluidaudio] models ready\n", stderr)
-        return manager
     }
 
     /// Transcribe a WAV file URL directly.
     /// `language` is an optional ISO code enabling FluidAudio's script-level
     /// token filter on the v3 joint decoder (v2 ignores the hint; nil = auto).
-    func transcribe(
-        wavURL: URL, language: String? = nil, expectedVersion: AsrModelVersion? = nil
-    ) async throws -> ASRResult {
+    func transcribe(wavURL: URL, language: String? = nil, expectedModelID: String? = nil,
+                    expectedVersion: AsrModelVersion? = nil) async throws -> ASRResult {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        if let expectedVersion { try await loadModelsForDecode(version: expectedVersion) }
+        if let modelID = expectedModelID ?? expectedVersion.map(FluidAudioModel.modelID) {
+            try await loadModels(modelID: modelID)
+        }
         guard let asrManager else { throw TranscriberError.notLoaded }
         let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
@@ -122,14 +167,14 @@ actor FluidAudioTranscriber {
 
     func transcribePreview(
         samples: [Float], language: String? = nil, expectedVersion: AsrModelVersion = .v3,
-        requiresWordTimings: Bool = true
+        expectedModelID: String? = nil, requiresWordTimings: Bool = true
     ) async throws -> BufferedTranscriptionWindow {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
         // Preview work may restore another already-installed model, but must
         // never download or repair a cache as a side effect of live captions.
-        try await loadModelsForDecode(version: expectedVersion, allowDownload: false)
+        try await loadModels(modelID: expectedModelID ?? FluidAudioModel.modelID(for: expectedVersion), allowDownload: false)
         guard let asrManager else { throw TranscriberError.notLoaded }
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
@@ -150,24 +195,40 @@ actor FluidAudioTranscriber {
         }
     }
 
-    func shutdown() async {
-        await acquireDecode()
-        defer { releaseDecode() }
-        asrManager = nil
-        loadedVersion = nil
+    private func removeWaiter(_ callerID: UUID, generation: UUID) {
+        guard var pending = pendingLoad, pending.generation == generation,
+              pending.waiters.remove(callerID) != nil else { return }
+        if pending.waiters.isEmpty {
+            pendingLoad = nil
+            pending.task.cancel()
+        } else {
+            pendingLoad = pending
+        }
     }
 
-    func shutdown(ifLoadedVersion version: AsrModelVersion) async {
-        await acquireDecode()
-        defer { releaseDecode() }
-        guard FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: loadedVersion,
-            deletingVersion: version
-        ) else { return }
-        asrManager = nil
-        loadedVersion = nil
+    private func cancelPendingLoad() {
+        loadGeneration = UUID()
+        pendingLoad?.task.cancel()
+        pendingLoad = nil
     }
 
+    func shutdown() {
+        cancelPendingLoad()
+        asrManager = nil
+        loadedModelID = nil
+    }
+
+    func shutdown(ifLoadedModelID modelID: String) {
+        if pendingLoad?.modelID == modelID { cancelPendingLoad() }
+        if FluidAudioUnloadPolicy.shouldUnload(
+            loadedModelID: loadedModelID,
+            deletingModelID: modelID
+        ) {
+            // Deleting loaded A must not cancel an unrelated pending B.
+            asrManager = nil
+            loadedModelID = nil
+        }
+    }
     private func acquireDecode() async {
         if !decodeBusy { decodeBusy = true; return }
         await withCheckedContinuation { decodeWaiters.append($0) }
@@ -181,24 +242,33 @@ actor FluidAudioTranscriber {
 
 enum FluidAudioUnloadPolicy {
     static func shouldUnload(
-        loadedVersion: AsrModelVersion?,
-        deletingVersion: AsrModelVersion
+        loadedModelID: String?,
+        deletingModelID: String
     ) -> Bool {
-        loadedVersion == deletingVersion
+        loadedModelID == deletingModelID
     }
 }
 
 /// One routing policy for loading, installed-state checks and deleting model files.
 enum FluidAudioModel {
+    static func modelID(for version: AsrModelVersion) -> String {
+        switch version {
+        case .v2: return BackendOption.parakeetEnglish.model
+        case .redux: return BackendOption.parakeetRedux.model
+        default: return BackendOption.parakeetMultilingual.model
+        }
+    }
+
     static func version(for modelID: String) -> AsrModelVersion {
         if modelID == BackendOption.parakeetRedux.model { return .redux }
         return modelID.contains("v2") ? .v2 : .v3
     }
 
-    static func plan(for version: AsrModelVersion) -> ManagedASRModelPlan {
-        switch version {
-        case .v2: return ManagedASRModelPlans.parakeetV2()
-        case .redux: return ManagedASRModelPlans.parakeetRedux()
+    static func plan(for modelID: String) -> ManagedASRModelPlan {
+        switch modelID {
+        case BackendOption.parakeetEnglish.model: return ManagedASRModelPlans.parakeetV2()
+        case BackendOption.parakeetRedux.model: return ManagedASRModelPlans.parakeetRedux()
+        case BackendOption.phonon25.model: return ManagedASRModelPlans.phonon25()
         default: return ManagedASRModelPlans.parakeetV3()
         }
     }

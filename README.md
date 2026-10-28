@@ -45,7 +45,8 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
-- **Meeting notes and answers** — Use templates, re-summarize with another model, and ask questions across meetings with references to source passages. Export notes, transcripts, and answers as Markdown or PDF.
+- **Meeting notes** — Use templates, re-summarize with another model, and export notes, transcripts, and answers as Markdown or PDF.
+- **Ask Meetings** — Chat with your meeting notes and transcripts directly beneath a saved meeting or from the Ask Meetings workspace. Use `@` to attach saved meetings, continue with follow-up questions, and open cited passages to check the sources.
 - **Your choice of AI** — Generate summaries with OpenAI or Anthropic API keys, OpenRouter, ChatGPT sign-in, Claude Code, Ollama, LM Studio, or a custom endpoint. Hosted providers receive the transcript for the requested task.
 - **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
 - **Calendar and meeting detection** — Show upcoming events from macOS Calendar accounts, choose calendars and time windows, and join or record from reminders. Optional camera and microphone activity detection recognizes meeting apps.
@@ -104,6 +105,8 @@ muesli-cli meetings list --limit 10
 muesli-cli meetings get 42 # Replace 42 with an ID from the list
 muesli-cli transcribe interview.m4a --format json
 ```
+
+All transcription models in the app are also available through `transcribe --model`, including `apple-speech` (macOS 26 and compatible hardware), `cohere-transcribe`, `bodhan-core`, `bodhan-core-int8`, `bodhan-flex`, `bodhan-flex-int8`, `gemma4-e2b`, and `gemma4-e4b` (macOS 15+). Use `muesli-cli transcribe --help` for the full list. Downloads reuse the app’s model caches; Apple manages its own language assets. Apple Speech uses the system language, Cohere defaults to English, and Bodhan defaults to Hindi. Gemma retains its experimental status.
 
 Data commands return JSON; file transcription returns plain text unless another format is requested. The `meetings update-notes` command replaces formatted notes while preserving the raw transcript. Use `spec` to check commands supported by your installed version.
 
@@ -226,6 +229,7 @@ Muesli has been possible because of the generosity of companies such as:
 - [Core Audio](https://developer.apple.com/documentation/coreaudio) by Apple — system audio process taps
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
 - [Parakeet Redux by Moondream](https://huggingface.co/moondream/parakeet-redux), based on NVIDIA Parakeet v3, with the [Core ML conversion by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) — model weights under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Muesli uses the converted weights without further modification.
+- [Phonon-2.5 by Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5), with the [Muesli Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Uses the GPU encoder on macOS 15+; original notices and conversion attribution are included.
 - [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — FastConformer TDT speech recognition model
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)

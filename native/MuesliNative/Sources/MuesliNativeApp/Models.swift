@@ -44,6 +44,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let phonon25 = BackendOption(
+        backend: "fluidaudio",
+        model: ParakeetRuntimePolicy.phonon25ModelID,
+        label: "Phonon-2.5",
+        sizeLabel: "~290 MB",
+        description: "Compact multilingual transcription in 25 languages.",
+        recommended: false
+    )
+
     static let parakeetEnglish = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
@@ -233,7 +242,7 @@ struct BackendOption: Equatable {
         let all = systemManaged
             + parakeetFamily
             + whisperFamily
-            + [.cohereTranscribe]
+            + [.phonon25, .cohereTranscribe]
             + streaming
             + bodhanFamily
             + experimental
@@ -348,7 +357,7 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
-            || Self.bodhanFamily.contains(self) || self == .appleSpeechAnalyzer
+            || Self.bodhanFamily.contains(self) || self == .phonon25 || self == .appleSpeechAnalyzer
             || self == .nemotron35Multilingual
     }
 
@@ -359,7 +368,7 @@ struct BackendOption: Equatable {
     /// Shared OS requirements for model selection in onboarding and the library.
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
-        if self == .parakeetRedux {
+        if backend == "fluidaudio", ParakeetRuntimePolicy.requiresMacOS15(for: model) {
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
         }
         switch backend {
@@ -478,7 +487,7 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = FluidAudioModel.plan(for: FluidAudioModel.version(for: model))
+            let plan = FluidAudioModel.plan(for: model)
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
@@ -2133,6 +2142,34 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum AppAppearanceMode: String, CaseIterable {
+    case light, system, dark
+
+    var label: String {
+        switch self {
+        case .light: "Light"
+        case .system: "Follow System"
+        case .dark: "Dark"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .light: "sun.max"
+        case .system: "desktopcomputer"
+        case .dark: "moon"
+        }
+    }
+
+    var appearanceName: NSAppearance.Name? {
+        switch self {
+        case .light: .aqua
+        case .system: nil
+        case .dark: .darkAqua
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -2185,6 +2222,15 @@ struct AppConfig: Codable {
     var diarizeMicrophoneAudio: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
+    var followSystemAppearance: Bool = false
+    // Retain dark_mode for older configurations; following the system is opt-in.
+    var appearanceMode: AppAppearanceMode {
+        get { followSystemAppearance ? .system : (darkMode ? .dark : .light) }
+        set {
+            followSystemAppearance = newValue == .system
+            if newValue != .system { darkMode = newValue == .dark }
+        }
+    }
     var enableDoubleTapDictation: Bool = true
     var enableBufferedLiveDictation: Bool = false
     /// Only applies when the dictation shortcut is a key combination.
@@ -2279,6 +2325,9 @@ struct AppConfig: Codable {
     var postProcessorCustomLLMModel: String = ""
     var activeTranscriptCleanupPromptId: String = TranscriptCleanupPrompts.defaultID
     var customTranscriptCleanupPrompts: [CustomTranscriptCleanupPrompt] = []
+    var dictationAppFormattingRules: [DictationAppFormattingRule] = []
+    var dictationFormattingTemplates: [DictationFormattingTemplate] = []
+    var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
@@ -2354,6 +2403,7 @@ struct AppConfig: Codable {
         case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
+        case followSystemAppearance = "follow_system_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case enableBufferedLiveDictation = "enable_buffered_live_dictation"
         case dictationCombinationActivation = "dictation_combination_activation"
@@ -2437,6 +2487,9 @@ struct AppConfig: Codable {
         case postProcessorCustomLLMModel = "post_processor_custom_llm_model"
         case activeTranscriptCleanupPromptId = "active_transcript_cleanup_prompt_id"
         case customTranscriptCleanupPrompts = "custom_transcript_cleanup_prompts"
+        case dictationAppFormattingRules = "dictation_app_formatting_rules"
+        case dictationFormattingTemplates = "dictation_formatting_templates"
+        case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
@@ -2550,6 +2603,7 @@ struct AppConfig: Codable {
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        followSystemAppearance = (try? c.decode(Bool.self, forKey: .followSystemAppearance)) ?? defaults.followSystemAppearance
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
@@ -2706,6 +2760,9 @@ struct AppConfig: Codable {
         postProcessorOllamaModel = (try? c.decode(String.self, forKey: .postProcessorOllamaModel)) ?? defaults.postProcessorOllamaModel
         postProcessorLMStudioModel = (try? c.decode(String.self, forKey: .postProcessorLMStudioModel)) ?? defaults.postProcessorLMStudioModel
         postProcessorCustomLLMModel = (try? c.decode(String.self, forKey: .postProcessorCustomLLMModel)) ?? defaults.postProcessorCustomLLMModel
+        dictationAppFormattingRules = (try? c.decode(DictationFormattingEntries<DictationAppFormattingRule>.self, forKey: .dictationAppFormattingRules).values) ?? []
+        dictationFormattingTemplates = (try? c.decode(DictationFormattingEntries<DictationFormattingTemplate>.self, forKey: .dictationFormattingTemplates).values) ?? []
+        dictationFormattingSetupDismissed = (try? c.decode(Bool.self, forKey: .dictationFormattingSetupDismissed)) ?? false
         customTranscriptCleanupPrompts = (try? c.decode([CustomTranscriptCleanupPrompt].self, forKey: .customTranscriptCleanupPrompts)) ?? defaults.customTranscriptCleanupPrompts
         activeTranscriptCleanupPromptId = (try? c.decode(String.self, forKey: .activeTranscriptCleanupPromptId)) ?? defaults.activeTranscriptCleanupPromptId
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt

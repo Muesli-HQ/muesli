@@ -91,6 +91,10 @@ case "${shard}" in
       WhisperPreviewSegmentSeekerTests
       WhisperPreviewPresentationTests
       BufferedLiveTranscriptionPolicyTests
+      FluidAudioModelLoadTests
+      ModelLibraryPreparationTests
+      ParakeetModelPreparationTests
+      Phonon25IntegrationTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
       CleanupFormattingTests
@@ -128,6 +132,7 @@ case "${shard}" in
       PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
+      DictationAppFormattingTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests
@@ -162,6 +167,7 @@ case "${shard}" in
       AudioQueueInputRecorderTests
       FallbackStreamingDictationRecorderTests
       MeetingCaptureShutdownTests
+      ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests

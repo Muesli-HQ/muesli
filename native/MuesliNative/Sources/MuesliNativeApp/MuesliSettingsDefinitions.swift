@@ -5,6 +5,20 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    /// Static appearance choices shared by the sidebar and full settings catalog.
+    /// Does not enumerate models, calendars, or their availability on disk.
+    func appearanceDefinition() -> MuesliSetting {
+        MuesliSetting(
+            id: "appearance", label: "Appearance",
+            choices: AppAppearanceMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.appearanceMode.rawValue },
+            unavailable: { _ in nil },
+            apply: { value in
+                guard let mode = AppAppearanceMode(rawValue: value) else { return }
+                self.updateConfig { $0.appearanceMode = mode }
+            })
+    }
+
     /// The menu and voice executor share the same persisted mode and controller
     /// validation. Only the manual menu may prepare a missing chord by capture.
     private func recordingModeDefinition(capturedShortcut: HotkeyConfig?) -> MuesliSetting {
@@ -176,9 +190,49 @@ extension MuesliController {
             }
         }
 
+        // Per-app formatting is mechanical, so these controls are voice eligible.
+        // App identities remain behind one static discovery group.
+        for rule in config.dictationAppFormattingRules {
+            let bundleID = rule.bundleID
+            let discovery = MuesliSetting.Discovery(id: "dictation_app_formatting", label: "Dictation formatting by app")
+            let unavailable: (String) -> String? = { _ in
+                self.config.dictationAppFormattingRules.contains { $0.bundleID == bundleID }
+                    ? nil : "This app rule was removed."
+            }
+            let templates = DictationFormattingTemplate.builtIns + config.dictationFormattingTemplates
+            add("dictation_format_preset_" + bundleID, "Template for " + rule.appName,
+                templates.map { .init(id: $0.id, label: $0.name) },
+                read: { config in
+                    guard let rule = config.dictationAppFormattingRules.first(where: { $0.bundleID == bundleID }) else { return "unchanged" }
+                    // A customized combination is a read-only menu placeholder, not another template.
+                    return DictationFormattingTemplate.selected(for: rule, saved: config.dictationFormattingTemplates)?.id ?? "Custom"
+                },
+                discovery: discovery, unavailable: { value in
+                    if let reason = unavailable(value) { return reason }
+                    return (DictationFormattingTemplate.builtIns + self.config.dictationFormattingTemplates)
+                        .contains(where: { $0.id == value }) ? nil : "This template was removed."
+                }) { value in
+                    self.applyDictationFormattingTemplate(bundleID: bundleID, templateID: value)
+                }
+            add("dictation_format_case_" + bundleID, "Capitalization in " + rule.appName,
+                DictationAppFormatting.LetterCase.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+                read: { $0.dictationAppFormattingRules.first { $0.bundleID == bundleID }?.formatting.letterCase.rawValue ?? "unchanged" },
+                discovery: discovery, unavailable: unavailable) { value in
+                    guard let option = DictationAppFormatting.LetterCase(rawValue: value) else { return }
+                    self.updateDictationFormatting(bundleID: bundleID) { $0.letterCase = option }
+                }
+            add("dictation_format_period_" + bundleID, "Final period in " + rule.appName,
+                DictationAppFormatting.FinalPeriod.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+                read: { $0.dictationAppFormattingRules.first { $0.bundleID == bundleID }?.formatting.finalPeriod.rawValue ?? "keep" },
+                discovery: discovery, unavailable: unavailable) { value in
+                    guard let option = DictationAppFormatting.FinalPeriod(rawValue: value) else { return }
+                    self.updateDictationFormatting(bundleID: bundleID) { $0.finalPeriod = option }
+                }
+        }
+
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
-        toggle("dark_mode", "Dark mode", \.darkMode)
+        settings.append(appearanceDefinition())
         toggle("sound", "Sound effects", \.soundEnabled)
         toggle("quill_sound", "Quill sounds", \.quilSoundEnabled)
         toggle("pause_media", "Pause media during dictation", \.pauseMediaDuringDictation)
