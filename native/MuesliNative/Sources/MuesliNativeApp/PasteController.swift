@@ -72,6 +72,8 @@ enum PasteController {
     static func paste(
         text: String,
         appendDictationSentenceSpace: Bool = false,
+        prepareTextForTarget: @escaping @MainActor (String, NSRunningApplication?) -> String = { text, _ in text },
+        onTextPrepared: @escaping @MainActor (String) -> Void = { _ in },
         pasteboard: NSPasteboard = .general,
         shortcut: PasteShortcut = .automatic,
         requireStagedClipboardOwnership: Bool = false,
@@ -103,7 +105,7 @@ enum PasteController {
             ? text + DictationPasteSpacing.trailingSeparator(after: text)
             : text
         let didStageText = pasteboard.setString(pastedText, forType: .string)
-        let pasteChangeCount = pasteboard.changeCount
+        var pasteChangeCount = pasteboard.changeCount
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -152,6 +154,32 @@ enum PasteController {
                 settleFailedDispatch()
                 return
             }
+
+            // Apply output preferences to the actual recipient, after model/dictionary
+            // processing and before spacing. Never overwrite a newer clipboard owner.
+            let formattedText = prepareTextForTarget(text, targetApplication)
+            if formattedText != text {
+                guard pasteboard.changeCount == pasteChangeCount else {
+                    onLifecycleEvent(.clipboardOwnershipLost)
+                    onPasteFinished(nil)
+                    onClipboardSettled()
+                    return
+                }
+                let separator = DictationPasteSpacing.trailingSeparator(after: formattedText)
+                let originalSeparator = DictationPasteSpacing.trailingSeparator(after: text)
+                let formattedPaste = appendDictationSentenceSpace
+                    ? formattedText + (separator.isEmpty ? originalSeparator : separator)
+                    : formattedText
+                pasteboard.clearContents()
+                let staged = pasteboard.setString(formattedPaste, forType: .string)
+                pasteChangeCount = pasteboard.changeCount
+                guard staged else {
+                    onLifecycleEvent(.clipboardStageFailed)
+                    settleFailedDispatch()
+                    return
+                }
+            }
+            onTextPrepared(formattedText)
 
             let didDispatchPaste: Bool
             switch dispatchStrategy {

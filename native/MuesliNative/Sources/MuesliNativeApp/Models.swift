@@ -2314,6 +2314,9 @@ struct AppConfig: Codable {
     var postProcessorCustomLLMModel: String = ""
     var activeTranscriptCleanupPromptId: String = TranscriptCleanupPrompts.defaultID
     var customTranscriptCleanupPrompts: [CustomTranscriptCleanupPrompt] = []
+    var dictationAppFormattingRules: [DictationAppFormattingRule] = []
+    var dictationFormattingTemplates: [DictationFormattingTemplate] = []
+    var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
@@ -2472,6 +2475,9 @@ struct AppConfig: Codable {
         case postProcessorCustomLLMModel = "post_processor_custom_llm_model"
         case activeTranscriptCleanupPromptId = "active_transcript_cleanup_prompt_id"
         case customTranscriptCleanupPrompts = "custom_transcript_cleanup_prompts"
+        case dictationAppFormattingRules = "dictation_app_formatting_rules"
+        case dictationFormattingTemplates = "dictation_formatting_templates"
+        case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
@@ -2741,6 +2747,9 @@ struct AppConfig: Codable {
         postProcessorOllamaModel = (try? c.decode(String.self, forKey: .postProcessorOllamaModel)) ?? defaults.postProcessorOllamaModel
         postProcessorLMStudioModel = (try? c.decode(String.self, forKey: .postProcessorLMStudioModel)) ?? defaults.postProcessorLMStudioModel
         postProcessorCustomLLMModel = (try? c.decode(String.self, forKey: .postProcessorCustomLLMModel)) ?? defaults.postProcessorCustomLLMModel
+        dictationAppFormattingRules = (try? c.decode([DictationAppFormattingRule].self, forKey: .dictationAppFormattingRules)) ?? []
+        dictationFormattingTemplates = (try? c.decode([DictationFormattingTemplate].self, forKey: .dictationFormattingTemplates)) ?? []
+        dictationFormattingSetupDismissed = (try? c.decode(Bool.self, forKey: .dictationFormattingSetupDismissed)) ?? false
         customTranscriptCleanupPrompts = (try? c.decode([CustomTranscriptCleanupPrompt].self, forKey: .customTranscriptCleanupPrompts)) ?? defaults.customTranscriptCleanupPrompts
         activeTranscriptCleanupPromptId = (try? c.decode(String.self, forKey: .activeTranscriptCleanupPromptId)) ?? defaults.activeTranscriptCleanupPromptId
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt

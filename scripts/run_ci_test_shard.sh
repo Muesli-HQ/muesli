@@ -119,6 +119,7 @@ case "${shard}" in
       PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
+      DictationAppFormattingTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests

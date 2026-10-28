@@ -22,6 +22,22 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### App formatting preferences outside SQLite
+
+`ConfigStore` saves dictation formatting preferences in the local `AppConfig`
+JSON, not in the history database. `dictation_app_formatting_rules` contains
+bundle IDs, display names and complete formatting snapshots. An optional
+`templateID` identifies the template from which a rule was copied; older rules
+without it still decode without changing their formatting. Combinations that
+do not match a built-in or saved template appear as Custom, including rules
+that previously used the retired Lowercase template.
+`dictation_formatting_templates` stores named user templates with stable IDs and
+formatting snapshots, defaulting to an empty list for older configurations.
+Applying a template copies its formatting into an app rule. Customizing that
+rule detaches its template identity; deleting a template preserves already
+applied app formatting. These preferences are local-only and add no SQLite,
+CloudKit or CLI fields.
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use

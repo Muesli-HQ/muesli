@@ -608,6 +608,7 @@ public final class MuesliController: NSObject {
     private var openWindowCount = 0
     private var capturedDictationContext: DictationContext?
     private var capturedDictationCorrectionTargetApp: DictationCorrectionTargetApp?
+    private var capturedDictationFormattingRules: [DictationAppFormattingRule] = []
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -3098,6 +3099,13 @@ public final class MuesliController: NSObject {
         Task { @MainActor in
             do { try await applySetting(id, value: value) }
             catch { presentErrorAlert(title: "Setting could not be changed", message: error.localizedDescription) }
+        }
+    }
+
+    func verifySavedDictationFormattingTemplate(_ template: DictationFormattingTemplate) throws {
+        let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath()))
+        guard saved.dictationFormattingTemplates.contains(template) else {
+            throw MuesliSettings.Failure.rejected("The template could not be saved. Check your settings before restarting.")
         }
     }
 
@@ -11631,6 +11639,7 @@ public final class MuesliController: NSObject {
     private func clearCapturedDictationSessionContext() {
         capturedDictationContext = nil
         capturedDictationCorrectionTargetApp = nil
+        capturedDictationFormattingRules = []
     }
 
     private func dictationTargetApp(
@@ -11731,6 +11740,8 @@ public final class MuesliController: NSObject {
 
     private func captureDictationCorrectionTargetApp() {
         capturedDictationCorrectionTargetApp = currentDictationTargetApp()
+        capturedDictationFormattingRules = isDictationTestMode ? []
+            : DictationAppFormattingRule.activeRules(config.dictationAppFormattingRules)
     }
 
     private func handleStart() {
@@ -11802,7 +11813,7 @@ public final class MuesliController: NSObject {
                         fputs("[muesli-native] streaming partial: +\"\(delta)\" (total \(fullText.count) chars)\n", stderr)
                         if !delta.isEmpty {
                             self.previousStreamText = fullText
-                            if self.currentDictationOutputMode != .voiceNote {
+                            if self.currentDictationOutputMode != .voiceNote, self.capturedDictationFormattingRules.isEmpty {
                                 PasteController.typeText(delta)
                             }
                         }
@@ -12175,6 +12186,37 @@ public final class MuesliController: NSObject {
             ? currentDictationTargetApp() ?? capturedDictationCorrectionTargetApp
             : nil
 
+        if outputMode == .paste, !capturedDictationFormattingRules.isEmpty, !cleaned.isEmpty {
+            let rules = capturedDictationFormattingRules
+            let context = capturedDictationCorrectionTargetApp?.appContext ?? ""
+            var preparedText = cleaned
+            var pastedTarget: DictationCorrectionTargetApp?
+            var didDispatch = false
+            PasteController.paste(text: cleaned, appendDictationSentenceSpace: true,
+                prepareTextForTarget: { text, app in
+                    DictationAppFormattingRule.apply(text, bundleID: app?.bundleIdentifier, rules: rules)
+                }, onTextPrepared: { preparedText = $0 },
+                shortcut: config.pasteShortcut, requireStagedClipboardOwnership: true,
+                onPasteFinished: { [weak self] app in
+                    guard let self else { return }
+                    pastedTarget = self.dictationTargetApp(from: app)
+                    self.releaseStandardDictationState()
+                    if didDispatch { self.indicator.showDictationCompletion() }
+                }, onClipboardSettled: { [weak self] in
+                    guard let self else { return }
+                    self.finishStandardDictationBookkeeping(text: preparedText, duration: duration,
+                        appContext: context, startedAt: startedAt, outputMode: outputMode,
+                        targetApp: pastedTarget, backend: BackendOption.nemotron35Multilingual.backend,
+                        bodhanMeasurement: nil,
+                        transcriptionModel: DictationModelIdentity(backend: BackendOption.nemotron35Multilingual.backend,
+                            model: BackendOption.nemotron35Multilingual.model, name: BackendOption.nemotron35Multilingual.label))
+                }, onLifecycleEvent: { event in
+                    if event == .pasteDispatched { didDispatch = true }
+                })
+            finishDictationLatencyTrace("nemotron_stop")
+            return
+        }
+
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
 
         if !cleaned.isEmpty {
@@ -12309,6 +12351,7 @@ public final class MuesliController: NSObject {
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
+        let formattingRules = capturedDictationFormattingRules
         let startingTargetApp = capturedDictationCorrectionTargetApp
         let storageContext = capturedContext.map { DictationContextCapture.formatForStorage($0) }
             ?? startingTargetApp?.appContext
@@ -12444,10 +12487,15 @@ public final class MuesliController: NSObject {
                 await MainActor.run {
                     if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
+                        var preparedText = text
                         var didDispatchPaste = false
                         PasteController.paste(
                             text: text,
                             appendDictationSentenceSpace: true,
+                            prepareTextForTarget: { text, app in
+                                DictationAppFormattingRule.apply(text, bundleID: app?.bundleIdentifier, rules: formattingRules)
+                            },
+                            onTextPrepared: { preparedText = $0 },
                             shortcut: self.config.pasteShortcut,
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
@@ -12461,7 +12509,7 @@ public final class MuesliController: NSObject {
                                     // poll after 100 ms, so starting it here captures immediate
                                     // edits without blocking the clipboard restoration timer.
                                     self.dictationCorrectionMonitor.start(
-                                        originalText: text,
+                                        originalText: preparedText,
                                         appContext: storageContext,
                                         targetApp: targetApp
                                     ) { [weak self] suggestion in
@@ -12476,7 +12524,7 @@ public final class MuesliController: NSObject {
                             onClipboardSettled: { [weak self] in
                                 guard let self else { return }
                                 self.finishStandardDictationBookkeeping(
-                                    text: text,
+                                    text: preparedText,
                                     duration: duration,
                                     appContext: storageContext,
                                     startedAt: startedAt,

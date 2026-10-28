@@ -53,6 +53,8 @@ struct TimelineView: View {
                 onSelect: { controller.openInsights(section: $0) }
             )
 
+            DictationFormattingSetupCard(appState: appState, controller: controller)
+
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
                     .padding(.horizontal, MuesliTheme.pageInset)
