@@ -39,6 +39,9 @@ final class CotypistSetup: ObservableObject {
     @Published private(set) var modelStates: [CotypistModel: ModelState] = Dictionary(
         uniqueKeysWithValues: CotypistModel.allCases.map { ($0, CotypistSetup.diskState($0)) })
     private var modelDownloads: [CotypistModel: Task<Void, Never>] = [:]
+    /// The shared downloader's latest progress per model (phase, file, speed, time left), for the
+    /// same progress view the other model cards use.
+    @Published private(set) var downloadSnapshots: [CotypistModel: ModelDownloadProgress] = [:]
 
     /// The selected model's state, for Settings.
     var modelState: ModelState { state(of: selectedModel()) }
@@ -147,7 +150,9 @@ final class CotypistSetup: ObservableObject {
                 ) { progress in
                     let fraction = progress.fractionCompleted ?? 0
                     Task { @MainActor in
-                        if case .downloading = self?.modelStates[model] { self?.modelStates[model] = .downloading(fraction) }
+                        guard case .downloading = self?.modelStates[model] else { return }
+                        self?.modelStates[model] = .downloading(fraction)
+                        self?.downloadSnapshots[model] = progress
                     }
                 }
                 self?.modelStates[model] = model.isDownloaded ? .ready : .failed("The download didn't complete.")
@@ -157,6 +162,7 @@ final class CotypistSetup: ObservableObject {
                 self?.modelStates[model] = .failed(error.localizedDescription)
             }
             self?.modelDownloads[model] = nil
+            self?.downloadSnapshots[model] = nil
         }
     }
 

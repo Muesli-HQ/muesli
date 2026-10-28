@@ -801,7 +801,8 @@ struct ModelsView: View {
             }
 
             if case .downloading(let fraction) = state {
-                downloadProgressView(for: "cotypist-" + model.rawValue, fallbackProgress: fraction)
+                downloadProgressView(for: "cotypist-" + model.rawValue, fallbackProgress: fraction,
+                                     snapshot: cotypist.downloadSnapshots[model])
             }
             if case .failed(let message) = state {
                 Text("Download failed: \(message)")
@@ -1190,9 +1191,11 @@ struct ModelsView: View {
         for modelID: String,
         fallbackProgress: Double,
         fallbackMessage: String? = nil,
-        isDownloading: Bool = true
+        isDownloading: Bool = true,
+        snapshot externalSnapshot: ModelDownloadProgress? = nil
     ) -> some View {
-        if let snapshot = downloadSnapshots[modelID] {
+        // Downloads this view doesn't own (Cotypist's) pass their snapshot in.
+        if let snapshot = externalSnapshot ?? downloadSnapshots[modelID] {
             VStack(alignment: .leading, spacing: 4) {
                 if snapshot.phase != .preparing {
                     ProgressView(value: snapshot.fractionCompleted ?? fallbackProgress)
