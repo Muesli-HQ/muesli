@@ -677,7 +677,14 @@ struct NativeModelsCLITranscriber: AudioTranscribing {
         guard let nativeModel = model.nativeModel else {
             throw CLIError.invalidInput("\(model.rawValue) is not an app-native transcription model.")
         }
-        let text = try await transcribeFile(wavURL, nativeModel, progress)
+        let text: String
+        do {
+            text = try await transcribeFile(wavURL, nativeModel, progress)
+        } catch let error as NativeFileTranscriptionError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Choose a different --model, or use a compatible Mac and macOS version.")
+        }
+        // The pipeline retains the decoded source file's full duration.
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 }

@@ -108,6 +108,34 @@ struct MuesliCLITests {
         }
     }
 
+    @Test("native CLI availability errors are actionable while unrelated runtime errors pass through")
+    func nativeAvailabilityErrors() async throws {
+        let url = URL(fileURLWithPath: "/tmp/audio.wav")
+        let reason = "Apple Speech requires macOS 26 and compatible Apple hardware."
+        let unavailable = NativeModelsCLITranscriber(transcribeFile: { _, _, _ in
+            throw NativeFileTranscriptionError.unavailable(reason)
+        })
+        do {
+            _ = try await unavailable.transcribe(wavURL: url, model: .appleSpeech, progress: { _ in })
+            Issue.record("Expected a platform availability error")
+        } catch let error as CLIError {
+            #expect(error.exitCode == 4)
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message == reason)
+            #expect(error.errorBody.fix?.contains("compatible Mac") == true)
+        }
+        let failure = NativeModelsCLITranscriber(transcribeFile: { _, _, _ in
+            throw NSError(domain: "ModelInference", code: 17)
+        })
+        do {
+            _ = try await failure.transcribe(wavURL: url, model: .cohere, progress: { _ in })
+            Issue.record("Expected the original inference error")
+        } catch {
+            #expect((error as NSError).domain == "ModelInference")
+            #expect((error as NSError).code == 17)
+        }
+    }
+
     @Test("cancelled native file requests stop before file access or model preparation")
     func cancelledNativeFileRequest() async {
         let task = Task {
@@ -118,6 +146,110 @@ struct MuesliCLITests {
             )
         }
         await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test("Gemma CLI replay supplies bounded PCM16 windows and removes temporary conversions", arguments: [1, 31])
+    func gemmaReplayPCM16(seconds: Int) async throws {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("cli-gemma-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try CLIWavWriter.writeWAV(samples: (0..<(seconds * 16_000)).map {
+            Float(sin(Double($0) * 2 * .pi * 200 / 16_000) * 0.25)
+        }, to: source)
+        let probe = NativeReplayProbe()
+        _ = try await NativeFileTranscriber.transcribeGemmaRecording(wavURL: source) { url in
+            // The real Gemma parser rejects the Float32 replay output without
+            // the adapter conversion; this exercises that exact file contract.
+            let wav = try WavReader.readFloatMonoWAV(from: url)
+            #expect(wav.sampleRate == 16_000)
+            #expect(!wav.samples.isEmpty && wav.samples.count <= 80_000)
+            #expect(wav.samples.contains { abs($0) > 0.2 })
+            let index = await probe.record(url)
+            return "window \(index)"
+        }
+        let urls = await probe.urls
+        #expect(urls.count == (seconds == 1 ? 1 : 7))
+        #expect(urls.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    @Test("Gemma CLI replay removes its PCM16 conversion when inference fails")
+    func gemmaReplayFailureCleanup() async throws {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("cli-gemma-failure-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try CLIWavWriter.writeWAV(samples: Array(repeating: 0.2, count: 16_000), to: source)
+        let probe = NativeReplayProbe()
+        await #expect(throws: CancellationError.self) {
+            try await NativeFileTranscriber.transcribeGemmaRecording(wavURL: source) { url in
+                _ = await probe.record(url)
+                throw CancellationError()
+            }
+        }
+        let urls = await probe.urls
+        #expect(urls.count == 1)
+        #expect(urls.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    @Test("silent Cohere input never reaches inference or saves a meeting")
+    func cohereSilenceGuard() async throws {
+        let fixture = try TranscribeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try CLIWavWriter.writeWAV(samples: Array(repeating: 0, count: 16_000), to: fixture.wavURL)
+        var postedChange = false
+        let native = NativeModelsCLITranscriber(transcribeFile: { url, model, _ in
+            #expect(model == .cohere)
+            return try await NativeFileTranscriber.transcribeCohereRecording(wavURL: url, speechDetected: { candidate in
+                let samples = try WavReader.readFloatMonoWAV(from: candidate).samples
+                #expect(samples.allSatisfy { $0 == 0 })
+                return false
+            }, infer: { _ in
+                Issue.record("Silent input must never prepare Cohere or invoke inference")
+                return "Invented speech"
+            })
+        })
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 1),
+            transcriber: RoutingAudioTranscriber(native: native),
+            dataChangePoster: { postedChange = true }
+        )
+        await #expect(throws: CLIError.self) {
+            try await pipeline.run(request: .init(sourceURL: fixture.sourceURL,
+                model: .cohere, title: nil, summarize: false, saveMeeting: true), context: fixture.context)
+        }
+        #expect(!postedChange)
+        #expect(!FileManager.default.fileExists(atPath: fixture.context.databaseURL.path))
+    }
+
+    @Test("Cohere speech guard permits speech and propagates detection failures")
+    func cohereSpeechGuardErrors() async throws {
+        let url = URL(fileURLWithPath: "/tmp/audio.wav")
+        let text = try await NativeFileTranscriber.transcribeCohereRecording(wavURL: url,
+            speechDetected: { _ in true }, infer: { candidate in
+                #expect(candidate == url)
+                return "Spoken words"
+            })
+        #expect(text == "Spoken words")
+        do {
+            _ = try await NativeFileTranscriber.transcribeCohereRecording(wavURL: url,
+                speechDetected: { _ in throw NSError(domain: "VAD", code: 12) }, infer: { _ in
+                    Issue.record("Detection failure must not permit inference")
+                    return "Invented speech"
+                })
+            Issue.record("Expected speech detection failure")
+        } catch {
+            #expect((error as NSError).domain == "VAD")
+        }
+    }
+
+    @Test("real Cohere speech detector rejects silence without loading ASR weights",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_APPLE_SPEECH_FIXTURE_DIR"] != nil))
+    func cohereSilenceIntegration() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cohere-silence-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try CLIWavWriter.writeWAV(samples: Array(repeating: 0, count: 16_000), to: url)
+        let text = try await NativeFileTranscriber.transcribeCohereRecording(wavURL: url) { _ in
+            Issue.record("Real silent input must not reach Cohere inference")
+            return "Invented speech"
+        }
+        #expect(text.isEmpty)
     }
 
     @Test("native file models share the app's OS compatibility rules")
@@ -847,5 +979,13 @@ private struct SuccessfulSummarizer: MeetingSummarizing {
 private struct FailingSummarizer: MeetingSummarizing {
     func summarize(transcript: String, title: String, supportDirectory: URL) async throws -> String {
         throw CLISummaryError.unavailable("summary backend unavailable")
+    }
+}
+
+private actor NativeReplayProbe {
+    private(set) var urls: [URL] = []
+    func record(_ url: URL) -> Int {
+        urls.append(url)
+        return urls.count
     }
 }
