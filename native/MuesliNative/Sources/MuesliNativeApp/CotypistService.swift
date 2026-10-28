@@ -35,9 +35,9 @@ final class CotypistService {
     /// the dictation context plumbing. Used only while that document is still the focused one.
     private var screenText: [String: (text: String, at: Date, document: String?)] = [:]
     private var screenInFlight: Set<String> = []
-    /// The text before the caret for recent suggestions, keyed by app and suggestion text, so an
-    /// outcome can be recorded with the sentence it completed.
-    private var recentContexts: [(key: String, before: String)] = []
+    /// The text before the caret for recent suggestions, keyed by the suggestion's ID (sent with the
+    /// reply and returned with its outcome), so an outcome is recorded with the sentence it completed.
+    private var recentContexts: [(id: String, before: String)] = []
     private let requests = CotypistRequestLedger()
 
     static var socketURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist.sock") }
@@ -192,11 +192,12 @@ final class CotypistService {
             switch CotypistShaper.shape(completion, afterSpace: afterSpace, heal: heal, maxTokens: maxTokens,
                                         firstWordOnly: firstWordOnly, thresholds: thresholds) {
             case .success(let shaped):
-                remember(before: textBeforeCaret, app: bundleID, suggestion: shaped.text)
+                let id = UUID().uuidString
+                remember(before: textBeforeCaret, id: id)
                 // With one-word suggestions the first stage is the whole suggestion.
                 let complete = firstWordOnly && thresholds.maxWords == 1
                 return timing.merging(["text": shaped.text, "firstWordLogProb": shaped.firstWordLogProb,
-                                       "complete": complete]) { $1 }
+                                       "complete": complete, "id": id]) { $1 }
             case .failure(let rejection):
                 // `retryFull`: the first word ran past the first stage's budget; the full request may finish it.
                 return timing.merging(["rejection": rejection.description, "retryFull": rejection == .firstWordIncomplete]) { $1 }
@@ -315,8 +316,8 @@ final class CotypistService {
     /// Records a suggestion's outcome: the suggestion, what was accepted of it, and the sentence it
     /// continued (the user's own text, kept to that one sentence, in the local database only).
     private func record(_ message: [String: Any]) {
-        let key = Self.contextKey(app: message["app"] as? String ?? "", suggestion: message["text"] as? String ?? "")
-        let before = recentContexts.last { $0.key == key }?.before ?? ""
+        let id = message["id"] as? String
+        let before = recentContexts.last { $0.id == id }?.before ?? ""
         guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before),
                                                 model: config().cotypistModel.rawValue) else { return }
         // A SQLite write transaction: off the main actor, which only hears back to refresh the timeline.
@@ -330,12 +331,10 @@ final class CotypistService {
         }
     }
 
-    private func remember(before: String, app: String, suggestion: String) {
-        recentContexts.append((Self.contextKey(app: app, suggestion: suggestion), before))
-        if recentContexts.count > 16 { recentContexts.removeFirst(recentContexts.count - 16) }
+    private func remember(before: String, id: String) {
+        recentContexts.append((id, before))
+        if recentContexts.count > 32 { recentContexts.removeFirst(recentContexts.count - 32) }
     }
-
-    private static func contextKey(app: String, suggestion: String) -> String { app + "\n" + suggestion }
 
     /// The sentence being written at the caret, for showing where a suggestion was accepted: from
     /// the last sentence end (or line break), reaching back one more sentence when the current one

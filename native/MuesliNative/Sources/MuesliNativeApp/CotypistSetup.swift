@@ -140,8 +140,10 @@ final class CotypistSetup: ObservableObject {
         modelStates[model] = .downloading(0)
         modelDownloads[model] = Task { @MainActor [weak self] in
             do {
+                // Pause cancels this task; with no one left observing, the transfer itself stops
+                // (the partial download is kept for resuming).
                 try await ModelDownloadCoordinator.shared.download(
-                    release.manifest(id: "cotypist-" + model.rawValue), to: model.directory
+                    release.manifest(id: "cotypist-" + model.rawValue), to: model.directory, cancelWhenUnobserved: true
                 ) { progress in
                     let fraction = progress.fractionCompleted ?? 0
                     Task { @MainActor in

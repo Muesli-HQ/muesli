@@ -281,7 +281,7 @@ static NSUInteger NextWordLength(NSString *text) {
         NSString *firstText = one[@"text"];
         if (firstText.length) {
             [self showGhost:firstText client:[self client]];
-            self->_shown = [@{@"app": bundleID ?: @"", @"trigger": trigger, @"text": firstText,
+            self->_shown = [@{@"app": bundleID ?: @"", @"trigger": trigger, @"text": firstText, @"id": one[@"id"] ?: @"",
                               @"source": one[@"source"] ?: @"", @"first_ms": @(round((CFAbsoluteTimeGetCurrent() - triggeredAt) * 1000)),
                               @"first_word_logprob": one[@"firstWordLogProb"] ?: @0} mutableCopy];
         } else if (![one[@"retryFull"] boolValue]) {
@@ -304,6 +304,8 @@ static NSUInteger NextWordLength(NSString *text) {
             }
             self->_shown[@"text"] = fullText;
             self->_shown[@"full_ms"] = @(ms);
+            // The suggestion on screen is now this reply's: its ID finds the context it continued.
+            if (two[@"id"]) self->_shown[@"id"] = two[@"id"];
         });
     });
 }
