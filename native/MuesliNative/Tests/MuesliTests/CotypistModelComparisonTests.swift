@@ -19,7 +19,9 @@ import Testing
 ///    describe private writing: keep the report and the console output local; never commit or share them.
 ///  - MUESLI_COTYPIST_BASE_MODEL / _INSTRUCT_MODEL / _DRAFTER: model directories;
 ///  - MUESLI_COTYPIST_COMPARISON_MODELS="name=/path;name=/path": base models to compare on raw
-///    text instead of the base/instruct setups (candidate typeahead models);
+///    text instead of the base/instruct setups (candidate typeahead models). A directory that isn't
+///    a catalog model's is scored with Gemma 4 E2B's gates, not gates of its own: for tuning only,
+///    not a measure of how it would behave in the app;
 ///  - MUESLI_COTYPIST_COMPARISON_SAMPLES (default 120 dictations, two cut points each);
 ///  - MUESLI_COTYPIST_COMPARISON_SETUPS: comma-separated setups to run (default all);
 ///  - MUESLI_COTYPIST_COMPARISON_GATE: one first-word gate for every sample, replacing the app's

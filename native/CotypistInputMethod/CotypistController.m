@@ -27,6 +27,12 @@ static const NSTimeInterval kBoundaryDelay = 0.06;
 static NSTimeInterval sMidWordDelay = 0.5;
 static const NSUInteger kContextChars = 1500;
 
+// The keystroke record keeps at most the context a request sends, whole characters only.
+static void KeepContextTail(NSMutableString *typed) {
+    if (typed.length <= kContextChars) return;
+    [typed deleteCharactersInRange:[typed rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, typed.length - kContextChars)]];
+}
+
 // Diagnostics for the experiment: request outcomes and timings only, never typed text. Written on
 // a serial queue so a key never waits on the disk; the file starts over past 1 MB.
 static const unsigned long long kLogLimit = 1 << 20;
@@ -209,6 +215,7 @@ static NSUInteger NextWordLength(NSString *text) {
     if (!_acceptedSoFar) _acceptedSoFar = [NSMutableString string];
     [_acceptedSoFar appendString:text];
     [_typed appendString:text];
+    KeepContextTail(_typed);
     // Clear the composition now and insert once this key event has finished: inserting during
     // the keyDown lets clients like Ghostty fold the text into the consumed key.
     [sender setMarkedText:@"" selectionRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -238,7 +245,10 @@ static NSUInteger NextWordLength(NSString *text) {
     // matches what's before the caret.
     if (mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) { [_typed setString:@""]; return; }
     NSString *chars = event.characters;
-    if (chars.length && [chars characterAtIndex:0] >= 0x20) [_typed appendString:chars];
+    if (chars.length && [chars characterAtIndex:0] >= 0x20) {
+        [_typed appendString:chars];
+        KeepContextTail(_typed);
+    }
 }
 
 - (void)requestSuggestion {

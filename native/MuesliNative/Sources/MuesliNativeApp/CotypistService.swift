@@ -46,6 +46,10 @@ final class CotypistService {
 
     func start() {
         guard server == nil else { return }
+        guard let helper = Self.helperRequirement(CotypistSetup.embeddedInputMethodURL) else {
+            log("socket server not started: no signed input method in this build")
+            return
+        }
         Task.detached(priority: .utility) { Self.installInputSource() }
         retentionTimer?.invalidate()  // `start()` runs again if the socket failed last time
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
@@ -53,10 +57,6 @@ final class CotypistService {
                 guard let store = CotypistService.shared.store else { return }
                 Task.detached(priority: .background) { try? store.pruneCotypistHistory() }
             }
-        }
-        guard let helper = Self.helperRequirement(CotypistSetup.embeddedInputMethodURL) else {
-            log("socket server not started: no signed input method in this build")
-            return
         }
         do {
             server = try CotypistSocketServer(path: Self.socketURL.path, peerRequirement: helper) { [weak self] request in

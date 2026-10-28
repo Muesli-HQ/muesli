@@ -3,14 +3,14 @@ import Testing
 
 @Suite("Cotypist suggestion shaping")
 struct CotypistShaperTests {
-    private func completion(_ tokens: [(String, Double)], stop: CotypistCompletion.Stop = .limit) -> CotypistCompletion {
+    private func completion(_ tokens: [(String, Double)], stop: CotypistCompletion.Stop = .endOfText) -> CotypistCompletion {
         CotypistCompletion(tokens: tokens.map { CotypistToken(text: $0.0, logprob: $0.1) }, stop: stop,
                            promptMs: 0, decodeMs: 0, reusedTokens: 0)
     }
 
     @Test("after a space, drops the leading space and keeps complete words")
     func afterSpace() throws {
-        let raw = completion([(" file", -1.0), (" to", -0.5), (" you", -0.4), (" in", -0.3), (" a", -0.2), (" few", -0.2), (" mi", -0.1), ("nutes", -0.1), (".", -0.1), (" Thanks", -0.5)])
+        let raw = completion([(" file", -1.0), (" to", -0.5), (" you", -0.4), (" in", -0.3), (" a", -0.2), (" few", -0.2), (" mi", -0.1), ("nutes", -0.1), (".", -0.1), (" Thanks", -0.5)], stop: .limit)
         let shaped = try CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false).get()
         #expect(shaped.text == "file to you in a few")
         #expect(shaped.firstWordLogProb == -1.0)
@@ -46,7 +46,7 @@ struct CotypistShaperTests {
     @Test("never shows a first word the token budget cut off")
     func truncatedFirstWord() {
         // One long word filling the whole budget: stage 1 asks for stage 2, which must not show it either.
-        let raw = completion((0..<10).map { ($0 == 0 ? " anti" : "dis", -0.1) })
+        let raw = completion((0..<10).map { ($0 == 0 ? " anti" : "dis", -0.1) }, stop: .limit)
         #expect(CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 10, firstWordOnly: false) == .failure(.empty))
     }
 
@@ -71,10 +71,19 @@ struct CotypistShaperTests {
 
     @Test("first-word stage shows only a word known to be complete")
     func firstWordOnly() throws {
-        let complete = completion([(" help", -2.0), (" me", -0.2), (" with", -0.4), (" this", -0.5)])
+        let complete = completion([(" help", -2.0), (" me", -0.2), (" with", -0.4), (" this", -0.5)], stop: .limit)
         #expect(try CotypistShaper.shape(complete, afterSpace: true, heal: nil, maxTokens: 4, firstWordOnly: true).get().text == "help")
-        let cut = completion([(" rec", -1.0), ("eiv", -0.1), ("ab", -0.1), ("le", -0.1)])
+        let cut = completion([(" rec", -1.0), ("eiv", -0.1), ("ab", -0.1), ("le", -0.1)], stop: .limit)
         #expect(CotypistShaper.shape(cut, afterSpace: true, heal: nil, maxTokens: 4, firstWordOnly: true) == .failure(.firstWordIncomplete))
+    }
+
+    @Test("a character split across tokens doesn't make a cut-off word look complete")
+    func groupedByteTokens() throws {
+        // Four tokens generated, three pieces emitted ("é" took two byte tokens), budget exhausted.
+        let raw = completion([(" ordered", -1.0), (" caf", -0.5), ("é", -0.2), ("t", -0.1)], stop: .limit)
+        #expect(try CotypistShaper.shape(raw, afterSpace: true, heal: nil, maxTokens: 4, firstWordOnly: false).get().text == "ordered")
+        let first = completion([(" caf", -0.5), ("é", -0.2), ("t", -0.1)], stop: .limit)
+        #expect(CotypistShaper.shape(first, afterSpace: true, heal: nil, maxTokens: 4, firstWordOnly: true) == .failure(.firstWordIncomplete))
     }
 
     @Test("healing shows the rest of the typed word and ignores forced tokens in the gate")

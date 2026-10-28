@@ -25,7 +25,9 @@ enum CotypistShaper {
         let tokens = completion.tokens
         if completion.stop == .healFailed { return .failure(.healFailed) }
         guard !tokens.isEmpty else { return .failure(.lineBreak) }
-        let stoppedByModel = completion.stop == .endOfText || completion.stop == .newline || tokens.count < maxTokens
+        // From the stop reason, not the token count: a character split across byte-level tokens is
+        // emitted as one piece, so a budget-limited completion can have fewer pieces than `maxTokens`.
+        let stoppedByModel = completion.stop == .endOfText || completion.stop == .newline
         var healLength = heal?.count ?? 0
 
         // Group tokens into words: a token starting with a space begins a new word.

@@ -90,7 +90,10 @@ final class CotypistSocketServer: @unchecked Sendable {
         guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributeAudit: tokenData] as CFDictionary, [], &code) == errSecSuccess,
               let code, SecCodeCheckValidity(code, [], peerRequirement) == errSecSuccess
         else { return false }
-        verifiedPeers.withLock { _ = verified.insert(process) }
+        verifiedPeers.withLock {
+            if verified.count >= 64 { verified.removeAll() }  // helpers relaunch; old processes are gone
+            _ = verified.insert(process)
+        }
         return true
     }
 
