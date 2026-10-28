@@ -4,7 +4,7 @@ import SwiftUI
 /// Where the Cotypist setup guide sits relative to System Settings: beside the window when there's
 /// room, so it never covers the Input Sources sheet or its add dialog (both centred on the window).
 enum CotypistSetupGuideLayout {
-    static let size = CGSize(width: 300, height: 268)
+    static let size = CGSize(width: 300, height: 290)
     static let gap: CGFloat = 14
 
     static func frame(besides settingsWindow: CGRect, on screen: CGRect) -> CGRect {
@@ -113,6 +113,13 @@ private struct CotypistSetupGuideView: View {
 
             step(1, "Next to **Input Sources**, click **Edit…**")
             step(2, "Click **+** at the bottom left, then **English**")
+            // A macOS quirk: the first time English is chosen, its list of input sources can be empty.
+            Text("List empty? Click another language, then English again.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.55))
+                .padding(.leading, 26)
+                .padding(.top, -6)
+                .fixedSize(horizontal: false, vertical: true)
             step(3, "Choose this, then click **Add**:")
 
             PermissionGuideAppRow(appName: model.inputSourceName, appIcon: NSApplication.shared.applicationIconImage)
