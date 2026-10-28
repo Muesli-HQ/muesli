@@ -7,6 +7,41 @@ import Testing
 /// index so a successful transcript cannot conceal dropped or replayed audio.
 @Suite("Buffered transcription continuity", .timeLimit(.minutes(1)))
 struct BufferedTranscriptionContinuityTests {
+    @Test("continuity preserves the prior recognized tail until replacement coverage completes", arguments: [0, 1, 2, 3])
+    func continuityRecoveryPreservesPriorTail(outcome: Int) async throws {
+        let output = ContinuityOutput()
+        let decoder = ContinuityDecoder(timed: .windows([
+            ContinuityDecoder.window([.init(text: "remember", start: 0.1, end: 0.5),
+                                      .init(text: "this", start: 1, end: 1.5)]),
+            .init(text: "", words: [])
+        ]), holdFirstRaw: true, failRaw: outcome == 0, failRawCall: outcome == 3 ? 2 : nil)
+        let session = makeSession(whisper: false, decoder: decoder, output: output)
+        var updates = output.updates.stream.makeAsyncIterator()
+        var starts = decoder.rawStarted.stream.makeAsyncIterator()
+        session.enqueue(ContinuityPCM.samples(0..<32_000))
+        _ = try await next(&updates)
+        let recognized = session.currentTranscript
+        #expect(recognized == "remember this")
+        session.enqueue(ContinuityPCM.samples(32_000..<64_000))
+        let finishing = Task { await session.finishForReuse() }
+        _ = await starts.next()
+        #expect(session.currentTranscript == recognized)
+        if outcome == 1 { session.cancel() }
+        await decoder.release()
+        let result = await finishing.value
+        if outcome == 2 {
+            #expect(result.canReuse)
+            #expect(result.text == "chunk0 chunk32000")
+        } else if outcome == 3 {
+            #expect(!result.canReuse)
+            #expect(result.text == "chunk0") // Replacement covered the old hypothesis before the next failure.
+        } else {
+            #expect(!result.canReuse)
+            #expect(result.text == recognized)
+            #expect(session.currentTranscript == recognized)
+        }
+    }
+
     @Test("untimed backends stream from their first chunk for six minutes")
     func directUntimedSession() async throws {
         let output = ContinuityOutput()
@@ -443,6 +478,7 @@ private actor ContinuityDecoder {
     private let repeatedRaw: String?
     private let holdFirstRaw: Bool
     private let failRaw: Bool
+    private let failRawCall: Int?
     private var released = false
     private var permit: CheckedContinuation<Void, Never>?
     private var inFlight = 0
@@ -452,12 +488,13 @@ private actor ContinuityDecoder {
     private(set) var maximumInFlight = 0
 
     init(timed: Timed, blankFirstRaw: Bool = false, repeatedRaw: String? = nil,
-         holdFirstRaw: Bool = false, failRaw: Bool = false) {
+         holdFirstRaw: Bool = false, failRaw: Bool = false, failRawCall: Int? = nil) {
         self.timed = timed
         self.blankFirstRaw = blankFirstRaw
         self.repeatedRaw = repeatedRaw
         self.holdFirstRaw = holdFirstRaw
         self.failRaw = failRaw
+        self.failRawCall = failRawCall
     }
 
     nonisolated static func window(_ words: [BufferedTranscriptionWord]) -> BufferedTranscriptionWindow {
@@ -497,7 +534,7 @@ private actor ContinuityDecoder {
         }
         // Deliberately ignore Task cancellation, as some native decoders do.
         // Session cancellation must reject their late completion independently.
-        if failRaw { throw Failure.decoderFailed }
+        if failRaw || rawRanges.count == failRawCall { throw Failure.decoderFailed }
         if blankFirstRaw && rawRanges.count == 1 { return "" }
         return repeatedRaw ?? "chunk\(range.lowerBound)"
     }

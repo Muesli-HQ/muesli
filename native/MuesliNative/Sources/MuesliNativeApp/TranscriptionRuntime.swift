@@ -151,9 +151,13 @@ actor TranscriptionCoordinator {
                 userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet, WhisperKit, or Bodhan model."])
         }
         if backend.backend == "bodhan" {
+            let metadata = BodhanPreviewMetadata()
             return BufferedTranscriptionSession(decodeWithoutTimings: { samples in
                 try await self.transcribeBufferedBodhan(samples: samples, modelID: backend.model,
-                    language: bodhanLanguage, outputMode: bodhanOutputMode)
+                    language: bodhanLanguage, outputMode: bodhanOutputMode,
+                    onLanguageSample: { metadata.append($0) })
+            }, measurement: { text in
+                metadata.measurement(text: text, modelID: backend.model, outputMode: bodhanOutputMode)
             }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         if backend.backend == "whisper" {
@@ -193,13 +197,14 @@ actor TranscriptionCoordinator {
         }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
     }
     private func transcribeBufferedBodhan(samples: [Float], modelID: String,
-                                         language: BodhanLanguage, outputMode: BodhanOutputMode) async throws -> String {
+                                         language: BodhanLanguage, outputMode: BodhanOutputMode,
+                                         onLanguageSample: @Sendable (BodhanLanguageSample) -> Void) async throws -> String {
         guard #available(macOS 15, *) else {
             throw NSError(domain: "BodhanASR", code: 32,
                           userInfo: [NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later."])
         }
         return try await bodhanTranscriber.transcribePreview(samples: samples, modelID: modelID,
-                                                            language: language, outputMode: outputMode)
+                                                            language: language, outputMode: outputMode, onLanguageSample: onLanguageSample)
     }
 
     private var _qwen3Transcriber: Any?
@@ -1706,15 +1711,15 @@ actor TranscriptionCoordinator {
             throw AppleSpeechAnalyzerError.unavailable
         default:
             return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage,
-                expectedVersion: FluidAudioModel.version(for: backend.model))
+                expectedModelID: backend.model)
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedVersion: AsrModelVersion) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedModelID: String) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedVersion: expectedVersion)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedModelID: expectedModelID)
         fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in

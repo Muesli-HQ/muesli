@@ -8,6 +8,28 @@ struct BodhanTranscription: Sendable {
     let languageSamples: [BodhanLanguageSample]
 }
 
+/// Session-owned metadata; disjoint preview samples advance one shared audio clock.
+final class BodhanPreviewMetadata: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [BodhanLanguageSample] = []
+    private var endSeconds = 0.0
+
+    func append(_ sample: BodhanLanguageSample) {
+        lock.lock(); defer { lock.unlock() }
+        let end = endSeconds + sample.endSeconds - sample.startSeconds
+        samples.append(.init(startSeconds: endSeconds, endSeconds: end,
+            languageCode: sample.languageCode, wasAutoDetected: sample.wasAutoDetected))
+        endSeconds = end
+    }
+
+    func measurement(text: String, modelID: String, outputMode: BodhanOutputMode) -> BodhanWBCSMeasurement {
+        lock.lock(); defer { lock.unlock() }
+        return .init(languageSamples: samples,
+            runLengths: outputMode.supportsWordsBeforeCodeSwitch(modelID: modelID)
+                ? WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text) : nil)
+    }
+}
+
 /// Batch recognition requires EOS. A short live chunk instead returns its bounded
 /// best effort, so a decoder repetition loop cannot terminate the entire session.
 enum BodhanDecodingPolicy {
@@ -310,7 +332,8 @@ actor BodhanTranscriber {
 
     /// Live inference reuses the prepared runtime or reloads validated cached files; it never downloads.
     func transcribePreview(samples: [Float], modelID: String,
-                           language: BodhanLanguage, outputMode: BodhanOutputMode) async throws -> String {
+                           language: BodhanLanguage, outputMode: BodhanOutputMode,
+                           onLanguageSample: @Sendable (BodhanLanguageSample) -> Void = { _ in }) async throws -> String {
         try Task.checkCancellation()
         try await prepare(modelID: modelID, allowDownload: false)
         try Task.checkCancellation()
@@ -321,6 +344,8 @@ actor BodhanTranscriber {
             outputMode: outputMode.supported(for: modelID))
         try Task.checkCancellation()
         recordBodhanTiming(result, modelID: modelID, audioSeconds: Double(samples.count) / 16000)
+        onLanguageSample(.init(startSeconds: 0, endSeconds: Double(samples.count) / 16000,
+            languageCode: result.language, wasAutoDetected: language == .automatic))
         return result.text
     }
 

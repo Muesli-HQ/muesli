@@ -404,7 +404,7 @@ struct BufferedTranscriptionBackendIntegrationTests {
                                        ("in that difference", ["in that difference"])] {
                 let occurrences = variants.reduce(0) { $0 + words.components(separatedBy: $1).count - 1 }
                 if occurrences != 4 {
-                    print("[long-pause] content_check_failed phrase=\(phrase) final_text=\(output.lastText)")
+                    print("[long-pause] content_check_failed occurrences=\(occurrences) expected=4 characters=\(output.lastText.count)")
                 }
                 #expect(occurrences == 4,
                         "Each of the four source repetitions must survive: \(phrase)")

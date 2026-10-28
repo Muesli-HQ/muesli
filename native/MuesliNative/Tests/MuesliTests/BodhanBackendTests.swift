@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 import FluidAudio
 import MLX
 import Testing
@@ -6,6 +7,22 @@ import Testing
 
 @Suite("Bodhan compatibility and languages")
 struct BodhanBackendTests {
+    @Test("streaming metadata retains absolute language spans and computes switches over the full transcript")
+    func previewMetadata() {
+        let metadata = BodhanPreviewMetadata()
+        metadata.append(.init(startSeconds: 0, endSeconds: 2, languageCode: "ta", wasAutoDetected: true))
+        metadata.append(.init(startSeconds: 0, endSeconds: 0.5, languageCode: "en", wasAutoDetected: false))
+        let text = "தமிழ் this is English தமிழ்"
+        let mixed = metadata.measurement(text: text, modelID: BodhanModel.flex.rawValue, outputMode: .mixed)
+        #expect(mixed.languageSamples.map(\.startSeconds) == [0, 2])
+        #expect(mixed.languageSamples.map(\.endSeconds) == [2, 2.5])
+        #expect(mixed.languageSamples.map(\.languageCode) == ["ta", "en"])
+        #expect(mixed.languageSamples.map(\.wasAutoDetected) == [true, false])
+        #expect(mixed.runLengths == WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text))
+        #expect(metadata.measurement(text: text, modelID: BodhanModel.flex.rawValue,
+                                     outputMode: .romanized).runLengths == nil)
+    }
+
     @Test("live token limits preserve progress while batch still requires EOS")
     func boundedPreviewDecoding() throws {
         for mode in BodhanOutputMode.allCases {

@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 /// A decoder produced a hypothesis that cannot yet be tied to the supplied
 /// audio. Preserve the last valid preview and retry only after more audio.
@@ -234,6 +235,8 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         var maximumOwnedWordEnd: Double?
         var previousTail: [BufferedTranscriptionWord] = []
         var previousTailReuseAgreement: [Bool] = []
+        var continuityRecovery: (text: String, throughSample: Int)?
+        var lastPublishedThroughSample = 0
         var lastPublishedTail = ""
         var lastPresentedTail = ""
         var presentation = WhisperPreviewPresentation()
@@ -279,7 +282,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
     /// Best raw hypothesis, including the undecided tail, for saved recovery.
     /// This accessor makes no claim that the stream completed successfully.
     var currentTranscript: String {
-        synchronized { state.finalText ?? state.committedText + state.lastPublishedTail }
+        synchronized { state.finalText ?? state.continuityRecovery?.text ?? (state.committedText + state.lastPublishedTail) }
     }
 
     var reuseDiagnostics: ReuseDiagnostics {
@@ -293,10 +296,14 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         }
     }
 
+    private let measurement: (@Sendable (String) -> BodhanWBCSMeasurement)?
+    func bodhanMeasurement(for text: String) -> BodhanWBCSMeasurement? { measurement?(text) }
+
     init(
         configuration: Configuration = .init(),
         decode: (@Sendable ([Float]) async throws -> BufferedTranscriptionWindow)? = nil,
         decodeWithoutTimings: (@Sendable ([Float]) async throws -> String)? = nil,
+        measurement: (@Sendable (String) -> BodhanWBCSMeasurement)? = nil,
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void,
         onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
@@ -308,6 +315,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         precondition(configuration.maximumBufferedSamples >= configuration.windowSamples)
         precondition(configuration.maximumRecoveryWindowSamples >= configuration.windowSamples)
         precondition(configuration.maximumTimestampDrift > 0 && configuration.maximumTimestampDrift.isFinite)
+        self.measurement = measurement
         self.configuration = configuration
         precondition(decode != nil || decodeWithoutTimings != nil)
         self.decode = decode ?? { _ in throw Failure.invalidTimings }
@@ -371,7 +379,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
             && state.decodedThroughSample == state.receivedSamples
         let reason: ReuseFallbackReason? = cancelled ? .cancelled
             : state.reuseTerminalReason ?? quality.structuralReason ?? (completed ? nil : .incompleteCoverage)
-        return ReuseResult(text: state.finalText ?? state.committedText + state.lastPublishedTail,
+        return ReuseResult(text: state.finalText ?? state.continuityRecovery?.text ?? (state.committedText + state.lastPublishedTail),
             canReuse: completed && reason == nil, completed: completed && !cancelled,
             fallbackReason: reason, receivedSamples: state.receivedSamples,
             decodedThroughSample: state.decodedThroughSample,
@@ -689,6 +697,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.previousTail = tailWords
         state.previousTailReuseAgreement = Array(reuseAgreement.dropFirst(commitCount))
         state.lastPublishedTail = tail
+        state.lastPublishedThroughSample = snapshot.offset + snapshot.audio.count
         state.followingAnchor = tailWords.first
         state.lastDecodedEnd = snapshot.offset + snapshot.audio.count
         state.decodedThroughSample = state.lastDecodedEnd
@@ -992,6 +1001,11 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.previousTailReuseAgreement = []
         state.followingAnchor = nil
         state.recoveryCandidate = nil
+        // Retain the best recognized hypothesis for failure/timeout recovery until
+        // disjoint decoding has replaced all audio represented by that hypothesis.
+        if !state.lastPublishedTail.isEmpty {
+            state.continuityRecovery = (state.committedText + state.lastPublishedTail, state.lastPublishedThroughSample)
+        }
         state.lastPublishedTail = ""
         state.lastPresentedTail = ""
         state.presentation = WhisperPreviewPresentation()
@@ -1012,6 +1026,9 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         state.audio.removeFirst(snapshot.audio.count)
         state.offset = snapshot.offset + snapshot.audio.count
         state.committedAudioThrough = state.offset
+        if let recovery = state.continuityRecovery, state.offset >= recovery.throughSample {
+            state.continuityRecovery = nil
+        }
         state.lastDecodedEnd = state.offset
         state.decodedThroughSample = state.offset
         state.lastCommitSnapshotEnd = state.offset

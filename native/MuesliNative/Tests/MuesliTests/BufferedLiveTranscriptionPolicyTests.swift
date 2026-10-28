@@ -10,7 +10,7 @@ struct BufferedLiveTranscriptionPolicyTests {
     func parakeetRequestedModelAfterMeetingPreload() async throws {
         let loads = BufferedBackendLoadRecorder()
         let transcriber = FluidAudioTranscriber(modelLoader: { version, allowDownload, _, _ in
-            let count = await loads.record(String(describing: version), allowDownload: allowDownload)
+            let count = await loads.record(String(describing: FluidAudioModel.version(for: version)), allowDownload: allowDownload)
             // Empty managers keep this test entirely offline. The sentinel on
             // reload proves selection happens before touching either decoder.
             if count > 2 { throw BufferedBackendLoadRecorder.Failure.requestedReload }
@@ -56,7 +56,7 @@ struct BufferedLiveTranscriptionPolicyTests {
     func cancelledPreviewsDoNotReload() async {
         let loads = BufferedBackendLoadRecorder()
         let parakeet = FluidAudioTranscriber(modelLoader: { version, allowDownload, _, _ in
-            _ = await loads.record(String(describing: version), allowDownload: allowDownload)
+            _ = await loads.record(String(describing: FluidAudioModel.version(for: version)), allowDownload: allowDownload)
             throw BufferedBackendLoadRecorder.Failure.requestedReload
         })
         let whisper = WhisperKitTranscriber(modelLoader: { name, allowDownload, _, _ in
