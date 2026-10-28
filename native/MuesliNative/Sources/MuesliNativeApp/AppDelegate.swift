@@ -145,9 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let controller else { return .terminateNow }
 
         terminationTask = Task { @MainActor [weak self] in
+            let referenceStartup = self?.referenceStartup
             let finished = await ShutdownDeadline.run(seconds: Self.shutdownDeadline) {
-                self?.referenceStartup?.cancel()
-                await self?.referenceStartup?.value
+                referenceStartup?.cancel()
+                await referenceStartup?.value
                 await ComputerUseReferenceDriver.shared.shutdown()
                 await controller.shutdown()
             }
