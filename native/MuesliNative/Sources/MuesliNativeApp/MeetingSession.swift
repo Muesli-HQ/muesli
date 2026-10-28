@@ -474,11 +474,14 @@ final class MeetingSession {
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     bufferedSessionFactory: { [transcriptionCoordinator = self.transcriptionCoordinator,
                         whisperLanguage = self.config.resolvedWhisperLanguage,
-                        parakeetLanguage = self.config.resolvedParakeetLanguage] onUpdate, onFailure in
+                        parakeetLanguage = self.config.resolvedParakeetLanguage,
+                        bodhanLanguage = self.config.resolvedBodhanLanguage,
+                        bodhanOutputMode = self.config.resolvedBodhanOutputMode] onUpdate, onFailure in
                         try transcriptionCoordinator.makeBufferedTranscriptionSession(
                             backend: selectedBackend,
                             whisperLanguage: whisperLanguage,
                             parakeetLanguage: parakeetLanguage,
+                            bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
                             onUpdate: onUpdate,
                             onFailure: onFailure,
                             onDiagnostic: { event in

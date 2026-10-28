@@ -295,7 +295,7 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
 
     init(
         configuration: Configuration = .init(),
-        decode: @escaping @Sendable ([Float]) async throws -> BufferedTranscriptionWindow,
+        decode: (@Sendable ([Float]) async throws -> BufferedTranscriptionWindow)? = nil,
         decodeWithoutTimings: (@Sendable ([Float]) async throws -> String)? = nil,
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void,
@@ -309,11 +309,14 @@ final class BufferedTranscriptionSession: @unchecked Sendable {
         precondition(configuration.maximumRecoveryWindowSamples >= configuration.windowSamples)
         precondition(configuration.maximumTimestampDrift > 0 && configuration.maximumTimestampDrift.isFinite)
         self.configuration = configuration
-        self.decode = decode
+        precondition(decode != nil || decodeWithoutTimings != nil)
+        self.decode = decode ?? { _ in throw Failure.invalidTimings }
         self.decodeWithoutTimings = decodeWithoutTimings
         self.onUpdate = onUpdate
         self.onFailure = onFailure
         self.onDiagnostic = onDiagnostic
+        // Untimed backends own disjoint PCM chunks from the first update.
+        state.continuity = decode == nil
     }
 
     func enqueue(_ samples: [Float]) {

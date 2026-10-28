@@ -259,7 +259,7 @@ extension MuesliController {
                 guard enabled else { return nil }
                 guard self.selectedDictationProvider == .local,
                       self.selectedBackend.supportsBufferedLiveTranscription else {
-                    return "Select a local Parakeet or Whisper model first."
+                    return "Select a local Parakeet, Whisper, or Bodhan model first."
                 }
                 return self.selectedBackend.isDownloaded ? nil : "Download the selected dictation model first."
             })
@@ -445,7 +445,7 @@ extension MuesliController {
                 if value == MeetingLiveCaptionBackend.selectedModelBuffered.rawValue {
                     let selected = self.appState.selectedMeetingTranscriptionBackend
                     return selected.supportsBufferedLiveTranscription && selected.isDownloaded
-                        ? nil : "Select a downloaded Parakeet or Whisper final meeting model first."
+                        ? nil : "Select a downloaded Parakeet, Whisper, or Bodhan final meeting model first."
                 }
                 return value == "off" || MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true ? nil : "Download this live transcript model from Models first."
             }) { value in

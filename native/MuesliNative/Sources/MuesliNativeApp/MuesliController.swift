@@ -11618,6 +11618,8 @@ public final class MuesliController: NSObject {
         let backend = selectedBackend
         let whisperLanguage = config.resolvedWhisperLanguage
         let parakeetLanguage = config.resolvedParakeetLanguage
+        let bodhanLanguage = config.resolvedBodhanLanguage
+        let bodhanOutputMode = config.resolvedBodhanOutputMode
         guard let captureApplication = NSWorkspace.shared.frontmostApplication else { return }
         let pendingAudio = BufferedDictationCaptureAudio()
         bufferedCaptureID = id
@@ -11639,12 +11641,14 @@ public final class MuesliController: NSObject {
             }
             self.completeBufferedDictationCapture(target: target, id: id, backend: backend,
                 whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage,
+                bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
                 pendingAudio: pendingAudio, previewTrace: previewTrace)
         }
     }
 
     private func completeBufferedDictationCapture(target: LiveDictationTextTarget, id: UUID,
         backend: BackendOption, whisperLanguage: WhisperKitLanguage, parakeetLanguage: ParakeetLanguage,
+        bodhanLanguage: BodhanLanguage, bodhanOutputMode: BodhanOutputMode,
         pendingAudio: BufferedDictationCaptureAudio, previewTrace: DictationLatencyTraceToken?) {
         target.onSuspended = { [weak self] in
             guard let self, self.bufferedDictationContext?.id == id else { return }
@@ -11672,6 +11676,7 @@ public final class MuesliController: NSObject {
                 backend: backend,
                 whisperLanguage: whisperLanguage,
                 parakeetLanguage: parakeetLanguage,
+                bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
                 onUpdate: { [weak self] update in
                     Task { @MainActor [weak self] in
                         guard let self, let current = self.bufferedDictationContext,

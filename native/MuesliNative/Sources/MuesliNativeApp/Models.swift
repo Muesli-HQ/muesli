@@ -331,7 +331,7 @@ struct BackendOption: Equatable {
 
     /// Buffered previews are deliberately opt-in and independent of native streaming.
     var supportsBufferedLiveTranscription: Bool {
-        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self) || Self.bodhanFamily.contains(self)
     }
 
     var supportsHostedDictationFallback: Bool {

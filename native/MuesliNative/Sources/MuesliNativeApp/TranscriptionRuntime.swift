@@ -134,13 +134,21 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         whisperLanguage: WhisperKitLanguage,
         parakeetLanguage: ParakeetLanguage,
+        bodhanLanguage: BodhanLanguage = .defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
         onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void,
         onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> BufferedTranscriptionSession {
         guard backend.supportsBufferedLiveTranscription else {
             throw NSError(domain: "MuesliBufferedTranscription", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet or WhisperKit model."])
+                userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet, WhisperKit, or Bodhan model."])
+        }
+        if backend.backend == "bodhan" {
+            return BufferedTranscriptionSession(decodeWithoutTimings: { samples in
+                try await self.transcribeBufferedBodhan(samples: samples, modelID: backend.model,
+                    language: bodhanLanguage, outputMode: bodhanOutputMode)
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
         }
         if backend.backend == "whisper" {
             let transcriber = whisperTranscriber
@@ -178,6 +186,16 @@ actor TranscriptionCoordinator {
             ).text
         }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
     }
+    private func transcribeBufferedBodhan(samples: [Float], modelID: String,
+                                         language: BodhanLanguage, outputMode: BodhanOutputMode) async throws -> String {
+        guard #available(macOS 15, *) else {
+            throw NSError(domain: "BodhanASR", code: 32,
+                          userInfo: [NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later."])
+        }
+        return try await bodhanTranscriber.transcribePreview(samples: samples, modelID: modelID,
+                                                            language: language, outputMode: outputMode)
+    }
+
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?

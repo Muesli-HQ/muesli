@@ -1,9 +1,69 @@
 import Foundation
+import FluidAudio
+import MLX
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Bodhan compatibility and languages")
 struct BodhanBackendTests {
+    @Test("live token limits preserve progress while batch still requires EOS")
+    func boundedPreviewDecoding() throws {
+        for mode in BodhanOutputMode.allCases {
+            #expect(BodhanDecodingPolicy.preview.tokenLimit(outputMode: mode) == 64)
+            #expect(BodhanDecodingPolicy.batch.tokenLimit(outputMode: mode) == mode.maximumGeneratedTokens)
+        }
+        try BodhanDecodingPolicy.preview.validateCompletion(endedWithEOS: false)
+        try BodhanDecodingPolicy.batch.validateCompletion(endedWithEOS: true)
+        #expect(throws: (any Error).self) {
+            try BodhanDecodingPolicy.batch.validateCompletion(endedWithEOS: false)
+        }
+    }
+
+    @Test("opt-in real-time Bodhan replay", .enabled(if: ProcessInfo.processInfo.environment["MUESLI_BODHAN_STREAM_AUDIO"] != nil))
+    func realtimeStreamingReplay() async throws {
+        guard #available(macOS 15, *) else { return }
+        let env = ProcessInfo.processInfo.environment
+        if let path = env["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
+        let path = try #require(env["MUESLI_BODHAN_STREAM_AUDIO"])
+        let model = BodhanModel(rawValue: env["MUESLI_BODHAN_STREAM_MODEL"] ?? "") ?? .flexInt8
+        try #require(model.isDownloaded, "Replay requires an existing cached model")
+        let backend = try #require(BackendOption.resolve(backend: "bodhan", model: model.rawValue))
+        let original = try AudioConverter().resampleAudioFile(URL(fileURLWithPath: path))
+        let repeats = Int(env["MUESLI_BODHAN_STREAM_REPEATS"] ?? "4") ?? 4
+        let repeated = Array(repeating: original, count: repeats).flatMap { $0 }
+        let first = Int(env["MUESLI_BODHAN_STREAM_FIRST_SAMPLE"] ?? "0") ?? 0
+        let count = Int(env["MUESLI_BODHAN_STREAM_SAMPLE_COUNT"] ?? "") ?? (repeated.count - first)
+        try #require(first >= 0 && count > 0 && first <= repeated.count - count)
+        let samples = Array(repeated[first..<first + count])
+        let coordinator = TranscriptionCoordinator()
+        try await coordinator.preloadRequired(backend: backend, includeMeetingHelpers: false)
+        let session = try coordinator.makeBufferedTranscriptionSession(
+            backend: backend, whisperLanguage: .auto, parakeetLanguage: .auto,
+            bodhanLanguage: .english, bodhanOutputMode: .mixed,
+            onUpdate: { update in
+                #expect(update.tail.isEmpty)
+            }, onFailure: { error in Issue.record("Bodhan replay failed: \(error)") },
+            onDiagnostic: { event in
+                if event.hasPrefix("continuity_decode:") { print("[bodhan-replay] \(event)") }
+            })
+        defer { session.cancel() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        for offset in stride(from: 0, to: samples.count, by: 1024) {
+            try await clock.sleep(until: start.advanced(by: .milliseconds(offset / 16)))
+            try #require(!session.diagnostics.closed, "Session closed before all audio arrived")
+            session.enqueue(Array(samples[offset..<min(offset + 1024, samples.count)]))
+        }
+        let stopped = clock.now
+        let result = await session.finishForReuse()
+        print("[bodhan-replay] model=\(model.rawValue) samples=\(samples.count) decoded=\(result.decodedThroughSample) updates=\(session.diagnostics.revision) stop=\(stopped.duration(to: clock.now)) reusable=\(result.canReuse)")
+        #expect(result.completed && result.canReuse)
+        #expect(result.receivedSamples == samples.count)
+        #expect(result.decodedThroughSample == samples.count)
+        #expect(stopped.duration(to: clock.now) < .seconds(5))
+        await coordinator.unloadBodhanTranscriber(ifLoadedModelID: model.rawValue)
+    }
+
     @Test("Bodhan tiers use product names without changing saved model IDs", arguments: BodhanModel.allCases)
     func tierNames(model: BodhanModel) {
         let tier = model.isInt8 ? "Lite" : "Pro"

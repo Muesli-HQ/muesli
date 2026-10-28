@@ -7,6 +7,27 @@ import Testing
 /// index so a successful transcript cannot conceal dropped or replayed audio.
 @Suite("Buffered transcription continuity", .timeLimit(.minutes(1)))
 struct BufferedTranscriptionContinuityTests {
+    @Test("untimed backends stream from their first chunk for six minutes")
+    func directUntimedSession() async throws {
+        let output = ContinuityOutput()
+        let decoder = ContinuityDecoder(timed: .deferral)
+        let session = BufferedTranscriptionSession(decodeWithoutTimings: { samples in
+            try await decoder.decodeRaw(samples)
+        }, onUpdate: { output.update($0) }, onFailure: { output.fail($0) })
+        var updates = output.updates.stream.makeAsyncIterator()
+        for offset in stride(from: 0, to: 5_760_000, by: 32_000) {
+            session.enqueue(ContinuityPCM.samples(offset..<offset + 32_000))
+            _ = try await next(&updates)
+            #expect(!session.diagnostics.closed)
+        }
+        let result = await session.finishForReuse()
+        #expect(result.canReuse && result.completed)
+        #expect(result.decodedThroughSample == 5_760_000)
+        #expect(await decoder.timedCalls == 0)
+        #expect(await decoder.rawRanges.count == 180)
+        assertCommittedPrefixes(output.values)
+    }
+
     @Test("missing timings switch to bounded disjoint chunks for either runtime policy", arguments: [false, true])
     func untimedHypothesesKeepStreaming(whisper: Bool) async throws {
         let output = ContinuityOutput()

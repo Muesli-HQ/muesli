@@ -4,19 +4,30 @@ Implementation branch: `codex/buffered-live-dictation`, worktree `c519/muesli`.
 Baseline: `ecdb38648aea4a4d9c44fdb33c3d12de0b11208e`.
 Tracking request: https://github.com/Muesli-HQ/muesli/issues/564.
 
-## Current implementation (2026-10-27)
+## Current implementation (2026-10-29)
 
 This section describes the shipped dev-lane B implementation and supersedes the
 initial plan and chronological implementation notes below.
 
 - The off-by-default “Watch text appear during hands-free mode” toggle supports
-  local Parakeet v2, v3, Redux, Unified, and catalog WhisperKit models.
+  local Parakeet v2, v3, Redux, Unified, catalog WhisperKit models, and all four
+  Bodhan Core/Flex Pro/Lite variants.
 - Only committed word groups are inserted at the cursor. Revisable hypotheses
   remain internal; there is no editable draft repeatedly replaced in the field.
   Hands-free pauses do not finalize a sentence. The hotkey ends the session.
 - The shared engine uses bounded rolling audio, timed word ownership and agreement,
   serial inference, and coalesced delivery. Its 45-second pending-audio cap is not
   a limit on recording duration. Whisper preview alignment excludes padded audio.
+- Backends without usable word timestamps use the shared continuity path: serial,
+  disjoint two-second PCM chunks, append-only committed text, exact sample coverage,
+  and tail-only finalization. Bodhan starts in this mode because its runtime does
+  not expose word timings; Parakeet and Whisper retain their existing timed path
+  and continuity fallback. Bodhan respects the captured language/output mode and
+  reuses its prepared runtime, with validated cache-only reloads if displaced.
+  Bodhan preview decoding has a 64-token budget per short chunk and preserves its
+  best effort when EOS is absent, recording that condition instead of terminating
+  streaming. Batch token budgets and EOS requirements remain unchanged.
+  No VAD, pause endpointing, or confidence-based speech suppression is added.
 - Whisper normally decodes at most eight seconds per rolling window. Consecutive
   hypotheses can confirm a word group before the three-second age cutoff when a
   following timed word establishes context. Case and edge punctuation may differ;
@@ -60,21 +71,28 @@ initial plan and chronological implementation notes below.
   insertion uses one guarded replacement of the changed text; losing ownership
   preserves the result in history instead of risking an unrelated field.
 - Recognized decorated non-speech cues such as `*crickets*`, `[cheers]`, and
-  `(laughter)` are filtered from live and final output across both model families.
+  `(laughter)` are filtered from live and final output across supported buffered backends.
   Ordinary spoken uses of these words remain. Incomplete cue markers are withheld
   until resolved so they cannot leak into committed cursor text.
 - Meeting previews reuse the engine with independent microphone/system sessions.
   Existing VAD-segment final transcripts remain authoritative for saved meetings;
   provisional captions do not become durable segments or speaker attribution.
 
-Validation: 218 targeted tests passed after the cue-filter change; 297 broader
-regression tests and actual Parakeet v3/Whisper Turbo fixture runs passed on the
-preceding tail-finalization change. Synthetic coverage includes five-minute rolling
-sessions. The signed dev B app was installed and its LocalVQE runtime verified.
-A user-driven approximately 192-second Whisper Turbo session in Codex completed
-about 3.0 seconds after stopping, with no whole-recording retranscription (cleanup
-disabled). This is one observed run, not a latency guarantee. Whisper Tiny Tamil
-streaming remains unreliable and needs further model/alignment investigation.
+Validation: 352 targeted tests pass, including cursor safety, final cleanup,
+Parakeet/Whisper regressions, cache-only Bodhan reloads, and six-minute synthetic
+sample-ownership coverage. Bodhan Core Lite and Flex Lite each completed a 345.8-second
+real-time engine replay with 173 updates and complete sample coverage. Their
+recognition tails drained in 0.219 and 0.239 seconds respectively. Core had temporary
+decode spikes up to 5.176 seconds, recovered, and finished without a session-ending
+failure. An exact two-second Core token-limit failure was reproduced and verified
+with the bounded preview policy before the full replay. These are engine results,
+not a new automated Codex composer test or a latency guarantee. Pro variants are
+enabled but have not received real-model throughput testing here.
+
+The signed dev B app is installed; its signature, LocalVQE runtime, and App Intents
+metadata are verified. Earlier user-driven Parakeet Unified and Whisper Turbo
+composer runs established the cursor baseline. Tiny/Tamil has not been revalidated
+with the current continuity path.
 
 ## Initial plan and implementation history
 
