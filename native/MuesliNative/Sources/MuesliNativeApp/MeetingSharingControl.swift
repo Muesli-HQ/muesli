@@ -6,6 +6,7 @@ struct MeetingSharingReceipt: Codable {
     let url: URL
     var recipients: [String]
     var expiresAt: Date
+    var ownerEmail: String? = nil
 }
 
 struct MeetingSharingControl: View {
@@ -16,6 +17,7 @@ struct MeetingSharingControl: View {
     let disabled: Bool
     let reconcile: () async throws -> Void
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var account = PlusPreviewAccount.shared
     @State private var receipt: MeetingSharingReceipt?
     @State private var showUpload = false
     @State private var showAccess = false
@@ -31,7 +33,7 @@ struct MeetingSharingControl: View {
             if receipt == nil { showUpload = true } else { showAccess = true }
         } label: {
             Label(receipt == nil ? "Share" : "Shared",
-                  systemImage: receipt == nil ? "person.crop.circle.badge.plus" : "checkmark.circle.fill")
+                  systemImage: receipt == nil ? "person.crop.circle.badge.plus" : "person.2.fill")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white)
@@ -51,41 +53,75 @@ struct MeetingSharingControl: View {
             }
         }
         .popover(isPresented: $showAccess) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Shared with").font(.headline)
-                if let receipt {
-                    if receipt.recipients.isEmpty {
-                        Text("Only you have access.").foregroundStyle(.secondary)
-                    } else {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(receipt.recipients, id: \.self) { email in
-                                    Label(email, systemImage: "person.crop.circle")
-                                        .textSelection(.enabled)
+            SharingCardScaleLayout(scale: 0.75) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let receipt {
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack {
+                                Text("People with access").font(.headline)
+                                Spacer()
+                                Menu {
+                                    Button("Refresh access", systemImage: "arrow.clockwise") {
+                                        Task { await refresh() }
+                                    }
+                                    .disabled(refreshing)
+                                    Divider()
+                                    Button("Share another copy", systemImage: "square.and.arrow.up") {
+                                        showAccess = false
+                                        showUpload = true
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis").frame(width: 24, height: 24)
                                 }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(maxHeight: 160)
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                                .accessibilityLabel("Sharing options")
+                            }
+                            Button("Invite or manage people", systemImage: "person.badge.plus") {
+                                openPermissions(receipt.url)
+                            }
+                            .buttonStyle(SharingPrimaryButtonStyle())
+
+                            let readers = receipt.recipients.filter {
+                                $0.caseInsensitiveCompare(receipt.ownerEmail ?? "") != .orderedSame
+                            }
+                            ScrollView {
+                                VStack(spacing: 14) {
+                                    personRow(receipt.ownerEmail ?? "You", role: "Owner", isOwner: true)
+                                    ForEach(readers, id: \.self) { email in
+                                        personRow(email, role: "Viewer", isOwner: false)
+                                    }
+                                }
+                            }
+                            .frame(height: min(CGFloat(readers.count + 1) * 48 - 14, 226))
+                            if !status.isEmpty {
+                                Label(status, systemImage: "exclamationmark.circle")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(18)
+                        Divider()
+                        HStack(spacing: 12) {
+                            Label("Invited people only", systemImage: "lock")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link") {
+                                NSPasteboard.general.clearContents()
+                                copied = NSPasteboard.general.setString(receipt.url.absoluteString, forType: .string)
+                            }.buttonStyle(SharingPrimaryButtonStyle())
+                        }
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                    } else {
+                        Text("This shared link is no longer available.").padding(18)
                     }
-                    if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
-                    HStack(spacing: 8) {
-                        Button("Manage access", systemImage: "person.2") {
-                            var url = URLComponents(url: receipt.url, resolvingAgainstBaseURL: false)
-                            url?.fragment = "permissions"
-                            if let destination = url?.url { NSWorkspace.shared.open(destination) }
-                        }.buttonStyle(SharingPrimaryButtonStyle())
-                        Button(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link") {
-                            NSPasteboard.general.clearContents()
-                            copied = NSPasteboard.general.setString(receipt.url.absoluteString, forType: .string)
-                        }.buttonStyle(SharingSecondaryButtonStyle())
-                    }
-                    Button("Refresh access", systemImage: "arrow.clockwise") { Task { await refresh() } }
-                        .buttonStyle(SharingSecondaryButtonStyle()).disabled(refreshing)
-                } else {
-                    Text("This shared link is no longer available.")
                 }
+                .frame(width: 380)
+                .fixedSize(horizontal: false, vertical: true)
+                .scaleEffect(0.75)
             }
-            .padding(20).frame(width: 380)
-            .task { await refresh() }
+            .task { copied = false; await refresh() }
         }
         .task(id: meetingKey) {
             reconciling = true
@@ -102,6 +138,32 @@ struct MeetingSharingControl: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await refresh() } }
         }
+        .onChange(of: account.token) { _, _ in
+            Task { await refresh() }
+        }
+    }
+
+    private func personRow(_ email: String, role: String, isOwner: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: isOwner ? "person.fill" : "person")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(isOwner ? Color.white : Color.primary)
+                .frame(width: 34, height: 34)
+                .background(isOwner ? Color(hex: 0x2563EB) : Color.primary.opacity(0.08), in: Circle())
+            Text(email)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1).truncationMode(.middle)
+                .textSelection(.enabled).help(email)
+            Spacer(minLength: 6)
+            Text(role).font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func openPermissions(_ link: URL) {
+        var url = URLComponents(url: link, resolvingAgainstBaseURL: false)
+        url?.fragment = "permissions"
+        if let destination = url?.url { NSWorkspace.shared.open(destination) }
     }
 
     private func persist() {
@@ -120,7 +182,7 @@ struct MeetingSharingControl: View {
             return
         }
         guard let token = PlusPreviewClient.readToken() else {
-            status = "Last known access. Open Manage access to check your account."
+            status = "App not signed in. Showing saved access."
             return
         }
         refreshing = true
@@ -131,16 +193,40 @@ struct MeetingSharingControl: View {
             guard !Task.isCancelled, key == meetingKey,
                   let emails = result["recipients"] as? [String],
                   let expiry = result["expiresAt"] as? Double else { return }
-            receipt = MeetingSharingReceipt(url: current.url, recipients: emails, expiresAt: Date(timeIntervalSince1970: expiry))
+            receipt = MeetingSharingReceipt(url: current.url, recipients: emails,
+                                            expiresAt: Date(timeIntervalSince1970: expiry),
+                                            ownerEmail: result["ownerEmail"] as? String ?? current.ownerEmail)
             status = ""
             persist()
         } catch let error as PlusPreviewClient.Failure where error.status == 404 {
             guard !Task.isCancelled, key == meetingKey else { return }
             receipt = nil
             persist()
+        } catch let error as PlusPreviewClient.Failure where error.status == 401 || error.status == 403 {
+            guard !Task.isCancelled, key == meetingKey else { return }
+            status = error.status == 401
+                ? "App sign-in expired. Showing saved access."
+                : "Account access needs attention. Showing saved access."
         } catch {
             guard !Task.isCancelled, key == meetingKey else { return }
-            status = "Last known access. Could not refresh; check Manage access."
+            status = "Couldn’t refresh. Showing saved access."
         }
+    }
+}
+
+/// Shrinks the popover's layout bounds along with its contents, rather than
+/// leaving the original empty space around a visually scaled card.
+private struct SharingCardScaleLayout: Layout {
+    let scale: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let size = content.sizeThatFits(.unspecified)
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.midX, y: bounds.midY),
+                             anchor: .center, proposal: .unspecified)
     }
 }

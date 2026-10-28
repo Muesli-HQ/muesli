@@ -51,6 +51,13 @@ struct AboutView<AnalyticsControl: View>: View {
                     }
                 }
 
+                if PlusPreviewShareView.enabled {
+                    sectionHeader("Muesli Plus Account")
+                    aboutCard {
+                        PlusPreviewAccountView()
+                    }
+                }
+
                 // MARK: - Support
                 sectionHeader("Support")
                 aboutCard {

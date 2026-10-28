@@ -2,7 +2,7 @@ import AppKit
 import Security
 import SwiftUI
 
-/// Available in the preview bundle or an explicitly opted-in DevC build. Opening performs no network work.
+/// Available in the preview bundle or an explicitly opted-in DevC build. Account checks send no meeting content.
 struct PlusPreviewShareView: View {
     static var enabled: Bool {
         let identifier = Bundle.main.bundleIdentifier
@@ -26,15 +26,15 @@ struct PlusPreviewShareView: View {
     @State private var recipients = SharingRecipientInput()
     @State private var includeTranscript = false
     @State private var accepted = false
-    @State private var busy = false
+    @State private var uploading = false
+    @ObservedObject private var session = PlusPreviewAccount.shared
+    private var busy: Bool { uploading || session.busy }
     @State private var attempted = false
-    @State private var account: String?
-    @State private var token: String?
-    @State private var termsVersion: String?
-    @State private var code: String?
+    private var account: String? { session.email }
+    private var token: String? { session.token }
+    private var termsVersion: String? { session.termsVersion }
     @State private var message = ""
     @State private var sharedURL: URL?
-    @State private var connectionTask: Task<Void, Never>?
     @State private var requestID = UUID().uuidString
 
     init(title: String, summary: String, transcript: String, onShared: @escaping (URL, [String], Date) -> Void = { _, _, _ in }) {
@@ -50,9 +50,9 @@ struct PlusPreviewShareView: View {
                 Spacer()
                 Text("Plus Preview").foregroundStyle(.secondary)
                 Button("Close") {
-                    connectionTask?.cancel()
+                    session.cancelSignIn()
                     dismiss()
-                }.disabled(busy && code == nil)
+                }.disabled(busy && !session.isSigningIn)
             }
             if let sharedURL {
                 SharingSuccessView(url: sharedURL, recipients: emails)
@@ -113,16 +113,16 @@ struct PlusPreviewShareView: View {
                 if let account {
                     Text("Sharing from: \(account)").font(.caption)
                 }
-                if let code { Text("Connection code: \(code)").font(.headline.monospaced()) }
                 if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
+                if !session.message.isEmpty { Text(session.message).font(.callout).foregroundStyle(.secondary) }
                 HStack {
                     if account == nil {
-                        Button("Sign in with your account", systemImage: "person.crop.circle") { connect() }
+                        Button("Sign in with your account", systemImage: "person.crop.circle") { session.signIn() }
                             .buttonStyle(SharingPrimaryButtonStyle())
                             .help("Sign in to Muesli Plus to check sharing access. Nothing is uploaded yet.")
                             .disabled(busy)
                     } else {
-                        Button("Disconnect", systemImage: "person.crop.circle.badge.xmark") { disconnect() }.disabled(busy)
+                        Button("Sign out", systemImage: "person.crop.circle.badge.xmark") { session.signOut() }.disabled(busy)
                         Spacer()
                         Button("Upload and invite", systemImage: "square.and.arrow.up") { upload() }
                             .buttonStyle(SharingPrimaryButtonStyle())
@@ -138,89 +138,21 @@ struct PlusPreviewShareView: View {
                 }
             }
         }.padding(24).frame(width: 620, height: sharedURL == nil ? 680 : 260)
-            .onDisappear { connectionTask?.cancel() }
-    }
-    private func connect() {
-        guard Self.enabled else { return }
-        busy = true
-        message = ""
-        code = nil
-        connectionTask = Task { @MainActor in
-            defer {
-                busy = false
-                code = nil
-            }
-            do {
-                var saved = PlusPreviewClient.readToken()
-                if let current = saved {
-                    do {
-                        let info = try await PlusPreviewClient.call("account", token: current)
-                        account = info["email"] as? String
-                        termsVersion = info["termsVersion"] as? String
-                        token = current
-                        return
-                    } catch let error as PlusPreviewClient.Failure where error.status == 401 {
-                        PlusPreviewClient.clearToken()
-                        saved = nil
-                    }
-                }
-                if saved == nil {
-                    let pair = try await PlusPreviewClient.call("pair/start", body: [:])
-                    guard let id = pair["id"] as? String, let pollToken = pair["pollToken"] as? String,
-                        let displayCode = pair["code"] as? String, let link = pair["url"] as? String,
-                        let url = URL(string: link), url.scheme == "https", url.host == "notes.muesli.works",
-                        url.path == "/preview/connect"
-                    else { throw PlusPreviewClient.Failure(status: 0, message: "Could not connect. Try again.") }
-                    code = displayCode
-                    NSWorkspace.shared.open(url)
-                    for _ in 0..<120 {
-                        try await Task.sleep(for: .seconds(5))
-                        let result = try await PlusPreviewClient.call(
-                            "pair/poll", body: ["id": id, "pollToken": pollToken])
-                        if let issued = result["token"] as? String {
-                            try Task.checkCancellation()
-                            let info = try await PlusPreviewClient.call("account", token: issued)
-                            try Task.checkCancellation()
-                            try PlusPreviewClient.saveToken(issued)
-                            token = issued
-                            account = info["email"] as? String
-                            termsVersion = info["termsVersion"] as? String
-                            return
-                        }
-                    }
-                    message = "Connection expired. Try again."
-                }
-            } catch is CancellationError {} catch { message = error.localizedDescription }
-        }
-    }
-    private func disconnect() {
-        guard let token, !busy else { return }
-        busy = true
-        Task { @MainActor in
-            defer { busy = false }
-            do {
-                _ = try await PlusPreviewClient.call("disconnect", token: token, body: [:])
-                PlusPreviewClient.clearToken()
-                self.token = nil
-                account = nil
-                termsVersion = nil
-                message = ""
-            } catch { message = "Could not disconnect yet. " + error.localizedDescription }
-        }
+            .task { session.refresh() }
+            .onDisappear { session.cancelSignIn() }
     }
     private func upload() {
-        guard Self.enabled, !busy, !attempted, accepted, validRecipients, let token, let termsVersion else { return }
+        guard Self.enabled, !busy, !attempted, accepted, validRecipients, let token, let termsVersion, account != nil else { return }
         // This is the sole content-bearing network call, reachable only from the explicit button.
-        let snapshot: [String: Any] = [
-            "title": title, "summary": summary, "transcript": includeTranscript ? transcript : "", "recipients": emails,
-            "confirmed": true, "accepted": true, "termsVersion": termsVersion, "requestId": requestID,
-        ]
-        busy = true
+        uploading = true
         attempted = true
         message = ""
         Task { @MainActor in
-            defer { busy = false }
+            defer { uploading = false }
             do {
+                let snapshot: [String: Any] = ["title": title, "summary": summary,
+                    "transcript": includeTranscript ? transcript : "", "recipients": emails,
+                    "confirmed": true, "accepted": true, "termsVersion": termsVersion, "requestId": requestID]
                 let result = try await PlusPreviewClient.call("upload", token: token, body: snapshot)
                 guard let link = result["url"] as? String, let url = URL(string: link), url.scheme == "https",
                     url.host == "notes.muesli.works"
@@ -372,9 +304,20 @@ enum PlusPreviewClient {
         }
         return String(data: data, encoding: .utf8)
     }
-    static func clearToken() { SecItemDelete(query as CFDictionary) }
+    static func clearToken() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(status: 0, message: "Could not remove the connection from Keychain.")
+        }
+    }
     static func saveToken(_ token: String) throws {
-        clearToken()
+        let attributes: [String: Any] = [kSecValueData as String: Data(token.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return }
+        guard status == errSecItemNotFound else {
+            throw Failure(status: 0, message: "Could not save the connection in Keychain.")
+        }
         var q = query
         q[kSecValueData as String] = Data(token.utf8)
         q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
