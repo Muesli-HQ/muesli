@@ -28,6 +28,13 @@ final class BodhanCoreML {
         let prompts: [String: [Int]]
         let mixed_prompts: [String: [Int]]?
 
+        /// Shared by MLX/Core ML, batch and preview decoding.
+        func transcript(from tokens: [Int]) -> String {
+            let text = tokens.filter { $0 >= special_count }.map { pieces[$0] }
+                .joined().replacingOccurrences(of: "▁", with: " ")
+            return BodhanTranscriptText.clean(text)
+        }
+
         /// Both decoder runtimes share this vocabulary and prompt validation.
         /// The 512-position cache limit belongs to the CoreML export, not the MLX decoder.
         func validate(vocabularySize: Int = 7152) throws {
@@ -344,7 +351,7 @@ final class BodhanCoreML {
             ids = [next]
         }
         try policy.validateCompletion(endedWithEOS: ended)
-        let text = tokens.filter { $0 >= tokenizer.special_count }.map { tokenizer.pieces[$0] }.joined().replacingOccurrences(of:"▁",with:" ").trimmingCharacters(in:.whitespacesAndNewlines)
+        let text = tokenizer.transcript(from: tokens)
         var result = Result(text:text,language:chosen,tokens:tokens.count,endedWithEOS:ended,
                       frontendSeconds:frontendSeconds,encoderSeconds:encoderSeconds,crossSeconds:crossSeconds,
                       decodeSeconds:Date().timeIntervalSince(decodeStart), predictionSeconds:predictionSeconds,

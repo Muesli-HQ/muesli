@@ -159,7 +159,7 @@ final class BodhanMLXDecoder {
         }
         try policy.validateCompletion(endedWithEOS: ended)
         let seconds = Date().timeIntervalSince(start)
-        let text = tokens.filter { $0 >= tokenizer.special_count }.map { tokenizer.pieces[$0] }.joined().replacingOccurrences(of:"▁",with:" ").trimmingCharacters(in:.whitespacesAndNewlines)
+        let text = tokenizer.transcript(from: tokens)
         var result = BodhanCoreML.Result(text:text,language:chosen,tokens:tokens.count,endedWithEOS:ended,frontendSeconds:frontendSeconds,
                      encoderSeconds:encoderSeconds,crossSeconds:crossSeconds,decodeSeconds:seconds,
                      predictionSeconds:seconds,selectionSeconds:0,encoderPolicy:encoderPolicy)

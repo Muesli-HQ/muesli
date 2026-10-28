@@ -141,11 +141,36 @@ enum BodhanLogging {
     }
 }
 
+/// Reserve only Bodhan's exact uppercase placeholder, not the ordinary word.
+enum BodhanTranscriptText {
+    private static let placeholder = try! NSRegularExpression(
+        pattern: #"(?:\[REDACTED\]|\(REDACTED\)|<REDACTED>|\{REDACTED\})|(?<![\p{L}\p{M}\p{N}_\x{22}\x{27}\x{60}“‘])REDACTED(?![\p{L}\p{M}\p{N}_\x{22}\x{27}\x{60}”’])"#
+    )
+
+    static func clean(_ text: String) -> String {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return placeholder.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
+            .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[ \t]+([,!?;:…।،؛؟]|\.(?![\p{L}\p{M}\p{N}]))"#, with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Keep punctuation supplied by a later overlapping batch window.
+    static func preservingPunctuation(from incoming: String, on existing: String) -> String {
+        let sentenceMarks = CharacterSet(charactersIn: ".,!?;:…।،؛؟")
+        let suffix = incoming.unicodeScalars.reversed().prefix { CharacterSet.punctuationCharacters.contains($0) }.reversed()
+        guard suffix.contains(where: { sentenceMarks.contains($0) }) else { return existing }
+        let oldSuffix = existing.unicodeScalars.reversed().prefix { CharacterSet.punctuationCharacters.contains($0) }
+        let stem = existing.unicodeScalars.dropLast(oldSuffix.count)
+        return String(String.UnicodeScalarView(stem)) + String(String.UnicodeScalarView(suffix))
+    }
+}
+
 enum BodhanTranscriptMerger {
     static func mergeOverlappingTranscripts(_ transcripts: [String]) -> String {
         var mergedWords: [String] = []
         for transcript in transcripts {
-            let words = transcript.split(whereSeparator: \.isWhitespace).map(String.init)
+            let words = BodhanTranscriptText.clean(transcript).split(whereSeparator: \.isWhitespace).map(String.init)
             guard !words.isEmpty else { continue }
             guard !mergedWords.isEmpty else {
                 mergedWords.append(contentsOf: words)
@@ -164,11 +189,16 @@ enum BodhanTranscriptMerger {
                     }
                 }
             }
+            if overlap > 0 {
+                for index in 0..<overlap {
+                    let existingIndex = mergedWords.count - overlap + index
+                    mergedWords[existingIndex] = BodhanTranscriptText.preservingPunctuation(
+                        from: words[index], on: mergedWords[existingIndex])
+                }
+            }
             mergedWords.append(contentsOf: words.dropFirst(overlap))
         }
-        return mergedWords.joined(separator: " ")
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return BodhanTranscriptText.clean(mergedWords.joined(separator: " "))
     }
 
     private static func normalizeMergeToken(_ token: String) -> String {

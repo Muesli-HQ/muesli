@@ -6,6 +6,45 @@ import Testing
 
 @Suite("Bodhan compatibility and languages")
 struct BodhanBackendTests {
+    @Test("Bodhan removes exact placeholders without blacklisting ordinary speech",
+          arguments: [
+            ["Ippo REDACTED Tamil and English pesuren.", "Ippo Tamil and English pesuren."],
+            ["தமிழ்[REDACTED]English ?", "தமிழ் English?"],
+            ["REDACTED (REDACTED) <REDACTED> {REDACTED}", ""],
+            ["The document was redacted, then unredacted.", "The document was redacted, then unredacted."],
+            ["Say \"REDACTED\" or \u{60}REDACTED\u{60} literally.", "Say \"REDACTED\" or \u{60}REDACTED\u{60} literally."],
+            ["UNREDACTED REDACTED_NAME REDACTED2 தமிழ்REDACTED", "UNREDACTED REDACTED_NAME REDACTED2 தமிழ்REDACTED"],
+            ["I use C++, .NET, and v2.3. It's fine!", "I use C++, .NET, and v2.3. It's fine!"],
+            ["தமிழில் பேசலாம்.\nEnglish too!", "தமிழில் பேசலாம்.\nEnglish too!"]
+          ])
+    func outputPlaceholders(pair: [String]) {
+        #expect(BodhanTranscriptText.clean(pair[0]) == pair[1])
+    }
+
+    @Test("Both decoder paths render punctuation and strip assembled placeholder subwords")
+    func tokenizerOutputPolicy() {
+        guard #available(macOS 15, *) else { return }
+        let tokenizer = BodhanCoreML.Tokenizer(
+            pieces: ["<pad>", "<|endoftext|>", "▁தமிழ்", "▁RE", "DA", "CT", "ED",
+                     "▁English", ",", "▁pesalaam", "?", "▁redacted"],
+            special_count: 2, eos_id: 1, prompts: [:], mixed_prompts: nil)
+        #expect(tokenizer.transcript(from: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1]) == "தமிழ் English, pesalaam?")
+        #expect(tokenizer.transcript(from: [11]) == "redacted")
+    }
+
+    @Test("Bodhan overlapping batch windows retain punctuation from later context")
+    func overlappingPunctuation() {
+        #expect(BodhanTranscriptMerger.mergeOverlappingTranscripts([
+            "Ippo Tamil and English pesuren", "English pesuren. Aduthu test pannalaam?"
+        ]) == "Ippo Tamil and English pesuren. Aduthu test pannalaam?")
+        #expect(BodhanTranscriptMerger.mergeOverlappingTranscripts([
+            "தமிழில் பேசலாம்", "பேசலாம்! English too."
+        ]) == "தமிழில் பேசலாம்! English too.")
+        #expect(BodhanTranscriptMerger.mergeOverlappingTranscripts([
+            "English pesuren.", "pesuren aduthu test"
+        ]) == "English pesuren. aduthu test")
+    }
+
     @Test("live token limits preserve progress while batch still requires EOS")
     func boundedPreviewDecoding() throws {
         for mode in BodhanOutputMode.allCases {
