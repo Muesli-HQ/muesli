@@ -132,12 +132,6 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        let _ = appState.config
-        return sidebarContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
-    }
-
-    @ViewBuilder
-    private var sidebarContent: some View {
         if isCollapsed {
             collapsedSidebar
         } else {
@@ -616,9 +610,10 @@ struct SidebarView: View {
     @ViewBuilder
     private var darkModeToggle: some View {
         MuesliSettingControl(controller: controller, id: "appearance", compactAppearance: true)
-        .padding(.horizontal, sidebarRowOuterPadding)
-        .padding(.leading, sidebarRowHorizontalPadding)
-        .padding(.bottom, MuesliTheme.spacing4)
+            .environment(\.muesliSettingDefinitions, [controller.appearanceDefinition()])
+            .padding(.horizontal, sidebarRowOuterPadding)
+            .padding(.leading, sidebarRowHorizontalPadding)
+            .padding(.bottom, MuesliTheme.spacing4)
     }
 
     @ViewBuilder

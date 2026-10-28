@@ -55,12 +55,17 @@ struct WindowAppearanceTests {
             dictationStore: store, configStore: configStore)
         let setting = try #require(controller.settingsDefinitions().first { $0.id == "appearance" })
         #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark"])
+        let sidebarSetting = controller.appearanceDefinition()
+        #expect(sidebarSetting.id == setting.id)
+        #expect(sidebarSetting.snapshot(config: controller.config).choices.map(\.id)
+            == setting.snapshot(config: controller.config).choices.map(\.id))
         let originalAppearance = NSApp?.appearance
         defer { NSApp?.appearance = originalAppearance }
         for mode in [AppAppearanceMode.light, .dark, .system] {
             try await controller.applySetting("appearance", value: mode.rawValue)
             #expect(controller.appState.config.appearanceMode == mode)
             #expect(configStore.load().appearanceMode == mode)
+            #expect(sidebarSetting.read(configStore.load()) == mode.rawValue)
             if let app = NSApp { #expect(app.appearance?.name == mode.appearanceName) }
         }
     }
