@@ -2,37 +2,45 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      warm_blacksmith_cache:
+        description: 'Warm Blacksmith release cache on main (paid; maintainer only)'
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
   push:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Ignore unrelated labels without cancelling real checks; warming is independent of main CI.
+  group: ci-${{ github.ref }}${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && format('-ignored-label-{0}', github.run_id) || (inputs.warm_blacksmith_cache && '-blacksmith-warm' || '') }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
-# Paid runners require pHequals7 acting on their own work, except migration PR #698.
-# The exception also requires the Blacksmith bot author and an upstream head repo.
-# github.actor stays the original actor on reruns; other community/bot work stays on GitHub.
+# Blacksmith is opt-in for labelled PRs triggered by pHequals7, or manual main warming.
+# Pushes (including merges), unlabelled PRs and other actors use GitHub.
 jobs:
   # Detect which files changed. This gates expensive native CI only; security
   # checks live in security.yml and are intentionally not path-filtered here.
   changes:
+    if: >-
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
+      warm_blacksmith_cache: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
+      cache_write_allowed: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true) }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
       app_source: ${{ steps.classify.outputs.app_source }}
       release_surface: ${{ steps.classify.outputs.release_surface }}
@@ -47,6 +55,16 @@ jobs:
       review_worthy: ${{ steps.classify.outputs.review_worthy }}
       native_or_packaging: ${{ steps.classify.outputs.native_or_packaging }}
     steps:
+      - name: Validate manual cache warm-up
+        if: github.event_name == 'workflow_dispatch' && inputs.warm_blacksmith_cache
+        env:
+          WARM_ALLOWED: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: |
+          if [[ "$WARM_ALLOWED" != "true" || "$CACHE_DISABLED" == "true" ]]; then
+            echo "::error::Blacksmith warming requires pHequals7, upstream main, and enabled release caching."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -76,14 +94,15 @@ jobs:
           printf '%s\n' "$FILES" | ./scripts/classify_changed_files.sh
 
   classifier-tests:
+    if: >-
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -132,11 +151,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
@@ -191,7 +209,7 @@ jobs:
       # Exact commit only: an older compatible snapshot must not suppress refresh.
       - name: Check for existing exact main cache
         if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.cache_write_allowed == 'true' &&
           vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
         id: lookup-release
         continue-on-error: true
@@ -203,7 +221,7 @@ jobs:
 
       - name: Begin save timing
         if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.cache_write_allowed == 'true' &&
           vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
           steps.lookup-release.outcome == 'success' &&
           steps.lookup-release.outputs.cache-hit != 'true'
@@ -212,7 +230,7 @@ jobs:
 
       - name: Save clean main release artifacts
         if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.cache_write_allowed == 'true' &&
           vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
           steps.lookup-release.outcome == 'success' &&
           steps.lookup-release.outputs.cache-hit != 'true'
@@ -225,12 +243,31 @@ jobs:
 
       - name: End save timing
         if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.cache_write_allowed == 'true' &&
           vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
           steps.lookup-release.outcome == 'success' &&
           steps.lookup-release.outputs.cache-hit != 'true'
         continue-on-error: true
         run: python3 scripts/ci_release_cache.py end save
+
+      - name: Verify requested Blacksmith warm-up succeeded
+        if: needs.changes.outputs.warm_blacksmith_cache == 'true'
+        env:
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
+          CACHE_BACKEND: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
+          CACHE_KEY: ${{ steps.release-cache.outputs.key }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-release.outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ steps.lookup-release.outcome }}
+          CACHE_LOOKUP_HIT: ${{ steps.lookup-release.outputs.cache-hit }}
+          CACHE_EXISTING_KEY: ${{ steps.lookup-release.outputs.cache-matched-key }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: |
+          PYTHONPATH=scripts python3 - <<'PYTHON'
+          import os
+          from ci_release_cache_cleanup import trusted_context
+          trusted_context(os.environ)
+          print("Blacksmith main cache is saved or already available for this commit.")
+          PYTHON
 
       - name: End measured release pipeline
         continue-on-error: true
@@ -240,6 +277,7 @@ jobs:
         if: always()
         continue-on-error: true
         env:
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
           CACHE_MATCHED_KEY: ${{ steps.restore-release.outputs.cache-matched-key }}
           CACHE_EXACT_HIT: ${{ steps.restore-release.outputs.cache-hit }}
           CACHE_RESTORE_OUTCOME: ${{ steps.restore-release.outcome }}
@@ -263,20 +301,19 @@ jobs:
   # read-only repository permissions. Retention uses the build runner's backend
   # and never receives credentials on PRs or manual feature-branch runs.
   release_cache_cleanup:
-    needs: build_release
+    needs: [changes, build_release]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.cache_write_allowed == 'true' &&
       vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
       needs.build_release.result == 'success' &&
       needs.build_release.outputs.cache_ready == 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     concurrency:
@@ -308,6 +345,7 @@ jobs:
       - name: Retain the newest three main release caches
         env:
           GH_TOKEN: ${{ github.token }}
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
           CACHE_BACKEND: ${{ needs.build_release.outputs.cache_backend }}
           CACHE_KEY: ${{ needs.build_release.outputs.cache_key }}
           CACHE_SAVE_OUTCOME: ${{ needs.build_release.outputs.cache_save_outcome }}
@@ -321,15 +359,14 @@ jobs:
   # dictation-transcription; a separate same-toolchain job would duplicate it.
   test_shards:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true'
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
@@ -356,15 +393,14 @@ jobs:
   # Dependency test targets are not executed by the application's test shards.
   ai-elements:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true'
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 10
     env:
@@ -383,15 +419,14 @@ jobs:
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true'
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
@@ -424,15 +459,14 @@ jobs:
   # missing signatures, accidental delta entries, and malformed appcast XML.
   update-flow:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
+    if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -447,19 +481,20 @@ jobs:
       - name: Test CloudKit release entitlement contract
         run: python3 ./scripts/test_verify_cloud_entitlements.py
 
-  # Gate job — always runs, always reports a status
-  # This is the only required check in branch protection
+  # Unrelated labels must not publish a skipped check named ci-gate.
+  # Warm-up has its own name because it does not execute the full test suite.
   ci-gate:
-    if: always()
+    name: ${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && 'ignored-label-event' || (inputs.warm_blacksmith_cache && 'blacksmith-cache-warm' || 'ci-gate') }}
+    if: >-
+      always() && !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
     needs: [changes, classifier-tests, build_release, release_cache_cleanup, test_shards, ai-elements, cli-smoke, update-flow]
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
-           (github.event.pull_request.number == 698 &&
-            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) &&
-          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       # A successful draft gate could otherwise be reused on the same SHA when

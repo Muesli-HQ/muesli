@@ -48,10 +48,16 @@ def cleanup_plan(entries, replacement_key):
 
 
 def trusted_context(env):
-    if (env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_EVENT_NAME") != "push"
+    manual_warm = (env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                   and env.get("CACHE_WARM_BLACKSMITH") == "true"
+                   and env.get("GITHUB_ACTOR") == "pHequals7"
+                   and env.get("GITHUB_REPOSITORY") == "Muesli-HQ/muesli"
+                   and env.get("CACHE_BACKEND") == "blacksmith")
+    if (env.get("GITHUB_ACTIONS") != "true"
+            or not (env.get("GITHUB_EVENT_NAME") == "push" or manual_warm)
             or env.get("GITHUB_REF") != MAIN_REF
             or env.get("CACHE_DISABLED") == "true"):
-        raise ValueError("Cleanup requires an enabled main-push cache")
+        raise ValueError("Cleanup requires an enabled main cache from a push or authorized warm-up")
     repo = env.get("GITHUB_REPOSITORY", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid repository")

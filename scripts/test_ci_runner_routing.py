@@ -24,15 +24,19 @@ def evaluate(expression, context):
     Reject unsupported syntax rather than executing arbitrary Python.
     """
     def resolve(match):
-        value = context
-        for key in match.group().split('.'):
-            value = value.get(key) if isinstance(value, dict) else None
-        # GitHub objects are truthy, even when empty; missing properties are null.
-        return repr(True if isinstance(value, dict) else value)
+        def walk(value, keys):
+            if not keys:
+                return True if isinstance(value, dict) else value
+            key, *tail = keys
+            if key == '*':
+                return [walk(item, tail) for item in value] if isinstance(value, list) else []
+            return walk(value.get(key) if isinstance(value, dict) else None, tail)
+        return repr(walk(context, match.group().split('.')))
 
-    expression = re.sub(r'\b(?:github|needs)(?:\.[\w-]+)+', resolve, expression)
+    expression = re.sub(r"\b(?:github|needs|inputs|vars|env)(?:\.[\w*-]+)+", resolve, expression)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+    expression = re.sub(r'\b(true|false|null)\b', lambda m: {'true': 'True', 'false': 'False', 'null': 'None'}[m[0]], expression)
 
     def visit(node):
         if isinstance(node, ast.Constant):
@@ -49,79 +53,140 @@ def evaluate(expression, context):
                 else:
                     raise ValueError('Unsupported boolean operator')
             return value
-        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        if isinstance(node, ast.List):
+            return [visit(item) for item in node.elts]
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            args = [visit(arg) for arg in node.args]
+            if node.func.id == 'contains' and len(args) == 2:
+                return any(str(value).casefold() == str(args[1]).casefold() for value in args[0])
+            if node.func.id == 'always' and not args:
+                return True
+            if node.func.id == 'format':
+                return args[0].format(*args[1:])
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
             left, right = visit(node.left), visit(node.comparators[0])
             if isinstance(left, str) and isinstance(right, str):
-                return left.casefold() == right.casefold()
-            return left == right
+                left, right = left.casefold(), right.casefold()
+            return (left == right) if isinstance(node.ops[0], ast.Eq) else (left != right)
         raise ValueError(f'Unsupported expression: {ast.dump(node)}')
 
     return visit(ast.parse(expression, mode='eval').body)
 
 
+def context(event='pull_request', actor='pHequals7', labels=(), ref='refs/pull/698/merge',
+            warm=False, action='synchronize', changed_label='ci:blacksmith', author='pHequals7'):
+    return {'github': {'repository': 'Muesli-HQ/muesli', 'event_name': event, 'actor': actor,
+                       'ref': ref, 'run_id': 123, 'event': {'action': action, 'label': {'name': changed_label},
+                       'pull_request': {'user': {'login': author}, 'labels': [{'name': l} for l in labels]}}},
+            'inputs': {'warm_blacksmith_cache': warm}}
+
+
 class RunnerRoutingTests(unittest.TestCase):
-    def test_every_job_routes_ownership_and_rerun_scenarios(self):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+
+    def expression(self, key):
+        match = re.search(r'^      ' + key + r': \$\{\{ (.+) \}\}$', self.workflow, re.M)
+        self.assertIsNotNone(match, key)
+        return match[1]
+
+    def job(self, name):
+        return re.search(r'^  ' + re.escape(name) + r':\n(.*?)(?=^  [\w-]+:|\Z)', self.workflow, re.M | re.S)[1]
+
+    def test_every_job_routes_only_explicit_opt_ins(self):
         scenarios = [
-            ('maintainer push', 'push', 'pHequals7', {}, True),
-            ('community push', 'push', 'contributor', {}, False),
-            ('bot push', 'push', 'github-actions[bot]', {}, False),
-            ('maintainer PR', 'pull_request', 'pHequals7', {'pull_request': {'user': {'login': 'pHequals7'}}}, True),
-            ('community PR', 'pull_request', 'contributor', {'pull_request': {'user': {'login': 'contributor'}}}, False),
-            ('maintainer updates community PR', 'pull_request', 'pHequals7', {'pull_request': {'user': {'login': 'contributor'}}}, False),
-            ('community updates maintainer PR', 'pull_request', 'contributor', {'pull_request': {'user': {'login': 'pHequals7'}}}, False),
-            ('maintainer updates bot PR', 'pull_request', 'pHequals7', {'pull_request': {'user': {'login': 'blacksmith-sh[bot]'}}}, False),
-            ('missing PR author', 'pull_request', 'pHequals7', {'pull_request': {}}, False),
-            ('maintainer manual run', 'workflow_dispatch', 'pHequals7', {}, True),
-            ('community manual run', 'workflow_dispatch', 'contributor', {}, False),
-            ('maintainer requests own issue', 'issue_comment', 'pHequals7', {'issue': {'user': {'login': 'pHequals7'}}}, True),
-            ('maintainer requests community issue or PR', 'issue_comment', 'pHequals7', {'issue': {'user': {'login': 'contributor'}}}, False),
-            ('community requests maintainer issue', 'issue_comment', 'contributor', {'issue': {'user': {'login': 'pHequals7'}}}, False),
-            ('maintainer reviews community PR', 'pull_request_review', 'pHequals7', {'pull_request': {'user': {'login': 'contributor'}}}, False),
-            ('missing actor', 'push', None, {}, False),
+            ('unlabelled maintainer PR', context(), False),
+            ('labelled maintainer PR', context(labels=['ci:blacksmith']), True),
+            ('adding opt-in', context(labels=['ci:blacksmith'], action='labeled'), True),
+            ('removing opt-in', context(action='unlabeled'), False),
+            ('other label only', context(labels=['bug']), False),
+            ('maintainer selects bot PR', context(labels=['ci:blacksmith'], author='blacksmith-sh[bot]'), True),
+            ('maintainer selects community PR', context(labels=['ci:blacksmith'], author='contributor'), True),
+            ('community update to opted-in PR', context(labels=['ci:blacksmith'], actor='contributor'), False),
+            ('bot update to opted-in PR', context(labels=['ci:blacksmith'], actor='github-actions[bot]'), False),
+            ('merge into main', context(event='push', ref='refs/heads/main'), False),
+            ('push cannot spoof an opt-in', context(event='push', labels=['ci:blacksmith'], warm=True), False),
+            ('ordinary manual main run', context(event='workflow_dispatch', ref='refs/heads/main'), False),
+            ('manual main warm-up', context(event='workflow_dispatch', ref='refs/heads/main', warm=True), True),
+            ('manual feature warm-up', context(event='workflow_dispatch', ref='refs/heads/feature', warm=True), False),
+            ('contributor main warm-up', context(event='workflow_dispatch', ref='refs/heads/main', warm=True, actor='contributor'), False),
+            ('missing actor', context(labels=['ci:blacksmith'], actor=None), False),
+            ('issue comment', context(event='issue_comment', labels=['ci:blacksmith']), False),
         ]
-        migration = {'number': 698, 'user': {'login': 'blacksmith-sh[bot]'},
-                     'head': {'repo': {'full_name': 'Muesli-HQ/muesli'}}}
-        scenarios.extend([
-            ('migration exception', 'pull_request', 'pHequals7', {'pull_request': migration}, True),
-            ('migration bot-triggered run', 'pull_request', 'blacksmith-sh[bot]', {'pull_request': migration}, False),
-            ('migration community-triggered run', 'pull_request', 'contributor', {'pull_request': migration}, False),
-            ('other Blacksmith PR', 'pull_request', 'pHequals7',
-             {'pull_request': {**migration, 'number': 699}}, False),
-            ('wrong author for migration number', 'pull_request', 'pHequals7',
-             {'pull_request': {**migration, 'user': {'login': 'contributor'}}}, False),
-            ('fork head for migration number', 'pull_request', 'pHequals7',
-             {'pull_request': {**migration, 'head': {'repo': {'full_name': 'contributor/muesli'}}}}, False),
-            ('missing head for migration number', 'pull_request', 'pHequals7',
-             {'pull_request': {**migration, 'head': None}}, False),
-            ('migration issue-comment has no paid override', 'issue_comment', 'pHequals7',
-             {'issue': {'number': 698, 'user': {'login': 'blacksmith-sh[bot]'}}}, False),
-        ])
-        for filename, job_count in WORKFLOWS.items():
+        for filename, count in WORKFLOWS.items():
             text = (ROOT / '.github/workflows' / filename).read_text()
+            if filename != 'ci.yml':
+                self.assertNotIn('blacksmith-', text, filename)
+                self.assertEqual(len(re.findall(r'^    runs-on: (ubuntu-latest|macos-26)$', text, re.M)), count)
+                continue
             expressions = re.findall(r'^    runs-on: >-\n((?:      .+\n)+)', text, re.M)
-            self.assertEqual(len(expressions), job_count, filename)
-            self.assertEqual(len(re.findall(r'^    runs-on:', text, re.M)), job_count, filename)
-            for index, block in enumerate(expressions):
+            self.assertEqual(len(expressions), count)
+            for block in expressions:
                 expression = ' '.join(block.split()).removeprefix('${{').removesuffix('}}').strip()
                 native = 'blacksmith-6vcpu-macos-26' in expression
                 paid = 'blacksmith-6vcpu-macos-26' if native else 'blacksmith-4vcpu-ubuntu-2404'
                 free = 'macos-26' if native else 'ubuntu-latest'
-                for name, event_name, actor, event, allowed in scenarios:
-                    context = {'github': {'repository': 'Muesli-HQ/muesli', 'event_name': event_name,
-                                          'actor': actor, 'event': event}}
-                    # Reruns must preserve the original route, regardless of who reruns.
+                for name, ctx, allowed in scenarios:
                     for rerunner in ('pHequals7', 'contributor'):
-                        context['github']['triggering_actor'] = rerunner
-                        with self.subTest(workflow=filename, job=index, case=name, rerunner=rerunner):
-                            self.assertEqual(evaluate(expression, context), paid if allowed else free)
-                    fork = deepcopy(context)
+                        ctx['github']['triggering_actor'] = rerunner
+                        with self.subTest(case=name, rerunner=rerunner, runner=paid):
+                            self.assertEqual(evaluate(expression, ctx), paid if allowed else free)
+                    fork = deepcopy(ctx)
                     fork['github']['repository'] = 'contributor/muesli'
-                    with self.subTest(workflow=filename, job=index, case=name, fork=True):
-                        self.assertEqual(evaluate(expression, fork), free)
+                    self.assertEqual(evaluate(expression, fork), free)
+
+    def test_main_cache_writes_require_push_or_authorized_warm_up(self):
+        warm = self.expression('warm_blacksmith_cache')
+        write = self.expression('cache_write_allowed')
+        cases = [
+            (context(event='push', ref='refs/heads/main'), False, True),
+            (context(event='push', ref='refs/heads/feature'), False, False),
+            (context(labels=['ci:blacksmith']), False, False),
+            (context(event='workflow_dispatch', ref='refs/heads/main'), False, False),
+            (context(event='workflow_dispatch', ref='refs/heads/main', warm=True), True, True),
+            (context(event='workflow_dispatch', ref='refs/heads/feature', warm=True), False, False),
+            (context(event='workflow_dispatch', ref='refs/heads/main', warm=True, actor='contributor'), False, False),
+        ]
+        for ctx, should_warm, should_write in cases:
+            with self.subTest(context=ctx):
+                self.assertEqual(bool(evaluate(warm, ctx)), should_warm)
+                self.assertEqual(bool(evaluate(write, ctx)), should_write)
+        validation = self.job('changes').split('      - name: Validate manual cache warm-up')[1].split('      - uses:')[0]
+        self.assertIn('WARM_ALLOWED: ${{ ' + warm + ' }}', validation)
+        self.assertIn('"$CACHE_DISABLED" == "true"', validation)
+        self.assertIn('exit 1', validation)
+        for name in ('test_shards', 'ai-elements', 'cli-smoke', 'update-flow'):
+            condition = re.search(r'^    if: (.+)$', self.job(name), re.M)[1]
+            for warm_mode in ('true', 'false'):
+                ctx = {'needs': {'changes': {'outputs': {'native_or_packaging': 'true', 'full_ci': 'true', 'warm_blacksmith_cache': warm_mode}}}}
+                self.assertEqual(bool(evaluate(condition, ctx)), warm_mode == 'false')
+
+    def test_unrelated_labels_neither_replace_gate_nor_cancel_real_ci(self):
+        self.assertIn('converted_to_draft, labeled, unlabeled]', self.workflow)
+        group = re.search(r'^  group: (.+)$', self.workflow, re.M)[1]
+        def render(template, ctx):
+            return re.sub(r'\$\{\{ (.*?) \}\}', lambda m: str(evaluate(m[1], ctx)), template)
+        normal = render(group, context())
+        self.assertEqual(normal, 'ci-refs/pull/698/merge')
+        gate_name = re.search(r'^    name: (.+)$', self.job('ci-gate'), re.M)[1]
+        for action in ('labeled', 'unlabeled', 'synchronize'):
+            for label in ('ci:blacksmith', 'bug'):
+                ctx = context(action=action, changed_label=label)
+                relevant = action == 'synchronize' or label == 'ci:blacksmith'
+                for job in ('changes', 'classifier-tests', 'ci-gate'):
+                    condition = re.search(r'^    if: >-\n((?:      .+\n)+)', self.job(job), re.M)[1]
+                    self.assertEqual(bool(evaluate(' '.join(condition.split()), ctx)), relevant)
+                self.assertEqual(render(gate_name, ctx), 'ci-gate' if relevant else 'ignored-label-event')
+                self.assertEqual(render(group, ctx) == normal, relevant)
+        main = context(event='push', ref='refs/heads/main')
+        warming = context(event='workflow_dispatch', ref='refs/heads/main', warm=True)
+        self.assertNotEqual(render(group, main), render(group, warming))
+        self.assertEqual(render(gate_name, warming), 'blacksmith-cache-warm')
+        self.assertEqual(render(gate_name, main), 'ci-gate')
 
     def test_regression_suite_is_registered(self):
-        text = (ROOT / '.github/workflows/ci.yml').read_text()
-        self.assertIn('run: python3 ./scripts/test_ci_runner_routing.py', text)
+        self.assertIn('run: python3 ./scripts/test_ci_runner_routing.py', self.workflow)
 
 
 if __name__ == '__main__':

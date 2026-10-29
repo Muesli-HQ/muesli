@@ -190,7 +190,7 @@ class ReleaseCacheTests(unittest.TestCase):
         build = next(step for step in steps if step.startswith("Build (release)\n"))
         self.assertIn("if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'\n", restore)
         save_condition = ("if: >-\n"
-                          "          github.event_name == 'push' && github.ref == 'refs/heads/main' &&\n"
+                          "          needs.changes.outputs.cache_write_allowed == 'true' &&\n"
                           "          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&\n"
                           "          steps.lookup-release.outcome == 'success' &&\n"
                           "          steps.lookup-release.outputs.cache-hit != 'true'\n")
@@ -200,7 +200,7 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", build)
         self.assertIn("python3 scripts/ci_release_cache.py build", build)
         self.assertEqual(job.count("uses: actions/cache/"), 3)
-        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' &&", lookup)
+        self.assertIn("needs.changes.outputs.cache_write_allowed == 'true' &&", lookup)
         self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'", lookup)
         self.assertIn("lookup-only: true", lookup)
         self.assertIn("continue-on-error: true", lookup)
@@ -219,13 +219,18 @@ class ReleaseCacheTests(unittest.TestCase):
                 self.assertIn(save_condition, step)
 
         cleanup = workflow.split("  release_cache_cleanup:\n", 1)[1].split("\n  test_shards:", 1)[0]
-        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' &&", cleanup)
+        self.assertIn("needs.changes.outputs.cache_write_allowed == 'true' &&", cleanup)
         self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&", cleanup)
         self.assertIn("needs.build_release.result == 'success' &&", cleanup)
         self.assertIn("needs.build_release.outputs.cache_ready == 'true'", cleanup)
         self.assertIn("cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}", job)
         self.assertNotIn("continue-on-error: true", cleanup)
         self.assertIn('scripts/install_blacksmith_cli.sh', cleanup)
+        verify = next(step for step in steps if step.startswith('Verify requested Blacksmith warm-up'))
+        self.assertNotIn('continue-on-error:', verify)
+        self.assertIn('trusted_context(os.environ)', verify)
+        self.assertIn('CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}', verify)
+        self.assertIn('CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}', cleanup)
         self.assertEqual(workflow.count('secrets.BLACKSMITH_CACHE_TOKEN'), 1)
         self.assertIn('secrets.BLACKSMITH_CACHE_TOKEN', cleanup)
         self.assertIn('CACHE_EXISTING_KEY: ${{ needs.build_release.outputs.cache_existing_key }}', cleanup)
