@@ -24,7 +24,9 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", branch: "main"), // TODO: pin to tagged release once one ships post-PR #455 (swift-transformers removal)
+        // Fork owner: salmonumbrella; Muesli maintainers own the pin and review fork-only
+        // changes against argmaxinc/WhisperKit before advancing its exact revision.
+        .package(url: "https://github.com/salmonumbrella/WhisperKit.git", revision: "bf94f52f0dfd15df51aa9bb0195c663d8a253f07"), // Producer-owned local-only model/tokenizer loading.
         // Ghost Pepper uses this LLM.swift fork for local Qwen cleanup. Before production, replace it with upstream
         // eastriverlee/LLM.swift once explicit Qwen/ChatML template behavior is validated against our GGUF models.
         .package(url: "https://github.com/obra/LLM.swift.git", revision: "f1e1e11982dbc59662be191b8bed408dfb48e9df"),

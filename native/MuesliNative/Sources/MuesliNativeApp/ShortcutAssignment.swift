@@ -2,7 +2,7 @@ import AppKit
 
 /// Shared by the key recorder and settings tools. Values describe keys, never code.
 enum ShortcutAssignment: String, CaseIterable {
-    case dictation, computerUse, quil, meetingRecording
+    case dictation, computerUse, quil, meetingRecording, feedbackCapture
 
     var settingID: String {
         switch self {
@@ -10,6 +10,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: "cua_hotkey"
         case .quil: "quill_hotkey"
         case .meetingRecording: "meeting_hotkey"
+        case .feedbackCapture: "feedback_capture_hotkey"
         }
     }
 
@@ -19,6 +20,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: "Computer use shortcut key"
         case .quil: "Quill shortcut key"
         case .meetingRecording: "Meeting recording shortcut key"
+        case .feedbackCapture: "Scrawl shortcut key"
         }
     }
 
@@ -28,6 +30,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: \.computerUseHotkey
         case .quil: \.quilHotkey
         case .meetingRecording: \.meetingRecordingHotkey
+        case .feedbackCapture: \.feedbackCaptureHotkey
         }
     }
 
@@ -35,7 +38,7 @@ enum ShortcutAssignment: String, CaseIterable {
         switch self {
         case .computerUse: 0
         case .quil: 1
-        case .dictation, .meetingRecording: 4
+        case .dictation, .meetingRecording, .feedbackCapture: 4
         }
     }
 
@@ -58,6 +61,8 @@ enum ShortcutAssignment: String, CaseIterable {
     static let singleKeys: [HotkeyConfig] = (UInt16(0)...127).compactMap { code in
         HotkeyConfig.label(for: code).map { HotkeyConfig(keyCode: code, label: $0) }
     }
+    var assignableSingleKeys: [HotkeyConfig] { self == .feedbackCapture ? [] : Self.singleKeys }
+
     private static let modifiers: [(name: String, flags: NSEvent.ModifierFlags)] = [
         ("command", .command), ("control", .control), ("option", .option), ("shift", .shift)
     ]
@@ -103,7 +108,7 @@ enum ShortcutAssignment: String, CaseIterable {
     }
 
     func hotkey(for value: String) -> HotkeyConfig? {
-        if let key = Self.singleKeys.first(where: { Self.value(for: $0) == value }) { return key }
+        if let key = assignableSingleKeys.first(where: { Self.value(for: $0) == value }) { return key }
         guard maximumModifiers > 0 else { return nil }
         let parts = value.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2, parts.count - 1 <= maximumModifiers,
@@ -127,6 +132,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: controller.updateComputerUseHotkey(hotkey)
         case .quil: controller.updateQuilHotkey(hotkey)
         case .meetingRecording: controller.updateMeetingRecordingHotkey(hotkey)
+        case .feedbackCapture: controller.updateFeedbackCaptureHotkey(hotkey)
         }
     }
 }

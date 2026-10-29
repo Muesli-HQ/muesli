@@ -76,8 +76,8 @@ final class VisualMemoryController {
         })
     }
 
-    // Called only on the utility maintenance task, never during UI rendering.
-    nonisolated private static func recoverableDuration(_ url: URL) -> Double? {
+    // Probe on a background task, never during UI rendering.
+    nonisolated static func recoverableDuration(_ url: URL) -> Double? {
         let asset = AVURLAsset(url: url)
         guard asset.isPlayable, !asset.tracks(withMediaType: .video).isEmpty else { return nil }
         let duration = CMTimeGetSeconds(asset.duration)

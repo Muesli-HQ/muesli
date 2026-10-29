@@ -57,6 +57,11 @@ case "${shard}" in
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      FeedbackCaptureTranscriptTests
+      FeedbackCaptureStoreTests
+      FeedbackCaptureLifecycleTests
+      FeedbackCaptureFinalizerTests
+      FeedbackCapturePillTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
       VisualMemoryStoreTests
@@ -137,6 +142,7 @@ case "${shard}" in
       DictationStateIdleTests
       DictationCorrectionMonitorTests
       Nemotron35ModelStoreTests
+      NemotronWavLoaderTests
     )
     ;;
   meetings)

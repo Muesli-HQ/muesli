@@ -33,7 +33,8 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     /// Multilingual config from metadata.json (multilingual/2240ms variant).
     /// Geometry: chunk_mel_frames 224 + pre_encode_cache 9 = total 233; 8× subsampling
     /// → 28 encoder frames/chunk; chunkSamples = 2240ms · 16kHz = 35840.
-    private var config: NemotronRNNTConfig {
+    private var config: NemotronRNNTConfig { configuration() }
+    func configuration(promptId override: Int32? = nil) -> NemotronRNNTConfig {
         NemotronRNNTConfig(
             chunkSamples: 35840,
             cacheChannelFrames: 42,      // att_context left
@@ -41,7 +42,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             encoderDim: 1024,
             decoderHiddenSize: 640,
             blankTokenId: 13087,         // = vocab_size (last logit index)
-            promptId: promptId,          // selected language (auto = 101)
+            promptId: override ?? promptId, // per-request override leaves the preference intact
             stripAngleBracketTags: true  // drop <lang>/<unk> tags the model emits
         )
     }
@@ -165,6 +166,10 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     /// Process one 2240ms audio chunk (35840 samples) and return newly decoded text.
     func transcribeChunk(samples: [Float], state: inout StreamState) async throws -> String {
+        try await transcribeChunk(samples: samples, state: &state, promptId: nil)
+    }
+
+    private func transcribeChunk(samples: [Float], state: inout StreamState, promptId: Int32?) async throws -> String {
         guard loaded, let preprocessor, let encoder, let decoder, let joint else {
             throw TranscriberError.notLoaded
         }
@@ -175,7 +180,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             try Task.checkCancellation()
             let newTokens = try await nemotronTranscribeChunk(
                 preprocessor: preprocessor, encoder: encoder, decoder: decoder, joint: joint,
-                config: config, samples: samples, state: &state)
+                config: configuration(promptId: promptId), samples: samples, state: &state)
             let text = nemotronDecodeTokens(
                 newTokens, tokenizer: tokenizer,
                 stripAngleBracketTags: config.stripAngleBracketTags, trim: false)
@@ -189,7 +194,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Convenience (full-file transcription)
 
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    func transcribe(wavURL: URL, promptId: Int32? = nil) async throws -> (text: String, processingTime: Double) {
         guard loaded else { throw TranscriberError.notLoaded }
 
         let samples = try nemotronLoadWavAsFloats(url: wavURL)
@@ -201,7 +206,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         while sampleOffset < samples.count {
             let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
             let chunk = Array(samples[sampleOffset..<chunkEnd])
-            _ = try await transcribeChunk(samples: chunk, state: &state)
+            _ = try await transcribeChunk(samples: chunk, state: &state, promptId: promptId)
             sampleOffset += config.chunkSamples
         }
 
@@ -254,6 +259,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             return modelDir
         }
 
+        guard !ManagedASRModelDownloader.localOnly else { throw CocoaError(.fileNoSuchFile) }
         fputs("[nemotron35] downloading multilingual/2240ms variant from HuggingFace...\n", stderr)
         _ = try await Nemotron35ModelStore.ensureDownloaded(progress: progress, progressSnapshot: progressSnapshot)
 

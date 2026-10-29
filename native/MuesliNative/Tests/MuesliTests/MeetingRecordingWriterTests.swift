@@ -6,6 +6,100 @@ import Testing
 @Suite("MeetingRecordingWriter")
 struct MeetingRecordingWriterTests {
 
+    @Test("feedback narration is incremental, fills clock gaps and trims overlap")
+    func incrementalNarration() throws {
+        let root = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("narration.wav")
+        let writer = try MeetingRecordingWriter(destination: url)
+        try writer.appendMicrophone([100, 200, 300], startFrame: 1000)
+        #expect(try Data(contentsOf: url).count == 50)
+        try writer.appendMicrophone([400, 500], startFrame: 1005)
+        try writer.appendMicrophone([600, 700, 800], startFrame: 1006)
+        try writer.appendMicrophone([900], startFrame: 1000)
+        #expect(try writer.finishMicrophone() == url)
+        #expect(try readMonoPCM16WAVSamples(from: url) == [100, 200, 300, 0, 0, 400, 500, 700, 800])
+        #expect(throws: (any Error).self) { try writer.appendMicrophone([1], startFrame: 1009) }
+        let empty = try MeetingRecordingWriter(destination: url)
+        #expect(try empty.finishMicrophone() == nil)
+        #expect(try Data(contentsOf: url).count == 44, "Feedback keeps the empty header for recovery")
+        let failed = try MeetingRecordingWriter(destination: url)
+        try failed.appendMicrophone([100], startFrame: 0)
+        #expect(throws: (any Error).self) { try failed.appendMicrophone([200], startFrame: 16_000 * 601) }
+        #expect(throws: (any Error).self) { try failed.finishMicrophone() }
+        #expect(try readMonoPCM16WAVSamples(from: url) == [100])
+        let meeting = try MeetingRecordingWriter(destination: url)
+        #expect(meeting.stop() == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path), "Meeting stop deletes an empty recording")
+    }
+
+    @Test("meeting stop preserves audio and reports a final synchronization error")
+    func stopPreservesRecordingWhenSynchronizationFails() throws {
+        let root = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("meeting.wav")
+        let writer = try MeetingRecordingWriter(destination: url, synchronize: { _ in
+            throw NSError(domain: "MeetingRecordingWriterTests", code: 17)
+        })
+        writer.appendMic([1200, -800, 400])
+
+        let result = writer.stopRecording()
+
+        #expect(result.recordingURL == url)
+        #expect((result.error as NSError?)?.domain == "MeetingRecordingWriterTests")
+        #expect((result.error as NSError?)?.code == 17)
+        #expect(try readMonoPCM16WAVSamples(from: url) == [1200, -800, 400])
+    }
+
+    @Test("WAV publication repairs stale headers and keeps unrepaired sources")
+    func wavPublicationRepairsOrRetainsSource() async throws {
+        let root = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("stale-header.wav")
+        let pcm = Data([0xB0, 0x04, 0xE0, 0xFC, 0x90, 0x01])
+        var staleWAV = WavWriter.header(dataSize: 0)
+        staleWAV.append(pcm)
+        try staleWAV.write(to: source)
+        let supportDirectory = root.appendingPathComponent("support", isDirectory: true)
+
+        let savedURL = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
+            from: source,
+            meetingTitle: "Header Repair",
+            startedAt: Date(timeIntervalSince1970: 0),
+            supportDirectory: supportDirectory,
+            fileFormat: .wav
+        )
+        let savedWAV = try Data(contentsOf: savedURL)
+        #expect(Data(savedWAV.prefix(44)) == WavWriter.header(dataSize: UInt32(pcm.count)))
+        #expect(Data(savedWAV.suffix(pcm.count)) == pcm)
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+
+        let invalidSource = root.appendingPathComponent("invalid.wav")
+        let invalidBytes = Data("not a WAV".utf8)
+        try invalidBytes.write(to: invalidSource)
+        let invalidSupportDirectory = root.appendingPathComponent("invalid-support", isDirectory: true)
+        var didFail = false
+        do {
+            _ = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
+                from: invalidSource,
+                meetingTitle: "Invalid",
+                startedAt: Date(timeIntervalSince1970: 0),
+                supportDirectory: invalidSupportDirectory,
+                fileFormat: .wav
+            )
+        } catch {
+            didFail = true
+        }
+        #expect(didFail)
+        #expect(FileManager.default.fileExists(atPath: invalidSource.path))
+        #expect((try? Data(contentsOf: invalidSource)) == invalidBytes)
+        let publishedFiles = (try? FileManager.default.contentsOfDirectory(
+            atPath: invalidSupportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true).path
+        )) ?? []
+        #expect(publishedFiles.isEmpty)
+    }
+
     @Test("retained mic is wired only to the cleaned stream, before pause and stop finalization")
     func sessionRetainsCleanedMicAndFlushesBeforeFinalization() throws {
         // Guard the session wiring without starting hardware capture or loading models.
@@ -20,7 +114,7 @@ struct MeetingRecordingWriterTests {
         #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
         for (start, finish) in [
             ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),
-            ("func stop(template:", "retainedRecordingWriter?.stop()")
+            ("func stop(template:", "retainedRecordingWriter?.stopRecording()")
         ] {
             let startRange = try #require(source.range(of: start))
             let body = source[startRange.upperBound...]

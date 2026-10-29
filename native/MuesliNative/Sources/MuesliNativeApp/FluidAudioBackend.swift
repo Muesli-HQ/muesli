@@ -116,7 +116,7 @@ actor FluidAudioTranscriber {
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
             let models: AsrModels
-            if ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+            if ManagedASRModelDownloader.localOnly || ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
                 models = try AsrModels.loadLocal(
                     from: modelDirectory, version: version,
                     encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
@@ -145,6 +145,10 @@ actor FluidAudioTranscriber {
         let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
+    }
+
+    static func captureWords(_ tokens: [TokenTiming]) -> [SpeechSegment] {
+        buildWordTimings(from: tokens).map { SpeechSegment(start: $0.startTime, end: $0.endTime, text: $0.word) }
     }
 
     private func removeWaiter(_ callerID: UUID, generation: UUID) {

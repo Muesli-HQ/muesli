@@ -1285,6 +1285,47 @@ struct MeetingsNavigationTests {
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
     }
 
+    @Test("prompt policy asks before retaining a recording with a finalization error")
+    func promptPolicyAsksBeforeRetainingRecordingWithWriterFailure() async {
+        var didPrompt = false
+        let shouldRetain = await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: true,
+            prompt: {
+                didPrompt = true
+                return false
+            }
+        )
+        #expect(didPrompt)
+        #expect(!shouldRetain)
+
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: true,
+            prompt: {
+                Issue.record("Never policy must not ask to retain audio")
+                return true
+            }
+        )))
+    }
+
+    @Test("alert fallback logging omits private content")
+    func alertFallbackLogOmitsPrivateContent() {
+        let privateContext = "Customer roadmap review"
+        let privateTitle = "Acme renewal planning"
+        let privatePath = "/tmp/acme-renewal-planning.wav"
+        let message = "The recording was saved at \(privatePath)."
+        let fallbackLog = MuesliController.alertFallbackLogMessage(
+            context: privateContext,
+            title: privateTitle,
+            informativeText: message
+        )
+
+        #expect(fallbackLog.contains("[muesli-native] unable to present"))
+        #expect(!fallbackLog.contains(privateContext))
+        #expect(!fallbackLog.contains(privateTitle))
+        #expect(!fallbackLog.contains(privatePath))
+        #expect(!fallbackLog.contains(message))
+    }
+
     @Test("explicit screen recording retains audio without another save prompt")
     func screenRecordingSkipsRetentionPrompt() async {
         #expect(await MuesliController.shouldRetainMeetingRecording(
@@ -1540,7 +1581,10 @@ struct MeetingsNavigationTests {
         let retainedRecordingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("retained-policy-drift-\(UUID().uuidString)")
             .appendingPathExtension("wav")
-        try Data("recording".utf8).write(to: retainedRecordingURL)
+        try WavWriter.writeWAV(
+            samples: [Float](repeating: 0.25, count: 1_600),
+            to: retainedRecordingURL
+        )
 
         let result = MeetingSessionResult(
             title: "Policy Drift",
