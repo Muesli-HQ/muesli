@@ -12,7 +12,7 @@ enum FloatingIndicatorPointerIntent {
     }
 }
 
-final class InteractiveFloatingPanel: NSPanel {
+class InteractiveFloatingPanel: NSPanel {
     var leftMouseDownHandler: ((NSPoint) -> Bool)?
 
     override var canBecomeKey: Bool { true }
@@ -206,6 +206,8 @@ final class FloatingIndicatorController: NSObject {
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
     private let pointerLocation: () -> NSPoint
+    private let makeFeedbackCapturePanel: @MainActor () -> NSPanel
+    private let makePanel: @MainActor (NSRect) -> InteractiveFloatingPanel
     private var isMeetingRecording = false
     private var isMeetingRecordingPaused = false
     private var isMeetingTranscriptManuallyDismissed = false
@@ -267,11 +269,19 @@ final class FloatingIndicatorController: NSObject {
 
     init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
          notchIndicator injectedNotch: NotchIndicatorController? = nil,
-         loadFeedbackConfiguration: (() -> AppConfig)? = nil) {
+         loadFeedbackConfiguration: (() -> AppConfig)? = nil,
+         makePanel: @escaping @MainActor (NSRect) -> InteractiveFloatingPanel = {
+             InteractiveFloatingPanel(contentRect: $0, styleMask: .borderless, backing: .buffered, defer: false)
+         },
+         makeFeedbackCapturePanel: @escaping @MainActor () -> NSPanel = {
+             InteractiveFloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+         }) {
         self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
         self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.load() }
         self.pointerLocation = pointerLocation
+        self.makeFeedbackCapturePanel = makeFeedbackCapturePanel
+        self.makePanel = makePanel
         super.init()
         notchIndicator.onOpenMeetingNotes = { [weak self] in self?.onOpenMeetingNotes?() }
         notchIndicator.onOpenHome = { [weak self] in self?.onOpenHome?() }
@@ -424,6 +434,66 @@ final class FloatingIndicatorController: NSObject {
         } else if state == .recording {
             onStopToggleDictation?()
         }
+    }
+
+    private var feedbackCapturePanel: NSPanel?
+    private var feedbackCaptureIsPresented = false
+
+    func dismissFeedbackCapturePreservingActivity() {
+        feedbackCapturePanel?.orderOut(nil); feedbackCapturePanel?.contentView = nil
+        feedbackCaptureIsPresented = false
+    }
+
+    func showFeedbackCapture(_ state: FeedbackCapturePillState?, config: AppConfig,
+                             power: @escaping () -> Float, finish: @escaping () -> Void,
+                             discard: @escaping () -> Void, open: @escaping () -> Void,
+                             repairPermission: @escaping () -> Void) {
+        guard let state else {
+            feedbackCapturePanel?.orderOut(nil); feedbackCapturePanel?.contentView = nil
+            if feedbackCaptureIsPresented {
+                notchIndicator.hide(); feedbackCaptureIsPresented = false
+                setState(self.state, config: config)
+            }
+            return
+        }
+        let preservesActivity: Bool
+        if case .busy = state { preservesActivity = true } else { preservesActivity = false }
+        if !preservesActivity { feedbackCaptureIsPresented = true }
+        let view = FeedbackCapturePillView(state: state, power: power, finish: finish,
+            discard: discard, open: open, repairPermission: repairPermission)
+        if !preservesActivity, config.indicatorAnchor == .notch, let screen = NSScreen.main,
+           notchIndicator.showFeedbackCapture(on: screen, view: view) {
+            feedbackCapturePanel?.orderOut(nil)
+            return
+        }
+        if !preservesActivity { notchIndicator.dismissFeedbackCapturePreservingActivity() }
+        let screen = NSScreen.screens.first { NSMouseInRect(pointerLocation(), $0.frame, false) } ?? NSScreen.main
+        guard let screen else { return }
+        let capturePanel = feedbackCapturePanel ?? makeFeedbackCapturePanel()
+        let hosting: NSHostingView<FeedbackCapturePillView>
+        if let current = capturePanel.contentView as? NSHostingView<FeedbackCapturePillView> {
+            hosting = current; hosting.rootView = view
+        } else {
+            hosting = NSHostingView(rootView: view)
+            capturePanel.contentView = hosting
+        }
+        let size = hosting.fittingSize
+        capturePanel.level = .statusBar; capturePanel.backgroundColor = .clear; capturePanel.isOpaque = false
+        capturePanel.hasShadow = true; capturePanel.hidesOnDeactivate = false; capturePanel.isReleasedWhenClosed = false
+        capturePanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let anchor = panel?.frame
+        let proposedFrame = NSRect(x: anchor.map { $0.midX - size.width / 2 } ?? (screen.visibleFrame.midX - size.width / 2),
+            y: preservesActivity ? (anchor?.maxY ?? screen.visibleFrame.minY + 40) + 8 : (anchor?.minY ?? screen.visibleFrame.minY + 40),
+            width: size.width, height: size.height)
+        let visibleFrame = screen.visibleFrame
+        let maximumOrigin = CGPoint(x: max(visibleFrame.minX, visibleFrame.maxX - proposedFrame.width),
+            y: max(visibleFrame.minY, visibleFrame.maxY - proposedFrame.height))
+        let frame = NSRect(x: min(max(proposedFrame.minX, visibleFrame.minX), maximumOrigin.x),
+            y: min(max(proposedFrame.minY, visibleFrame.minY), maximumOrigin.y),
+            width: proposedFrame.width, height: proposedFrame.height)
+        capturePanel.setFrame(frame, display: true)
+        if !preservesActivity { panel?.orderOut(nil) }
+        capturePanel.orderFrontRegardless(); feedbackCapturePanel = capturePanel
     }
 
     func showDictationCompletion() {
@@ -712,6 +782,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setState(_ requestedState: DictationState, config: AppConfig) {
+        if feedbackCaptureIsPresented && requestedState == .idle { return }
+        if requestedState != .idle {
+            feedbackCapturePanel?.orderOut(nil); feedbackCapturePanel?.contentView = nil; feedbackCaptureIsPresented = false
+        }
         // The shared indicator also receives dictation completion/failure and
         // warmup updates. They must not retire a still-active meeting's controls.
         if isMeetingRecording, self.state == .recording, requestedState != .recording {
@@ -1115,9 +1189,13 @@ final class FloatingIndicatorController: NSObject {
         return true
     }
 
+    private func interruptedIdlePlacementFrame(config: AppConfig) -> NSRect {
+        isHovered ? frameForState(.idle, config: config) : panel?.frame ?? frameForState(.idle, config: config)
+    }
+
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
+        guard state == .idle, !feedbackCaptureIsPresented else { return }
         hideShortcutPillChrome()
-        guard state == .idle else { return }
         // A notice takes ownership from loading before either presentation is chosen.
         isShowingLoading = false
         deferredLoadingMessage = nil
@@ -1125,9 +1203,10 @@ final class FloatingIndicatorController: NSObject {
         loadingSpinner?.isHidden = true
         if showNotchStatus(icon == "✓" ? .success : .warning, message: message, duration: duration) { return }
         hoverExitWorkItem?.cancel()
+        let config = feedbackConfiguration()
+        let placementFrame = interruptedIdlePlacementFrame(config: config)
         isHovered = false
         notchIndicator.hide()
-        let config = feedbackConfiguration()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
@@ -1140,7 +1219,7 @@ final class FloatingIndicatorController: NSObject {
             font: warningFont,
             screen: screen
         )
-        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let center = CGPoint(x: placementFrame.midX, y: placementFrame.midY)
         let x = min(max(center.x - warningSize.width / 2, screen.minX), screen.maxX - warningSize.width)
         let y = min(max(center.y - warningSize.height / 2, screen.minY), screen.maxY - warningSize.height)
         let targetFrame = NSRect(x: x, y: y, width: warningSize.width, height: warningSize.height)
@@ -1201,7 +1280,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
-        guard state == .idle, !isMeetingRecording else { return }
+        guard state == .idle, !isMeetingRecording, !feedbackCaptureIsPresented else { return }
         if isDragging {
             deferredLoadingMessage = message
             return
@@ -1219,12 +1298,18 @@ final class FloatingIndicatorController: NSObject {
         guard let panel, let contentView, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
+        // If loading interrupts an idle hover expansion, panel.frame may still
+        // be between the compact and expanded frames. Center on the expanded
+        // destination so the pending hover animation cannot shift the loading
+        // pill after its own frame animation completes.
+        let placementFrame = interruptedIdlePlacementFrame(config: config)
+
         hoverExitWorkItem?.cancel()
         isHovered = false
         isShowingLoading = true
         preservesCollapsedLeftEdge = false
         let loadingSize = loadingPillSize(message: message, screen: screen)
-        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let center = CGPoint(x: placementFrame.midX, y: placementFrame.midY)
         let x = min(max(center.x - loadingSize.width / 2, screen.minX), screen.maxX - loadingSize.width)
         let y = min(max(center.y - loadingSize.height / 2, screen.minY), screen.maxY - loadingSize.height)
         let targetFrame = NSRect(x: x, y: y, width: loadingSize.width, height: loadingSize.height)
@@ -1400,6 +1485,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func close() {
+        feedbackCapturePanel?.close(); feedbackCapturePanel = nil; feedbackCaptureIsPresented = false
         let pendingQuestion = question
         question = nil
         questionHostingView = nil
@@ -2014,12 +2100,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func createPanel(config: AppConfig) {
-        let panel = InteractiveFloatingPanel(
-            contentRect: frameForState(.idle, config: config),
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false
-        )
+        let panel = makePanel(frameForState(.idle, config: config))
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear

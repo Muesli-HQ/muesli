@@ -10,7 +10,15 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     let url: URL
     private let queue = DispatchQueue(label: "com.muesli.screen-video", qos: .userInitiated)
     private let audio = OSAllocatedUnfairLock<MeetingVideoAudioBuffer?>(initialState: nil)
-    private var stream: SCStream?
+    private let collection = OSAllocatedUnfairLock<(stream: SCStream?, cutoff: CMTime?)>(initialState: (nil, nil))
+    /// Close collection synchronously; writer closure waits for microphone drain.
+    func requestStop(at cutoff: CMTime) {
+        let capture = collection.withLock { state in
+            if state.cutoff == nil { state.cutoff = cutoff }
+            return state.stream
+        }
+        Task { if let capture { try? await capture.stopCapture() } }
+    }
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
@@ -22,6 +30,9 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     private var finished = false
     private var isStopping = false
     var onFinalized: (@Sendable () -> Void)?
+    var onFinalizationResult: (@Sendable (Result<Double, Error>) -> Void)?
+    var onFirstVideoFrame: (@Sendable (Int64) -> Void)?
+    private let feedbackCapture: Bool
     private var lastSpaceCheck = Date.distantPast
     var onFailure: (@Sendable (String) -> Void)?
 
@@ -31,7 +42,16 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000
     ]
 
-    init(url: URL) { self.url = url; super.init() }
+    init(url: URL, feedbackCapture: Bool = false) {
+        self.url = url; self.feedbackCapture = feedbackCapture; super.init()
+        if feedbackCapture { audio.withLock { $0 = MeetingVideoAudioBuffer(start: 0) } }
+    }
+
+    private func makeWriter() throws -> AVAssetWriter {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        if feedbackCapture { writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600) }
+        return writer
+    }
 
     func start(filter: SCContentFilter, width: Int, height: Int) async throws {
         let config = SCStreamConfiguration()
@@ -41,13 +61,26 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         config.queueDepth = 3
         config.showsCursor = true
         config.capturesAudio = false
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        try prepareWriter(width: config.width, height: config.height)
+        let stream = SCStream(filter: filter, configuration: config, delegate: self)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        let admitted = collection.withLock { state in
+            guard state.cutoff == nil else { return false }
+            state.stream = stream; return true
+        }
+        guard admitted else { throw CancellationError() }
+        try await stream.startCapture()
+        if collection.withLock({ $0.cutoff != nil }) { try? await stream.stopCapture() }
+    }
+
+    func prepareWriter(width: Int, height: Int) throws {
+        let writer = try makeWriter()
         let codec: AVVideoCodecType = Self.hasHardwareEncoder(kCMVideoCodecType_HEVC) ? .hevc : .h264
         guard Self.hasHardwareEncoder(codec == .hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264) else {
             throw Self.error("A hardware video encoder is unavailable.")
         }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: codec, AVVideoWidthKey: config.width, AVVideoHeightKey: config.height,
+            AVVideoCodecKey: codec, AVVideoWidthKey: width, AVVideoHeightKey: height,
             AVVideoEncoderSpecificationKey: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true],
             AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 2_000_000,
                 AVVideoMaxKeyFrameIntervalKey: 30, AVVideoAllowFrameReorderingKey: false]
@@ -58,30 +91,56 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         guard writer.canAdd(input), writer.canAdd(sound) else { throw Self.error("Cannot prepare the video writer.") }
         writer.add(input); writer.add(sound)
         self.writer = writer; videoInput = input; audioInput = sound
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        self.stream = stream
-        try await stream.startCapture()
+    }
+
+    /// Feed a synthetic native frame through the production writer queue, without a screen stream.
+    func testing_appendVideoFrame(_ sample: CMSampleBuffer) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.appendVideoFrame(sample)
+                continuation.resume(returning: self.firstTime != nil)
+            }
+        }
     }
 
     func appendAudio(_ samples: [Int16], microphone: Bool, startFrame: Int64) {
-        audio.withLock { $0?.append(samples, start: startFrame, microphone: microphone) }
+        let overflow = audio.withLock { mix in
+            if feedbackCapture && microphone {
+                if mix?.appendFeedbackMicrophone(samples, start: startFrame) == false {
+                    mix = nil; return true
+                }
+            } else { mix?.append(samples, start: startFrame, microphone: microphone) }
+            return false
+        }
+        if overflow { queue.async { self.fail(Self.error("Audio encoding fell behind.")) } }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        queue.async { self.fail(error) }
+        queue.async {
+            if !self.collection.withLock({ $0.cutoff != nil }) { self.fail(error) }
+        }
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, !isStopping, !finished, failure == nil, CMSampleBufferIsValid(sampleBuffer),
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let status = attachments.first?[.status] as? Int, status == SCFrameStatus.complete.rawValue,
-              let writer, let input = videoInput else { return }
+              writer != nil, videoInput != nil else { return }
+        appendVideoFrame(sampleBuffer)
+    }
+    private func appendVideoFrame(_ sampleBuffer: CMSampleBuffer) {
+        guard let writer, let input = videoInput else { return }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard !finished, !isStopping, collection.withLock({ $0.cutoff.map { time <= $0 } ?? true }) else { return }
         if firstTime == nil {
-            guard writer.startWriting() else { fail(writer.error ?? Self.error("Cannot start video writing.")); return }
+            guard writer.status == .writing || writer.startWriting() else { fail(writer.error ?? Self.error("Cannot start video writing.")); return }
+            guard input.isReadyForMoreMediaData else { return }
             writer.startSession(atSourceTime: time)
             firstTime = time
-            audio.withLock { $0 = MeetingVideoAudioBuffer(start: Int64((CMTimeGetSeconds(time) * 16_000).rounded())) }
+            audio.withLock {
+                let frame = Int64((CMTimeGetSeconds(time) * 16_000).rounded())
+                if feedbackCapture { $0?.discard(before: frame) }
+                else { $0 = MeetingVideoAudioBuffer(start: frame) }
+            }
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
             timer.setEventHandler { [weak self] in self?.writeAudio() }
@@ -89,29 +148,40 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         }
         if input.isReadyForMoreMediaData {
             guard input.append(sampleBuffer) else { fail(writer.error ?? Self.error("Video write failed.")); return }
+            if lastTime == nil { onFirstVideoFrame?(Int64((CMTimeGetSeconds(time) * 16_000).rounded())) }
             lastTime = time
         }
         if let lastTime, CMTimeGetSeconds(time - lastTime) > 5 { fail(Self.error("The video encoder could not keep up.")) }
     }
 
-    private func writeAudio(flush: Bool = false, targetOverride: Int64? = nil) {
+    private func writeAudio(at hostTime: CMTime = CMClockGetTime(CMClockGetHostTimeClock()), flush: Bool = false, targetOverride: Int64? = nil) {
         guard !finished, failure == nil, let start = firstTime, let input = audioInput else { return }
         if Date().timeIntervalSince(lastSpaceCheck) > 5 {
             lastSpaceCheck = Date()
             let free = ((try? FileManager.default.attributesOfFileSystem(forPath: url.deletingLastPathComponent().path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
             guard free > 2_000_000_000 else { fail(Self.error("Screen recording stopped: disk space is low.")); return }
         }
-        let elapsed = max(0, CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()) - start))
-        // AEC can retain up to three seconds awaiting a reference. Delay encoding,
-        // not presentation timestamps; late output still occupies its capture position.
-        let target = targetOverride ?? Int64(max(0, elapsed - (flush ? 0 : 3.5)) * 16_000)
-        guard target - audioSamples <= 160_000 else { fail(Self.error("Audio encoding fell behind.")); return }
-        while target - audioSamples >= 1600 && input.isReadyForMoreMediaData {
-            let mixed = audio.withLock { $0?.take(count: 1600) ?? [Int16](repeating: 0, count: 1600) }
+        let admittedTime = collection.withLock { $0.cutoff.map { CMTimeMinimum(hostTime, $0) } ?? hostTime }
+        let elapsed = max(0, CMTimeGetSeconds(admittedTime - start))
+        // Meeting AEC can retain three seconds. Feedback has serial mic delivery:
+        // consume only through received input, so queue latency cannot erase PCM.
+        // Feedback bounds actual queued PCM at admission, rather than silent time.
+        let clockTarget = targetOverride ?? Int64(max(0, elapsed - (flush || feedbackCapture ? 0 : 3.5)) * 16_000)
+        guard feedbackCapture || clockTarget - audioSamples <= 160_000 else { fail(Self.error("Audio encoding fell behind.")); return }
+        let target: Int64
+        if feedbackCapture && !flush {
+            let delivered = audio.withLock { mix in
+                mix.map { max(0, ($0.microphoneEndFrame ?? $0.cursor) - $0.cursor) } ?? 0
+            }
+            target = min(clockTarget, audioSamples + delivered)
+        } else { target = clockTarget }
+        while (flush ? target > audioSamples : target - audioSamples >= 1600) && input.isReadyForMoreMediaData {
+            let count = Int(min(1600, target - audioSamples))
+            let mixed = audio.withLock { $0?.take(count: count) ?? [Int16](repeating: 0, count: count) }
             do {
                 let buffer = try Self.audioBuffer(mixed, time: start + CMTime(value: audioSamples, timescale: 16_000))
                 guard input.append(buffer) else { throw writer?.error ?? Self.error("Audio write failed.") }
-                audioSamples += 1600
+                audioSamples += Int64(count)
             } catch { fail(error); return }
         }
     }
@@ -140,7 +210,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     }
 
     func stop(timeout: TimeInterval = 8) async throws -> Double {
-        let capture = stream
+        let capture = collection.withLock { $0.stream }
         return try await withCheckedThrowingContinuation { continuation in
             let completion = OSAllocatedUnfairLock<CheckedContinuation<Double, Error>?>(initialState: continuation)
             let complete: @Sendable (Result<Double, Error>) -> Void = { result in
@@ -154,6 +224,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                 complete(.failure(Self.error("Screen finalization is continuing in the background.")))
             }
             let finalized: @Sendable (Result<Double, Error>) -> Void = { [self] result in
+                onFinalizationResult?(result)
                 onFinalized?()
                 complete(result)
             }
@@ -161,14 +232,15 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             Task { if let capture { try? await capture.stopCapture() } }
             queue.async {
                 self.isStopping = true
-                self.stream = nil
+                self.collection.withLock { $0.stream = nil }
                 self.audioTimer?.cancel(); self.audioTimer = nil
                 guard !self.finished else { finalized(.failure(Self.error("Recording already finalized."))); return }
                 guard let start = self.firstTime else {
                     self.writer?.cancelWriting()
                     finalized(.failure(self.failure ?? Self.error("No screen frames were captured."))); return
                 }
-                let target = Int64(max(0, CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()) - start)) * 16_000)
+                let end = self.collection.withLock { $0.cutoff } ?? CMClockGetTime(CMClockGetHostTimeClock())
+                let target = Int64(max(0, CMTimeGetSeconds(end - start)) * 16_000)
                 self.drainAndFinish(target: target, start: start, deadline: .now() + .seconds(2), complete: finalized)
             }
         }
@@ -179,7 +251,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             complete(.failure(writer?.error ?? Self.error("Video writer stopped."))); return
         }
         writeAudio(flush: true, targetOverride: target)
-        if failure == nil, target - audioSamples >= 1600, DispatchTime.now() < deadline {
+        if failure == nil, target > audioSamples, DispatchTime.now() < deadline {
             queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
                 self.drainAndFinish(target: target, start: start, deadline: deadline, complete: complete)
             }
@@ -187,17 +259,26 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         }
         // Backpressure must not prevent finalization forever. After the bounded
         // drain window, preserve encoded media even if the audio tail is incomplete.
-        if failure == nil, target - audioSamples >= 1600 {
+        let incompleteAudio = failure == nil && target > audioSamples
+        let finalizationError = failure ?? (feedbackCapture && incompleteAudio
+            ? Self.error("Narration encoding is incomplete. The complete WAV narration is retained.") : nil)
+        if incompleteAudio {
             Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.muesli", category: "MeetingVideo")
                 .warning("Audio drain timed out; finalizing encoded media without the remaining audio tail.")
         }
         finished = true
         audio.withLock { $0 = nil }
+        if feedbackCapture, let cutoff = collection.withLock({ $0.cutoff }), cutoff > start {
+            writer.endSession(atSourceTime: cutoff)
+        }
         videoInput?.markAsFinished(); audioInput?.markAsFinished()
-        let duration = max(Double(audioSamples) / 16_000, CMTimeGetSeconds((lastTime ?? start) - start))
+        let duration = feedbackCapture ? Double(target) / 16_000
+            : max(Double(audioSamples) / 16_000, CMTimeGetSeconds((lastTime ?? start) - start))
         writer.finishWriting {
-            if writer.status == .completed { complete(.success(duration)) }
-            else { complete(.failure(writer.error ?? Self.error("Could not finalize screen recording."))) }
+            if writer.status == .completed {
+                if let finalizationError { complete(.failure(finalizationError)) }
+                else { complete(.success(duration)) }
+            } else { complete(.failure(writer.error ?? Self.error("Could not finalize screen recording."))) }
         }
     }
     private func fail(_ error: Error) {

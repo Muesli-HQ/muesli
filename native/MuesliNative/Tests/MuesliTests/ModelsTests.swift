@@ -1127,6 +1127,21 @@ struct MeetingSummaryBackendTests {
 @Suite("AppConfig")
 struct AppConfigTests {
 
+    @Test("Scrawl defaults off with Option-Shift-S and round-trips old configs")
+    func feedbackCaptureDefaults() throws {
+        for json in ["{}", #"{"feedback_capture":"invalid"}"#] {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(!config.enableFeedbackCapture)
+            #expect(config.feedbackCaptureHotkey == .combination(modifiers: [.option, .shift], keyCode: 1))
+        }
+        var config = AppConfig()
+        config.enableFeedbackCapture = true
+        config.feedbackCaptureHotkey = .combination(modifiers: [.control, .shift], keyCode: 3)
+        let restored = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(restored.enableFeedbackCapture)
+        #expect(restored.feedbackCaptureHotkey == config.feedbackCaptureHotkey)
+    }
+
     @Test("Calendar meeting-link filter defaults on and preserves a saved opt-out")
     func calendarMeetingLinkFilterPersistence() throws {
         #expect(AppConfig().calendarMeetingLinksOnly)
@@ -2468,6 +2483,88 @@ struct AppConfigTests {
 
 @Suite("HotkeyMonitor")
 struct HotkeyMonitorTests {
+
+    @Test("modifier changes do not inspect key-repeat state")
+    func flagsChangedEventDoesNotReadRepeatState() throws {
+        let monitor = HotkeyMonitor()
+        monitor.feedbackReleaseToggle = true
+        monitor.configure(.feedbackCaptureDefault)
+        let event = try #require(NSEvent.keyEvent(with: .flagsChanged, location: .zero,
+            modifierFlags: .option, timestamp: 0, windowNumber: 0, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 58))
+        var starts = 0
+        monitor.onToggleStart = { starts += 1 }
+
+        #expect(!monitor.handleEventForTests(event))
+        #expect(starts == 0)
+    }
+
+    @Test("feedback starts only after every chord key releases in either Carbon/event order")
+    func feedbackReleaseOrder() {
+        for carbon in [false, true] {
+            for keyFirst in [false, true] {
+                var now = Date(timeIntervalSinceReferenceDate: 0)
+                let monitor = HotkeyMonitor(now: { now })
+                monitor.feedbackReleaseToggle = true
+                monitor.configure(.feedbackCaptureDefault)
+                var starts = 0, stops = 0
+                monitor.onToggleStart = { starts += 1 }
+                monitor.onToggleStop = { stops += 1 }
+                if !carbon {
+                    #expect(!monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 55, flags: .command), "Unowned modifier changes must pass through the local fallback")
+                }
+                func press() {
+                    if carbon { monitor.handleRegisteredHotKeyPressForTests() }
+                    else { monitor.handleCombinationForTests(type: .keyDown, keyCode: 1, flags: [.option, .shift]) }
+                }
+                press(); press()
+                #expect(starts == 0)
+                if keyFirst {
+                    if carbon { monitor.handleRegisteredHotKeyReleaseForTests(flags: [.option, .shift]) }
+                    else { monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [.option, .shift]) }
+                    #expect(starts == 0)
+                    monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 58, flags: .shift)
+                    #expect(starts == 0)
+                    monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: [])
+                } else {
+                    if carbon { monitor.handleRegisteredHotKeyReleaseForTests(flags: .shift, keyStillDown: true) }
+                    monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 58, flags: .shift)
+                    monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: [])
+                    #expect(starts == 0)
+                    monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+                }
+                #expect(starts == 1 && monitor.isToggleRecording)
+                monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+                #expect(monitor.isToggleRecording)
+                now = now.addingTimeInterval(0.399)
+                press()
+                monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+                #expect(stops == 0)
+                now = Date(timeIntervalSinceReferenceDate: 0.4)
+                press()
+                #expect(stops == 1 && !monitor.isToggleRecording)
+                monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+                #expect(starts == 1) // stopping release cannot restart
+                if !carbon { #expect(!monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 55, flags: [])) }
+            }
+        }
+    }
+    @Test("feedback rejects repeats and resets synchronously after failed admission")
+    func feedbackAdmissionReset() {
+        let monitor = HotkeyMonitor()
+        monitor.feedbackReleaseToggle = true; monitor.configure(.feedbackCaptureDefault)
+        var starts = 0
+        monitor.onToggleStart = { starts += 1; monitor.cancelToggleMode() }
+        for _ in 0..<2 {
+            monitor.handleCombinationForTests(type: .keyDown, keyCode: 1, flags: [.option, .shift], isRepeat: true)
+            monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+            #expect(!monitor.isToggleRecording)
+            monitor.handleCombinationForTests(type: .keyDown, keyCode: 1, flags: [.option, .shift])
+            monitor.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+            #expect(!monitor.isToggleRecording)
+        }
+        #expect(starts == 2)
+    }
     final class ManualHotkeyScheduler {
         private struct ScheduledItem {
             let deadline: TimeInterval
@@ -2517,6 +2614,69 @@ struct HotkeyMonitorTests {
                 now: currentDate
             )
         }
+    }
+
+    @Test("Paired feedback and bare Option monitors arbitrate modifier order without changing bare holds")
+    func pairedFeedbackAndBareModifierAdmission() {
+        for option: UInt16 in [58, 61] {
+            for shiftFirst in [false, true] {
+                for delay in [0.05, 0.30] {
+                    let scheduler = ManualHotkeyScheduler()
+                    let bare = scheduler.makeMonitor(); bare.configure(keyCode: 61)
+                    let feedback = scheduler.makeMonitor()
+                    feedback.feedbackReleaseToggle = true; feedback.configure(.feedbackCaptureDefault)
+                    var bareStarts = 0, feedbackStarts = 0, feedbackStops = 0
+                    bare.onStart = { bareStarts += 1 }
+                    feedback.onToggleStart = { feedbackStarts += 1 }
+                    feedback.onToggleStop = { feedbackStops += 1 }
+                    func flags(_ key: UInt16, _ modifiers: NSEvent.ModifierFlags) {
+                        bare.handleFlagsChanged(keyCode: key, flags: modifiers.union(.capsLock))
+                        feedback.handleCombinationForTests(type: .flagsChanged, keyCode: key, flags: modifiers.union(.capsLock))
+                    }
+                    flags(shiftFirst ? 56 : option, shiftFirst ? .shift : .option)
+                    scheduler.advance(by: delay)
+                    flags(shiftFirst ? option : 56, [.option, .shift])
+                    scheduler.advance(by: 0.30) // Exceed the bare hold timer before S.
+                    let expectedBare = option == 61 && !shiftFirst && delay > 0.25 ? 1 : 0
+                    #expect(bareStarts == expectedBare, "Shift-first must not admit bare dictation; a genuine bare hold still starts")
+                    bare.handleKeyDown(keyCode: 1)
+                    feedback.handleCombinationForTests(type: .keyDown, keyCode: 1, flags: [.option, .shift])
+                    feedback.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [.option, .shift])
+                    #expect(feedbackStarts == 0)
+                    flags(option, .shift); flags(56, [])
+                    #expect(feedbackStarts == 1)
+                    scheduler.advance(by: 0.4)
+                    feedback.handleCombinationForTests(type: .keyDown, keyCode: 1, flags: [.option, .shift])
+                    #expect(feedbackStops == 1)
+                    feedback.handleCombinationForTests(type: .keyUp, keyCode: 1, flags: [])
+                    #expect(feedbackStarts == 1)
+                }
+            }
+        }
+
+        let scheduler = ManualHotkeyScheduler()
+        let bare = scheduler.makeMonitor(); bare.configure(keyCode: 61)
+        var arms = 0, cancels = 0, toggles = 0, stops = 0
+        bare.onArm = { arms += 1 }; bare.onCancel = { cancels += 1 }
+        bare.onToggleStart = { toggles += 1 }; bare.onToggleStop = { stops += 1 }
+        bare.handleFlagsChanged(keyCode: 61, flags: .option)
+        bare.handleFlagsChanged(keyCode: 61, flags: []) // Cleanup owed by this first tap.
+        bare.handleFlagsChanged(keyCode: 56, flags: .shift)
+        bare.handleFlagsChanged(keyCode: 61, flags: [.option, .shift])
+        bare.handleFlagsChanged(keyCode: 61, flags: .shift)
+        bare.handleFlagsChanged(keyCode: 56, flags: [])
+        #expect(arms == 1 && cancels == 1 && toggles == 0, "Rejected presses must preserve cleanup without completing a double-tap")
+        bare.handleFlagsChanged(keyCode: 61, flags: [.option, .capsLock])
+        #expect(arms == 2 && toggles == 0, "Rejected presses must not seed the next double-tap; Caps Lock is incidental")
+        bare.handleFlagsChanged(keyCode: 61, flags: .capsLock)
+        bare.handleFlagsChanged(keyCode: 61, flags: [.option, .capsLock])
+        #expect(toggles == 1)
+        bare.handleFlagsChanged(keyCode: 61, flags: .capsLock)
+        bare.handleFlagsChanged(keyCode: 56, flags: [.shift, .capsLock])
+        bare.handleFlagsChanged(keyCode: 61, flags: [.option, .shift, .capsLock])
+        #expect(stops == 1, "Stopping an active toggle precedes fresh admission checks")
+        bare.cancelCurrentSession(); scheduler.advance(by: 1)
+        #expect(!bare.hasPendingOrActiveSession)
     }
 
     @Test("external cancellation invalidates armed, prepared and active holds", arguments: [0.0, 0.20, 0.30])

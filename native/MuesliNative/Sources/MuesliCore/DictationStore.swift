@@ -350,6 +350,7 @@ public final class DictationStore {
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
+        try FeedbackCaptureStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)

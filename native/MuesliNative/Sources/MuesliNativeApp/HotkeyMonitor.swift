@@ -62,12 +62,50 @@ struct HotkeyCaptureSuspension {
     }
 }
 
+/// Feedback's release-toggle is independent of the hold/double-tap policies.
+struct FeedbackCaptureHotkeyState {
+    enum Action: Equatable { case start, stop }
+    private(set) var active = false
+    private var pressed = false
+    var isPending: Bool { pressed }
+    private var keyDown = false
+    private var startOnRelease = false
+    private var lastStart = Date.distantPast
+
+    mutating func press(now: Date) -> Action? {
+        guard !pressed else { return nil }
+        pressed = true; keyDown = true
+        guard now.timeIntervalSince(lastStart) >= 0.4 else { startOnRelease = false; return nil }
+        if active { active = false; startOnRelease = false; return .stop }
+        startOnRelease = true
+        return nil
+    }
+    mutating func release(keyReleased: Bool, modifiersReleased: Bool, now: Date) -> Action? {
+        if keyReleased { keyDown = false }
+        guard pressed, !keyDown, modifiersReleased else { return nil }
+        pressed = false
+        guard startOnRelease else { return nil }
+        startOnRelease = false; active = true; lastStart = now
+        return .start
+    }
+    mutating func synchronize(startedAt: Date?) {
+        active = startedAt != nil; lastStart = startedAt ?? .distantPast
+        startOnRelease = false
+    }
+    mutating func cancel() { active = false; startOnRelease = false; lastStart = .distantPast }
+    mutating func reset() { self = Self() }
+}
+
 final class HotkeyMonitor {
     private var captureSuspension = HotkeyCaptureSuspension()
     enum CombinationActivation: String, Codable {
         case toggle
         case pushToTalk = "push_to_talk"
     }
+
+    var feedbackReleaseToggle = false
+    var feedbackSessionStartedAt: (() -> Date?)?
+    private var feedbackToggle = FeedbackCaptureHotkeyState()
 
     var onArm: (() -> Void)?
     var onPrepare: (() -> Void)?
@@ -132,6 +170,8 @@ final class HotkeyMonitor {
     private var doubleTapWindow: TimeInterval
     private let scheduleAfter: (TimeInterval, DispatchWorkItem) -> Void
     private let now: () -> Date
+    private let registerEvents: (() -> (() -> Void))?
+    private var unregisterEvents: (() -> Void)?
 
     init(
         prepareDelay: TimeInterval = 0.15,
@@ -140,8 +180,10 @@ final class HotkeyMonitor {
         scheduleAfter: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, item in
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        registerEvents: (() -> (() -> Void))? = nil
     ) {
+        self.registerEvents = registerEvents
         self.prepareDelay = prepareDelay
         self.startDelay = startDelay
         self.doubleTapWindow = doubleTapWindow
@@ -169,6 +211,8 @@ final class HotkeyMonitor {
     func start() {
         guard !captureSuspension.isSuspended else { return }
         guard !isRunning else { return }
+        synchronizeFeedbackCapture()
+        if let registerEvents { unregisterEvents = registerEvents(); return }
 
         // Carbon registration itself does not require listen access, but the
         // companion global Escape monitor does.
@@ -227,6 +271,7 @@ final class HotkeyMonitor {
             self.registeredHotKeyHandler = nil
         }
         registeredHotKeyIsDown = false
+        unregisterEvents?(); unregisterEvents = nil
     }
 
     func configure(keyCode: UInt16) {
@@ -268,7 +313,11 @@ final class HotkeyMonitor {
     }
 
     private func finishActiveSessionBeforeReconfigure() {
-        guard targetKeyDown
+        // The capture owner controls Finish; restarting its listener only resets
+        // the gesture. start() restores the admitted session and original guard.
+        if feedbackReleaseToggle, feedbackSessionStartedAt != nil { cancelCurrentSession(); return }
+        guard feedbackToggle.isPending
+            || targetKeyDown
             || armed
             || prepared
             || active
@@ -292,8 +341,15 @@ final class HotkeyMonitor {
         }
     }
 
+    func synchronizeFeedbackCapture() {
+        guard feedbackReleaseToggle, let feedbackSessionStartedAt else { return }
+        feedbackToggle.synchronize(startedAt: feedbackSessionStartedAt())
+        toggleActive = feedbackToggle.active
+    }
+
     /// Call externally to stop toggle mode (e.g., from floating indicator click)
     func stopToggleMode() {
+        feedbackToggle.cancel()
         if toggleActive {
             toggleActive = false
             fputs("[hotkey] toggle stopped externally\n", stderr)
@@ -303,6 +359,7 @@ final class HotkeyMonitor {
 
     /// Cancel toggle mode without triggering onToggleStop (discard path)
     func cancelToggleMode() {
+        feedbackToggle.cancel()
         if toggleActive {
             toggleActive = false
             fputs("[hotkey] toggle cancelled externally\n", stderr)
@@ -314,6 +371,7 @@ final class HotkeyMonitor {
     /// cannot leave pending key work alive or stop an already-cancelled session.
     /// Used for both held keys and hands-free sessions; safe to call repeatedly.
     func cancelCurrentSession() {
+        feedbackToggle.reset()
         sessionGeneration &+= 1
         cancelTimers()
         targetKeyDown = false
@@ -329,11 +387,11 @@ final class HotkeyMonitor {
     }
 
     var isRunning: Bool {
-        globalMonitor != nil || localMonitor != nil || registeredHotKey != nil
+        globalMonitor != nil || localMonitor != nil || registeredHotKey != nil || unregisterEvents != nil
     }
 
     var hasPendingOrActiveSession: Bool {
-        targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown
+        feedbackToggle.isPending || targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown
     }
 
     func suspendForShortcutCapture() {
@@ -373,11 +431,12 @@ final class HotkeyMonitor {
 
     @discardableResult
     private func handleCombination(_ event: NSEvent) -> Bool {
-        handleCombination(
+        let isRepeat = event.type == .keyDown && event.isARepeat
+        return handleCombination(
             type: event.type,
             keyCode: event.keyCode,
             flags: event.modifierFlags,
-            isRepeat: event.isARepeat
+            isRepeat: isRepeat
         )
     }
 
@@ -388,6 +447,9 @@ final class HotkeyMonitor {
         flags: NSEvent.ModifierFlags,
         isRepeat: Bool
     ) -> Bool {
+        if feedbackReleaseToggle {
+            return handleFeedbackToggle(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
+        }
         if type == .keyDown && keyCode == 53 {
             if combinationActivation == .pushToTalk,
                combinationKeyDown || prepared || active {
@@ -449,6 +511,26 @@ final class HotkeyMonitor {
             beginCombinationPushToTalk()
         } else {
             armCombinationToggle()
+        }
+        return true
+    }
+
+    @discardableResult
+    private func handleFeedbackToggle(type: NSEvent.EventType, keyCode: UInt16,
+                                      flags: NSEvent.ModifierFlags, isRepeat: Bool = false) -> Bool {
+        let modifiers = combinationModifiers ?? []
+        let key = combinationKeyCode ?? targetKeyCode
+        var action: FeedbackCaptureHotkeyState.Action?
+        if type == .keyDown, keyCode == key, !isRepeat,
+           HotkeyConfig.supportedCombinationModifiers(from: flags) == modifiers {
+            action = feedbackToggle.press(now: now())
+        } else if feedbackToggle.isPending && (type == .flagsChanged || (type == .keyUp && keyCode == key)) {
+            action = feedbackToggle.release(keyReleased: type == .keyUp && keyCode == key,
+                modifiersReleased: flags.intersection(modifiers).isEmpty, now: now())
+        } else { return false }
+        toggleActive = feedbackToggle.active
+        if let action {
+            switch action { case .start: onToggleStart?(); case .stop: onToggleStop?() }
         }
         return true
     }
@@ -563,13 +645,13 @@ final class HotkeyMonitor {
     /// modifier changes. Keep narrow monitors so a registered session remains
     /// cancellable and a held chord ends when one of its modifiers is released.
     private func startRegisteredCombinationEscapeMonitors() {
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard event.type == .flagsChanged || event.keyCode == 53 else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            guard event.type == .flagsChanged || event.keyCode == 53 || (self?.feedbackReleaseToggle == true && event.type == .keyUp) else { return }
             _ = self?.handle(event)
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
-            if event.type == .flagsChanged {
+            if event.type == .flagsChanged || (self.feedbackReleaseToggle && event.type == .keyUp) {
                 _ = self.handle(event)
                 return event
             }
@@ -583,6 +665,17 @@ final class HotkeyMonitor {
     }
 
     fileprivate func handleRegisteredHotKey(kind: UInt32) {
+        if feedbackReleaseToggle {
+            let key = combinationKeyCode ?? targetKeyCode
+            if kind == UInt32(kEventHotKeyPressed) {
+                _ = handleFeedbackToggle(type: .keyDown, keyCode: key, flags: combinationModifiers ?? [])
+            } else if kind == UInt32(kEventHotKeyReleased) {
+                let down = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(key))
+                _ = handleFeedbackToggle(type: down ? .flagsChanged : .keyUp, keyCode: key,
+                    flags: NSEvent.ModifierFlags(rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue)))
+            }
+            return
+        }
         switch kind {
         case UInt32(kEventHotKeyPressed):
             guard !registeredHotKeyIsDown else { return }
@@ -640,10 +733,12 @@ final class HotkeyMonitor {
     }
 
     func handleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags) {
+        guard !feedbackReleaseToggle else { return }
         if keyCode == targetKeyCode {
             let isDown = isModifierDown(keyCode: targetKeyCode, flags: flags)
             if isDown {
                 if !targetKeyDown {
+                    let owesCancellation = armCancelWorkItem != nil
                     armCancelWorkItem?.cancel()
                     armCancelWorkItem = nil
                     targetKeyDown = true
@@ -656,6 +751,18 @@ final class HotkeyMonitor {
                         toggleActive = false
                         cancelTimers()
                         onToggleStop?()
+                        return
+                    }
+
+                    let hasOtherModifier = [NSEvent.ModifierFlags.command, .control, .option, .shift, .function]
+                        .contains { flags.contains($0) && !isModifierDown(keyCode: targetKeyCode, flags: $0) }
+                    if hasOtherModifier {
+                        otherKeyPressed = true
+                        armed = false
+                        lastTapWasShort = false
+                        lastTapUpTime = nil
+                        cancelTimers()
+                        if owesCancellation { onCancel?() }
                         return
                     }
 
@@ -753,6 +860,7 @@ final class HotkeyMonitor {
     }
 
     func handleKeyDown(keyCode: UInt16) {
+        guard !feedbackReleaseToggle else { return }
         // Escape cancels any active recording
         if keyCode == 53 {
             if toggleActive || active || armed || prepared || armCancelWorkItem != nil {
@@ -892,8 +1000,11 @@ final class HotkeyMonitor {
         handleRegisteredHotKey(kind: UInt32(kEventHotKeyPressed))
     }
 
-    func handleRegisteredHotKeyReleaseForTests() {
-        handleRegisteredHotKey(kind: UInt32(kEventHotKeyReleased))
+    func handleRegisteredHotKeyReleaseForTests(flags: NSEvent.ModifierFlags? = nil, keyStillDown: Bool = false) {
+        if feedbackReleaseToggle, let flags {
+            _ = handleFeedbackToggle(type: keyStillDown ? .flagsChanged : .keyUp,
+                keyCode: combinationKeyCode ?? targetKeyCode, flags: flags)
+        } else { handleRegisteredHotKey(kind: UInt32(kEventHotKeyReleased)) }
     }
 
     var registeredHotKeyIDForTests: EventHotKeyID { registeredHotKeyID }

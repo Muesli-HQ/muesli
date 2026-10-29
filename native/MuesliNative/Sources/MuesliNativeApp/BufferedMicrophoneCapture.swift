@@ -24,6 +24,7 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
     private let queue: DispatchQueue
     private let consume: (AVAudioPCMBuffer, Int64) -> Void
     private let shouldAdmitSamples: () -> Bool
+    private let nativeStopDrainRange: (() -> Range<Int64>?)?
 
     init(
         format: AVAudioFormat,
@@ -31,6 +32,7 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
         capacity: Int = 16,
         maximumFrames: AVAudioFrameCount = 16_384,
         shouldAdmitSamples: @escaping () -> Bool = { true },
+        nativeStopDrainRange: (() -> Range<Int64>?)? = nil,
         consume: @escaping (AVAudioPCMBuffer, Int64) -> Void
     ) throws {
         // Bound storage even for pathological device formats. The normal stereo
@@ -59,17 +61,29 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
         self.queue = queue
         self.consume = consume
         self.shouldAdmitSamples = shouldAdmitSamples
+        self.nativeStopDrainRange = nativeStopDrainRange
     }
 
     @discardableResult
     func offer(_ input: AVAudioPCMBuffer, startFrame: Int64? = nil) -> Admission {
         // Some drivers omit host time. Estimate once at capture, never on the
         // delayed worker; hardware timestamps are preferred by both backends.
-        let capturedStart = startFrame ?? (MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())
+        var capturedStart = startFrame ?? (MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())
             - Int64((Double(input.frameLength) * 16_000 / input.format.sampleRate).rounded()))
         return state.withLock { state in
-            guard state.accepting, !state.paused, input.frameLength > 0,
-                  shouldAdmitSamples() else { return .ignored }
+            guard state.accepting, input.frameLength > 0 else { return .ignored }
+            var offset = 0, count = Int(input.frameLength)
+            if state.paused || !shouldAdmitSamples() {
+                // Only timestamped native-held input can cross closed admission.
+                // Clip in the hardware format before queuing conversion or file I/O.
+                guard let startFrame, let range = nativeStopDrainRange?() else { return .ignored }
+                let rate = input.format.sampleRate / 16_000
+                let lower = max(0, ceil(Double(range.lowerBound - startFrame) * rate))
+                let upper = min(Double(count), floor(Double(range.upperBound - startFrame) * rate))
+                guard lower < upper else { return .ignored }
+                offset = Int(lower); count = Int(upper - lower)
+                capturedStart = startFrame + Int64((Double(offset) / rate).rounded())
+            }
             guard let index = state.available.popLast() else {
                 // Do not silently drop a middle chunk and compress the recording
                 // timeline. Fail this capture episode once and let its existing
@@ -83,7 +97,8 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
                 state.accepting = false
                 return .invalidBuffer
             }
-            copy.frameLength = input.frameLength
+            copy.frameLength = AVAudioFrameCount(count)
+            let byteOffset = offset * Int(input.format.streamDescription.pointee.mBytesPerFrame)
             let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input.audioBufferList))
             let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
             guard source.count == target.count else {
@@ -93,17 +108,18 @@ final class BufferedMicrophoneCapture: @unchecked Sendable {
             }
             for i in source.indices {
                 guard let from = source[i].mData, let to = target[i].mData,
-                      source[i].mDataByteSize == target[i].mDataByteSize else {
+                      Int(source[i].mDataByteSize) >= byteOffset + Int(target[i].mDataByteSize) else {
                     state.available.append(index)
                     state.accepting = false
                     return .invalidBuffer
                 }
-                memcpy(to, from, Int(source[i].mDataByteSize))
+                memcpy(to, from.advanced(by: byteOffset), Int(target[i].mDataByteSize))
             }
             // Submission and closing are ordered by this short lock. The worker
             // cannot hold the lock while stalled in a consumer or a disk write.
+            let admittedStart = capturedStart
             queue.async { [self] in
-                consume(buffers[index], capturedStart)
+                consume(buffers[index], admittedStart)
                 self.state.withLock { $0.available.append(index) }
             }
             return .accepted

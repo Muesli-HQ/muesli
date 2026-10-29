@@ -11,6 +11,7 @@ struct LocalStorageUsageView: View {
         (.models, "Downloaded models", "cpu", .blue),
         (.meetingAudio, "Meeting audio", "waveform", .teal),
         (.meetingVideo, "Meeting video", "video", .purple),
+        (.feedbackCaptures, "Scrawl captures", "camera.viewfinder", .red),
         (.database, "Notes, transcripts & app database", "externaldrive", .orange),
         (.waveformCache, "Audio waveform cache", "waveform.path", .pink),
         (.other, "Other app data", "folder", .gray)
