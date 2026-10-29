@@ -1,7 +1,9 @@
+import AppKit
 import AudioToolbox
 @preconcurrency import AVFoundation
 import CoreAudio
 import Foundation
+import IOKit
 
 enum AudioOutputRouteKind: Equatable, CustomStringConvertible {
     case speakerLike
@@ -205,6 +207,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
     private var defaultOutputListener: AudioObjectPropertyListenerBlock?
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var deviceInventoryListener: AudioObjectPropertyListenerBlock?
+    private var screenParametersObserver: NSObjectProtocol?
     private let routeChangeSettleDelay: TimeInterval
     private let routeChangeMaximumDelay: TimeInterval
     private var pendingRouteRefreshItem: DispatchWorkItem?
@@ -282,6 +285,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
                 self.installDefaultOutputListener()
                 self.installDefaultInputListener()
                 self.installDeviceInventoryListener()
+                self.installScreenParametersObserver()
             }
             self.performRouteCacheRefresh(
                 refreshingDeviceInventory: true,
@@ -293,6 +297,9 @@ final class DictationAudioRouteController: DictationAudioRouting {
 
     deinit {
         pendingRouteRefreshItem?.cancel()
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
         // Never remove HAL listeners synchronously on the releasing/UI thread.
         let output = defaultOutputListener
         let input = defaultInputListener
@@ -699,6 +706,19 @@ final class DictationAudioRouteController: DictationAudioRouting {
         }
     }
 
+    private func installScreenParametersObserver() {
+        // Closing the lid leaves the CoreAudio device graph unchanged, so the
+        // listeners above never observe the built-in microphone going silent.
+        // It does remove the built-in display, which posts this notification.
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.scheduleRouteChangeRefresh(.deviceInventory)
+        }
+    }
+
     private static func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -724,6 +744,19 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 }
 
+enum ClamshellState {
+    /// Desktop Macs publish no clamshell state and report open.
+    static func isClosed() -> Bool {
+        let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard rootDomain != IO_OBJECT_NULL else { return false }
+        defer { IOObjectRelease(rootDomain) }
+        let value = IORegistryEntryCreateCFProperty(
+            rootDomain, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue()
+        return (value as? Bool) ?? false
+    }
+}
+
 protocol CoreAudioDeviceInspecting {
     func defaultOutputDeviceID() -> AudioObjectID?
     func defaultInputDeviceID() -> AudioObjectID?
@@ -737,6 +770,12 @@ protocol CoreAudioDeviceInspecting {
 }
 
 final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
+    private let isLidClosed: @Sendable () -> Bool
+
+    init(isLidClosed: @escaping @Sendable () -> Bool = { ClamshellState.isClosed() }) {
+        self.isLidClosed = isLidClosed
+    }
+
     func defaultOutputDeviceID() -> AudioObjectID? {
         defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
     }
@@ -837,6 +876,10 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
     }
 
     func builtInInputDeviceID() -> AudioObjectID? {
+        // A closed lid disconnects the built-in microphone in hardware, but it
+        // stays enumerated and captures only zeros. Report it unavailable so
+        // Automatic follows the system default input instead.
+        guard !isLidClosed() else { return nil }
         let builtInInputs = allDeviceIDs().filter {
             transportType(for: $0) == kAudioDeviceTransportTypeBuiltIn
                 && hasStreams(deviceID: $0, scope: kAudioDevicePropertyScopeInput)

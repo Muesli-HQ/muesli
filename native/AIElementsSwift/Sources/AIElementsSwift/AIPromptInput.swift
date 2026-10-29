@@ -28,8 +28,8 @@ public struct AIPromptInput<Header: View, Editor: View, Footer: View>: View {
             editor
             footer
         }
-        .padding(10)
-        .background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isFocused ? theme.accent.opacity(0.5) : theme.border, lineWidth: 1))
+        .padding(14)
+        .background(theme.surface, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(isFocused ? theme.accent.opacity(0.5) : theme.border, lineWidth: 1).allowsHitTesting(false))
     }
 }

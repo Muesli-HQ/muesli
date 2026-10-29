@@ -1,3 +1,4 @@
+import AppKit
 import CoreAudio
 import Testing
 @testable import MuesliNativeApp
@@ -218,6 +219,45 @@ struct DictationAudioRouteControllerTests {
 
         #expect(controller.preferredInputDeviceIDForDictation() == nil)
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == nil)
+    }
+
+    @Test("closed lid reports the built-in mic as unavailable")
+    func closedLidReportsBuiltInMicUnavailable() {
+        let inspector = CoreAudioDeviceInspector(isLidClosed: { true })
+
+        #expect(inspector.builtInInputDeviceID() == nil)
+    }
+
+    @Test("screen changes refresh automatic routes when the lid closes and reopens")
+    func screenChangesRefreshLidAvailability() async throws {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .headphoneLike,
+            defaultInputDeviceID: 110,
+            builtInInputDeviceID: 97
+        )
+        let routeQueue = DispatchQueue(label: "test.dictation-audio-route.lid-transition")
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: routeQueue,
+            routeChangeSettleDelay: 0,
+            routeChangeMaximumDelay: 0
+        )
+        routeQueue.sync {}
+        #expect(controller.cachedPreferredInputDeviceIDForDictation() == 97)
+        #expect(controller.preferredInputDeviceIDForMeeting() == 97)
+
+        // The audio device graph and default input stay unchanged across lid transitions.
+        for builtInID: AudioObjectID? in [nil, 97] {
+            routeQueue.sync { inspector.builtInInputDeviceIDValue = builtInID }
+            NotificationCenter.default.post(
+                name: NSApplication.didChangeScreenParametersNotification, object: nil
+            )
+            try await Task.sleep(for: .milliseconds(100))
+            routeQueue.sync {}
+            #expect(controller.cachedPreferredInputDeviceIDForDictation() == builtInID)
+            #expect(controller.preferredInputDeviceIDForMeeting() == builtInID)
+        }
     }
 
     @Test("user selected microphone overrides automatic route policy")

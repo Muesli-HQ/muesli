@@ -3,6 +3,33 @@ import Testing
 
 @Suite("Dictation backend preparation ownership")
 struct DictationBackendPreparationTests {
+    @Test("A new local or hosted selection cancels the previous preparation task", arguments: [true, false])
+    func switchingCancelsPreparation(_ hosted: Bool) async {
+        var state = DictationBackendPreparationState()
+        let first = state.begin(isHosted: false)
+        let task = Task<Void, Never> { }
+        state.track(task, for: first)
+        #expect(!task.isCancelled)
+        let next = state.begin(isHosted: hosted)
+        #expect(task.isCancelled)
+        #expect(state.owns(next))
+        let finished = state.finish(first, succeeded: true)
+        #expect(!finished)
+        await task.value
+    }
+
+    @Test("An obsolete selection cannot attach work to the newer selection")
+    func staleTaskAttachmentIsCancelled() async {
+        var state = DictationBackendPreparationState()
+        let first = state.begin(isHosted: false)
+        let next = state.begin(isHosted: false)
+        let stale = Task<Void, Never> { }
+        state.track(stale, for: first)
+        #expect(stale.isCancelled)
+        #expect(state.owns(next))
+        await stale.value
+    }
+
     @Test("Late success and failure cannot finish a newer warmup", arguments: [true, false])
     func supersededCompletion(succeeded: Bool) {
         var state = DictationBackendPreparationState()

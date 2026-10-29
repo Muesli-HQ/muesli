@@ -28,7 +28,7 @@ final class BodhanMLXDecoder {
             let q = config?["quantization"] as? [String: Any]
             guard q?["bits"] as? Int == 8, q?["group_size"] as? Int == 64,
                   q?["mode"] as? String == "affine" else {
-                throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Unsupported Bodhan INT8 quantization configuration."])
+                throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Unsupported Bodhan Lite quantization configuration."])
             }
             var projections: [(String, Int, Int)] = [("lm_head", 7152, 1024)]
             for i in 0..<24 {
@@ -46,7 +46,7 @@ final class BodhanMLXDecoder {
                       w[prefix + ".scales"]?.shape == [output, input / 64],
                       w[prefix + ".biases"]?.shape == [output, input / 64],
                       w[prefix + ".bias"]?.shape == [output] else {
-                    throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "Incompatible Bodhan INT8 projection: \(prefix)."])
+                    throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "Incompatible Bodhan Lite projection: \(prefix)."])
                 }
             }
         }
@@ -94,7 +94,7 @@ final class BodhanMLXDecoder {
         return (linear(norm(x,"final_layer_norm"),"lm_head"),next)
     }
     func generate(acoustic: MLMultiArray, length: Int, tokenizer: BodhanCoreML.Tokenizer,
-                  language: String?, outputMode: BodhanOutputMode, frontendSeconds: Double, encoderSeconds: Double,
+                  language: String?, outputMode: BodhanOutputMode, policy: BodhanDecodingPolicy = .batch, frontendSeconds: Double, encoderSeconds: Double,
                   encoderPolicy: String) throws -> BodhanCoreML.Result {
         try tokenizer.validate()
         let crossStart = Date()
@@ -147,7 +147,7 @@ final class BodhanMLXDecoder {
         // MLX weights retain 1024 position rows and the KV cache grows dynamically.
         // The 10-token romanized prompt plus 512 generated tokens fits this table;
         // the diagnostic CoreML export has a separate fixed 512-position cache.
-        for _ in 0..<outputMode.maximumGeneratedTokens {
+        for _ in 0..<policy.tokenLimit(outputMode: outputMode) {
             if Task<Never,Never>.isCancelled { throw CancellationError() }
             let (logits,nextCache) = BodhanProfiling.measure("MLXStepGraph") { step(ids,position,cross,cache) }
             let next = argMax(logits[0,ids.count-1],axis:-1)
@@ -157,10 +157,10 @@ final class BodhanMLXDecoder {
             if token == tokenizer.eos_id { ended = true; break }
             tokens.append(token); ids = [token]
         }
-        guard ended else { throw NSError(domain:"BodhanASR",code:6,userInfo:[NSLocalizedDescriptionKey:"Bodhan reached its token limit. Try a shorter recording."]) }
+        try policy.validateCompletion(endedWithEOS: ended)
         let seconds = Date().timeIntervalSince(start)
         let text = tokens.filter { $0 >= tokenizer.special_count }.map { tokenizer.pieces[$0] }.joined().replacingOccurrences(of:"▁",with:" ").trimmingCharacters(in:.whitespacesAndNewlines)
-        var result = BodhanCoreML.Result(text:text,language:chosen,tokens:tokens.count,endedWithEOS:true,frontendSeconds:frontendSeconds,
+        var result = BodhanCoreML.Result(text:text,language:chosen,tokens:tokens.count,endedWithEOS:ended,frontendSeconds:frontendSeconds,
                      encoderSeconds:encoderSeconds,crossSeconds:crossSeconds,decodeSeconds:seconds,
                      predictionSeconds:seconds,selectionSeconds:0,encoderPolicy:encoderPolicy)
         result.decoderWeightPrecision = weightPrecision

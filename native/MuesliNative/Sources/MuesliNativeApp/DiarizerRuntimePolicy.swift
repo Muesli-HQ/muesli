@@ -140,7 +140,7 @@ enum DiarizerModelCacheState: String, Sendable {
 struct DiarizerPreloadContext: Sendable {
     static let telemetrySchemaVersion = "1"
     // Keep synchronized with the exact FluidAudio pin in Package.swift.
-    static let fluidAudioVersion = "0.15.1"
+    static let fluidAudioVersion = "0.17.3"
 
     let trigger: DiarizerPreloadTrigger
     let policy: DiarizerRuntimePolicy

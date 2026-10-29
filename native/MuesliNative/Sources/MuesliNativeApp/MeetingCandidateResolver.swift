@@ -510,7 +510,7 @@ final class MeetingCandidateResolver {
     }
 
     private func bestCalendarMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
-        let candidates = processes.filter { process in
+        let candidates = processes.map(canonicalSlackAudioProcess).filter { process in
             guard process.bundleID != selfBundleID else { return false }
             guard process.isRunningInput else { return false }
             guard Self.dedicatedApps[process.bundleID] != nil else { return false }
@@ -532,7 +532,7 @@ final class MeetingCandidateResolver {
     }
 
     private func bestMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
-        let candidates = processes.filter { process in
+        let candidates = processes.map(canonicalSlackAudioProcess).filter { process in
             guard process.bundleID != selfBundleID else { return false }
             guard process.isRunningInput else { return false }
             guard Self.dedicatedApps[process.bundleID] != nil else { return false }
@@ -545,6 +545,26 @@ final class MeetingCandidateResolver {
             if lhsWeak != rhsWeak { return !lhsWeak && rhsWeak }
             return lhs.appName < rhs.appName
         }.first
+    }
+
+    /// Attribute Slack helpers to Slack while preserving each process's own audio evidence.
+    /// The existing full-duplex checks and parent-keyed suppression then apply unchanged.
+    private func canonicalSlackAudioProcess(_ process: AudioProcessActivity) -> AudioProcessActivity {
+        let slackBundleID = "com.tinyspeck.slackmacgap"
+        let helperBundleID = "\(slackBundleID).helper"
+        let isSlackHelper = process.bundleID.caseInsensitiveCompare(helperBundleID) == .orderedSame
+            || isHelperBundleID(process.bundleID, for: helperBundleID)
+        guard process.bundleID != selfBundleID, slackBundleID != selfBundleID,
+              isSlackHelper else { return process }
+        return AudioProcessActivity(
+            audioObjectID: process.audioObjectID,
+            pid: process.pid,
+            bundleID: slackBundleID,
+            appName: "Slack",
+            isRunningInput: process.isRunningInput,
+            isRunningOutput: process.isRunningOutput,
+            deviceIDs: process.deviceIDs
+        )
     }
 
     private func bestBrowserAudioProcess(

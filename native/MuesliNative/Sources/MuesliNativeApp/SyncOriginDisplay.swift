@@ -13,7 +13,11 @@ enum SyncOriginDisplay {
     }
 
     static func badgeLabel(forMeetingSource source: MeetingSource) -> String? {
-        source == .iOS ? iOSBadgeLabel : nil
+        source == .granolaImport ? "Imported from Granola" : (source == .iOS ? iOSBadgeLabel : nil)
+    }
+
+    static func help(forMeetingSource source: MeetingSource) -> String {
+        source == .granolaImport ? "Imported from a Granola CSV. Date is document creation time; duration and audio are unavailable." : iOSBadgeHelp
     }
 }
 

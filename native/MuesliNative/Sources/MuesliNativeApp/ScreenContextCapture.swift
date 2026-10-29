@@ -31,9 +31,10 @@ enum DictationContextCapture {
     static func capture(
         includeScreenOCR: Bool,
         shouldCaptureScreenOCR: (@Sendable () async -> Bool)? = nil,
-        allowTitleFallback: Bool = true
+        allowTitleFallback: Bool = true,
+        maxDocumentChars: Int = 200
     ) async -> DictationContext {
-        let base = capture(allowTitleFallback: allowTitleFallback)
+        let base = capture(allowTitleFallback: allowTitleFallback, maxDocumentChars: maxDocumentChars)
         guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
         let screenContext = await ScreenContextCapture.captureVisibleScreen(
             shouldCapture: shouldCaptureScreenOCR,
@@ -56,8 +57,9 @@ enum DictationContextCapture {
     }
 
     /// Captures focused app name + text context via Accessibility API.
-    /// Lightweight and deterministic — no screenshots, no OCR.
-    static func capture(allowTitleFallback: Bool = true) -> DictationContext {
+    /// Lightweight and deterministic — no screenshots, no OCR. `maxDocumentChars` bounds the
+    /// text read before the cursor (dictation keeps 200; typeahead reads further back).
+    static func capture(allowTitleFallback: Bool = true, maxDocumentChars: Int = 200) -> DictationContext {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
@@ -66,7 +68,7 @@ enum DictationContextCapture {
         var selectedText = ""
 
         if let app, AXIsProcessTrusted(), let focusedElement = focusedUIElement(for: app) {
-            docContext = textBeforeCursor(focusedElement, maxChars: 200)
+            docContext = textBeforeCursor(focusedElement, maxChars: maxDocumentChars)
             selectedText = selectedTextValue(in: focusedElement)
         }
 

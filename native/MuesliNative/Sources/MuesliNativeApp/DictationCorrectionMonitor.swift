@@ -1029,6 +1029,7 @@ final class DictationCorrectionMonitor {
                         emittedSuggestionCount += 1
                         Self.log("emit \(Self.suggestionLogMetadata(suggestion))")
                         await MainActor.run {
+                            guard !Task.isCancelled else { return }
                             onSuggestion(suggestion)
                         }
                         if emittedSuggestionCount >= Self.maxSuggestionsPerSession {

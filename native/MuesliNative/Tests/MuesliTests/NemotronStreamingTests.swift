@@ -346,48 +346,54 @@ struct StreamingDictationControllerTests {
     }
 
     @available(macOS 15, *)
-    @Test("stop completes when stream state initialization stalls")
+    @Test("stop completes when stream state initialization stalls", .timeLimit(.minutes(1)))
     func stopCompletesWhenStreamStateInitializationStalls() async {
         let transcriber = HangingStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
             recorder: recorder,
-            stopStreamStateTimeout: 1.0
+            stopStreamStateTimeout: 0
         )
 
         #expect(controller.start() == true)
         recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
-
-        let startedAt = Date()
+        await transcriber.waitForInitialization()
         let text = await stop(controller)
-        let elapsed = Date().timeIntervalSince(startedAt)
+        await transcriber.waitForCancellation()
 
         #expect(text.isEmpty)
-        #expect(elapsed < 2.5)
+        #expect(recorder.stopCalls == 1)
+        #expect(recorder.onAudioBuffer == nil)
+        #expect(recorder.onRecordingFailed == nil)
     }
 
     @available(macOS 15, *)
-    @Test("stop completes when stream state initialization ignores cancellation")
+    @Test("stop completes when stream state initialization ignores cancellation", .timeLimit(.minutes(1)))
     func stopCompletesWhenStreamStateInitializationIgnoresCancellation() async {
         let transcriber = CancellationIgnoringStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
             recorder: recorder,
-            stopStreamStateTimeout: 1.0
+            stopStreamStateTimeout: 0
         )
 
         #expect(controller.start() == true)
         recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
-
-        let startedAt = Date()
+        await transcriber.waitForInitialization()
         let text = await stop(controller)
-        let elapsed = Date().timeIntervalSince(startedAt)
+
+        // Completion must not wait for the underlying initializer. This ordering
+        // tests the timeout guarantee without timing the shared CI executor.
+        #expect(await transcriber.isWaitingForRelease)
+        #expect(await transcriber.transcribeCalls == 0)
+        #expect(recorder.stopCalls == 1)
+        #expect(recorder.onAudioBuffer == nil)
+        #expect(recorder.onRecordingFailed == nil)
         await transcriber.releaseState()
 
         #expect(text.isEmpty)
-        #expect(elapsed < 2.5)
     }
 
     @available(macOS 15, *)
@@ -597,10 +603,29 @@ private actor ThrowingChunkStreamingTranscriber: NemotronStreamingTranscribing {
 
 @available(macOS 15, *)
 private final class HangingStreamingTranscriber: NemotronStreamingTranscribing {
+    private let initialization = AsyncStream<Void>.makeStream()
+    private let cancellation = AsyncStream<Void>.makeStream()
+
+    func waitForInitialization() async {
+        for await _ in initialization.stream { return }
+    }
+
+    func waitForCancellation() async {
+        for await _ in cancellation.stream { return }
+    }
+
     func makeStreamState() async throws -> RNNTStreamState {
-        while true {
-            try Task.checkCancellation()
-            try await Task.sleep(for: .milliseconds(100))
+        initialization.continuation.yield(())
+        initialization.continuation.finish()
+        do {
+            while true {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        } catch {
+            cancellation.continuation.yield(())
+            cancellation.continuation.finish()
+            throw error
         }
     }
 
@@ -616,11 +641,21 @@ private final class HangingStreamingTranscriber: NemotronStreamingTranscribing {
 private actor CancellationIgnoringStreamingTranscriber: NemotronStreamingTranscribing {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
+    private let initialization = AsyncStream<Void>.makeStream()
+    private(set) var transcribeCalls = 0
+
+    var isWaitingForRelease: Bool { continuation != nil && !released }
+
+    func waitForInitialization() async {
+        for await _ in initialization.stream { return }
+    }
 
     func makeStreamState() async throws -> RNNTStreamState {
         if !released {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
+                initialization.continuation.yield(())
+                initialization.continuation.finish()
             }
         }
         return try makeTestNemotronStreamState()
@@ -638,7 +673,8 @@ private actor CancellationIgnoringStreamingTranscriber: NemotronStreamingTranscr
         samples: [Float],
         state: inout RNNTStreamState
     ) async throws -> String {
-        "should not be reached"
+        transcribeCalls += 1
+        return "should not be reached"
     }
 }
 

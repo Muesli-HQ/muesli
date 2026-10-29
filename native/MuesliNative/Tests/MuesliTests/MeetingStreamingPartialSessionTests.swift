@@ -174,6 +174,9 @@ struct MeetingStreamingPartialSessionTests {
     func publishesOutOfBandProgressiveCallback() async throws {
         let engine = DelayedPartialEngine(text: "中文实时字幕")
         let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        // Both the engine callback and delayed publication capture the session
+        // weakly. Keep its owner alive beyond enqueue until readback completes.
+        defer { session.stop() }
         let collector = PartialCollector()
         session.onPartialUpdate = { collector.record($0) }
         await session.connect()

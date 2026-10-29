@@ -3,7 +3,25 @@ import AppKit
 import Foundation
 import MuesliCore
 import SQLite3
+import Observation
 @testable import MuesliNativeApp
+
+@MainActor
+private final class HistoryRefreshPublicationCounter {
+    private(set) var count = 0
+
+    func observe(_ state: AppState) {
+        withObservationTracking {
+            _ = state.dictationStats
+        } onChange: { [weak self, weak state] in
+            MainActor.assumeIsolated {
+                guard let self, let state else { return }
+                self.count += 1
+                self.observe(state)
+            }
+        }
+    }
+}
 
 private enum OpenRouterDisconnectTestError: Error {
     case expected
@@ -96,6 +114,42 @@ private actor OpenRouterCatalogRaceProbe {
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
 
+    @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
+    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
+        let directory = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        configStore.save(config)
+        let controller = makeController(dictationStore: store, configStore: configStore)
+        let history = controller.installRefreshWindowsForTesting(
+            history: hasHistoryWindow, preferences: hasPreferencesWindow
+        )
+        defer { _ = controller.installRefreshWindowsForTesting(history: false, preferences: false) }
+        let counter = HistoryRefreshPublicationCounter()
+        counter.observe(controller.appState)
+
+        for expectedCount in 1...2 {
+            let id = try store.insertDictation(
+                text: "Fresh history", durationSeconds: 1,
+                startedAt: Date(), endedAt: Date()
+            )
+            controller.refreshUI()
+            #expect(counter.count == expectedCount)
+            #expect(controller.appState.dictationRows.contains { $0.id == id })
+            #expect(controller.appState.dictationStats.totalSessions == expectedCount)
+        }
+
+        // Standalone reload callers must still refresh history themselves.
+        if let history {
+            history.reload()
+            #expect(counter.count == 3)
+        }
+    }
+
     private func makeController(
         dictationStore: DictationStore? = nil,
         configStore: ConfigStore? = nil
@@ -143,6 +197,113 @@ struct MeetingsNavigationTests {
             systemAudioPath: nil,
             savedRecordingPath: savedRecordingPath
         )
+    }
+
+    @Test("recording template changes persist without summarizing or changing the default",
+          arguments: [false, true])
+    func recordingTemplateSelection(paused: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Planning", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.defaultMeetingTemplateID = "one-to-one"
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Interview notes", icon: "doc.text"
+            )]
+        }
+        // Pausing leaves the meeting's status as recording, so the choice remains editable.
+        controller.appState.isMeetingRecordingPaused = paused
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let selected = try #require(try store.meeting(id: id))
+        #expect(selected.selectedTemplateID == "custom-test")
+        #expect(selected.selectedTemplatePrompt == "Interview notes")
+        #expect(selected.title == "Planning")
+        #expect(selected.formattedNotes == "## Notes")
+        #expect(selected.rawTranscript == "Transcript")
+        #expect(selected.status == .recording)
+        #expect(controller.config.defaultMeetingTemplateID == "one-to-one")
+        // Explicit Auto must not resolve back to the configured default.
+        try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+        let automatic = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: automatic).id == MeetingTemplates.autoID)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
+    }
+
+    @Test("Stop freezes the template and rejects late selections")
+    func recordingTemplateLocksAtStop() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(try store.meeting(id: id)?.status == .processing)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        }
+        controller.deleteCustomMeetingTemplate(id: "custom-test")
+        #expect(frozen.id == "custom-test")
+        #expect(frozen.prompt == "Original prompt")
+        let persisted = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: persisted).prompt == frozen.prompt)
+        for status in [MeetingStatus.completed, .failed, .noteOnly] {
+            try store.updateMeetingStatus(id: id, status: status)
+            #expect(throws: MeetingTemplateSelectionError.self) {
+                try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+            }
+        }
+    }
+
+    @Test("Stop retains the last saved template when the database read fails", arguments: [false, true])
+    func recordingTemplateReadFailure(explicitAuto: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        let selectedID = explicitAuto ? MeetingTemplates.autoID : "custom-test"
+        try controller.selectRecordingTemplate(id: selectedID, meetingID: id)
+        // A rejected choice must not replace the last successfully saved selection.
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings RENAME TO unavailable_meetings", nil, nil, nil) == SQLITE_OK)
+        defer { sqlite3_exec(db, "ALTER TABLE unavailable_meetings RENAME TO meetings", nil, nil, nil) }
+        #expect(throws: (any Error).self) { _ = try store.meeting(id: id) }
+        // A different capture must never inherit this meeting's choice.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id + 1) == nil)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(frozen.id == selectedID)
+        if !explicitAuto { #expect(frozen.prompt == "Original prompt") }
+        // The fallback is consumed at Stop, not retained indefinitely.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id) == nil)
+    }
+
+    @Test("a deleted template cannot silently replace a recording's selection")
+    func recordingTemplateRejectsMissingChoice() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
     }
 
     @Test("re-summarize rejects unconfigured Anthropic without changing saved notes")
@@ -858,6 +1019,44 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
+    @Test("a corrupt legacy catalog cannot disable meeting video storage")
+    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let legacy = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        #expect(controller.store == nil)
+        #expect(!controller.hasMedia(meetingID: id))
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try videos.save([clip])
+        controller.reload()
+        #expect(controller.items == [clip])
+    }
+
+    @Test("a failed initial meeting keeps video without retained audio or notes")
+    func failedMeetingKeepsVideo() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let config = ConfigStore(supportDirectory: support)
+        let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
+        let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try Data([1]).write(to: videos.url(for: clip.path))
+        try videos.save([clip])
+        let controller = makeController(dictationStore: store, configStore: config)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(try videos.items() == [clip])
+    }
+
     @Test("a failed initial meeting keeps its retained audio even without manual notes")
     func failedMeetingKeepsRetainedAudio() throws {
         let store = try makeStore()
@@ -1084,6 +1283,22 @@ struct MeetingsNavigationTests {
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("explicit screen recording retains audio without another save prompt")
+    func screenRecordingSkipsRetentionPrompt() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: {
+                Issue.record("Screen recording already opted into retaining media")
+                return false
+            }
+        ))
+        // The separate audio preference must not override an explicit never policy.
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: { true }
+        )))
     }
 
     @Test("WAV recovery reports success and double failure reports the fallback error")
@@ -2181,6 +2396,27 @@ struct MeetingBrowserLogicTests {
         #expect(formatted.contains("Jun 15, 2025"))
         #expect(formatted.contains("12:30"))
         #expect(formatted.localizedCaseInsensitiveContains("PM"))
+    }
+
+    @Test("local timestamps follow time-zone changes while explicit offsets stay fixed")
+    func localDatesFollowTimeZoneChanges() async {
+        // Keep process-wide TZ changes isolated from other tests and macOS settings.
+        await #expect(processExitsWith: .success) {
+            setenv("TZ", "UTC", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let local = "2025-01-01T12:00:00"
+            let absolute = "2025-01-01T12:00:00Z"
+            let before = try #require(MeetingBrowserLogic.parseDate(local))
+            let fixed = try #require(MeetingBrowserLogic.parseDate(absolute))
+
+            setenv("TZ", "America/Los_Angeles", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let after = try #require(MeetingBrowserLogic.parseDate(local))
+            #expect(after.timeIntervalSince(before) == 8 * 60 * 60)
+            #expect(MeetingBrowserLogic.parseDate(absolute) == fixed)
+        }
     }
 
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {
