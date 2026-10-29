@@ -28,7 +28,7 @@ jobs:
       (github.head_ref == 'codex/ci-build-cache-experiment' &&
        contains(github.event.pull_request.labels.*.name, 'ci-cache-benchmark') &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 40
     outputs:
       cache_key: ${{ steps.prepare.outputs.cache_key }}
@@ -75,7 +75,7 @@ jobs:
 
   warm:
     needs: cold
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 40
     strategy:
       fail-fast: false

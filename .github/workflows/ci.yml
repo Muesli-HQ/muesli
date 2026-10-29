@@ -19,7 +19,7 @@ jobs:
   # Detect which files changed. This gates expensive native CI only; security
   # checks live in security.yml and are intentionally not path-filtered here.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
@@ -65,7 +65,7 @@ jobs:
           printf '%s\n' "$FILES" | ./scripts/classify_changed_files.sh
 
   classifier-tests:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Check out repository
@@ -101,7 +101,7 @@ jobs:
     if: >-
       needs.changes.outputs.native_or_packaging == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -232,7 +232,7 @@ jobs:
       vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
       needs.build_release.result == 'success' &&
       needs.build_release.outputs.cache_save_outcome == 'success'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     continue-on-error: true
     permissions:
@@ -255,7 +255,7 @@ jobs:
   test_shards:
     needs: changes
     if: needs.changes.outputs.native_or_packaging == 'true'
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -282,7 +282,7 @@ jobs:
   ai-elements:
     needs: changes
     if: needs.changes.outputs.native_or_packaging == 'true'
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -301,7 +301,7 @@ jobs:
   cli-smoke:
     needs: changes
     if: needs.changes.outputs.native_or_packaging == 'true'
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -334,7 +334,7 @@ jobs:
   update-flow:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Check out repository
@@ -353,7 +353,7 @@ jobs:
   ci-gate:
     if: always()
     needs: [changes, classifier-tests, build_release, test_shards, ai-elements, cli-smoke, update-flow]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       # A successful draft gate could otherwise be reused on the same SHA when
       # the PR becomes ready, before its release build finishes.
