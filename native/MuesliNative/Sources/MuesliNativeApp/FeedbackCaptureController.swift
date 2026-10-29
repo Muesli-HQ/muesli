@@ -26,6 +26,7 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
     private var phase = Phase.preparing
     private var resourcesInstalled = false
     let target: FeedbackCaptureTarget
+    let drawModifier: FeedbackCaptureDrawModifier
     let admittedAt: Date
     private var recordingStart: Date?
     let queue = DispatchQueue(label: "com.muesli.feedback-microphone", qos: .userInitiated)
@@ -43,8 +44,10 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
     var onFailure: (@Sendable (String) -> Void)?
 
     init(target: FeedbackCaptureTarget, store: FeedbackCaptureStore, now: Date = Date(),
-         makeAudioWriter: @escaping (URL) throws -> any FeedbackCaptureAudioWriting = { try MeetingRecordingWriter(destination: $0) }) {
-        self.target = target; self.store = store; admittedAt = now; self.makeAudioWriter = makeAudioWriter
+         makeAudioWriter: @escaping (URL) throws -> any FeedbackCaptureAudioWriting = { try MeetingRecordingWriter(destination: $0) },
+         drawModifier: FeedbackCaptureDrawModifier = .shift) {
+        self.target = target; self.store = store; admittedAt = now
+        self.makeAudioWriter = makeAudioWriter; self.drawModifier = drawModifier
     }
     var isCurrent: Bool { lock.withLock { phase != .stopping } }
     var hasResources: Bool { lock.withLock { resourcesInstalled } }
@@ -125,10 +128,13 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
             origin: { [weak self] in self?.snapshot()?.microphoneStartFrame },
             admitted: { [weak self] in self?.isCurrent == true },
             onFailure: { [weak self] in self?.addFailure(stage: "events", message: $0) },
-            onGap: { [weak self] gap in self?.lock.withLock { self?.manifest?.inputGaps.append(gap) } })
+            onGap: { [weak self] gap in self?.lock.withLock { self?.manifest?.inputGaps.append(gap) } }, modifier: drawModifier)
         inputMonitor = monitor; monitor.start()
     }
-    @MainActor func stopInputMonitoring() { inputMonitor?.stop() }
+    @MainActor func stopInputMonitoring() {
+        if let cutoff = lock.withLock({ drainEndFrame }) { inputMonitor?.stop(frame: cutoff) }
+        else { inputMonitor?.stop() }
+    }
     @MainActor func drainInput() async { await inputMonitor?.drain(); inputMonitor = nil }
     func startMicrophone() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -353,7 +359,7 @@ final class FeedbackCaptureController {
     static func displayTarget(_ original: FeedbackCaptureTarget) -> FeedbackCaptureTarget? {
         NSScreen.screens.compactMap { target(screen: $0, appName: original.appName) }.first { $0.displayId == original.displayId }
     }
-    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?) -> Bool {
+    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?, drawModifier: FeedbackCaptureDrawModifier = .shift) -> Bool {
         if let permission = FeedbackCaptureAdmission.missingPermission(permissions) {
             present(.blocked(permission: permission)); return false
         }
@@ -365,7 +371,7 @@ final class FeedbackCaptureController {
         guard let store, let target = pointerTarget() else {
             present(.failed(stage: "Preparation", message: errorMessage ?? "Display unavailable", retainedMedia: false)); return false
         }
-        let capture = FeedbackCaptureAttempt(target: target, store: store, now: now())
+        let capture = FeedbackCaptureAttempt(target: target, store: store, now: now(), drawModifier: drawModifier)
         errorMessage = nil
         attempt = capture; ownsMicrophone = true; present(.preparing)
         capture.onFailure = { [weak self, weak capture] message in
@@ -599,7 +605,7 @@ final class FeedbackCaptureController {
         }
         if let failure = manifest.failures.first {
             return .failed(stage: failure.stage, message: failure.message,
-                retainedMedia: retainsContent || manifest.audio != nil || manifest.video != nil || !manifest.events.isEmpty)
+                retainedMedia: retainsContent || manifest.audio != nil || manifest.video != nil || (!manifest.events.isEmpty || !manifest.strokes.isEmpty))
         }
         return manifest.state == .ready ? .ready : .failed(stage: "Recording", message: "No media captured", retainedMedia: false)
     }

@@ -385,3 +385,25 @@ the summary as unillustrated text. Automatic clipboard delivery follows durable
 publication only when the clipboard is unchanged since Finish; explicit Copy
 reads the saved summary. Recovery regenerates local artifacts without automatic
 copying. Clipboard delivery state is transient and is not a manifest promise.
+
+Slice 4 adds default-empty version-1 `strokes` and `marks`, and optional keyframe
+`markId`; absent fields remain backward compatible. A stroke stores capture-time
+`t0/t1`, point-space target dimensions `fw/fh`, optional numbered `pin`, and flat
+integer `pts` triples `[x,y,dtMs,…]` with x/y in 0…10000 and time from `t0`.
+Marks store stable replay-derived IDs, stroke indexes, time bounds, normalized
+bounding boxes, optional pin, description, and optional relative `frame`.
+Shared mark frames and individual keyframe files use the same containment checks.
+Only successfully written frames retain links. Strokes/marks remain local-only.
+
+The mixed event journal preserves old pointer records and adds tagged stroke,
+undo, and input-gap transitions. New undo records include an optional `stroke`
+target using the existing stroke value. Targeted undo removes only that surviving
+stroke; a missing or invalid preceding stroke cannot redirect it to earlier ink.
+Older time-only undo records retain their last-stroke behavior without a migration.
+Recovery applies operations in append order, retains complete records around
+invalid records/truncated tails, closes an open Secure Input interval at recovered
+capture end, and deterministically rebuilds marks from surviving strokes.
+Stroke-only captures retain content and contribute to duration. Existing SQL
+columns, title/body projection, version, and migration remain unchanged.
+Old configuration defaults the canonical
+`feedback_capture_draw_modifier` setting to `shift`.

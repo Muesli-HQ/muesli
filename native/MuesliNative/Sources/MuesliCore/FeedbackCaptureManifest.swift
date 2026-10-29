@@ -39,6 +39,8 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     public var audio: String?
     public var transcript: FeedbackCaptureTranscript?
     public var events: [FeedbackCaptureEvent] = []
+    public var strokes: [FeedbackCaptureStroke] = []
+    public var marks: [FeedbackCaptureMark] = []
     public var inputGaps: [FeedbackCaptureInputGap] = []
     public var keyframes: [FeedbackCaptureKeyframe] = []
     public var contactSheet: String?
@@ -61,7 +63,7 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     }
     enum CodingKeys: String, CodingKey {
         case version, id, createdAtMs, durationMs, state, target, video, videoOffsetMs, audio, failures
-        case microphoneStartFrame, videoStartFrame, transcript, events, inputGaps, keyframes, contactSheet
+        case microphoneStartFrame, videoStartFrame, transcript, events, strokes, marks, inputGaps, keyframes, contactSheet
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,6 +86,8 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
         // These cached sidecars can be rebuilt from the event journal and media.
         events = (try? c.decodeIfPresent([FeedbackCaptureEvent].self, forKey: .events)) ?? []
         keyframes = (try? c.decodeIfPresent([FeedbackCaptureKeyframe].self, forKey: .keyframes)) ?? []
+        strokes = (try? c.decodeIfPresent([FeedbackCaptureStroke].self, forKey: .strokes)) ?? []
+        marks = (try? c.decodeIfPresent([FeedbackCaptureMark].self, forKey: .marks)) ?? []
         // Input gaps have no rebuild source, so skip malformed entries individually.
         var decodedInputGaps: [FeedbackCaptureInputGap] = []
         if var inputGapEntries = try? c.nestedUnkeyedContainer(forKey: .inputGaps) {

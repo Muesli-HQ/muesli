@@ -98,6 +98,13 @@ struct FeedbackCaptureView: View {
                             }.textSelection(.enabled)
                         }.frame(maxHeight: 220)
                     }
+                    if let manifest, !manifest.marks.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(manifest.marks, id: \.id) { mark in
+                                Text("✎ \(mark.description)")
+                            }
+                        }.textSelection(.enabled)
+                    }
                     if videoURL != nil && audioURL != nil {
                         Picker("Media", selection: $mode) {
                             Text("Video").tag("Screen")
@@ -109,7 +116,7 @@ struct FeedbackCaptureView: View {
                         if let player { MeetingVideoPlayerView(player: player).frame(minHeight: 220, maxHeight: .infinity) }
                     } else if let audioURL {
                         MeetingRecordingPlayerView(recordingPath: audioURL.path).id(audioURL)
-                    } else {
+                    } else if manifest?.strokes.isEmpty != false {
                         ContentUnavailableView("Media unavailable", systemImage: "video.slash", description: Text("The saved media may be missing or still recording."))
                     }
                     if let manifest {
@@ -188,7 +195,7 @@ struct FeedbackCaptureView: View {
                 bundleURL = loaded.bundle; activeWriter = loaded.active
                 contactSheet = loaded.contactSheet; frames = loaded.frames; summaryAvailable = loaded.summaryAvailable
                 if !loaded.missingArtifacts.isEmpty { message = "Missing or unreadable: " + loaded.missingArtifacts.joined(separator: ", ") }
-                else if videoURL == nil && audioURL == nil && loaded.manifest.events.isEmpty { message = "Saved media file is missing" }
+                else if videoURL == nil && audioURL == nil && loaded.manifest.events.isEmpty && loaded.manifest.strokes.isEmpty { message = "Saved media file is missing" }
             } catch {
                 if !Task.isCancelled { message = error.localizedDescription }
             }

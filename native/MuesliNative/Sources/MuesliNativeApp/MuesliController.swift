@@ -598,13 +598,16 @@ public final class MuesliController: NSObject {
         else if interactiveAudioSessionOwnership.dictationIsActive || isDictationTestMode { busy = "Finish dictation" }
         else if isMeetingAudioProcessing { busy = "Finish meeting processing" }
         else { busy = nil }
-        let accepted = feedbackCapture.start(permissions: permissions(), busyActivity: busy, device: device)
+        let accepted = feedbackCapture.start(permissions: permissions(), busyActivity: busy, device: device, drawModifier: config.feedbackCaptureDrawModifier)
         if accepted {
             feedbackCaptureHotkeyMonitor.synchronizeFeedbackCapture()
             coolDownDictationRecorder(reason: "feedback-capture")
             refreshFeedbackCaptureMenu()
         }
         else { feedbackCaptureHotkeyMonitor.cancelToggleMode() }
+    }
+    func setFeedbackCaptureDrawModifier(_ modifier: FeedbackCaptureDrawModifier) {
+        updateConfig { $0.feedbackCaptureDrawModifier = modifier }
     }
     @objc func finishFeedbackCapture() { storedFeedbackCapture?.finish() }
     @objc func openFeedbackCaptures() { feedbackCapture.open() }

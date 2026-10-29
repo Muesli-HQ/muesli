@@ -58,6 +58,44 @@ struct FeedbackCaptureLifecycleTests {
 
     let granted = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: true)
 
+    @Test func recoveredInkOnlyCapturePresentsRetainedMarksWithoutMissingMedia() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var manifest = try store.begin(target: feedbackTarget())
+            var data = Data()
+            for stroke in [feedbackStroke(100), feedbackStroke(1500, pin: 1)] {
+                data.append(try JSONEncoder().encode(FeedbackCaptureJournalRecord.stroke(stroke))); data.append(10)
+            }
+            try data.write(to: store.mediaURL(id: manifest.id, path: "events.jsonl"))
+            let recovered = store.reconcileMedia(manifest, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            try #require(recovered.retainsContent && recovered.manifest.marks.count == 2)
+            manifest = recovered.manifest; manifest.state = .recovered
+            try store.publish(manifest); store.release(id: manifest.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"),
+                supportDirectory: root, observeSystem: false)
+            _ = await controller.reload(requestedID: manifest.id)
+            _ = NSApplication.shared
+            let attribute = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+            let previous = NSApp.accessibilityAttributeValue(attribute)
+            NSApp.accessibilitySetValue(true, forAttribute: attribute)
+            defer { NSApp.accessibilitySetValue(previous, forAttribute: attribute) }
+            let panel = FeedbackCapturePillTests.HiddenPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            let hosting = NSHostingView(rootView: FeedbackCaptureView(controller: controller, selectedID: manifest.id))
+            panel.contentView = hosting
+            defer { panel.contentView = nil; panel.close() }
+            let fixture = FeedbackCapturePillTests()
+            try await waitUntil {
+                fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled() }
+            }
+            let text = fixture.accessibilityElements(hosting).flatMap {
+                [$0.accessibilityLabel(), $0.accessibilityValue() as? String].compactMap { $0 }
+            }.joined(separator: "\n")
+            for mark in manifest.marks { #expect(text.contains(mark.description)) }
+            #expect(!text.contains("Saved media file is missing"))
+            #expect(!text.contains("Media unavailable"))
+        }
+    }
+
     @Test func delayedPreparationKeepsRecordingClockDistinctFromAdmission() async throws {
         // Match AppKit's common modes in this test host, which never runs NSApplication.run().
         CFRunLoopAddCommonMode(CFRunLoopGetMain(), CFRunLoopMode(rawValue: RunLoop.Mode.eventTracking.rawValue as CFString))

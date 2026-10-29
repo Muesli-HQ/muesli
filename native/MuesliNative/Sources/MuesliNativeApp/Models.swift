@@ -2180,6 +2180,7 @@ struct AppConfig: Codable {
     var enableMeetingRecordingHotkey: Bool = false
     var feedbackCaptureHotkey: HotkeyConfig = .feedbackCaptureDefault
     var enableFeedbackCapture: Bool = false
+    var feedbackCaptureDrawModifier: FeedbackCaptureDrawModifier = .shift
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -2362,6 +2363,7 @@ struct AppConfig: Codable {
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
         case feedbackCaptureHotkey = "feedback_capture_hotkey"
         case enableFeedbackCapture = "feedback_capture"
+        case feedbackCaptureDrawModifier = "feedback_capture_draw_modifier"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -2518,6 +2520,7 @@ struct AppConfig: Codable {
             .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
         feedbackCaptureHotkey = (try? c.decode(HotkeyConfig.self, forKey: .feedbackCaptureHotkey)) ?? defaults.feedbackCaptureHotkey
+        feedbackCaptureDrawModifier = (try? c.decode(FeedbackCaptureDrawModifier.self, forKey: .feedbackCaptureDrawModifier)) ?? .shift
         enableFeedbackCapture = (try? c.decode(Bool.self, forKey: .enableFeedbackCapture)) ?? defaults.enableFeedbackCapture
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode

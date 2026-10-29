@@ -57,6 +57,11 @@ case "${shard}" in
       WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      FeedbackCaptureInkTests
+      FeedbackCaptureInkOverlayTests
+      FeedbackCaptureInkPersistenceTests
+      FeedbackCaptureInkExportTests
+      FeedbackCaptureInkInputTests
       FeedbackCaptureEventsTests
       FeedbackCaptureContextTests
       FeedbackCaptureInputTests

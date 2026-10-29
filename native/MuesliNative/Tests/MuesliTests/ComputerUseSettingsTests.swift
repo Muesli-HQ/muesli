@@ -41,6 +41,15 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test func canonicalSettingPersistsThroughSharedExecutor() async throws {
+        try await withShortcutSettings { controller, config in
+            let definition = try #require(controller.settingsDefinitions().first { $0.id == "feedback_capture_draw_modifier" })
+            #expect(definition.choices.map(\.id) == ["shift", "option", "control", "fn"])
+            try await controller.applySetting("feedback_capture_draw_modifier", value: "option")
+            #expect(config.load().feedbackCaptureDrawModifier == .option)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()

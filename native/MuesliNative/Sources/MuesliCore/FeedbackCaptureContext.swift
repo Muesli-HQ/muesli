@@ -10,13 +10,14 @@ public struct FeedbackCaptureKeyframe: Codable, Equatable, Sendable {
     public var reason: String
     public var file: String
     public var eventIndex: Int?
+    public var markId: String?
     public var said: String
     /// Consecutive half-open indexes into transcript.words, independent of decoded frame time.
     public var saidRange: FeedbackCaptureWordRange
-    public init(index: Int, t: Int64, reason: String, file: String, eventIndex: Int? = nil,
+    public init(index: Int, t: Int64, reason: String, file: String, eventIndex: Int? = nil, markId: String? = nil,
                 said: String, saidRange: FeedbackCaptureWordRange) {
         self.index = index; self.t = t; self.reason = reason; self.file = file
-        self.eventIndex = eventIndex; self.said = said; self.saidRange = saidRange
+        self.markId = markId; self.eventIndex = eventIndex; self.said = said; self.saidRange = saidRange
     }
 }
 public struct FeedbackCaptureInputGap: Codable, Equatable, Sendable {
@@ -35,6 +36,7 @@ public enum FeedbackCaptureContext {
         public let reason: String
         public let eventIndex: Int?
         public let score: Double
+        public var markIds: [String] = []
     }
     public static func budget(durationMs: Int64) -> Int {
         6 + Int(min(6, max(0, (Double(durationMs) - 40_000) / 20_000).rounded(.up)))
@@ -43,9 +45,33 @@ public enum FeedbackCaptureContext {
         guard !a.luma.isEmpty, a.luma.count == b.luma.count else { return 1 }
         return Double(zip(a.luma, b.luma).filter { abs(Int($0) - Int($1)) > 16 }.count) / Double(a.luma.count)
     }
-    public static func select(durationMs: Int64, events: [FeedbackCaptureEvent], thumbnails: [Thumbnail]) -> [Candidate] {
+    private static func settledSceneChanges(in samples: [Thumbnail]) -> [(anchor: Int64, time: Int64, delta: Double)] {
+        guard samples.count >= 4 else { return [] }
+        var changes: [(anchor: Int64, time: Int64, delta: Double)] = []
+        for i in 1..<(samples.count - 2) {
+            let delta = change(samples[i - 1], samples[i])
+            if delta > 0.12, change(samples[i], samples[i + 1]) < 0.05, change(samples[i], samples[i + 2]) < 0.05 {
+                changes.append((anchor: samples[i].t, time: samples[i + 2].t, delta: delta))
+            }
+        }
+        return changes
+    }
+    public static func markSplitBeforeStrokeIndices(strokes: [FeedbackCaptureStroke], thumbnails: [Thumbnail]) -> Set<Int> {
+        let changes = settledSceneChanges(in: thumbnails.sorted { $0.t < $1.t })
+        guard !changes.isEmpty, strokes.count > 1 else { return [] }
+        var result: Set<Int> = []
+        for index in 1..<strokes.count {
+            let previous = strokes[index - 1], current = strokes[index]
+            if changes.contains(where: { $0.anchor > previous.t1 && $0.anchor <= current.t1 }) {
+                result.insert(index)
+            }
+        }
+        return result
+    }
+    public static func select(durationMs: Int64, events: [FeedbackCaptureEvent], thumbnails: [Thumbnail], marks: [FeedbackCaptureMark] = []) -> [Candidate] {
         let samples = thumbnails.sorted { $0.t < $1.t }
         guard let first = samples.first, let last = samples.last else { return [] }
+        let sceneChanges = settledSceneChanges(in: samples)
         func nearest(_ time: Int64) -> Thumbnail {
             samples.min { abs($0.t - time) < abs($1.t - time) }!
         }
@@ -58,14 +84,9 @@ public enum FeedbackCaptureContext {
                 reason: event.kind == .scroll ? "scene_change" : event.kind.rawValue, eventIndex: index, score: 60 + 30 * delta))
         }
         // A scene must change and remain settled for two further samples (about 500 ms).
-        if samples.count >= 4 {
-            for i in 1..<(samples.count - 2) {
-                let delta = change(samples[i - 1], samples[i])
-                if delta > 0.12, change(samples[i], samples[i + 1]) < 0.05, change(samples[i], samples[i + 2]) < 0.05 {
-                    candidates.append(.init(anchor: samples[i].t, time: samples[i + 2].t,
-                        reason: "scene_change", eventIndex: nil, score: 40 + 20 * delta))
-                }
-            }
+        for scene in sceneChanges {
+            candidates.append(.init(anchor: scene.anchor, time: scene.time,
+                reason: "scene_change", eventIndex: nil, score: 40 + 20 * scene.delta))
         }
         let ranked = candidates.sorted {
             if $0.score != $1.score { return $0.score > $1.score }
@@ -85,8 +106,56 @@ public enum FeedbackCaptureContext {
         let initial = selected.first { $0.reason == "initial" }
         var bounded = Array(selected.filter { $0.reason != "initial" }.prefix(budget(durationMs: durationMs) - (initial == nil ? 0 : 1)))
         if let initial { bounded.append(initial) }
+        if !marks.isEmpty {
+            var mandatory: [Candidate] = []
+            var groupBoxes: [[Double]] = []
+            for mark in marks {
+                let time = min(last.t, max(first.t, mark.t1))
+                let previousMarkTimes = mandatory.last.map { prior in
+                    marks.filter { prior.markIds.contains($0.id) }.map(\.t1)
+                } ?? []
+                let crossedSceneChange = previousMarkTimes.contains { previousTime in
+                    sceneChanges.contains { $0.anchor > previousTime && $0.anchor <= time }
+                }
+                if var prior = mandatory.last,
+                   !crossedSceneChange,
+                   marks.filter({ prior.markIds.contains($0.id) }).allSatisfy({ retained in
+                       regionalChange(nearest(retained.t1), nearest(time), boxes: groupBoxes + [mark.boxNorm]) < 0.05
+                   }) {
+                    mandatory.removeLast()
+                    prior = Candidate(anchor: prior.anchor, time: time, reason: "mark", eventIndex: nil,
+                                      score: 100, markIds: prior.markIds + [mark.id])
+                    mandatory.append(prior); groupBoxes.append(mark.boxNorm)
+                } else {
+                    mandatory.append(.init(anchor: mark.t0, time: time, reason: "mark", eventIndex: nil, score: 100, markIds: [mark.id]))
+                    groupBoxes = [mark.boxNorm]
+                }
+            }
+            bounded = Array(bounded.filter { candidate in
+                !mandatory.contains { abs($0.time - candidate.time) <= 500 && change(nearest($0.time), nearest(candidate.time)) < 0.05 }
+            }.sorted { $0.score > $1.score }.prefix(max(0, budget(durationMs: durationMs) - mandatory.count))) + mandatory
+        }
         return bounded.sorted {
             $0.time == $1.time ? ($0.eventIndex ?? -1) < ($1.eventIndex ?? -1) : $0.time < $1.time
+        }
+    }
+    private static func regionalChange(_ a: Thumbnail, _ b: Thumbnail, boxes: [[Double]]) -> Double {
+        guard a.luma.count == 64 * 36, b.luma.count == a.luma.count else { return change(a, b) }
+        var cells: Set<Int> = []
+        for box in boxes where box.count == 4 && box.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+            let x0 = max(0, min(63, Int(floor(box[0] * 64)) - 1)), x1 = max(0, min(63, Int(ceil(box[2] * 64)) + 1))
+            let y0 = max(0, min(35, Int(floor(box[1] * 36)) - 1)), y1 = max(0, min(35, Int(ceil(box[3] * 36)) + 1))
+            if x0 <= x1 && y0 <= y1 { for y in y0...y1 { for x in x0...x1 { cells.insert(y * 64 + x) } } }
+        }
+        guard !cells.isEmpty else { return 1 }
+        return Double(cells.filter { abs(Int(a.luma[$0]) - Int(b.luma[$0])) > 16 }.count) / Double(cells.count)
+    }
+    /// Existing frame links carry shared-mark groups through partial rendering.
+    public static func linkMarks(_ m: inout FeedbackCaptureManifest) {
+        let files = Set(m.keyframes.map(\.file))
+        for index in m.marks.indices {
+            if let file = m.marks[index].frame, files.contains(file) { continue }
+            m.marks[index].frame = m.keyframes.first { $0.markId == m.marks[index].id }?.file
         }
     }
     public static func partition(transcript: FeedbackCaptureTranscript, anchors: [Int64]) -> [FeedbackCaptureWordRange] {
@@ -123,7 +192,7 @@ public enum FeedbackCaptureContext {
         return candidates.enumerated().map { index, candidate in
             let range = rangesByDisplayOrder[index]
             return .init(index: index + 1, t: candidate.time, reason: candidate.reason,
-                file: String(format: "frames/frame-%02d.png", index + 1), eventIndex: candidate.eventIndex,
+                file: String(format: "frames/frame-%02d.png", index + 1), eventIndex: candidate.eventIndex, markId: candidate.markIds.first,
                 said: transcript.words[range.from..<range.to].map(\.text).joined(separator: " "), saidRange: range)
         }
     }
@@ -167,6 +236,8 @@ public enum FeedbackCaptureContext {
             if let index = frame.eventIndex, m.events.indices.contains(index) {
                 line += " " + description(m.events[index]); referenced.insert(index)
             }
+            let marks = m.marks.filter { $0.frame == frame.file || $0.id == frame.markId }
+            if !marks.isEmpty { line += " " + marks.map { "✎ " + $0.description }.joined(separator: "; ") }
             if !frame.said.isEmpty { line += " “\(frame.said)”" }
             line += " — \(path(frame.file))"
             lines.append(line)
@@ -179,6 +250,11 @@ public enum FeedbackCaptureContext {
         for (index, event) in m.events.enumerated() where !referenced.contains(index) {
             lines.append("- Event (\(stamp(event.t))) \(description(event))")
         }
+        for mark in m.marks where !m.keyframes.contains(where: { $0.file == mark.frame || $0.markId == mark.id }) {
+            lines.append("- Mark (\(stamp(mark.t0))) ✎ \(mark.description)")
+        }
+        let overflow = m.keyframes.dropFirst(12).filter { $0.reason == "mark" }.count
+        if overflow > 0 { lines.append("+\(overflow) more marked frames in frames/") }
         for failure in m.failures { lines.append("\(failure.stage): \(failure.message)") }
         return lines.joined(separator: "\n") + "\n"
     }

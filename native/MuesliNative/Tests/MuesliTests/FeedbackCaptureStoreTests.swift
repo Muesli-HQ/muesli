@@ -194,6 +194,99 @@ struct FeedbackCaptureStoreTests {
             #expect(store.isActive(id: manifest.id))
         }
     }
+    @Test func malformedInkSidecarsDoNotHideRetainedVideo() throws {
+        try withFeedbackStore { store, _, _ in
+            let manifest = try store.begin(target: feedbackTarget())
+            var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest)) as? [String: Any])
+            json["strokes"] = ["malformed"]
+            json["marks"] = ["malformed"]
+            json["video"] = "recording.mp4"
+            try JSONSerialization.data(withJSONObject: json).write(to: store.mediaURL(id: manifest.id, path: "unfinished.json"))
+            try Data([0]).write(to: store.mediaURL(id: manifest.id, path: "recording.mp4"))
+            store.release(id: manifest.id)
+
+            var errors: [String] = []
+            let recovered = try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in 500 }) {
+                errors.append($1.localizedDescription)
+            }
+            #expect(errors.isEmpty)
+            #expect(recovered.map(\.id) == [manifest.id])
+            #expect(recovered.first?.video == "recording.mp4")
+            #expect(recovered.first?.strokes.isEmpty == true)
+            #expect(recovered.first?.marks.isEmpty == true)
+            #expect(try store.list().map(\.id) == [manifest.id])
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: manifest.id, path: "recording.mp4").path))
+        }
+    }
+    @Test func recoveryMergesSavedAndReplayedInputGapsWithoutDuplicates() throws {
+        try withFeedbackStore { store, _, _ in
+            var manifest = try store.begin(target: feedbackTarget())
+            let savedGaps = [FeedbackCaptureInputGap(t0: 50, t1: 75), .init(t0: 200, t1: 250)]
+            manifest.inputGaps = savedGaps
+
+            let records: [FeedbackCaptureJournalRecord] = [
+                .gap(t: 50, unavailable: true), .gap(t: 75, unavailable: false),
+                .gap(t: 50, unavailable: true), .gap(t: 75, unavailable: false),
+                .gap(t: 300, unavailable: true), .gap(t: 325, unavailable: false)
+            ]
+            var eventLog = Data()
+            for record in records {
+                eventLog.append(try JSONEncoder().encode(record))
+                eventLog.append(10)
+            }
+            try eventLog.write(to: store.mediaURL(id: manifest.id, path: "events.jsonl"))
+
+            let recovered = store.reconcileMedia(manifest, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            #expect(recovered.manifest.inputGaps == [
+                .init(t0: 50, t1: 75), .init(t0: 200, t1: 250), .init(t0: 300, t1: 325)
+            ])
+        }
+    }
+    @Test func recoveryKeepsSavedMarkGroupsAndFrameLinks() throws {
+        try withFeedbackStore { store, _, _ in
+            var manifest = try store.begin(target: feedbackTarget())
+            manifest.strokes = [
+                .init(t0: 100, t1: 200, fw: 1920, fh: 1080, pts: [1000, 1000, 0, 2000, 2000, 100]),
+                .init(t0: 400, t1: 500, fw: 1920, fh: 1080, pts: [7000, 1000, 0, 8000, 2000, 100])
+            ]
+            let savedMarks = [
+                FeedbackCaptureMark(id: "m1", strokes: [0], t0: 100, t1: 200, boxNorm: [0.1, 0.1, 0.2, 0.2],
+                    pin: nil, description: "mark on first page", frame: "frames/frame-01.png"),
+                FeedbackCaptureMark(id: "m2", strokes: [1], t0: 400, t1: 500, boxNorm: [0.7, 0.1, 0.8, 0.2],
+                    pin: nil, description: "mark on second page", frame: "frames/frame-02.png")
+            ]
+            manifest.marks = savedMarks
+            manifest.keyframes = [
+                .init(index: 1, t: 200, reason: "mark", file: "frames/frame-01.png", markId: "m1", said: "", saidRange: .init(from: 0, to: 0)),
+                .init(index: 2, t: 500, reason: "mark", file: "frames/frame-02.png", markId: "m2", said: "", saidRange: .init(from: 0, to: 0))
+            ]
+
+            let recovered = store.reconcileMedia(manifest, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+
+            #expect(recovered.manifest.marks == savedMarks)
+            #expect(recovered.manifest.keyframes.map(\.file) == ["frames/frame-01.png", "frames/frame-02.png"])
+        }
+    }
+    @Test func recoveryDoesNotDuplicateSynthesizedOpenInputGapAcrossRetries() throws {
+        try withFeedbackStore { store, _, _ in
+            var manifest = try store.begin(target: feedbackTarget())
+            manifest.durationMs = 325
+
+            var eventLog = Data()
+            eventLog.append(try JSONEncoder().encode(FeedbackCaptureJournalRecord.gap(t: 300, unavailable: true)))
+            eventLog.append(10)
+            try eventLog.write(to: store.mediaURL(id: manifest.id, path: "events.jsonl"))
+
+            let expectedGaps = [FeedbackCaptureInputGap(t0: 300, t1: 325)]
+            let firstRecovery = store.reconcileMedia(manifest, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            #expect(firstRecovery.manifest.inputGaps == expectedGaps)
+
+            try store.checkpoint(firstRecovery.manifest)
+            let persistedRecovery = try store.manifest(id: manifest.id)
+            let secondRecovery = store.reconcileMedia(persistedRecovery, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            #expect(secondRecovery.manifest.inputGaps == expectedGaps)
+        }
+    }
     @Test func catalogSkipsUnknownStatesWithoutHidingKnownCaptures() throws {
         try withFeedbackStore { store, db, _ in
             let future = try store.begin(target: feedbackTarget())

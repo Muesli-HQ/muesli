@@ -72,7 +72,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         return result
     }
     private func validatePaths(_ manifest: FeedbackCaptureManifest) throws {
-        for path in [manifest.audio, manifest.video, manifest.contactSheet].compactMap({ $0 }) + manifest.keyframes.map(\.file) {
+        for path in [manifest.audio, manifest.video, manifest.contactSheet].compactMap({ $0 }) + manifest.keyframes.map(\.file) + manifest.marks.compactMap(\.frame) {
             _ = try mediaURL(id: manifest.id, path: path)
         }
     }
@@ -142,16 +142,25 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     public func reconcileMedia(_ recording: FeedbackCaptureManifest,
         audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?) -> (manifest: FeedbackCaptureManifest, retainsContent: Bool) {
         var m = recording
+        var openGap: Int64?
         let log = try? mediaURL(id: m.id, path: "events.jsonl")
         if let log, FileManager.default.fileExists(atPath: log.path) {
             do {
                 let replay = FeedbackCaptureEvents.replay(try Data(contentsOf: log), target: m.target)
-                m.events = replay.events
+                m.events = replay.events; m.strokes = replay.strokes
+                var mergedGaps: [FeedbackCaptureInputGap] = []
+                for gap in m.inputGaps + replay.inputGaps where !mergedGaps.contains(gap) {
+                    mergedGaps.append(gap)
+                }
+                m.inputGaps = mergedGaps; openGap = replay.gapStart
+                m.durationMs = max(m.durationMs, replay.durationMs)
                 for issue in replay.failures where !m.failures.contains(issue) { m.failures.append(issue) }
             } catch { m.failures.append(.init(stage: "events", message: error.localizedDescription)) }
         }
         m.durationMs = max(m.durationMs, m.events.map(\.end).max() ?? 0)
-        var retainsContent = !m.events.isEmpty
+        m.durationMs = max(m.durationMs, m.strokes.map(\.t1).max() ?? 0)
+        if m.marks.isEmpty { m.marks = FeedbackCaptureInk.marks(m.strokes) }
+        var retainsContent = !m.events.isEmpty || !m.strokes.isEmpty
         for (path, stage, probe) in [("narration.wav", "audio", audioDuration), ("recording.mp4", "video", videoDuration)] {
             do {
                 let url = try mediaURL(id: m.id, path: path)
@@ -171,6 +180,10 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
                 // An unreadable path is uncertain, never proof of an empty bundle.
                 retainsContent = true
             }
+        }
+        if let start = openGap {
+            let gap = FeedbackCaptureInputGap(t0: start, t1: max(start, m.durationMs))
+            if !m.inputGaps.contains(gap) { m.inputGaps.append(gap) }
         }
         return (m, retainsContent)
     }

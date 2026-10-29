@@ -111,16 +111,71 @@ public struct FeedbackCaptureEvents: Sendable {
         }
         return result
     }
-    public static func replay(_ data: Data, target: FeedbackCaptureTarget) -> (events: [FeedbackCaptureEvent], failures: [FeedbackCaptureFailure]) {
-        var events: [FeedbackCaptureEvent] = [], failures: [FeedbackCaptureFailure] = []
+    public struct Replay: Sendable {
+        public var events: [FeedbackCaptureEvent] = []
+        public var strokes: [FeedbackCaptureStroke] = []
+        public var inputGaps: [FeedbackCaptureInputGap] = []
+        public var gapStart: Int64?
+        public var durationMs: Int64 = 0
+        public var failures: [FeedbackCaptureFailure] = []
+    }
+    public static func replay(_ data: Data, target: FeedbackCaptureTarget) -> Replay {
+        var result = Replay()
         let records = data.split(separator: 10, omittingEmptySubsequences: false)
         for (index, record) in records.enumerated() where !record.isEmpty {
             guard index < records.count - 1 else {
-                failures.append(.init(stage: "events", message: "Truncated event log tail retained.")); break
+                result.failures.append(.init(stage: "events", message: "Truncated event log tail retained.")); break
             }
-            do { events.append(try JSONDecoder().decode(FeedbackCaptureEvent.self, from: Data(record))) }
-            catch { failures.append(.init(stage: "events", message: "Invalid event record \(index + 1) retained.")) }
+            do {
+                switch try JSONDecoder().decode(FeedbackCaptureJournalRecord.self, from: Data(record)) {
+                case .pointer(let event): result.events.append(event); result.durationMs = max(result.durationMs, event.end)
+                case .stroke(let stroke): result.strokes.append(stroke); result.durationMs = max(result.durationMs, stroke.t1)
+                case .undo(let t, let stroke):
+                    if let stroke {
+                        if let index = result.strokes.lastIndex(of: stroke) { result.strokes.remove(at: index) }
+                    } else if !result.strokes.isEmpty { result.strokes.removeLast() }
+                    result.durationMs = max(result.durationMs, t)
+                case .gap(let t, let unavailable):
+                    result.durationMs = max(result.durationMs, t)
+                    if unavailable { if result.gapStart == nil { result.gapStart = t } }
+                    else if let start = result.gapStart {
+                        result.inputGaps.append(.init(t0: start, t1: max(start, t))); result.gapStart = nil
+                    }
+                }
+            } catch { result.failures.append(.init(stage: "events", message: "Invalid event record \(index + 1) retained.")) }
         }
-        return (merge(events, target: target), failures)
+        result.events = merge(result.events, target: target)
+        return result
+    }
+}
+
+/// Pointer records retain their S3 wire shape; new operations replay in journal order.
+public enum FeedbackCaptureJournalRecord: Codable, Sendable {
+    case pointer(FeedbackCaptureEvent), stroke(FeedbackCaptureStroke), undo(Int64, stroke: FeedbackCaptureStroke? = nil), gap(t: Int64, unavailable: Bool)
+    private enum CodingKeys: String, CodingKey { case kind, stroke, t, unavailable }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        if kind == "stroke" { self = .stroke(try c.decode(FeedbackCaptureStroke.self, forKey: .stroke)); return }
+        if kind == "undo" || kind == "input_gap" {
+            let t = try c.decode(Int64.self, forKey: .t)
+            guard t >= 0 else { throw DecodingError.dataCorruptedError(forKey: .t, in: c, debugDescription: "Invalid journal time") }
+            self = kind == "undo" ? .undo(t, stroke: try c.decodeIfPresent(FeedbackCaptureStroke.self, forKey: .stroke))
+                : .gap(t: t, unavailable: try c.decode(Bool.self, forKey: .unavailable))
+            return
+        }
+        self = .pointer(try FeedbackCaptureEvent(from: decoder))
+    }
+    public func encode(to encoder: Encoder) throws {
+        if case .pointer(let event) = self { try event.encode(to: encoder); return }
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .pointer: break
+        case .stroke(let stroke): try c.encode("stroke", forKey: .kind); try c.encode(stroke, forKey: .stroke)
+        case .undo(let t, let stroke):
+            try c.encode("undo", forKey: .kind); try c.encode(t, forKey: .t); try c.encodeIfPresent(stroke, forKey: .stroke)
+        case .gap(let t, let unavailable):
+            try c.encode("input_gap", forKey: .kind); try c.encode(t, forKey: .t); try c.encode(unavailable, forKey: .unavailable)
+        }
     }
 }

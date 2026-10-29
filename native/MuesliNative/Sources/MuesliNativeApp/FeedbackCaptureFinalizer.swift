@@ -71,7 +71,7 @@ struct FeedbackCaptureFinalizer {
                 try await Task.detached { try store.checkpoint(checkpoint) }.value
             }
         }
-        manifest.state = manifest.audio != nil || manifest.video != nil || !manifest.events.isEmpty ? completionState : .failed
+        manifest.state = manifest.audio != nil || manifest.video != nil || (!manifest.events.isEmpty || !manifest.strokes.isEmpty) ? completionState : .failed
         let published = manifest
         try await Task.detached { try store.publish(published) }.value
         // Recovery reconstructs local artifacts but never replaces the user's clipboard.
@@ -210,8 +210,17 @@ extension FeedbackCaptureFinalizer {
         [
             .init(name: .keyframes) { manifest, context in
                 guard !context.preserveSavedImages else { return }
-                let candidates = FeedbackCaptureContext.select(durationMs: manifest.durationMs, events: manifest.events, thumbnails: context.thumbnails)
+                if !manifest.strokes.isEmpty, !context.thumbnails.isEmpty {
+                    let splits = FeedbackCaptureContext.markSplitBeforeStrokeIndices(strokes: manifest.strokes, thumbnails: context.thumbnails)
+                    manifest.marks = FeedbackCaptureInk.marks(manifest.strokes, splitBeforeStrokeIndices: splits)
+                }
+                let candidates = FeedbackCaptureContext.select(durationMs: manifest.durationMs, events: manifest.events, thumbnails: context.thumbnails, marks: manifest.marks)
                 manifest.keyframes = FeedbackCaptureContext.keyframes(candidates, transcript: manifest.transcript)
+                for (candidate, frame) in zip(candidates, manifest.keyframes) {
+                    for index in manifest.marks.indices where candidate.markIds.contains(manifest.marks[index].id) {
+                        manifest.marks[index].frame = frame.file
+                    }
+                }
                 manifest.contactSheet = nil
             },
             .init(name: .render) { manifest, context in
@@ -219,6 +228,8 @@ extension FeedbackCaptureFinalizer {
                 let selected = manifest
                 // A failed or expired decoder must not publish paths to nonexistent images.
                 manifest.keyframes = []; manifest.contactSheet = nil
+                // Retain group membership in `selected`; clear every published link until writes succeed.
+                for index in manifest.marks.indices { manifest.marks[index].frame = nil }
                 guard let video = selected.video, !selected.keyframes.isEmpty else { return }
                 let url = try context.store.mediaURL(id: selected.id, path: video)
                 let cancellation = FeedbackCaptureDecodeCancellation()
@@ -230,6 +241,8 @@ extension FeedbackCaptureFinalizer {
                 let writer = Task.detached(priority: .utility) { try write(output, id: selected.id, store: context.store) }
                 let written = try await withTaskCancellationHandler { try await writer.value } onCancel: { writer.cancel() }
                 manifest.keyframes = written.frames.map(\.keyframe)
+                manifest.marks = selected.marks
+                FeedbackCaptureContext.linkMarks(&manifest)
                 manifest.contactSheet = written.contactSheet == nil ? nil : "contact-sheet.png"
                 manifest.failures += written.failures
             },

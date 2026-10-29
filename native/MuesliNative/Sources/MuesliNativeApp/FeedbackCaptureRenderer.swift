@@ -180,9 +180,11 @@ enum FeedbackCaptureRenderer {
                 frame.t = Int64((decoded.actualTime.seconds * 1000).rounded()) + (manifest.videoOffsetMs ?? 0)
                 let event = selected.eventIndex.flatMap { manifest.events.indices.contains($0) ? manifest.events[$0] : nil }
                 let click = event.flatMap { $0.kind == .click ? CGPoint(x: $0.x, y: $0.y) : nil }
-                let image = try annotate(decoded.image, index: frame.index, click: click)
+                let markStrokes = manifest.marks.filter { $0.frame == selected.file || $0.id == selected.markId }
+                    .flatMap(\.strokes).filter { manifest.strokes.indices.contains($0) }.map { manifest.strokes[$0] }
+                let image = try annotate(decoded.image, index: frame.index, click: click, strokes: markStrokes)
                 result.frames.append(.init(keyframe: frame, png: try png(image)))
-                images.append(image)
+                if images.count < 12 { images.append(image) }
             } catch {
                 try cancellation.check()
                 result.failures.append(.init(stage: "render", message: "Frame #\(selected.index): \(error.localizedDescription)"))
@@ -208,7 +210,7 @@ enum FeedbackCaptureRenderer {
         }
         return context
     }
-    static func annotate(_ image: CGImage, index: Int, click: CGPoint?) throws -> CGImage {
+    static func annotate(_ image: CGImage, index: Int, click: CGPoint?, strokes: [FeedbackCaptureStroke] = []) throws -> CGImage {
         let context = try canvas(width: image.width, height: image.height + 60)
         let width = CGFloat(image.width), height = CGFloat(image.height)
         let source = CGRect(x: 0, y: 0, width: width, height: height)
@@ -229,6 +231,9 @@ enum FeedbackCaptureRenderer {
             context.fillEllipse(in: CGRect(x: centre.x - 2, y: centre.y - 2, width: 4, height: 4))
             context.restoreGState()
         }
+        context.saveGState(); context.clip(to: source)
+        for stroke in strokes { drawInk(stroke, in: context, width: width, height: height) }
+        context.restoreGState()
         let chip = CGRect(x: 12, y: height + 12, width: 36, height: 36)
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.addPath(CGPath(roundedRect: chip, cornerWidth: 7, cornerHeight: 7, transform: nil)); context.fillPath()
@@ -243,6 +248,36 @@ enum FeedbackCaptureRenderer {
         CTLineDraw(line, context)
         guard let result = context.makeImage() else { throw ScreenVideoRecorder.error("Frame annotation failed") }
         return result
+    }
+
+    /// Shared by the live point-space overlay and exported pixel-space annotations.
+    static func drawInk(_ stroke: FeedbackCaptureStroke, in context: CGContext, width: CGFloat, height: CGFloat) {
+        guard stroke.fw > 0, stroke.fh > 0, stroke.pts.count >= 3 else { return }
+        context.saveGState(); defer { context.restoreGState() }
+        context.scaleBy(x: width / stroke.fw, y: height / stroke.fh)
+        // Device components preserve the specified #FF3B30 bytes on exported canvases.
+        context.setStrokeColor(red: 1, green: 59.0 / 255, blue: 48.0 / 255, alpha: 1)
+        context.setFillColor(red: 1, green: 59.0 / 255, blue: 48.0 / 255, alpha: 1)
+        context.setLineWidth(3); context.setLineCap(.round); context.setLineJoin(.round)
+        func point(_ i: Int) -> CGPoint {
+            CGPoint(x: Double(stroke.pts[i]) / 10000 * stroke.fw, y: (1 - Double(stroke.pts[i + 1]) / 10000) * stroke.fh)
+        }
+        if let pin = stroke.pin {
+            let p = point(0)
+            context.strokeEllipse(in: CGRect(x: p.x - 15, y: p.y - 15, width: 30, height: 30))
+            context.fillEllipse(in: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20))
+            let text = NSAttributedString(string: "\(pin)", attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 12, nil),
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
+            ])
+            let line = CTLineCreateWithAttributedString(text)
+            context.textPosition = CGPoint(x: p.x - CTLineGetTypographicBounds(line, nil, nil, nil) / 2, y: p.y - 4)
+            CTLineDraw(line, context)
+        } else {
+            context.move(to: point(0))
+            for i in stride(from: 3, to: stroke.pts.count, by: 3) { context.addLine(to: point(i)) }
+            context.strokePath()
+        }
     }
 
     static func contactSheet(_ images: [CGImage]) throws -> CGImage {
