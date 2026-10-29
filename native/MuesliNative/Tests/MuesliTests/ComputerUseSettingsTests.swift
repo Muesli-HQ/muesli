@@ -7,6 +7,40 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Feedback checks chord conflicts without changing the shared bare modifier rule")
+    func feedbackChordConflicts() async throws {
+        let feedback = HotkeyConfig.feedbackCaptureDefault
+        let bareOption = HotkeyConfig(keyCode: 61, label: "Right Option")
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(feedback, bareOption))
+        #expect(!ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(feedback, bareOption))
+        #expect(ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(feedback, config: AppConfig()).didUpdate)
+        for modifiers: NSEvent.ModifierFlags in [[.option], [.option, .shift], [.option, .shift, .command]] {
+            let chord = HotkeyConfig.combination(modifiers: modifiers, keyCode: 1)
+            #expect(ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(feedback, chord))
+            var config = AppConfig(); config.dictationHotkey = chord
+            #expect(!ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(feedback, config: config).didUpdate)
+        }
+        try await withShortcutSettings { controller, config in
+            #expect(!controller.updateFeedbackCaptureHotkey(bareOption).didUpdate)
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("feedback_capture_hotkey", value: "key:61")
+            }
+            let definition = try #require(controller.settingsDefinitions().first { $0.id == "feedback_capture_hotkey" })
+            #expect(!definition.choices.contains { $0.id.hasPrefix("key:") })
+            try await controller.applySetting("feedback_capture", value: "on")
+            #expect(config.load().enableFeedbackCapture)
+            #expect(controller.updateDictationHotkey(feedback).didUpdate == false)
+            #expect(controller.updateMeetingRecordingHotkey(feedback).didUpdate == false)
+            #expect(controller.updateQuilHotkey(.combination(modifiers: [.option], keyCode: 1)).didUpdate == false)
+            #expect(controller.updateFeedbackCaptureHotkey(.combination(modifiers: [.control], keyCode: 9)).didUpdate)
+            #expect(config.load().feedbackCaptureHotkey == .combination(modifiers: [.control], keyCode: 9))
+            #expect(controller.settingsDefinitions().contains { $0.id == "feedback_capture_hotkey" })
+            controller.resetShortcutDefaults()
+            #expect(config.load().feedbackCaptureHotkey == .feedbackCaptureDefault)
+            #expect(!config.load().enableFeedbackCapture)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()
@@ -775,7 +809,7 @@ struct ComputerUseSettingsTests {
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")
     func shortcutValueRules() {
         for target in ShortcutAssignment.allCases {
-            for key in ShortcutAssignment.singleKeys {
+            for key in target.assignableSingleKeys {
                 #expect(target.hotkey(for: ShortcutAssignment.value(for: key)) == key)
             }
             for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+k+", "run shell"] {

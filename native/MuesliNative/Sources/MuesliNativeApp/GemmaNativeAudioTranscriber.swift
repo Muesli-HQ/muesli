@@ -182,7 +182,7 @@ actor GemmaNativeAudioTranscriber {
         guard descriptor.isPresent(at: directory) else { throw GemmaNativeAudioError.modelMissing(path: directory.path) }
         try descriptor.validate(modelURL: directory.appendingPathComponent(descriptor.modelFilename))
         try Task.checkCancellation()
-        if !model.isCleanupOnly, vad == nil { vad = try await VadManager() }
+        if !model.isCleanupOnly, vad == nil { vad = try await GemmaNativeAudioModels.loadVAD() }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
         var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let audioConfig: GemmaAudioEncoder.Configuration? = try model.isCleanupOnly ? nil : JSONDecoder().decode(GemmaAudioEncoder.Configuration.self,
@@ -232,7 +232,7 @@ actor GemmaNativeAudioTranscriber {
         }
         // Run the already-used Silero detector even when meeting helpers have not
         // been loaded. A failed detector is an error, never permission to hallucinate.
-        if vad == nil { vad = try await VadManager() }
+        if vad == nil { vad = try await GemmaNativeAudioModels.loadVAD() }
         let vadStart = Date()
         let speech = try await vad!.process(wav.samples)
         let vadSeconds = Date().timeIntervalSince(vadStart)

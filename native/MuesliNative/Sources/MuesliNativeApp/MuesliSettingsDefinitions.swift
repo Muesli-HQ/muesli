@@ -286,7 +286,7 @@ extension MuesliController {
         }
         for target in ShortcutAssignment.allCases {
             settings.append(MuesliSetting(id: target.settingID, label: target.label,
-                choices: ShortcutAssignment.singleKeys.map {
+                choices: target.assignableSingleKeys.map {
                     Choice(id: ShortcutAssignment.value(for: $0), label: $0.label)
                 }, read: { ShortcutAssignment.value(for: $0[keyPath: target.keyPath]) },
                 unavailable: { _ in nil }, apply: { value in
@@ -435,6 +435,7 @@ extension MuesliController {
         }
 
         toggle("transcript_cleanup", "AI transcript cleanup", \.enablePostProcessor, apply: setPostProcessorEnabled)
+        toggle("feedback_capture", "Scrawl", \.enableFeedbackCapture) { try checkShortcut(self.updateFeedbackCaptureEnabled($0)) }
         toggle("quill", "Quill rewrite selected text", \.enableQuilMode, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateQuilModeEnabled($0)) }
         add("cleanup_source", "Cleanup source", TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }.map { .init(id: $0.backend, label: $0.label) },
             read: { TranscriptCleanupBackendOption.resolved($0.postProcessorBackend).isOnDevice ? TranscriptCleanupBackendOption.local.backend : $0.postProcessorBackend }) { value in

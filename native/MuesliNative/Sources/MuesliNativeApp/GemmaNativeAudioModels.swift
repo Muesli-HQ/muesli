@@ -1,4 +1,6 @@
 import Foundation
+import CoreML
+import FluidAudio
 import MuesliCore
 
 /// One process-wide default for all Gemma interfaces and managed drafter downloads.
@@ -31,6 +33,20 @@ enum GemmaMTPPolicy {
 
 /// Pinned, previously evaluated full E-series checkpoints; shared download verification contract.
 enum GemmaNativeAudioModels {
+    /// Inject the installed model directly: FluidAudio's directory initializer can repair via download.
+    static func loadVAD(modelURL: URL = ManagedASRModelPlans.fluidAudioModelsRoot()
+        .appendingPathComponent(Repo.vad.folderName).appendingPathComponent(ModelNames.VAD.sileroVadFile)) async throws -> VadManager {
+        guard ManagedASRModelDownloader.localOnly else { return try await VadManager() }
+        do {
+            let config = MLModelConfiguration()
+            config.computeUnits = VadConfig.default.computeUnits
+            return try await VadManager(vadModel: MLModel.load(contentsOf: modelURL, configuration: config))
+        } catch {
+            throw NSError(domain: "FeedbackCapture", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Installed Gemma VAD unavailable: \(error.localizedDescription)"])
+        }
+    }
+
     static let e2b = ManagedCleanupModel("mlx-community/gemma-4-e2b-it-4bit", "238767527555cb75a05732a84dff5d6ba0dd6809", [
         ("model.safetensors", 3550670554, "038e39a37a7667373d2c3991375446b10c96ae1d717a68674870343db376b76e"),
         ("config.json", 6395, "6397cb6eca41b911d1dcab74e17941351057bd759284052a2331918ff6f9246c"),
@@ -76,6 +92,10 @@ enum GemmaNativeAudioModels {
                                  progressSnapshot: ModelDownloadProgressHandler? = nil) async throws -> URL {
         let target = descriptor(for: model)
         let destination = directory(for: model)
+        if ManagedASRModelDownloader.localOnly {
+            guard isAvailable(model) else { throw CocoaError(.fileNoSuchFile) }
+            return destination.appendingPathComponent(target.modelFilename)
+        }
         if overrideDirectory() != nil {
             try target.validate(modelURL: destination.appendingPathComponent(target.modelFilename))
         } else {

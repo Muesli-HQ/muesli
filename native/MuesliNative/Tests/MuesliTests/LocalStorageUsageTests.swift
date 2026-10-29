@@ -4,6 +4,12 @@ import Testing
 
 @Suite("Local storage usage")
 struct LocalStorageUsageTests {
+    @Test func feedbackBundleSubtreeHasOneCategory() {
+        for path in ["capture.json", "narration.wav", "recording.mp4", "unfinished.json", "events.jsonl", "frames/frame-01.png", "zoom/example.png"] {
+            #expect(LocalStorageUsage.category(for: "feedback-captures/fc-1234-abcd.capture/" + path) == .feedbackCaptures)
+        }
+        #expect(LocalStorageUsage.category(for: "other/feedback-captures/audio.wav") == .other)
+    }
     @Test func categorizesFilesWithoutCountingLinksOrOverlappingRootsTwice() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

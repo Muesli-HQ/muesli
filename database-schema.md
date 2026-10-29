@@ -343,3 +343,75 @@ sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreig
 
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
+
+### Scrawl captures (local-only)
+
+`FeedbackCaptureStore.migrate(db:)` runs from `DictationStore.migrateIfNeeded()`.
+The idempotent migration creates `feedback_captures` and the
+`feedback_captures_time(created_at)` index. Its seven columns are:
+
+- `id TEXT PRIMARY KEY`, `created_at REAL` (Unix seconds), `duration_ms INTEGER`;
+- `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
+- `bundle_path TEXT`, relative to the support directory;
+- `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
+- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
+
+Captures have no meeting/dictation foreign key and never enter CloudKit, search,
+telemetry, or automatic exports. Media lives in mode-0700
+`feedback-captures/fc-<epochms>-<4 hex>.capture/` directories. `capture.json`
+uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
+Readers ignore unknown fields and reject unsupported versions. Version 1 also
+contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional
+`contactSheet`; older manifests decode without these fields. Event coordinates
+are normalized to the fixed display with a top-left origin. Events are tagged
+`click`, `drag`, or `scroll`, with capture-relative millisecond times. Keyframes
+store `index`, decoded capture time `t`, `reason`, relative `file`, optional
+`eventIndex`, `said`, and a half-open `saidRange {from,to}` into transcript words.
+Malformed optional sidecars are tolerated independently: rebuildable `events`,
+`keyframes`, and `contactSheet` fall back to empty or nil, while malformed
+`inputGaps` entries are skipped individually.
+Action anchors drive narration partitioning separately from decoded frame times.
+All artifact paths pass the store's bundle containment checks. The row's
+`keyframeCount` reflects the published frames, including partial render results.
+
+Before capture, `unfinished.json` journals the manifest atomically. The first
+microphone host frame and first accepted video host frame are checkpointed as
+soon as known; `videoOffsetMs` aligns video zero to narration sample zero.
+Publication writes the manifest and row before removing the journal. Active and
+still-finalizing bundles remain owned until actual writer completion. Recovery
+independently repairs complete surviving PCM samples and validates fragmented
+video through the same media reconciliation used at Finish. Each probe records
+its own failure; one cannot suppress the other. It preserves partial or uncertain
+media and claims interrupted bundles for the same finalizer. The journal remains
+while missing transcription resumes, and checkpointed transcripts are reused.
+Complete surviving `events.jsonl` records are replayed and merged; a truncated
+tail records an `events` failure without discarding earlier usable events.
+Event-only bundles retain ownership, contribute to duration, and enter the same
+finalizer even without playable media. Unknown contents still prevent deletion.
+Completion publishes `recovered` before retiring the journal. Each bundle reports
+recovery errors independently; successfully claimed bundles retain ownership and
+continue finalization even when a sibling fails. Inference holds no store lock.
+Only an interrupted bundle proven empty is removed. Journal-backed captures remain
+openable after row publication fails. Deletion uses the store, removes files
+before its row, and leaves failures visible for retry. No ad hoc SQL cleanup.
+
+The optional version-1 `transcript` contains `source`, optional `model`, `text`,
+`words` and `segments` (`t0`, `t1`, `text`), `estimated`, and optional
+`missing.reason`. Times are integer milliseconds from narration WAV sample zero,
+independent of `videoOffsetMs`. Older manifests omit it; no SQL migration or
+backfill is needed. Store publication maintains title and body projections.
+Narration uses disjoint quiet chunks of at most eight seconds, each decoded once.
+Complete measured words are retained; incomplete chunks estimate their full text.
+Decoder-only padding to 300 ms never extends source-time bounds.
+Missing audio/model, empty output, cancellation, timeout, and decoding errors
+retain playable media and record a named transcription failure. Narration and
+model identifiers remain local-only and do not enter sync or telemetry.
+
+Finalization prepares thumbnails alongside transcription, selects and annotates
+frames under `frames/`, writes `contact-sheet.png`, then atomically writes
+`summary.md` before publication. Thumbnail and render deadlines cancel native
+decoding and reject its late results. Failed illustrations leave narration in
+the summary as unillustrated text. Automatic clipboard delivery follows durable
+publication only when the clipboard is unchanged since Finish; explicit Copy
+reads the saved summary. Recovery regenerates local artifacts without automatic
+copying. Clipboard delivery state is transient and is not a manifest promise.
