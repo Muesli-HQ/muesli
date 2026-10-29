@@ -39,6 +39,7 @@ case "${shard}" in
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
+      CapturesCLITests
       ChatGPTAuthTests
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests

@@ -328,20 +328,40 @@ struct CommandSpecPayload: Encodable {
 struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
-        abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        abstract: "Agent-friendly CLI for local Muesli meetings, dictations, and Scrawl captures.",
+        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self, CapturesCommand.self]
     )
 
     static func main() async {
         // Match packaged app MLX precision even when invoked from a shell, where
         // the app's LSEnvironment Info.plist entry does not apply.
         setenv("MLX_ENABLE_TF32", "0", 1)
+        // ArgumentParser's async extension driver uses its own error exit.
+        // Route Scrawl explicitly so parser and runtime errors share our envelope.
+        if CommandLine.arguments.dropFirst().first == "captures" {
+            do {
+                var command = try parseAsRoot()
+                if var asyncCommand = command as? AsyncParsableCommand { try await asyncCommand.run() }
+                else { try command.run() }
+            } catch {
+                if Self.exitCode(for: error).rawValue == 0 { CapturesCommand.exit(withError: error) }
+                exit(withError: error)
+            }
+            return
+        }
         await main(nil)
     }
 
     static func exit(withError error: Error? = nil) -> Never {
         guard let error else {
             Foundation.exit(0)
+        }
+
+        if let failure = CapturesCommand.failureContext(arguments: Array(CommandLine.arguments.dropFirst())),
+           Self.exitCode(for: error).rawValue != 0 {
+            let error = CapturesCommand.inputError(error)
+            emitFailure(command: failure.command, error: error.errorBody, dbPath: failure.context.databaseURL)
+            Foundation.exit(error.exitCode)
         }
 
         if let cliError = error as? CLIError {
@@ -382,6 +402,10 @@ struct MuesliCLI: AsyncParsableCommand {
             .init(name: "meetings update-notes", usage: "muesli-cli meetings update-notes <id> (--stdin | --file <path>)", summary: "Replace stored meeting notes only.", examples: ["muesli-cli meetings update-notes 42 --file notes.md", "cat notes.md | muesli-cli meetings update-notes 42 --stdin"]),
             .init(name: "dictations list", usage: "muesli-cli dictations list [--limit <n>]", summary: "List recent dictations.", examples: ["muesli-cli dictations list --limit 10"]),
             .init(name: "dictations get", usage: "muesli-cli dictations get <id>", summary: "Return a full dictation record.", examples: ["muesli-cli dictations get 7"]),
+            .init(name: "captures list", usage: "muesli-cli captures list [--limit N] [--db-path <path>] [--support-dir <dir>]", summary: "List recent Scrawl captures.", examples: ["muesli-cli captures list --limit 10"]),
+            .init(name: "captures get", usage: "muesli-cli captures get <id|latest> [--manifest] [--db-path <path>] [--support-dir <dir>]", summary: "Read a Scrawl summary, paths, and failures.", examples: ["muesli-cli captures get latest --manifest"]),
+            .init(name: "captures frames", usage: "muesli-cli captures frames <id|latest> [--db-path <path>] [--support-dir <dir>]", summary: "Read available Scrawl screenshots.", examples: ["muesli-cli captures frames latest"]),
+            .init(name: "captures zoom", usage: "muesli-cli captures zoom <id|latest> (--at M:SS | --mark N) [--db-path <path>] [--support-dir <dir>]", summary: "Render a bounded Scrawl span and overlapping narration.", examples: ["muesli-cli captures zoom latest --at 0:12", "muesli-cli captures zoom latest --mark 1"]),
         ])
     }
 }

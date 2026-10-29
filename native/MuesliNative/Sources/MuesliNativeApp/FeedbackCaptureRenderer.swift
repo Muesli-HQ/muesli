@@ -80,7 +80,51 @@ actor FeedbackCaptureMediaLimiter {
     }
 }
 
-enum FeedbackCaptureRenderer {
+public enum FeedbackCaptureRenderer {
+    public struct ZoomFrame: Sendable {
+        public let index: Int
+        public let t: Int64
+        public let png: Data
+    }
+    public struct ZoomOutput: Sendable {
+        public let context: FeedbackCaptureContext.Zoom
+        public let frames: [ZoomFrame]
+        public let contactSheet: Data
+        public let failures: [FeedbackCaptureFailure]
+    }
+    /// Headless decoding only. The caller writes returned artifacts after the job succeeds.
+    public static func zoom(_ manifest: FeedbackCaptureManifest, url: URL, at: String? = nil,
+                            mark: Int? = nil) async throws -> ZoomOutput {
+        guard manifest.state != .recording, manifest.state != .processing else {
+            throw ScreenVideoRecorder.error("Scrawl is still recording or processing; zoom it after completion.")
+        }
+        let cancellation = FeedbackCaptureDecodeCancellation()
+        return try await FeedbackCaptureMediaJob<ZoomOutput>().run(timeout: .seconds(30), cancel: { cancellation.cancel() }) {
+            try await FeedbackCaptureMediaLimiter.render.perform {
+                let asset = AVURLAsset(url: url)
+                let duration = try await asset.load(.duration).seconds * 1000
+                guard duration.isFinite, duration > 0, duration < Double(Int64.max) else {
+                    throw ScreenVideoRecorder.error("Scrawl zoom has no playable video.")
+                }
+                let context = try FeedbackCaptureContext.zoom(manifest, at: at, mark: mark, videoDurationMs: Int64(duration))
+                var selected = manifest
+                selected.keyframes = context.times.enumerated().map { i, time in
+                    .init(index: i + 1, t: time, reason: "zoom", file: "zoom-frame-\(i + 1).png",
+                          said: "", saidRange: .init(from: 0, to: 0))
+                }
+                selected.marks = manifest.marks.filter { item in context.frames.contains { $0.markIds.contains(item.id) } }
+                for i in selected.marks.indices {
+                    let frame = context.frames.firstIndex { $0.markIds.contains(selected.marks[i].id) }!
+                    selected.marks[i].frame = selected.keyframes[frame].file
+                }
+                let output = try await render(selected, url: url, cancellation: cancellation, boundLongEdge: true, zoom: context)
+                guard let sheet = output.contactSheet else { throw ScreenVideoRecorder.error("Scrawl zoom could not render a contact sheet.") }
+                return ZoomOutput(context: context, frames: output.frames.map {
+                    ZoomFrame(index: $0.keyframe.index, t: $0.keyframe.t, png: $0.png)
+                }, contactSheet: sheet, failures: context.failures + output.failures)
+            }
+        }
+    }
     struct Frame: Sendable { var keyframe: FeedbackCaptureKeyframe; let png: Data }
     struct Output: Sendable { var frames: [Frame]; var contactSheet: Data?; var failures: [FeedbackCaptureFailure] }
 
@@ -155,7 +199,8 @@ enum FeedbackCaptureRenderer {
         return thumbnails
     }
 
-    static func render(_ manifest: FeedbackCaptureManifest, url: URL, cancellation: FeedbackCaptureDecodeCancellation) async throws -> Output {
+    static func render(_ manifest: FeedbackCaptureManifest, url: URL, cancellation: FeedbackCaptureDecodeCancellation,
+                       boundLongEdge: Bool = false, zoom: FeedbackCaptureContext.Zoom? = nil) async throws -> Output {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ScreenVideoRecorder.error("Video track unavailable") }
         let natural = try await track.load(.naturalSize), transform = try await track.load(.preferredTransform)
@@ -164,7 +209,7 @@ enum FeedbackCaptureRenderer {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
-        let scale = min(1, 2560 / size.width)
+        let scale = min(1, 2560 / (boundLongEdge ? max(size.width, size.height) : size.width))
         generator.maximumSize = CGSize(width: floor(size.width * scale), height: floor(size.height * scale))
         try cancellation.install { generator.cancelAllCGImageGeneration() }
         defer { generator.cancelAllCGImageGeneration() }
@@ -178,11 +223,27 @@ enum FeedbackCaptureRenderer {
                 try cancellation.check()
                 var frame = selected
                 frame.t = Int64((decoded.actualTime.seconds * 1000).rounded()) + (manifest.videoOffsetMs ?? 0)
-                let event = selected.eventIndex.flatMap { manifest.events.indices.contains($0) ? manifest.events[$0] : nil }
-                let click = event.flatMap { $0.kind == .click ? CGPoint(x: $0.x, y: $0.y) : nil }
+                let eventIndices = zoom?.frames.first { $0.t == selected.t }?.eventIndices ?? selected.eventIndex.map { [$0] } ?? []
+                let clicks = eventIndices.filter { manifest.events.indices.contains($0) }.map { manifest.events[$0] }
+                    .filter { $0.kind == .click }.map { CGPoint(x: $0.x, y: $0.y) }
                 let markStrokes = manifest.marks.filter { $0.frame == selected.file || $0.id == selected.markId }
-                    .flatMap(\.strokes).filter { manifest.strokes.indices.contains($0) }.map { manifest.strokes[$0] }
-                let image = try annotate(decoded.image, index: frame.index, click: click, strokes: markStrokes)
+                    .flatMap { mark -> [FeedbackCaptureStroke] in
+                        let strokes = mark.strokes.filter { manifest.strokes.indices.contains($0) }.map { manifest.strokes[$0] }
+                        guard let zoom else { return strokes }
+                        let end = min(zoom.playable.upperBound, frame.t)
+                        let clipped = end < zoom.playable.lowerBound ? [] : strokes.compactMap {
+                            FeedbackCaptureContext.clippedInk($0, to: zoom.playable.lowerBound...end)
+                        }
+                        let hasDrawableInk = clipped.contains { stroke in
+                            guard stroke.fw > 0, stroke.fh > 0 else { return false }
+                            return stroke.pin == nil ? stroke.pts.count >= 6 : stroke.pts.count >= 3
+                        }
+                        if !hasDrawableInk {
+                            result.failures.append(.init(stage: "zoom", message: "Scrawl mark \(mark.id) omitted: no ink at actual frame time \(frame.t) ms."))
+                        }
+                        return clipped
+                    }
+                let image = try annotate(decoded.image, index: frame.index, click: nil, strokes: markStrokes, clicks: clicks)
                 result.frames.append(.init(keyframe: frame, png: try png(image)))
                 if images.count < 12 { images.append(image) }
             } catch {
@@ -210,7 +271,7 @@ enum FeedbackCaptureRenderer {
         }
         return context
     }
-    static func annotate(_ image: CGImage, index: Int, click: CGPoint?, strokes: [FeedbackCaptureStroke] = []) throws -> CGImage {
+    static func annotate(_ image: CGImage, index: Int, click: CGPoint?, strokes: [FeedbackCaptureStroke] = [], clicks: [CGPoint] = []) throws -> CGImage {
         let context = try canvas(width: image.width, height: image.height + 60)
         let width = CGFloat(image.width), height = CGFloat(image.height)
         let source = CGRect(x: 0, y: 0, width: width, height: height)
@@ -218,7 +279,7 @@ enum FeedbackCaptureRenderer {
         context.setFillColor(red: 28.0 / 255, green: 29.0 / 255, blue: 34.0 / 255, alpha: 1)
         context.fill(CGRect(x: 0, y: height, width: width, height: 60))
         context.draw(image, in: source)
-        if let click {
+        for click in (click.map({ [$0] }) ?? []) + clicks {
             context.saveGState(); context.clip(to: source)
             let centre = CGPoint(x: click.x * width, y: (1 - click.y) * height)
             let radius = 14 * max(1, width / 1280)

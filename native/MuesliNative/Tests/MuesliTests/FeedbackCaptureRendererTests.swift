@@ -8,8 +8,119 @@ import os
 
 @Suite("Scrawl renderer", .serialized)
 struct FeedbackCaptureRendererTests {
+    @Test func zoomReportsPinClippedByActualFrameTime() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            defer { store.release(id: m.id) }
+            let video = try store.mediaURL(id: m.id, path: "recording.mp4")
+            try await makeVideo(video)
+            m.state = .ready; m.durationMs = 3000
+            m.strokes = [.init(t0: 800, t1: 900, fw: 320, fh: 180, pin: 7, pts: [2000, 2000, 0])]
+            m.marks = FeedbackCaptureInk.marks(m.strokes)
+            let output = try await FeedbackCaptureRenderer.zoom(m, url: video, mark: 1)
+            let index = try #require(output.context.frames.firstIndex { $0.markIds.contains("m1") }) + 1
+            #expect(output.frames.first { $0.index == index }?.t == 750)
+            var visible = false
+            for frame in output.frames {
+                let bitmap = try #require(NSBitmapImageRep(data: frame.png))
+                let pin = try #require(bitmap.colorAt(x: 72, y: 96)?.usingColorSpace(.deviceRGB))
+                if pin.redComponent > 0.9 && pin.greenComponent < 0.35 {
+                    visible = true
+                    #expect(frame.t >= 800 && frame.t <= 900, "Do not move the pin to a later screenshot")
+                }
+            }
+            let omissions = output.failures.filter { $0.stage == "zoom" && $0.message.contains("mark m1") && $0.message.contains("actual") }
+            #expect(visible || omissions.count == 1, "Selected pin must remain visible or have a named actual-time omission")
+            #expect(output.frames.count <= 6)
+        }
+    }
+    @Test func zoomReportsOrdinaryStrokeClippedToOneSampleAtActualFrameTime() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            defer { store.release(id: m.id) }
+            let video = try store.mediaURL(id: m.id, path: "recording.mp4")
+            try await makeVideo(video)
+            m.state = .ready; m.durationMs = 3000
+            m.strokes = [.init(t0: 700, t1: 900, fw: 320, fh: 180, pts: [2000, 2000, 0, 8000, 2000, 200])]
+            m.marks = FeedbackCaptureInk.marks(m.strokes)
+            let output = try await FeedbackCaptureRenderer.zoom(m, url: video, mark: 1)
+            let frame = try #require(output.frames.first { $0.t == 750 })
+            let clipped = try #require(FeedbackCaptureContext.clippedInk(
+                m.strokes[0], to: output.context.playable.lowerBound...frame.t
+            ))
+            #expect(clipped.pts == [2000, 2000, 0])
+            let omissions = output.failures.filter {
+                $0.stage == "zoom" && $0.message.contains("mark m1") && $0.message.contains("actual frame time 750 ms")
+            }
+            #expect(omissions.count == 1, "A one-sample ordinary stroke must report that its drawing was omitted")
+        }
+    }
+    @Test(arguments: [false, true])
+    func zoomKeepsInkOnItsSourceSceneAndUsesUnsavedClicks(crossing: Bool) async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            defer { store.release(id: m.id) }
+            let video = try store.mediaURL(id: m.id, path: "recording.mp4")
+            try await makeVideo(video, frameCount: crossing ? 120 : 12, fps: crossing ? 20 : 4, sceneChangeFrame: crossing ? 94 : 6)
+            m.state = .ready; m.durationMs = crossing ? 6000 : 3000
+            let start: Int64 = crossing ? 4000 : 1000, end: Int64 = crossing ? 4500 : 1250
+            let clickTime: Int64 = crossing ? 4250 : 1000
+            m.strokes = [.init(t0: start, t1: end, fw: 320, fh: 180, pts: [2000, 2000, 0, 3000, 2000, Int(end - start)])]
+            if crossing { m.strokes.append(.init(t0: 5200, t1: 5500, fw: 320, fh: 180, pts: [4000, 2000, 0, 5000, 2000, 300])) }
+            m.strokes.append(.init(t0: end, t1: end, fw: 320, fh: 180, pin: 5, pts: [1000, 7000, 0]))
+            m.marks = FeedbackCaptureInk.marks(m.strokes)
+            #expect(m.marks.count == 2)
+            m.events = [0.8, 0.6].map { .click(t: clickTime, x: $0, y: 0.5, button: 0) }
+            let output = try await FeedbackCaptureRenderer.zoom(m, url: video, at: crossing ? "0:03" : "0:02")
+            var inkTimes: [Int64] = [], clickTimes: [Int64] = []
+            for frame in output.frames {
+                let bitmap = try #require(NSBitmapImageRep(data: frame.png))
+                let ink = try #require(bitmap.colorAt(x: 80, y: 96)?.usingColorSpace(.deviceRGB))
+                if ink.redComponent > 0.9 && ink.greenComponent < 0.35 {
+                    inkTimes.append(frame.t)
+                    let pin = try #require(bitmap.colorAt(x: 40, y: 186)?.usingColorSpace(.deviceRGB))
+                    #expect(pin.redComponent > 0.9 && pin.greenComponent < 0.35)
+                    let scene = try #require(bitmap.colorAt(x: 300, y: 200)?.usingColorSpace(.deviceRGB))
+                    #expect(scene.redComponent < 0.2, "Ink must remain on the pre-switch screen")
+                }
+                let click = try #require(bitmap.colorAt(x: 270, y: 150)?.usingColorSpace(.deviceRGB))
+                if click.blueComponent > click.redComponent + 0.15 {
+                    clickTimes.append(frame.t)
+                    let other = try #require(bitmap.colorAt(x: 206, y: 150)?.usingColorSpace(.deviceRGB))
+                    #expect(other.blueComponent > other.redComponent + 0.15)
+                }
+                let future = try #require(bitmap.colorAt(x: 144, y: 96)?.usingColorSpace(.deviceRGB))
+                #expect(!(future.redComponent > 0.9 && future.greenComponent < 0.35))
+            }
+            #expect(inkTimes == [end])
+            #expect(clickTimes == [clickTime])
+        }
+    }
+    @Test func boundedZoomRenderRetainsSuccessfulFramesAndReportsPartialDecode() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            defer { store.release(id: m.id) }
+            let video = try store.mediaURL(id: m.id, path: "recording.mp4")
+            try await makeVideo(video)
+            m.keyframes = [0, 5000].enumerated().map { index, time in
+                .init(index: index + 1, t: Int64(time), reason: "zoom", file: "unused-\(index).png",
+                      said: "", saidRange: .init(from: 0, to: 0))
+            }
+            let output = try await FeedbackCaptureRenderer.render(m, url: video,
+                cancellation: FeedbackCaptureDecodeCancellation(), boundLongEdge: true)
+            #expect(output.frames.map(\.keyframe.index) == [1])
+            #expect(output.contactSheet != nil && output.failures.contains { $0.message.contains("#2") })
+            m.state = .ready; m.durationMs = 3000
+            let cancelled = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await FeedbackCaptureRenderer.zoom(m, url: video, at: "0:01")
+            }
+            await #expect(throws: CancellationError.self) { try await cancelled.value }
+        }
+    }
     /// Silent H.264 fixture, with no input devices, audio tracks or player.
-    func makeVideo(_ url: URL, samples: [(time: CMTime, value: UInt8)]? = nil) async throws {
+    func makeVideo(_ url: URL, samples: [(time: CMTime, value: UInt8)]? = nil,
+                   frameCount: Int = 12, fps: Int32 = 4, sceneChangeFrame: Int = 6) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180
@@ -20,8 +131,8 @@ struct FeedbackCaptureRendererTests {
         writer.add(input)
         try #require(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
-        let samples = samples ?? (0..<12).map { index in
-            (time: CMTime(value: Int64(index), timescale: 4), value: index < 6 ? 20 : 200)
+        let samples = samples ?? (0..<frameCount).map { index in
+            (time: CMTime(value: Int64(index), timescale: fps), value: index < sceneChangeFrame ? 20 : 200)
         }
         for sample in samples {
             while !input.isReadyForMoreMediaData {
@@ -73,6 +184,22 @@ struct FeedbackCaptureRendererTests {
             let ring = try #require(bitmap.colorAt(x: 160 + 14, y: 150)?.usingColorSpace(.deviceRGB))
             #expect(ring.blueComponent > ring.redComponent + 0.15)
             #expect(rendered.contactSheet != nil)
+            // Ink before the span or after actual decoded time must be absent.
+            m.durationMs = 5000
+            m.strokes = [.init(t0: 700, t1: 1100, fw: 320, fh: 180,
+                pts: [1000, 2000, 0, 1100, 2000, 0, 3000, 2000, 100, 3100, 2000, 100, 5000, 2000, 300, 5100, 2000, 300, 7000, 2000, 400, 7100, 2000, 400])]
+            m.marks = FeedbackCaptureInk.marks(m.strokes); m.marks[0].frame = m.keyframes[0].file
+            let zoom = try FeedbackCaptureContext.zoom(m, at: "0:03", videoDurationMs: 3000)
+            m.keyframes[0].t = 1150
+            let clipped = try await FeedbackCaptureRenderer.render(m, url: url, cancellation: FeedbackCaptureDecodeCancellation(), zoom: zoom)
+            let clippedFrame = try #require(clipped.frames.first)
+            #expect(clippedFrame.keyframe.t < 1100)
+            let pixels = try #require(NSBitmapImageRep(data: clippedFrame.png))
+            for (x, time) in [(32, Int64(700)), (96, 800), (160, 1000), (224, 1100)] {
+                let c = try #require(pixels.colorAt(x: x, y: 96)?.usingColorSpace(.deviceRGB))
+                #expect((c.redComponent > 0.9 && c.greenComponent < 0.35) == (time >= zoom.playable.lowerBound && time <= clippedFrame.keyframe.t))
+            }
+
             store.release(id: m.id)
         }
     }

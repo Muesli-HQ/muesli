@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import Darwin.sys.file
 import SQLite3
 
 /// Local-only bundles. The journal remains authoritative until manifest AND row publication succeed.
@@ -40,6 +42,44 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         let bundle = try bundleURL(id: id)
         let result = bundle.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
         guard !path.hasPrefix("/"), result.path.hasPrefix(bundle.path + "/") else { throw failure("Invalid capture media path") }
+        return result
+    }
+    private func withCaptureMutationLock<T>(id: String, _ body: () throws -> T) throws -> T {
+        guard validID(id) else { throw failure("Invalid capture ID") }
+        _ = try bundleURL(id: id)
+        let directory = root.appendingPathComponent(".locks", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let url = directory.appendingPathComponent("\(id).lock", isDirectory: false)
+        let descriptor = Darwin.open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw failure("Open capture mutation lock") }
+        defer { _ = Darwin.close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw failure("Lock capture mutation") }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+    private func captureRowExists(id: String) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM feedback_captures WHERE id=? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
+            throw failure("Prepare capture lookup")
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, id, -1, transient)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return true
+        case SQLITE_DONE: return false
+        default: throw failure("Check capture row")
+        }
+    }
+    /// Mutate an existing capture bundle while coordinating with deletion in every process.
+    /// `nil` means the row or bundle no longer exists; the body is never run in that case.
+    public func withExistingBundleMutation<T>(id: String, _ body: (URL) throws -> T) throws -> T? {
+        lock.lock(); defer { lock.unlock() }
+        let folder = try bundleURL(id: id)
+        let result: T? = try withCaptureMutationLock(id: id) {
+            guard try captureRowExists(id: id), FileManager.default.fileExists(atPath: folder.path) else { return nil }
+            return try body(folder)
+        }
         return result
     }
     public func begin(target: FeedbackCaptureTarget, now: Date = Date()) throws -> FeedbackCaptureManifest {
@@ -191,13 +231,15 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard !active.contains(id) else { throw failure("Capture is still recording or finalizing") }
         let folder = try bundleURL(id: id)
-        // Keep the row visible if filesystem removal fails.
-        if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, id, -1, transient)
-        guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
+        try withCaptureMutationLock(id: id) {
+            // Keep the row visible if filesystem removal fails.
+            if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, id, -1, transient)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
+        }
     }
     /// Repair and claim interrupted bundles. The caller resumes its finalizer before publication.
     @discardableResult

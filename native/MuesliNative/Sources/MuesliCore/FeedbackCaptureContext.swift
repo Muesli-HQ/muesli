@@ -25,6 +25,128 @@ public struct FeedbackCaptureInputGap: Codable, Equatable, Sendable {
     public init(t0: Int64, t1: Int64) { self.t0 = t0; self.t1 = t1 }
 }
 public enum FeedbackCaptureContext {
+    public struct Zoom: Sendable {
+        public let t0: Int64, t1: Int64
+        public let frames: [ZoomFrame]
+        public var times: [Int64] { frames.map(\.t) }
+        public let playable: ClosedRange<Int64>
+        public let failures: [FeedbackCaptureFailure]
+        public let words: [FeedbackCaptureTranscript.Span]
+        public let estimated: Bool
+        public let missing: FeedbackCaptureTranscript.Missing?
+        public var said: String { words.map(\.text).joined(separator: " ") }
+    }
+    public struct ZoomFrame: Sendable {
+        public let t: Int64
+        public var markIds: [String] = []
+        public var eventIndices: [Int] = []
+    }
+    /// Keep original point clocks and pin identities; never invent boundary points.
+    public static func clippedInk(_ stroke: FeedbackCaptureStroke, to range: ClosedRange<Int64>) -> FeedbackCaptureStroke? {
+        var clipped = stroke
+        clipped.pts = stride(from: 0, to: stroke.pts.count - 2, by: 3).filter { i in
+            let (time, overflow) = stroke.t0.addingReportingOverflow(Int64(stroke.pts[i + 2]))
+            return !overflow && range.contains(time)
+        }.flatMap { Array(stroke.pts[$0...($0 + 2)]) }
+        return clipped.pts.isEmpty ? nil : clipped
+    }
+    public struct ZoomError: LocalizedError {
+        public let errorDescription: String?
+        init(_ message: String) { errorDescription = message }
+    }
+    public static func validateZoomSelector(at: String?, mark: Int?) throws {
+        guard (at == nil) != (mark == nil), mark == nil || mark! > 0 else {
+            throw ZoomError("Scrawl zoom requires exactly one of --at M:SS or positive --mark N.")
+        }
+    }
+    /// Narration keeps its capture clock; only image sampling is clipped to video.
+    public static func zoom(_ m: FeedbackCaptureManifest, at: String? = nil, mark: Int? = nil,
+                            videoDurationMs: Int64) throws -> Zoom {
+        try validateZoomSelector(at: at, mark: mark)
+        guard m.durationMs > 0 else { throw ZoomError("Scrawl has no nonempty span to zoom.") }
+        let start: Int64, end: Int64, padding: Int64
+        if let at {
+            let parts = at.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2, !parts[0].isEmpty, parts[1].count == 2,
+                  parts.allSatisfy({ $0.utf8.allSatisfy { (48...57).contains($0) } }),
+                  let minutes = Int64(parts[0]), let seconds = Int64(parts[1]), seconds < 60 else {
+                throw ZoomError("Scrawl --at must be M:SS with seconds from 00 to 59.")
+            }
+            let (ms, overflow) = minutes.multipliedReportingOverflow(by: 60_000)
+            let (time, additionOverflow) = ms.addingReportingOverflow(seconds * 1000)
+            guard !overflow, !additionOverflow, time <= m.durationMs else { throw ZoomError("Scrawl timestamp is outside the capture duration.") }
+            start = time; end = time; padding = 2000
+        } else {
+            guard let mark, let selected = m.marks.first(where: { $0.id == "m\(mark)" }),
+                  selected.t0 >= 0, selected.t1 >= selected.t0, selected.t0 <= m.durationMs else {
+                throw ZoomError("Scrawl --mark must identify an existing positive mark ID (mN).")
+            }
+            start = selected.t0; end = min(m.durationMs, selected.t1); padding = 1000
+        }
+        let t0 = start > padding ? start - padding : 0
+        let t1 = m.durationMs - end < padding ? m.durationMs : end + padding
+        let offset = m.videoOffsetMs ?? 0
+        guard videoDurationMs > 0 else { throw ZoomError("Scrawl zoom has no playable video.") }
+        let (videoEnd, overflow) = offset.addingReportingOverflow(videoDurationMs - 1)
+        let first = max(t0, max(0, offset)), last = min(t1, overflow ? Int64.max : videoEnd)
+        guard t0 < t1, first <= last else { throw ZoomError("Scrawl zoom span has no playable video.") }
+        let playable = first...last
+        var frames: [ZoomFrame] = [], failures: [FeedbackCaptureFailure] = []
+        func reserve(_ time: Int64?, label: String, markId: String? = nil, eventIndex: Int? = nil) {
+            guard let time, playable.contains(time) else {
+                failures.append(.init(stage: "zoom", message: "Scrawl \(label) omitted: no playable source time.")); return
+            }
+            if let i = frames.firstIndex(where: { $0.t == time }) {
+                if let markId { frames[i].markIds.append(markId) }
+                if let eventIndex { frames[i].eventIndices.append(eventIndex) }
+            } else if frames.count < 6 {
+                frames.append(.init(t: time, markIds: markId.map { [$0] } ?? [], eventIndices: eventIndex.map { [$0] } ?? []))
+            } else {
+                failures.append(.init(stage: "zoom", message: "Scrawl \(label) omitted: six-frame limit."))
+            }
+        }
+        func distance(_ time: Int64) -> UInt64 { time >= end ? UInt64(time) - UInt64(end) : UInt64(end) - UInt64(time) }
+        let selectedMarkId = mark.map { "m\($0)" }
+        let marks = m.marks.enumerated().filter { _, item in
+            item.id == selectedMarkId || (item.t0 == item.t1 ? item.t0 >= t0 && item.t0 < t1 : item.t0 < t1 && item.t1 > t0)
+        }.sorted { a, b in
+            let aSelected = a.element.id == selectedMarkId, bSelected = b.element.id == selectedMarkId
+            if aSelected != bSelected { return aSelected }
+            let da = distance(a.element.t1), db = distance(b.element.t1)
+            return da == db ? a.offset < b.offset : da < db
+        }
+        for (_, item) in marks {
+            let ink = item.strokes.filter { m.strokes.indices.contains($0) }
+                .compactMap { clippedInk(m.strokes[$0], to: playable) }
+            let retainedEnd = ink.compactMap { stroke -> Int64? in
+                guard let delta = stroke.pts.last else { return nil }
+                return stroke.t0 + Int64(delta) // clippedInk checked addition.
+            }.max()
+            let time = retainedEnd == nil ? nil : (item.t0 < first || item.t1 > last ? retainedEnd : item.t1)
+            reserve(time, label: "mark \(item.id)", markId: item.id)
+        }
+        let clicks = m.events.enumerated().filter { $0.element.kind == .click && $0.element.t >= t0 && $0.element.t < t1 }
+            .sorted { a, b in
+                let da = distance(a.element.t), db = distance(b.element.t)
+                return da == db ? a.offset < b.offset : da < db
+            }
+        for (i, click) in clicks { reserve(click.t, label: "click event \(i + 1)", eventIndex: i) }
+        let length = last - first, count = length >= 5 ? 6 : Int(length) + 1, divisor = Int64(max(1, count - 1))
+        let spare = (0..<count).map { i in
+            first + (length / divisor) * Int64(i) + (length % divisor) * Int64(i) / divisor
+        }.filter { time in !frames.contains { $0.t == time } }
+        let slots = min(6 - frames.count, spare.count)
+        for i in 0..<slots {
+            let index = slots == 1 ? spare.count / 2 : i * (spare.count - 1) / (slots - 1)
+            frames.append(.init(t: spare[index]))
+        }
+        let transcript = m.transcript ?? .unavailable("Scrawl narration unavailable")
+        let words = transcript.words.filter { word in
+            word.t0 == word.t1 ? word.t0 >= t0 && word.t0 < t1 : word.t0 < t1 && word.t1 > t0
+        }
+        return Zoom(t0: t0, t1: t1, frames: frames.sorted { $0.t < $1.t }, playable: playable, failures: failures,
+                    words: words, estimated: transcript.estimated, missing: transcript.missing)
+    }
     public struct Thumbnail: Equatable, Sendable {
         public let t: Int64
         public let luma: [UInt8]
@@ -222,6 +344,7 @@ public enum FeedbackCaptureContext {
         func path(_ relative: String) -> String { bundle.appendingPathComponent(relative).path }
         var lines = ["[muesli Scrawl \(stamp(m.durationMs)) · \(m.target.appName) · \(bundle.path)]",
             "Manifest: \(path("capture.json"))"]
+        lines.append("Zoom Scrawl: `muesli-cli captures zoom \(m.id) --at M:SS` shows a moment in detail; use --mark N for mark mN.")
         if let sheet = m.contactSheet {
             lines.append("Contact sheet: \(path(sheet))")
             lines.append("Open the contact sheet and frames before changing anything: the words make sense on the images.")

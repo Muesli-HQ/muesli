@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import Darwin.sys.file
 import SQLite3
 import Testing
 @testable import MuesliCore
@@ -327,6 +329,99 @@ struct FeedbackCaptureStoreTests {
             #expect(!FileManager.default.fileExists(atPath: folder.path))
         }
     }
+
+    @Test func captureMutationLockSerializesDeleteAcrossStores() throws {
+        try withFeedbackStore { store, _, root in
+            let manifest = try store.begin(target: feedbackTarget())
+            store.release(id: manifest.id)
+            let bundle = try store.bundleURL(id: manifest.id)
+            let deletingStore = try FeedbackCaptureStore(databaseURL: root.appendingPathComponent("muesli.db"), support: root)
+
+            let lockDirectory = store.root.appendingPathComponent(".locks", isDirectory: true)
+            let lockURL = lockDirectory.appendingPathComponent("\(manifest.id).lock")
+            try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            let lockDescriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            try #require(lockDescriptor >= 0)
+            var lockHeld = true
+            defer {
+                if lockHeld { _ = flock(lockDescriptor, LOCK_UN) }
+                _ = Darwin.close(lockDescriptor)
+            }
+            try #require(flock(lockDescriptor, LOCK_EX) == 0)
+
+            let deletionStarted = DispatchSemaphore(value: 0)
+            let deletionFinished = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                deletionStarted.signal()
+                try? deletingStore.delete(id: manifest.id)
+                deletionFinished.signal()
+            }
+            try #require(deletionStarted.wait(timeout: .now() + .seconds(5)) == .success)
+            let deletionFinishedWhileLocked = deletionFinished.wait(timeout: .now() + .seconds(1)) == .success
+
+            #expect(!deletionFinishedWhileLocked)
+            #expect(FileManager.default.fileExists(atPath: bundle.path))
+            #expect(try store.get(id: manifest.id) != nil)
+
+            let unlockResult = flock(lockDescriptor, LOCK_UN)
+            lockHeld = unlockResult != 0
+            #expect(unlockResult == 0)
+            try #require(deletionFinished.wait(timeout: .now() + .seconds(5)) == .success)
+            #expect(!FileManager.default.fileExists(atPath: bundle.path))
+            #expect(try store.get(id: manifest.id) == nil)
+            #expect(FileManager.default.fileExists(atPath: lockURL.path))
+        }
+    }
+
+    @Test func withExistingBundleMutationSkipsMissingRowsAndBundles() throws {
+        try withFeedbackStore { store, db, _ in
+            let manifest = try store.begin(target: feedbackTarget())
+            store.release(id: manifest.id)
+            let bundle = try store.bundleURL(id: manifest.id)
+            let marker = bundle.appendingPathComponent("mutation.txt")
+            var bodyRuns = 0
+
+            let result = try store.withExistingBundleMutation(id: manifest.id) { existingBundle in
+                bodyRuns += 1
+                #expect(existingBundle == bundle)
+                try Data("written".utf8).write(to: marker)
+                return "written"
+            }
+            #expect(result == "written")
+            #expect(bodyRuns == 1)
+            #expect(try String(contentsOf: marker, encoding: .utf8) == "written")
+
+            let lockDirectory = store.root.appendingPathComponent(".locks", isDirectory: true)
+            let lockURL = lockDirectory.appendingPathComponent("\(manifest.id).lock")
+            #expect((try FileManager.default.attributesOfItem(atPath: lockDirectory.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+            #expect((try FileManager.default.attributesOfItem(atPath: lockURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+            var statement: OpaquePointer?
+            try #require(sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &statement, nil) == SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, (manifest.id as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            try #require(sqlite3_step(statement) == SQLITE_DONE)
+            let missingRow: String? = try store.withExistingBundleMutation(id: manifest.id) { _ in
+                bodyRuns += 1
+                return "unexpected"
+            }
+            #expect(missingRow == nil)
+            #expect(bodyRuns == 1)
+            #expect(FileManager.default.fileExists(atPath: bundle.path))
+
+            try store.save(manifest)
+            try FileManager.default.removeItem(at: bundle)
+            let missingBundle: String? = try store.withExistingBundleMutation(id: manifest.id) { _ in
+                bodyRuns += 1
+                return "unexpected"
+            }
+            #expect(missingBundle == nil)
+            #expect(bodyRuns == 1)
+            #expect(try store.get(id: manifest.id) != nil)
+        }
+    }
+
     @Test @MainActor func checkpointSurvivesCrashBeforeFinishAndRecoveryIsIdempotent() async throws {
         try await withFeedbackStoreAsync { store, root in
             var m = try store.begin(target: feedbackTarget())

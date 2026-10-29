@@ -4,6 +4,110 @@ import Testing
 
 @Suite("Scrawl context")
 struct FeedbackCaptureContextTests {
+    @Test(arguments: [Int64(1000), 1001])
+    func zoomKeepsExplicitEndpointMarkOrNamesItsOmission(videoDuration: Int64) throws {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.durationMs = 1000
+        m.strokes = [.init(t0: 1000, t1: 1000, fw: 100, fh: 100, pin: 7, pts: [5000, 5000, 0])]
+        m.marks = FeedbackCaptureInk.marks(m.strokes)
+        m.events = [.click(t: 1000, x: 0.5, y: 0.5, button: 0)]
+        m.transcript = .init(source: "fixture", text: "endpoint", words: [.init(t0: 1000, t1: 1000, text: "endpoint")], segments: [], estimated: false)
+        let zoom = try FeedbackCaptureContext.zoom(m, mark: 1, videoDurationMs: videoDuration)
+        if videoDuration == 1000 {
+            #expect(zoom.failures.map(\.message) == ["Scrawl mark m1 omitted: no playable source time."])
+        } else {
+            #expect(zoom.frames.first { $0.markIds.contains("m1") }?.t == 1000 && zoom.failures.isEmpty)
+        }
+        #expect(zoom.words.isEmpty && zoom.frames.allSatisfy { $0.eventIndices.isEmpty })
+        let incidental = try FeedbackCaptureContext.zoom(m, at: "0:01", videoDurationMs: videoDuration)
+        #expect(incidental.words.isEmpty && incidental.frames.allSatisfy { $0.markIds.isEmpty && $0.eventIndices.isEmpty })
+        #expect(incidental.failures.isEmpty)
+    }
+    @Test func zoomReservesRequestedMarkAndReportsBoundedEvidenceDeterministically() throws {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.durationMs = 10000; m.videoOffsetMs = 900
+        m.strokes = (0..<8).map { i in .init(t0: Int64(1000 + i * 100), t1: Int64(1000 + i * 100),
+            fw: 100, fh: 100, pin: i + 1, pts: [5000, 5000, 0]) }
+        m.strokes.append(.init(t0: 1700, t1: 1700, fw: 100, fh: 100, pin: 9, pts: [2000, 2000, 0]))
+        m.marks = FeedbackCaptureInk.marks(m.strokes)
+        m.events = [1700, 1700, 1750, 800].map { .click(t: Int64($0), x: 0.5, y: 0.5, button: 0) }
+        let zoom = try FeedbackCaptureContext.zoom(m, mark: 8, videoDurationMs: 5000)
+        #expect(zoom.times == [1200, 1300, 1400, 1500, 1600, 1700])
+        #expect(zoom.frames.last?.markIds == ["m8", "m9"] && zoom.frames.last?.eventIndices == [0, 1])
+        #expect(zoom.failures.map(\.message) == [
+            "Scrawl mark m2 omitted: six-frame limit.", "Scrawl mark m1 omitted: six-frame limit.",
+            "Scrawl click event 3 omitted: six-frame limit.", "Scrawl click event 4 omitted: no playable source time."])
+        m.marks = []; m.strokes = []
+        m.events = [1700, 2300, 2200, 1800, 2100, 1900, 2000, 800].map { .click(t: Int64($0), x: 0.5, y: 0.5, button: 0) }
+        let clicks = try FeedbackCaptureContext.zoom(m, at: "0:02", videoDurationMs: 5000)
+        #expect(clicks.frames.flatMap(\.eventIndices) == [0, 3, 5, 6, 4, 2])
+        #expect(clicks.failures.count == 2)
+        let stroke = FeedbackCaptureStroke(t0: 100, t1: 500, fw: 1, fh: 1, pin: 7, pts: [0, 0, 0, 5000, 5000, 200, 10000, 10000, 400])
+        let clipped = try #require(FeedbackCaptureContext.clippedInk(stroke, to: 200...400))
+        #expect(clipped.t0 == 100 && clipped.t1 == 500 && clipped.pin == 7 && clipped.pts == [5000, 5000, 200])
+        #expect(FeedbackCaptureContext.clippedInk(stroke, to: 101...299) == nil)
+    }
+    @Test("Scrawl timestamp bounds and evenly spaced samples", arguments: [
+        ("0:00", Int64(0), Int64(2000)), ("0:03", 1000, 5000), ("0:10", 8000, 10000)
+    ])
+    func zoomTimestamp(at: String, start: Int64, end: Int64) throws {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.durationMs = 10000
+        let zoom = try FeedbackCaptureContext.zoom(m, at: at, videoDurationMs: 11000)
+        #expect(zoom.t0 == start && zoom.t1 == end)
+        #expect(zoom.times.count == 6 && Set(zoom.times).count == 6)
+        #expect(zoom.times.first == start && zoom.times.last == end)
+        let gaps = zip(zoom.times, zoom.times.dropFirst()).map { $1 - $0 }
+        #expect(gaps.max()! - gaps.min()! <= 1)
+    }
+    @Test func zoomRejectsBadSelectorsAndClipsOnlyVideoSampling() throws {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.durationMs = 10000; m.videoOffsetMs = 1250
+        for at in ["-1:00", "0:1", "0:60", "1:00", "1:000", " 0:00", "0:00\n", "9223372036854775807:00", "153722867280912:59"] {
+            #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, at: at, videoDurationMs: 5000) }
+        }
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, videoDurationMs: 5000) }
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, at: "0:00", mark: 1, videoDurationMs: 5000) }
+        for mark in [0, -1] {
+            #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, mark: mark, videoDurationMs: 5000) }
+        }
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, at: "0:09", videoDurationMs: 5000) }
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, at: "0:00", videoDurationMs: 0) }
+        let clipped = try FeedbackCaptureContext.zoom(m, at: "0:00", videoDurationMs: 5000)
+        #expect(clipped.t0 == 0 && clipped.t1 == 2000 && clipped.times.first == 1250)
+        m.videoOffsetMs = -500
+        #expect(try FeedbackCaptureContext.zoom(m, at: "0:03", videoDurationMs: 3000).times.last == 2499)
+        m.durationMs = Int64.max; m.videoOffsetMs = 0
+        m.strokes = [.init(t0: Int64.max - 10, t1: Int64.max, fw: 1, fh: 1, pts: [0, 0, 0])]
+        m.marks = FeedbackCaptureInk.marks(m.strokes)
+        let extreme = try FeedbackCaptureContext.zoom(m, mark: 1, videoDurationMs: Int64.max)
+        #expect(extreme.t1 == Int64.max && extreme.times.last == Int64.max - 1)
+        m.durationMs = 0
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, at: "0:00", videoDurationMs: 1) }
+    }
+    @Test func zoomUsesStableMarkAndAllOverlappingWordsOnceWithOriginalTimes() throws {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.durationMs = 10000
+        m.strokes = [.init(t0: 2000, t1: 5000, fw: 100, fh: 100, pin: 7, pts: [5000, 5000, 0])]
+        m.marks = FeedbackCaptureInk.marks(m.strokes)
+        let words: [FeedbackCaptureTranscript.Span] = [
+            .init(t0: 0, t1: 1000, text: "before"), .init(t0: 500, t1: 1001, text: "crossing"),
+            .init(t0: 1000, t1: 1000, text: "zero"), .init(t0: 900, t1: 6100, text: "spanning"),
+            .init(t0: 5999, t1: 7000, text: "after"), .init(t0: 6000, t1: 6000, text: "outside")]
+        m.transcript = .init(source: "fixture", text: "unused full text", words: words, segments: [], estimated: true)
+        let zoom = try FeedbackCaptureContext.zoom(m, mark: 1, videoDurationMs: 11000)
+        #expect(zoom.t0 == 1000 && zoom.t1 == 6000)
+        #expect(zoom.words == Array(words[1...4]))
+        #expect(zoom.said == "crossing zero spanning after" && zoom.estimated && zoom.missing == nil)
+        #expect(throws: FeedbackCaptureContext.ZoomError.self) { try FeedbackCaptureContext.zoom(m, mark: 7, videoDurationMs: 11000) }
+        m.transcript = .unavailable("fixture model missing")
+        let missing = try FeedbackCaptureContext.zoom(m, mark: 1, videoDurationMs: 11000)
+        #expect(missing.words.isEmpty && missing.said.isEmpty && missing.estimated)
+        #expect(missing.missing?.reason == "fixture model missing")
+        m.durationMs = 1; m.strokes = []; m.marks = []
+        let tiny = try FeedbackCaptureContext.zoom(m, at: "0:00", videoDurationMs: 1)
+        #expect(tiny.times == [0])
+    }
     typealias Thumbnail = FeedbackCaptureContext.Thumbnail
     func thumbs(_ values: [UInt8]) -> [Thumbnail] {
         values.enumerated().map { .init(t: Int64($0.offset * 250), luma: [UInt8](repeating: $0.element, count: 64 * 36)) }
@@ -137,7 +241,7 @@ struct FeedbackCaptureContextTests {
         #expect(summary.contains("[clicked x 0.51, y 0.12]"))
         #expect(summary.contains("Unillustrated narration: “Then stop.”"))
         #expect(summary.components(separatedBy: "Open this.").count == 2)
-        #expect(!summary.contains("captures zoom"))
+        #expect(summary.contains("muesli-cli captures zoom \(m.id) --at M:SS"))
     }
     @Test("Summary identifies estimated narration timing even when all words are illustrated")
     func summaryMarksEstimatedTimingForFullyIllustratedNarration() {

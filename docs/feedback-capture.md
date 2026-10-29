@@ -50,3 +50,47 @@ in points and flat integer `[x,y,dtMs,…]` triples (coordinates 0…10000).
 `undo`, and `input_gap` operations. Recovery replays operations in order before
 rebuilding marks, preserving complete records around malformed records or a
 truncated tail. These additions require no SQL migration or backfill.
+
+### Inspect Scrawl from a coding agent
+
+The bundled CLI reads saved Scrawl bundles locally:
+
+```bash
+muesli-cli captures list --limit 10
+muesli-cli captures get latest
+muesli-cli captures get latest --manifest
+muesli-cli captures frames latest
+muesli-cli captures zoom latest --at 0:12
+muesli-cli captures zoom latest --mark 1
+```
+
+Each command returns the existing JSON envelope with absolute local artifact
+paths. Open the sheet and frames alongside the summary before changing code.
+`get` includes capture metadata, state, summary, available paths, and structured
+failures. `--manifest` adds the validated version-1 manifest with relative paths;
+unsupported versions are refused. Missing artifacts produce warnings, and a
+missing summary is regenerated from surviving artifacts. `latest` always selects
+the newest row, even when it is busy or failed. Inspect busy captures with `get`
+or `frames`; wait for processing to finish before zooming.
+
+Zoom requires exactly one selector. `--at M:SS` includes two seconds on each
+side; `--mark N` selects stable mark ID `mN` (independent of pin and screenshot
+numbers), with one second around its full span. Bounds are clipped to capture
+and available video. Zoom reserves the requested mark first, then other marks
+and clicks nearest the requested moment, sharing co-timed annotations. Spare
+slots sample the span evenly, with at most six frames. Marks use their source
+completion times; crossing marks use the latest retained ink sample. Ink is
+clipped to the span, playable video, and each actual decoded capture time.
+Evidence omitted by the frame limit or unplayable time appears in `failures`.
+Narration words
+overlapping the span retain original times, order, estimated timing, and any
+missing-transcript reason.
+
+Zoom writes frames and one contact sheet only under a new private
+`zoom/<request>/` directory inside the selected bundle. Source frames have a
+maximum 2560-pixel long edge and sheets a maximum 1600-pixel long edge. Partial
+decoding reports its failures; no usable sheet is an error. The original
+manifest, summary, frames, and database row are preserved. No files are uploaded.
+All four commands accept the existing `--db-path`/`--support-dir` options and
+`MUESLI_DB_PATH`/`MUESLI_SUPPORT_DIR` environment overrides. The exact payloads
+and error codes are documented in the agent skill's CLI contract.
