@@ -112,3 +112,46 @@ struct DictationFormattingSuggestion: Identifiable, Equatable {
         }
     }
 }
+
+// Decode each saved entry independently so an unsupported enum or malformed row
+// cannot discard unrelated app rules/templates on the next config save.
+struct DictationFormattingEntries<Element: Decodable>: Decodable {
+    let values: [Element]
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var values: [Element] = []
+        while !container.isAtEnd {
+            let entry = try container.superDecoder()
+            if let value = try? Element(from: entry) { values.append(value) }
+        }
+        self.values = values
+    }
+}
+
+extension DictationAppFormatting {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        letterCase = try container.decodeIfPresent(LetterCase.self, forKey: .letterCase) ?? .unchanged
+        finalPeriod = try container.decodeIfPresent(FinalPeriod.self, forKey: .finalPeriod) ?? .keep
+    }
+}
+
+extension DictationAppFormattingRule {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bundleID = try container.decode(String.self, forKey: .bundleID)
+        appName = try container.decode(String.self, forKey: .appName)
+        formatting = try container.decodeIfPresent(DictationAppFormatting.self, forKey: .formatting) ?? .unchanged
+        templateID = try container.decodeIfPresent(String.self, forKey: .templateID)
+    }
+}
+
+extension DictationFormattingTemplate {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        formatting = try container.decodeIfPresent(DictationAppFormatting.self, forKey: .formatting) ?? .unchanged
+    }
+}

@@ -60,13 +60,83 @@ enum PasteController {
         "`": (50, []), "~": (50, .maskShift),
     ]
 
+    private typealias ClipboardSnapshot = [[(NSPasteboard.PasteboardType, Data)]]
+
+    /// One owner for staging, replacing, dispatching and restoring a paste. A later
+    /// request inherits the original snapshot, never another request's temporary text.
+    @MainActor private static var clipboardTransactions: [NSPasteboard.Name: ClipboardTransaction] = [:]
+
+    @MainActor
+    private final class ClipboardTransaction {
+        let pasteboard: NSPasteboard
+        let savedItems: ClipboardSnapshot
+        private var ownedGeneration: Int
+        private var hasStagedText = false
+
+        private init(pasteboard: NSPasteboard, savedItems: ClipboardSnapshot, generation: Int) {
+            self.pasteboard = pasteboard
+            self.savedItems = savedItems
+            ownedGeneration = generation
+        }
+
+        static func begin(on pasteboard: NSPasteboard) -> ClipboardTransaction? {
+            let previous = clipboardTransactions[pasteboard.name]
+            let generation = pasteboard.changeCount
+            let saved: ClipboardSnapshot
+            if let previous, previous.ownsClipboard {
+                saved = previous.savedItems
+            } else {
+                saved = saveClipboard(pasteboard)
+            }
+            // Providers may change the clipboard while rendering a snapshot. Do not
+            // stage over that newer copy or restore a snapshot from a different generation.
+            guard pasteboard.changeCount == generation,
+                  clipboardTransactions[pasteboard.name] === previous else { return nil }
+            let transaction = ClipboardTransaction(pasteboard: pasteboard, savedItems: saved, generation: generation)
+            clipboardTransactions[pasteboard.name] = transaction
+            return transaction
+        }
+
+        var ownsClipboard: Bool {
+            clipboardTransactions[pasteboard.name] === self && pasteboard.changeCount == ownedGeneration
+        }
+
+        var canDispatch: Bool { hasStagedText && ownsClipboard }
+
+        func stage(_ text: String, write: (NSPasteboard, String) -> Bool) -> Bool {
+            guard ownsClipboard else { return false }
+            hasStagedText = false
+            // clearContents returns the generation we acquired. Adding data to that
+            // generation does not increment it. Never adopt a post-write changeCount:
+            // even a successful write can be followed immediately by another owner.
+            ownedGeneration = pasteboard.clearContents()
+            let didWrite = write(pasteboard, text)
+            hasStagedText = didWrite && ownsClipboard
+            return hasStagedText
+        }
+
+        func settle(retainingText: Bool = false) -> LifecycleEvent {
+            defer {
+                if clipboardTransactions[pasteboard.name] === self {
+                    clipboardTransactions.removeValue(forKey: pasteboard.name)
+                }
+            }
+            guard ownsClipboard else { return .clipboardRestoreSkipped }
+            // A failed write owns, at most, an empty generation. It is never a
+            // usable manual-paste fallback, even when the caller requests retention.
+            if retainingText && hasStagedText { return .clipboardRetainedForManualPaste }
+            return restoreClipboard(pasteboard, from: savedItems, expectedGeneration: ownedGeneration)
+                ? .clipboardRestored : .clipboardRestoreSkipped
+        }
+    }
+
     /// Paste text into the active app via clipboard, then restore the original clipboard contents.
     ///
     /// Flow: save clipboard → write text → dispatch Paste → restore clipboard after delay.
     /// If the clipboard cannot be saved (e.g. lazy-provided data), falls back to a simple
     /// paste without restoration.
     /// For nonempty text, completion receives the target app only when the selected Paste
-    /// command was accepted. When staged-clipboard ownership is required, a failed write or
+    /// command was accepted. Every caller requires staged-clipboard ownership: a failed write or
     /// intervening clipboard change also completes with `nil` attribution and skips dispatch.
     @MainActor
     static func paste(
@@ -76,7 +146,6 @@ enum PasteController {
         onTextPrepared: @escaping @MainActor (String) -> Void = { _ in },
         pasteboard: NSPasteboard = .general,
         shortcut: PasteShortcut = .automatic,
-        requireStagedClipboardOwnership: Bool = false,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
@@ -87,6 +156,7 @@ enum PasteController {
             PasteController.performTargetPasteCommand(in: $0)
         },
         simulatePasteAction: (@MainActor (PasteShortcut) -> Bool)? = nil,
+        stageTextAction: (@MainActor (NSPasteboard, String) -> Bool)? = nil,
         onPasteDispatched: @escaping @MainActor () -> Void = {},
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
         onClipboardSettled: @escaping @MainActor () -> Void = {},
@@ -95,17 +165,19 @@ enum PasteController {
         guard !text.isEmpty else { return }
         let simulatePasteAction = simulatePasteAction ?? { PasteController.simulatePaste(shortcut: $0) }
 
-        // Save current clipboard contents (all types) so we can restore after paste.
-        let savedItems = saveClipboard(pasteboard)
-
-        let clearedChangeCount = pasteboard.clearContents()
-        // Only live dictation opts in. Quill, history copy, and other paste uses
-        // keep their exact text; stored transcripts are never padded.
+        let stageText = stageTextAction ?? { $0.setString($1, forType: .string) }
+        guard let transaction = ClipboardTransaction.begin(on: pasteboard) else {
+            onLifecycleEvent(.clipboardOwnershipLost)
+            onPasteFinished(nil)
+            onClipboardSettled()
+            return
+        }
+        // Only live dictation opts in. Quill and other paste uses keep exact text;
+        // stored transcripts are never padded.
         let pastedText = appendDictationSentenceSpace
             ? text + DictationPasteSpacing.trailingSeparator(after: text)
             : text
-        let didStageText = pasteboard.setString(pastedText, forType: .string)
-        var pasteChangeCount = pasteboard.changeCount
+        let didStageText = transaction.stage(pastedText, write: stageText)
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -116,38 +188,15 @@ enum PasteController {
 
             @MainActor
             func settleFailedDispatch() {
-                if retainStagedTextOnFailure, pasteboard.changeCount == pasteChangeCount {
-                    onLifecycleEvent(.clipboardRetainedForManualPaste)
-                } else if pasteboard.changeCount == pasteChangeCount {
-                    restoreClipboard(pasteboard, from: savedItems)
-                    onLifecycleEvent(.clipboardRestored)
-                } else {
-                    onLifecycleEvent(.clipboardRestoreSkipped)
-                }
+                onLifecycleEvent(transaction.settle(retainingText: retainStagedTextOnFailure))
                 onPasteFinished(nil)
                 onClipboardSettled()
             }
 
-            if requireStagedClipboardOwnership {
-                guard didStageText else {
-                    // Restore only when Muesli still owns the cleared pasteboard. If another
-                    // app wrote to it, preserving that newer content takes precedence.
-                    if pasteboard.changeCount == clearedChangeCount {
-                        restoreClipboard(pasteboard, from: savedItems)
-                        onLifecycleEvent(.clipboardRestored)
-                    } else {
-                        onLifecycleEvent(.clipboardRestoreSkipped)
-                    }
-                    onPasteFinished(nil)
-                    onClipboardSettled()
-                    return
-                }
-                guard pasteboard.changeCount == pasteChangeCount else {
-                    onLifecycleEvent(.clipboardOwnershipLost)
-                    onPasteFinished(nil)
-                    onClipboardSettled()
-                    return
-                }
+            guard didStageText, transaction.canDispatch else {
+                if didStageText { onLifecycleEvent(.clipboardOwnershipLost) }
+                settleFailedDispatch()
+                return
             }
             guard shouldDispatchPaste() else {
                 onLifecycleEvent(.pasteDispatchCancelled)
@@ -159,10 +208,9 @@ enum PasteController {
             // processing and before spacing. Never overwrite a newer clipboard owner.
             let formattedText = prepareTextForTarget(text, targetApplication)
             if formattedText != text {
-                guard pasteboard.changeCount == pasteChangeCount else {
+                guard transaction.canDispatch else {
                     onLifecycleEvent(.clipboardOwnershipLost)
-                    onPasteFinished(nil)
-                    onClipboardSettled()
+                    settleFailedDispatch()
                     return
                 }
                 let separator = DictationPasteSpacing.trailingSeparator(after: formattedText)
@@ -170,16 +218,20 @@ enum PasteController {
                 let formattedPaste = appendDictationSentenceSpace
                     ? formattedText + (separator.isEmpty ? originalSeparator : separator)
                     : formattedText
-                pasteboard.clearContents()
-                let staged = pasteboard.setString(formattedPaste, forType: .string)
-                pasteChangeCount = pasteboard.changeCount
-                guard staged else {
+                guard transaction.stage(formattedPaste, write: stageText) else {
                     onLifecycleEvent(.clipboardStageFailed)
                     settleFailedDispatch()
                     return
                 }
             }
             onTextPrepared(formattedText)
+            // Preparation and callbacks are extension points. Revalidate after all
+            // of them, including when formatting leaves the text unchanged.
+            guard transaction.canDispatch else {
+                onLifecycleEvent(.clipboardOwnershipLost)
+                settleFailedDispatch()
+                return
+            }
 
             let didDispatchPaste: Bool
             switch dispatchStrategy {
@@ -217,12 +269,7 @@ enum PasteController {
             // transcript owns the user's clipboard.
             onLifecycleEvent(.clipboardRestoreScheduled)
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-                if pasteboard.changeCount == pasteChangeCount {
-                    restoreClipboard(pasteboard, from: savedItems)
-                    onLifecycleEvent(.clipboardRestored)
-                } else {
-                    onLifecycleEvent(.clipboardRestoreSkipped)
-                }
+                onLifecycleEvent(transaction.settle())
                 onClipboardSettled()
             }
 
@@ -528,9 +575,10 @@ enum PasteController {
 
     /// Restore previously saved clipboard contents. If nothing was saved, clears the clipboard
     /// so dictation text doesn't linger.
-    private static func restoreClipboard(_ pasteboard: NSPasteboard, from saved: [[(NSPasteboard.PasteboardType, Data)]]) {
-        pasteboard.clearContents()
-        if saved.isEmpty { return }
+    @discardableResult
+    private static func restoreClipboard(
+        _ pasteboard: NSPasteboard, from saved: ClipboardSnapshot, expectedGeneration: Int? = nil
+    ) -> Bool {
         var restoredItems: [NSPasteboardItem] = []
         for itemPairs in saved {
             let item = NSPasteboardItem()
@@ -539,6 +587,12 @@ enum PasteController {
             }
             restoredItems.append(item)
         }
-        pasteboard.writeObjects(restoredItems)
+        // Prepare items before touching the board. NSPasteboard has no atomic
+        // compare-and-swap; check at the last possible point before acquiring it.
+        if let expectedGeneration, pasteboard.changeCount != expectedGeneration { return false }
+        let generation = pasteboard.clearContents()
+        if restoredItems.isEmpty { return pasteboard.changeCount == generation }
+        let written = pasteboard.writeObjects(restoredItems)
+        return written && pasteboard.changeCount == generation
     }
 }

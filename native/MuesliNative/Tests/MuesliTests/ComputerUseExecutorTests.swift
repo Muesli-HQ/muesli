@@ -27,6 +27,25 @@ struct ComputerUseExecutorTests {
         #expect(pasteboard.string(forType: .string) == "original")
     }
 
+    @Test("clipboard ownership loss is reported as failure without pasting another app's content")
+    @MainActor
+    func pasteLosesClipboardOwnership() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let result = await ComputerUseToolExecutor.pasteText(
+            "dictated", shortcut: .automatic, pasteboard: pasteboard,
+            targetApplicationProvider: {
+                pasteboard.clearContents()
+                pasteboard.setString("new user copy", forType: .string)
+                return NSRunningApplication.current
+            },
+            simulatePasteAction: { _ in Issue.record("Must not dispatch another owner's content"); return true }
+        )
+        #expect(result.status == .failed)
+        #expect(pasteboard.string(forType: .string) == "new user copy")
+    }
+
     @Test("successful custom paste remains executed with or without app attribution", arguments: [true, false])
     @MainActor
     func pasteDispatchSuccess(hasAttribution: Bool) async throws {

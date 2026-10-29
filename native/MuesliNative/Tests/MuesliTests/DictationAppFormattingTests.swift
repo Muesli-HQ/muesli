@@ -205,6 +205,45 @@ struct DictationAppFormattingTests {
         #expect(DictationAppFormattingRule.activeRules([.init(bundleID: "other", appName: "Other")]).isEmpty)
     }
 
+    @Test("Malformed and unsupported entries do not erase neighboring rules or templates")
+    func partiallyInvalidConfig() throws {
+        let json = #"""
+        {
+          "dictation_app_formatting_rules": [
+            {"bundleID":"first.app","appName":"First","formatting":{"letterCase":"lowercase"}},
+            {"bundleID":"unknown.app","appName":"Unknown","formatting":{"letterCase":"future_case"}},
+            null, 7, {"appName":"Missing identity"},
+            {"bundleID":"last.app","appName":"Last","formatting":{"finalPeriod":"remove"}}
+          ],
+          "dictation_formatting_templates": [
+            {"id":"first","name":"First","formatting":{"letterCase":"lowercase"}},
+            {"id":"unknown","name":"Unknown","formatting":{"finalPeriod":"future_period"}},
+            false, [], {"id":3,"name":"Wrong identity type"},
+            {"id":"last","name":"Last","formatting":{"finalPeriod":"remove"}}
+          ]
+        }
+        """#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.dictationAppFormattingRules.map(\.bundleID) == ["first.app", "last.app"])
+        #expect(config.dictationFormattingTemplates.map(\.id) == ["first", "last"])
+        #expect(config.dictationAppFormattingRules.map(\.formatting) == [
+            .init(letterCase: .lowercase), .init(finalPeriod: .remove)
+        ])
+        let saved = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(saved.dictationAppFormattingRules == config.dictationAppFormattingRules)
+        #expect(saved.dictationFormattingTemplates == config.dictationFormattingTemplates)
+    }
+
+    @Test("Missing formatting objects and fields preserve text", arguments: ["", #","formatting":{}"#, #","formatting":null"#])
+    func missingFormattingDefaults(fragment: String) throws {
+        let rule = try JSONDecoder().decode(DictationAppFormattingRule.self,
+            from: Data((#"{"bundleID":"legacy.app","appName":"Legacy""# + fragment + "}").utf8))
+        let template = try JSONDecoder().decode(DictationFormattingTemplate.self,
+            from: Data((#"{"id":"legacy","name":"Legacy""# + fragment + "}").utf8))
+        #expect(rule.formatting.apply(to: "Keep Me.") == "Keep Me.")
+        #expect(template.formatting == .unchanged)
+    }
+
     @Test("Existing app rules resolve to built-in templates without changing their output")
     func legacyTemplates() throws {
         let rule = try JSONDecoder().decode(DictationAppFormattingRule.self, from:
@@ -299,7 +338,6 @@ struct DictationAppFormattingTests {
                     preparationCount += 1
                     return DictationAppFormatting.lowercaseChat.apply(to: text)
                 }, onTextPrepared: { prepared = $0 }, pasteboard: board,
-                requireStagedClipboardOwnership: true,
                 targetApplicationProvider: { targetRead = true; return .current },
                 simulatePasteAction: { _ in delivered = board.string(forType: .string) ?? ""; return true },
                 onClipboardSettled: { continuation.resume() })
@@ -319,7 +357,7 @@ struct DictationAppFormattingTests {
         var dispatched = false
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             PasteController.paste(text: "Hi.", prepareTextForTarget: { text, _ in formatted = true; return text.lowercased() },
-                pasteboard: board, requireStagedClipboardOwnership: true,
+                pasteboard: board,
                 targetApplicationProvider: { board.clearContents(); board.setString("new owner", forType: .string); return nil },
                 simulatePasteAction: { _ in dispatched = true; return true },
                 onClipboardSettled: { continuation.resume() })

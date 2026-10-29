@@ -233,7 +233,7 @@ struct DictationFormattingSetupCard: View {
     var body: some View {
         if !appState.config.dictationFormattingSetupDismissed,
            appState.config.dictationAppFormattingRules.isEmpty,
-           appState.config.resolvedOnboardingUseCase.includesPushToTalk {
+           appState.config.resolvedOnboardingUseCase.includesDictation {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Your words, formatted for each app").font(.headline)
                 Text("Prefer lowercase messages or fewer final periods? Set up formatting for your most-used apps.")

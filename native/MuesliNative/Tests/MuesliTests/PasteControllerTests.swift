@@ -112,7 +112,7 @@ struct PasteControllerTests {
         let chord = try #require(PasteKeyChord(keyCode: 47, modifiers: .maskControl))
         var dispatched: PasteShortcut?
         PasteController.paste(text: "dictated", pasteboard: pasteboard, shortcut: .custom(chord),
-            requireStagedClipboardOwnership: true, simulatePasteAction: { shortcut in
+            simulatePasteAction: { shortcut in
                 dispatched = shortcut
                 return true
             })
@@ -158,7 +158,6 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "replacement",
                 pasteboard: pasteboard,
-                requireStagedClipboardOwnership: true,
                 shouldDispatchPaste: { false },
                 simulatePasteAction: { _ in
                     didSimulatePaste = true
@@ -185,7 +184,6 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "Quill output",
                 pasteboard: pasteboard,
-                requireStagedClipboardOwnership: true,
                 shouldDispatchPaste: { false },
                 retainStagedTextOnFailure: true,
                 onPasteFinished: { application in
@@ -450,7 +448,6 @@ struct PasteControllerTests {
             PasteController.paste(
                 text: "dictated text",
                 pasteboard: pasteboard,
-                requireStagedClipboardOwnership: true,
                 targetApplicationProvider: {
                     events.append("snapshot")
                     pasteboard.clearContents()
@@ -473,8 +470,8 @@ struct PasteControllerTests {
         #expect(pasteboard.string(forType: .string) == "user-copied-during-delay")
     }
 
-    @Test("shared paste remains ungated unless clipboard ownership is required")
-    func sharedPasteRemainsUngatedByDefault() async {
+    @Test("every paste caller rejects another owner's clipboard before dispatch")
+    func sharedPasteAlwaysRequiresOwnership() async {
         let pasteboard = makePasteboard()
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
@@ -501,8 +498,159 @@ struct PasteControllerTests {
             )
         }
 
-        #expect(events == ["snapshot", "command", "callback"])
+        #expect(events == ["snapshot", "callback"])
         #expect(pasteboard.string(forType: .string) == "newer-clipboard-content")
+    }
+
+    @Test("initial and formatting writes never adopt a competing clipboard generation",
+          arguments: [1, 2], [false, true])
+    func competingWriterDuringStage(writeNumber: Int, reportsSuccess: Bool) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var writes = 0
+        var finishes = 0
+        var settlements = 0
+        var foreignGeneration: Int?
+        var events: [PasteController.LifecycleEvent] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "Dictated.", prepareTextForTarget: { text, _ in text.lowercased() },
+                pasteboard: pasteboard, retainStagedTextOnFailure: true,
+                simulatePasteAction: { _ in Issue.record("Dispatched foreign clipboard"); return true },
+                stageTextAction: { board, text in
+                    writes += 1
+                    if writes == writeNumber {
+                        if reportsSuccess { board.setString(text, forType: .string) }
+                        board.clearContents()
+                        board.setString("new user copy", forType: .string)
+                        foreignGeneration = board.changeCount
+                        return reportsSuccess
+                    }
+                    return board.setString(text, forType: .string)
+                },
+                onPasteDispatched: { Issue.record("Reported an unsafe dispatch") },
+                onPasteFinished: { app in finishes += 1; #expect(app == nil) },
+                onClipboardSettled: { settlements += 1; continuation.resume() },
+                onLifecycleEvent: { events.append($0) }
+            )
+        }
+        #expect(writes == writeNumber)
+        #expect(finishes == 1 && settlements == 1)
+        #expect(pasteboard.string(forType: .string) == "new user copy")
+        #expect(pasteboard.changeCount == foreignGeneration)
+        #expect(events.contains(.clipboardStageFailed))
+        #expect(events.contains(.clipboardRestoreSkipped))
+        #expect(!events.contains(.clipboardRetainedForManualPaste))
+    }
+
+    @Test("a failed initial or formatting write restores the original, never retains an empty fallback",
+          arguments: [1, 2], [false, true])
+    func failedStageWithoutCompetingWriter(writeNumber: Int, retainFallback: Bool) async {
+        let pasteboard = makePasteboard()
+        let original = NSPasteboardItem()
+        original.setString("original", forType: .string)
+        original.setData(Data([1, 2, 3]), forType: .init("com.muesli.tests.binary"))
+        pasteboard.writeObjects([original])
+        var writes = 0
+        var finishes = 0
+        var events: [PasteController.LifecycleEvent] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "Dictated.", prepareTextForTarget: { text, _ in text.lowercased() },
+                pasteboard: pasteboard, retainStagedTextOnFailure: retainFallback,
+                simulatePasteAction: { _ in Issue.record("Dispatched a failed write"); return true },
+                stageTextAction: { board, text in
+                    writes += 1
+                    return writes == writeNumber ? false : board.setString(text, forType: .string)
+                },
+                onPasteFinished: { app in finishes += 1; #expect(app == nil) },
+                onClipboardSettled: { continuation.resume() },
+                onLifecycleEvent: { events.append($0) }
+            )
+        }
+        #expect(writes == writeNumber)
+        #expect(finishes == 1)
+        #expect(pasteboard.string(forType: .string) == "original")
+        #expect(pasteboard.data(forType: .init("com.muesli.tests.binary")) == Data([1, 2, 3]))
+        #expect(events.contains(.clipboardRestored))
+        #expect(!events.contains(.clipboardRetainedForManualPaste))
+    }
+
+    @Test("callback clipboard changes block dispatch even when preparation returns unchanged text",
+          arguments: ["prepare", "prepared", "dispatchGate"])
+    func callbacksCannotBypassOwnership(phase: String) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        func replaceClipboard() {
+            pasteboard.clearContents()
+            pasteboard.setString("new user copy", forType: .string)
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            PasteController.paste(
+                text: "Dictated.",
+                prepareTextForTarget: { text, _ in
+                    if phase == "prepare" { replaceClipboard() }
+                    return text
+                },
+                onTextPrepared: { _ in if phase == "prepared" { replaceClipboard() } },
+                pasteboard: pasteboard,
+                shouldDispatchPaste: {
+                    if phase == "dispatchGate" { replaceClipboard() }
+                    return true
+                },
+                simulatePasteAction: { _ in Issue.record("Dispatched after callback lost ownership"); return true },
+                onPasteFinished: { #expect($0 == nil) },
+                onClipboardSettled: { continuation.resume() }
+            )
+        }
+        #expect(pasteboard.string(forType: .string) == "new user copy")
+    }
+
+    @Test("overlapping requests restore the user's original clipboard, not staged dictation",
+          arguments: [false, true], ["success", "cancel", "writeFailure"])
+    func overlappingPastes(startAfterDispatch: Bool, secondOutcome: String) async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var commands: [String] = []
+        var finishes = 0
+        var settlements = 0
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let settled = {
+                settlements += 1
+                if settlements == 2 { continuation.resume() }
+            }
+            @MainActor func startSecond() {
+                PasteController.paste(
+                    text: "Second", pasteboard: pasteboard,
+                    shouldDispatchPaste: { secondOutcome != "cancel" },
+                    simulatePasteAction: { _ in
+                        commands.append("second")
+                        #expect(pasteboard.string(forType: .string) == "Second")
+                        return true
+                    },
+                    stageTextAction: { board, text in
+                        secondOutcome != "writeFailure" && board.setString(text, forType: .string)
+                    },
+                    onPasteFinished: { _ in finishes += 1 },
+                    onClipboardSettled: settled
+                )
+            }
+            PasteController.paste(
+                text: "First", pasteboard: pasteboard,
+                simulatePasteAction: { _ in commands.append("first"); return true },
+                onPasteDispatched: { if startAfterDispatch { startSecond() } },
+                onPasteFinished: { app in
+                    finishes += 1
+                    if !startAfterDispatch { #expect(app == nil) }
+                },
+                onClipboardSettled: settled
+            )
+            if !startAfterDispatch { startSecond() }
+        }
+        let expected = (startAfterDispatch ? ["first"] : []) + (secondOutcome == "success" ? ["second"] : [])
+        #expect(commands == expected)
+        #expect(finishes == 2 && settlements == 2)
+        #expect(pasteboard.string(forType: .string) == "original")
     }
 
     @Test("paste completes without attribution when Cmd+V setup fails")

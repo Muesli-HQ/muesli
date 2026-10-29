@@ -10196,7 +10196,6 @@ public final class MuesliController: NSObject {
                     PasteController.paste(
                         text: replacement,
                         shortcut: configSnapshot.pasteShortcut,
-                        requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: { snapshot.isTargetStillFocused() },
                         dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
@@ -12339,7 +12338,7 @@ public final class MuesliController: NSObject {
             prepareTextForTarget: { text, app in
                 DictationAppFormattingRule.apply(text, bundleID: app?.bundleIdentifier, rules: formattingRules)
             }, onTextPrepared: { preparedText = $0 }, pasteboard: pasteboard,
-            shortcut: config.pasteShortcut, requireStagedClipboardOwnership: true,
+            shortcut: config.pasteShortcut,
             targetApplicationProvider: targetProvider, simulatePasteAction: simulatePaste,
             onPasteFinished: { [weak self] app in
                 guard let self else { return }

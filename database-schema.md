@@ -33,6 +33,9 @@ do not match a built-in or saved template appear as Custom, including rules
 that previously used the retired Lowercase template.
 `dictation_formatting_templates` stores named user templates with stable IDs and
 formatting snapshots, defaulting to an empty list for older configurations.
+Entries decode independently: malformed entries or unsupported enum values are
+skipped without dropping valid neighboring rules/templates. Missing formatting
+objects or fields default to keeping capitalization and the final period.
 Applying a template copies its formatting into an app rule. Customizing that
 rule detaches its template identity; deleting a template preserves already
 applied app formatting. These preferences are local-only and add no SQLite,
