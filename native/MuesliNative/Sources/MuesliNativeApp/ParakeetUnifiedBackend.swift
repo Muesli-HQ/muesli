@@ -7,9 +7,35 @@ import MuesliCore
 /// (FastConformer-RNNT) using FluidAudio's offline batch `UnifiedAsrManager`.
 /// English-focused, lower-WER successor to Parakeet TDT v3.
 actor ParakeetUnifiedTranscriber {
+    typealias ModelLoader = @Sendable (
+        ManagedASRModelPlan, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> UnifiedAsrManager
+
+    private let modelLoader: ModelLoader
     private var asrManager: UnifiedAsrManager?
     private var loadedPlan: ManagedASRModelPlan?
     private var loadGeneration: UInt64 = 0
+
+    init(modelLoader: @escaping ModelLoader = { plan, localOnly, progress, progressSnapshot in
+        return try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            allowDownload: !localOnly,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        ) { modelDirectory in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading Parakeet Unified into Core ML..."
+            )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
+            let manager = UnifiedAsrManager()
+            try await manager.loadModels(from: modelDirectory)
+            return manager
+        }
+    }) {
+        self.modelLoader = modelLoader
+    }
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -33,22 +59,7 @@ actor ParakeetUnifiedTranscriber {
 
         fputs("[parakeet-unified] loading models local_only=\(localOnly)...\n", stderr)
         let plan = ManagedASRModelPlans.parakeetUnified()
-        let manager = try await ManagedASRModelDownloader.loadValidated(
-            plan,
-            allowDownload: !localOnly,
-            progress: progress,
-            progressSnapshot: progressSnapshot
-        ) { modelDirectory in
-            let preparing = ModelDownloadProgress.preparing(
-                modelID: plan.modelID,
-                message: "Loading Parakeet Unified into Core ML..."
-            )
-            progress?(0.95, preparing.message)
-            progressSnapshot?(preparing)
-            let manager = UnifiedAsrManager()
-            try await manager.loadModels(from: modelDirectory)
-            return manager
-        }
+        let manager = try await modelLoader(plan, localOnly, progress, progressSnapshot)
         // A shutdown() during the load must invalidate the result: discard the
         // freshly loaded manager instead of resurrecting a stale one.
         guard generation == loadGeneration else {

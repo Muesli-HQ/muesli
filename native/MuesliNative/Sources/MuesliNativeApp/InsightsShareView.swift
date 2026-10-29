@@ -213,7 +213,7 @@ enum InsightsShareRenderer {
         return renderer.nsImage
     }
 
-    static func pngData(for image: NSImage) -> Data? {
+    nonisolated static func pngData(for image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation,
               let representation = NSBitmapImageRep(data: tiff) else { return nil }
         return representation.representation(using: .png, properties: [.compressionFactor: 0.82])

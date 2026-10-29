@@ -289,6 +289,11 @@ actor AppleSpeechAnalyzerTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Locale {
+        if ManagedASRModelDownloader.localOnly {
+            let locale = try await localeResolver.resolve(requestedLocale)
+            guard await hasInstalledAssets(requestedLocale: locale) else { throw CocoaError(.fileNoSuchFile) }
+            return locale
+        }
         let use = try await prepareAndRetain(requestedLocale: requestedLocale,
             progress: progress, progressSnapshot: progressSnapshot)
         releaseUse(use.id)
@@ -435,19 +440,24 @@ actor AppleSpeechAnalyzerTranscriber {
         }
     }
 
-    func transcribe(wavURL: URL, requestedLocale: Locale = .current) async throws -> SpeechTranscriptionResult {
+    func transcribe(wavURL: URL, requestedLocale: Locale = .current, wordTiming: Bool = false) async throws -> SpeechTranscriptionResult {
         let startedAt = CFAbsoluteTimeGetCurrent()
-        let use = try await prepareAndRetain(requestedLocale: requestedLocale)
+        let use: (locale: Locale, id: UUID)
+        if ManagedASRModelDownloader.localOnly {
+            let locale = try await localeResolver.resolve(requestedLocale)
+            guard await hasInstalledAssets(requestedLocale: locale) else { throw CocoaError(.fileNoSuchFile) }
+            use = (locale, activeUses.retain(locale))
+        } else { use = try await prepareAndRetain(requestedLocale: requestedLocale) }
         defer { releaseUse(use.id) }
         let locale = use.locale
-        let transcriber = makeTranscriber(locale: locale)
+        let transcriber = makeTranscriber(locale: locale, wordTiming: wordTiming)
         let analyzer = SpeechAnalyzer(
             modules: [transcriber],
             options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .lingering)
         )
         let audioFile = try AVAudioFile(forReading: wavURL)
 
-        async let collected = collectResults(from: transcriber)
+        async let collected = collectResults(from: transcriber, wordTiming: wordTiming)
         if let lastSample = try await analyzer.analyzeSequence(from: audioFile) {
             try await analyzer.finalizeAndFinish(through: lastSample)
         } else {
@@ -468,18 +478,35 @@ actor AppleSpeechAnalyzerTranscriber {
         return result
     }
 
-    private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
+    func hasInstalledAssets(requestedLocale: Locale) async -> Bool {
+        guard let locale = try? await localeResolver.resolve(requestedLocale) else { return false }
+        return await SpeechTranscriber.installedLocales.contains { $0.identifier(.bcp47) == locale.identifier(.bcp47) }
+    }
+
+    static func captureWords(_ text: AttributedString) -> [SpeechSegment] {
+        text.runs.compactMap { run in
+            guard let range = run.audioTimeRange else { return nil }
+            let word = String(text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !word.isEmpty else { return nil }
+            return SpeechSegment(start: CMTimeGetSeconds(range.start),
+                end: CMTimeGetSeconds(CMTimeRangeGetEnd(range)), text: word)
+        }
+    }
+
+    private func makeTranscriber(locale: Locale, wordTiming: Bool = false) -> SpeechTranscriber {
         SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
             reportingOptions: [],
-            attributeOptions: []
+            attributeOptions: wordTiming ? [.audioTimeRange] : []
         )
     }
 
-    private func collectResults(from transcriber: SpeechTranscriber) async throws -> SpeechTranscriptionResult {
+    private func collectResults(from transcriber: SpeechTranscriber, wordTiming: Bool = false) async throws -> SpeechTranscriptionResult {
         var accumulator = AppleSpeechTranscriptAccumulator()
+        var words: [SpeechSegment] = []
         for try await result in transcriber.results {
+            if wordTiming, result.isFinal { words += Self.captureWords(result.text) }
             let start = CMTimeGetSeconds(result.range.start)
             let end = CMTimeGetSeconds(CMTimeRangeGetEnd(result.range))
             accumulator.receive(
@@ -489,7 +516,7 @@ actor AppleSpeechAnalyzerTranscriber {
                 end: end
             )
         }
-        return SpeechTranscriptionResult(text: accumulator.text, segments: accumulator.segments)
+        return SpeechTranscriptionResult(text: accumulator.text, segments: accumulator.segments, words: wordTiming ? words : nil)
     }
 
     private func downloadSnapshot(fraction: Double) -> ModelDownloadProgress {

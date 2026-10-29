@@ -1,3 +1,4 @@
+import AVFoundation
 import Testing
 import WhisperKit
 import Foundation
@@ -435,6 +436,61 @@ struct StreamingDictationControllerTests {
         let text = await stoppedText
         #expect(text == " hello")
         #expect(await transcriber.transcribeCalls == 1)
+    }
+}
+
+@Suite("Nemotron WAV input")
+struct NemotronWavLoaderTests {
+    @Test("Float32 WAV input keeps one sample per frame")
+    func float32WAVPreservesFrames() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nemotron-float-wav-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let samples: [Float] = [0.25, -0.5, 0.75, -1, 0]
+        do {
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+            let writer = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)))
+            buffer.frameLength = buffer.frameCapacity
+            for index in samples.indices {
+                buffer.floatChannelData![0][index] = samples[index]
+            }
+            try writer.write(from: buffer)
+        }
+
+        let decoded = try nemotronLoadWavAsFloats(url: url)
+        #expect(decoded.count == samples.count)
+        #expect(decoded == samples)
+    }
+
+    @Test("Float32 WAV loader accumulates short reads through the full frame count")
+    func float32WAVAccumulatesShortReads() throws {
+        let samples: [Float] = [0.25, -0.5, 0.75, -1, 0]
+        var position: Int64 = 0
+        var chunks: [[Float]] = [[0.25, -0.5], [0.75], [-1, 0]]
+        var requestedFrames: [AVAudioFrameCount] = []
+
+        let decoded = try nemotronCollectWavSamples(frameCount: Int64(samples.count), framePosition: { position }) {
+            requested in
+            requestedFrames.append(requested)
+            let chunk = chunks.removeFirst()
+            position += Int64(chunk.count)
+            return chunk
+        }
+
+        #expect(decoded == samples)
+        #expect(requestedFrames == [5, 3, 2])
+        #expect(chunks.isEmpty)
+    }
+
+    @Test("Float32 WAV loader rejects a read that makes no frame progress")
+    func float32WAVNoProgressThrows() {
+        let position: Int64 = 0
+
+        #expect(throws: NemotronRNNTError.self) {
+            try nemotronCollectWavSamples(frameCount: 5, framePosition: { position }) { _ in [] }
+        }
     }
 }
 
@@ -1073,6 +1129,11 @@ struct WhisperKitLanguageTests {
         let options = WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "large-v3-v20240930_626MB")
         #expect(options.language == language.rawValue)
         #expect(!options.detectLanguage)
+        #expect(!options.wordTimestamps)
+        let timed = WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "large-v3-v20240930_626MB", wordTimestamps: true)
+        #expect(timed.wordTimestamps && timed.language == language.rawValue)
+        let english = WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "small.en", wordTimestamps: true)
+        #expect(english.wordTimestamps && english.language == nil)
         #expect(WhisperKitTranscriber.makeDecodeOptions(language: language, modelName: "small.en").language == nil)
     }
 

@@ -274,11 +274,16 @@ final class NotchIndicatorController {
     private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
 
     private let pointerLocation: () -> NSPoint
+    private let makeFeedbackCapturePanel: @MainActor () -> NSPanel
 
     init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
-         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         makeFeedbackCapturePanel: @escaping @MainActor () -> NSPanel = {
+             NotchIndicatorPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+         }) {
         self.pointerLocation = pointerLocation
         self.resolveGeometry = resolveGeometry
+        self.makeFeedbackCapturePanel = makeFeedbackCapturePanel
     }
     var onReview: (() -> Void)?
     var onOpenHome: (() -> Void)?
@@ -295,6 +300,40 @@ final class NotchIndicatorController {
         NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
             topInset: screen.safeAreaInsets.top,
             left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
+    }
+
+    /// Retire only feedback, retaining its host for a later style transition.
+    func dismissFeedbackCapturePreservingActivity() {
+        guard panel?.contentView is NSHostingView<FeedbackCapturePillView> else { return }
+        panel?.orderOut(nil)
+    }
+
+    /// The feedback surface shares its state and controls with the floating pill.
+    @discardableResult
+    func showFeedbackCapture(on screen: NSScreen, view: FeedbackCapturePillView) -> Bool {
+        guard let geometry = resolveGeometry(screen) else { return false }
+        let hosting: NSHostingView<FeedbackCapturePillView>
+        if let current = panel?.contentView as? NSHostingView<FeedbackCapturePillView> {
+            hosting = current; hosting.rootView = view
+        } else {
+            hide()
+            if panel == nil { panel = makeFeedbackCapturePanel() }
+            hosting = NSHostingView(rootView: view)
+            panel?.contentView = hosting
+        }
+        guard let panel else { return false }
+        panel.level = .statusBar; panel.backgroundColor = .clear; panel.isOpaque = false
+        panel.hasShadow = false; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let size = hosting.fittingSize
+        // Leave the camera housing clear, using the existing geometry's placement.
+        let frame = geometry.frame()
+        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2,
+            y: min(frame.minY, screen.visibleFrame.maxY) - size.height - 4,
+            width: size.width, height: size.height), display: true)
+        self.panel = panel
+        panel.orderFrontRegardless()
+        return true
     }
 
     @discardableResult
@@ -847,7 +886,7 @@ private struct NotchIndicatorView: View {
 
 /// Keep per-frame work out of SwiftUI layout, matching the floating pill's
 /// common-mode timer + fixed CALayer bars. The representable owns its timer.
-private struct NotchWaveform: NSViewRepresentable {
+struct NotchWaveform: NSViewRepresentable {
     let power: () -> Float
     let scrolling: Bool
     let reduceMotion: Bool
@@ -861,7 +900,7 @@ private struct NotchWaveform: NSViewRepresentable {
 }
 
 @MainActor
-private final class NotchWaveformView: NSView {
+final class NotchWaveformView: NSView {
     private var bars: [CALayer] = []
     private var timer: Timer?
     private var power: () -> Float = { -160 }

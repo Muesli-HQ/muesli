@@ -101,6 +101,7 @@ private enum DictationAudioRouteTiming {
 }
 
 enum InteractiveAudioSessionOwner {
+    case feedbackCapture
     case dictation
     case computerUse
     case quil
@@ -110,30 +111,35 @@ struct InteractiveAudioSessionOwnership: Equatable {
     let dictationIsActive: Bool
     let computerUseIsActive: Bool
     var quilIsActive: Bool = false
+    var feedbackCaptureIsActive: Bool = false
 
     var hasActiveOwner: Bool {
-        dictationIsActive || computerUseIsActive || quilIsActive
+        dictationIsActive || computerUseIsActive || quilIsActive || feedbackCaptureIsActive
     }
 
     func canStart(_ owner: InteractiveAudioSessionOwner) -> Bool {
         switch owner {
         case .dictation:
-            return !computerUseIsActive && !quilIsActive
+            return !computerUseIsActive && !quilIsActive && !feedbackCaptureIsActive
         case .computerUse:
-            return !dictationIsActive && !quilIsActive
+            return !dictationIsActive && !quilIsActive && !feedbackCaptureIsActive
         case .quil:
-            return !dictationIsActive && !computerUseIsActive
+            return !dictationIsActive && !computerUseIsActive && !feedbackCaptureIsActive
+        case .feedbackCapture:
+            return !dictationIsActive && !computerUseIsActive && !quilIsActive
         }
     }
 
     func shouldIgnoreCleanup(for owner: InteractiveAudioSessionOwner) -> Bool {
         switch owner {
         case .dictation:
-            return !dictationIsActive && (computerUseIsActive || quilIsActive)
+            return !dictationIsActive && (computerUseIsActive || quilIsActive || feedbackCaptureIsActive)
         case .computerUse:
-            return !computerUseIsActive && (dictationIsActive || quilIsActive)
+            return !computerUseIsActive && (dictationIsActive || quilIsActive || feedbackCaptureIsActive)
         case .quil:
-            return !quilIsActive && (dictationIsActive || computerUseIsActive)
+            return !quilIsActive && (dictationIsActive || computerUseIsActive || feedbackCaptureIsActive)
+        case .feedbackCapture:
+            return !feedbackCaptureIsActive && (dictationIsActive || computerUseIsActive || quilIsActive)
         }
     }
 }
@@ -420,12 +426,20 @@ public final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     private(set) lazy var transcriptionCoordinator = TranscriptionCoordinator(
+        foregroundActivity: { [weak self] in
+            guard let self else { return false }
+            return self.dictationState != .idle || self.isMeetingRecording() || self.isStartingMeetingRecording
+                || self.interactiveAudioSessionOwnership.hasActiveOwner
+        },
         nativeGemmaReadinessInvalidated: { [weak self] in
             self?.nativeRecordingGate.invalidate()
             self?.indicator.hideLoading()
         }
     )
-    private let hotkeyMonitor = HotkeyMonitor()
+    private let feedbackCaptureHotkeyMonitor: HotkeyMonitor
+    private let hotkeyMonitor: HotkeyMonitor
+    private let makeFeedbackCapture: @MainActor (URL, URL) -> FeedbackCaptureController
+    private let feedbackMenuRefresh: (@MainActor () -> Void)?
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
@@ -525,6 +539,159 @@ public final class MuesliController: NSObject {
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
     private(set) var selectedPostProcessorBackend: TranscriptCleanupBackendOption
     // One retained capture owns phase and identity through native retirement.
+    private var storedFeedbackCapture: FeedbackCaptureController?
+    var feedbackCaptureOwnsMicrophone: Bool { storedFeedbackCapture?.ownsMicrophone == true }
+    var feedbackCapture: FeedbackCaptureController {
+        if let storedFeedbackCapture { return storedFeedbackCapture }
+        let capture = makeFeedbackCapture(dictationStore.resolvedDatabaseURL, configStore.supportDirectory())
+        storedFeedbackCapture = capture
+        capture.finalizer.stages.append(.init(name: .transcribe) { [weak self] manifest, context in
+            guard let self else { throw CancellationError() }
+            let coordinator = self.transcriptionCoordinator
+            let preferred = self.selectedDictationProvider == .local ? self.selectedBackend : nil
+            let snapshot = self.config
+            let stage = FeedbackCaptureFinalizer.transcriptionStage { url in
+                try await coordinator.transcribeFeedbackCapture(at: url, preferred: preferred, config: snapshot)
+            }
+            try await stage.run(&manifest, context)
+        })
+        capture.finalizer.prepareThumbnails = FeedbackCaptureFinalizer.prepareContextThumbnails
+        capture.finalizer.stages += FeedbackCaptureFinalizer.contextStages()
+        capture.finalizer.stages.append(FeedbackCaptureFinalizer.copyStage())
+        capture.onAdmissionReset = { [weak self] in self?.feedbackCaptureHotkeyMonitor.cancelToggleMode() }
+        capture.onMicrophoneReleased = { [weak self] in
+            guard let self else { return }
+            self.syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
+            self.refreshFeedbackCaptureMenu()
+        }
+        capture.onStateChanged = { [weak self, weak capture] state in
+            guard let self, let capture else { return }
+            let otherActivity = self.dictationState != .idle || self.isMeetingRecording() || self.isStartingMeetingRecording
+                || self.quilTask != nil || self.computerUseCommandTask != nil
+            if otherActivity {
+                if state == nil { self.indicator.dismissFeedbackCapturePreservingActivity(); return }
+                guard case .busy = state else { return }
+            }
+            let presentation = capture.presentationID
+            let captureID = capture.presentedCaptureID
+            self.indicator.showFeedbackCapture(state, config: self.config,
+                power: { [weak capture] in capture?.powerLevel() ?? -160 },
+                finish: { [weak capture] in if capture?.presentationID == presentation { capture?.finish() } },
+                discard: { [weak capture] in if capture?.presentationID == presentation { capture?.discard() } },
+                open: { [weak capture] in if capture?.presentationID == presentation { capture?.open(id: captureID) } },
+                repairPermission: { [weak self, weak capture] in
+                    if capture?.presentationID == presentation { self?.repairFeedbackCapturePermission() }
+                }, copy: { [weak capture] in
+                    guard capture?.presentationID == presentation, let captureID else { return }
+                    Task { [weak capture] in _ = await capture?.copy(id: captureID, expectedPresentationID: presentation) }
+                })
+        }
+        return capture
+    }
+
+    private func refreshFeedbackCaptureMenu() {
+        if let feedbackMenuRefresh { feedbackMenuRefresh() }
+        else { statusBarController?.refresh() }
+    }
+
+    @objc func toggleFeedbackCapture() {
+        handleFeedbackCaptureToggle(permissions: { .captureSystemSnapshot() },
+            device: { [weak self] in self?.dictationAudioRoutingController.preferredInputDeviceIDForDictation() })
+    }
+    func handleFeedbackCaptureToggle(permissions: () -> InteractionPermissionSnapshot, device: @escaping () -> AudioObjectID?) {
+        if storedFeedbackCapture?.ownsMicrophone == true {
+            storedFeedbackCapture?.finish(); feedbackCaptureHotkeyMonitor.cancelToggleMode(); return
+        }
+        guard config.enableFeedbackCapture, !isShuttingDown, !isCapturingShortcut else {
+            feedbackCaptureHotkeyMonitor.cancelToggleMode(); return
+        }
+        let busy: String?
+        if isMeetingRecording() || isStartingMeetingRecording || isStoppingMeetingRecording { busy = "Stop the meeting" }
+        else if interactiveAudioSessionOwnership.quilIsActive { busy = "Finish Quill" }
+        else if interactiveAudioSessionOwnership.computerUseIsActive { busy = "Finish computer use" }
+        else if interactiveAudioSessionOwnership.dictationIsActive || isDictationTestMode { busy = "Finish dictation" }
+        else if isMeetingAudioProcessing { busy = "Finish meeting processing" }
+        else { busy = nil }
+        let accepted = feedbackCapture.start(permissions: permissions(), busyActivity: busy, device: device, drawModifier: config.feedbackCaptureDrawModifier)
+        if accepted {
+            feedbackCaptureHotkeyMonitor.synchronizeFeedbackCapture()
+            coolDownDictationRecorder(reason: "feedback-capture")
+            refreshFeedbackCaptureMenu()
+        }
+        else { feedbackCaptureHotkeyMonitor.cancelToggleMode() }
+    }
+    func setFeedbackCaptureDrawModifier(_ modifier: FeedbackCaptureDrawModifier) {
+        updateConfig { $0.feedbackCaptureDrawModifier = modifier }
+    }
+    @objc func finishFeedbackCapture() { storedFeedbackCapture?.finish() }
+    @objc func openFeedbackCaptures() { feedbackCapture.open() }
+
+    private func repairFeedbackCapturePermission() {
+        guard case .blocked(let permission) = storedFeedbackCapture?.state else { return }
+        let pane: String
+        switch permission {
+        case "Accessibility": pane = "Privacy_Accessibility"; beginSystemPermissionGuide(for: .accessibility)
+        case "Input Monitoring": pane = "Privacy_ListenEvent"; beginSystemPermissionGuide(for: .inputMonitoring)
+        case "Microphone": pane = "Privacy_Microphone"
+        default:
+            pane = "Privacy_ScreenCapture"
+            if !hasRequestedFeedbackScreenRecordingAccess {
+                hasRequestedFeedbackScreenRecordingAccess = true
+                // Let macOS present its own Settings action on the first request.
+                _ = CGRequestScreenCaptureAccess()
+                return
+            }
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
+    }
+
+    private func configureFeedbackCaptureHotkeyMonitor() {
+        guard hasStarted, config.hasCompletedOnboarding, config.enableFeedbackCapture,
+              validateFeedbackCaptureShortcut(config.feedbackCaptureHotkey).didUpdate else {
+            feedbackCaptureHotkeyMonitor.stop(); return
+        }
+        feedbackCaptureHotkeyMonitor.feedbackReleaseToggle = true
+        feedbackCaptureHotkeyMonitor.feedbackSessionStartedAt = { [weak self] in self?.storedFeedbackCapture?.admittedAt }
+        feedbackCaptureHotkeyMonitor.escapeCancelsToggleSession = false
+        feedbackCaptureHotkeyMonitor.registersCombinationGlobally = true
+        feedbackCaptureHotkeyMonitor.allowsStartsWhileEditingText = true
+        feedbackCaptureHotkeyMonitor.doubleTapEnabled = false
+        feedbackCaptureHotkeyMonitor.onToggleStart = { [weak self] in self?.toggleFeedbackCapture() }
+        feedbackCaptureHotkeyMonitor.onToggleStop = { [weak self] in self?.finishFeedbackCapture() }
+        feedbackCaptureHotkeyMonitor.configure(config.feedbackCaptureHotkey)
+        feedbackCaptureHotkeyMonitor.start()
+    }
+    private func feedbackCaptureConflict(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult? {
+        guard config.enableFeedbackCapture,
+              ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(hotkey, config.feedbackCaptureHotkey) else { return nil }
+        return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Scrawl", hotkey: config.feedbackCaptureHotkey))
+    }
+    private func validateFeedbackCaptureShortcut(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(hotkey, config: config)
+        guard result.didUpdate else { return result }
+        if let chord = PasteKeyboardLayout.resolve(config.pasteShortcut),
+           ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(hotkey, Self.hotkey(for: chord)) {
+            return .conflict(message: ShortcutHotkeyPolicy.pasteConflictMessage)
+        }
+        return result
+    }
+    @discardableResult
+    func updateFeedbackCaptureHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = validateFeedbackCaptureShortcut(hotkey)
+        guard result.didUpdate else { return result }
+        updateConfig { $0.feedbackCaptureHotkey = hotkey }
+        return result
+    }
+    @discardableResult
+    func updateFeedbackCaptureEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled {
+            let result = validateFeedbackCaptureShortcut(config.feedbackCaptureHotkey)
+            guard result.didUpdate else { return result }
+        }
+        updateConfig { $0.enableFeedbackCapture = enabled }
+        return .updated
+    }
+
     lazy var visualMemory = VisualMemoryController(databaseURL: dictationStore.resolvedDatabaseURL, supportDirectory: configStore.supportDirectory())
     private var meetingCapture: (id: Int64, session: MeetingSession)?
     private var activeMeetingSession: MeetingSession? {
@@ -599,6 +766,7 @@ public final class MuesliController: NSObject {
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
     private var hasRequestedComputerUseScreenRecordingAccess = false
+    private var hasRequestedFeedbackScreenRecordingAccess = false
     private var activeComputerUseTrace: ComputerUseRunTrace?
     private var activeQuilAudioSessionID: UUID?
     private var quilStartedAt: Date?
@@ -682,7 +850,7 @@ public final class MuesliController: NSObject {
     private var bridgeDiscoveryFollowUpPending = false
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
-    private var hasStarted = false
+    var hasStarted = false
 
     init(
         runtime: RuntimePaths,
@@ -696,8 +864,19 @@ public final class MuesliController: NSObject {
         openRouterAuth: OpenRouterAuthManager? = nil,
         openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient(),
         downloadedBackendOptions: @escaping () -> [BackendOption] = { BackendOption.downloaded },
-        modelOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion
+        modelOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion,
+        hotkeyMonitor: HotkeyMonitor = HotkeyMonitor(),
+        feedbackCaptureHotkeyMonitor: HotkeyMonitor = HotkeyMonitor(),
+        makeFeedbackCapture: @escaping @MainActor (URL, URL) -> FeedbackCaptureController = {
+            FeedbackCaptureController(databaseURL: $0, supportDirectory: $1)
+        },
+        feedbackMenuRefresh: (@MainActor () -> Void)? = nil,
+        indicator: FloatingIndicatorController? = nil
     ) {
+        self.hotkeyMonitor = hotkeyMonitor
+        self.feedbackCaptureHotkeyMonitor = feedbackCaptureHotkeyMonitor
+        self.makeFeedbackCapture = makeFeedbackCapture
+        self.feedbackMenuRefresh = feedbackMenuRefresh
         self.configStore = configStore
         self.modelOSVersion = modelOSVersion
         self.downloadedBackendOptions = {
@@ -765,7 +944,7 @@ public final class MuesliController: NSObject {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .chatGPT
         self.selectedPostProcessorBackend = loadedPostProcessorBackend
-        self.indicator = FloatingIndicatorController(configStore: configStore)
+        self.indicator = indicator ?? FloatingIndicatorController(configStore: configStore)
         ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
         dictationAudioSessionManager.onEvent = { [weak self] event in
@@ -814,6 +993,8 @@ public final class MuesliController: NSObject {
             || FileManager.default.fileExists(atPath: AppIdentity.supportDirectoryURL.appendingPathComponent("visual-memory/catalog.sqlite").path) {
             _ = visualMemory
         }
+        Task { await feedbackCapture.recover() }
+        configureFeedbackCaptureHotkeyMonitor()
         recoverRetainedMeetingRecordings()
         recoverStaleLiveMeetings()
         normalizeMeetingTranscriptionSelectionForAvailability()
@@ -839,6 +1020,9 @@ public final class MuesliController: NSObject {
             named: MeetingSession.micDiarizationDirectoryName,
             logDescription: "leftover mic diarization tracks"
         )
+        for name in FeedbackCaptureAttempt.temporaryDirectoryNames() {
+            cleanupTemporaryDirectory(named: name, logDescription: "leftover feedback microphone files")
+        }
         cleanupHistoricalMeetingWaveformCacheFilesIfNeeded()
 
         hotkeyMonitor.onArm = { [weak self] in self?.handleArm() }
@@ -1122,6 +1306,9 @@ public final class MuesliController: NSObject {
 
     func cancelMeetingRetranscriptionsForShutdown() async {
         isShuttingDown = true
+        shutdownStep = "Scrawl"
+        await storedFeedbackCapture?.shutdown()
+        feedbackCaptureHotkeyMonitor.stop()
         shutdownStep = "retranscription tasks"
 
         // Suspend asynchronously (never block the main thread) until retry
@@ -1770,6 +1957,8 @@ public final class MuesliController: NSObject {
         iCloudDisableCompletionStatus: String? = nil,
         _ mutate: (inout AppConfig) -> Void
     ) {
+        let previousFeedbackCaptureEnabled = config.enableFeedbackCapture
+        let previousFeedbackCaptureHotkey = config.feedbackCaptureHotkey
         let wasICloudSyncEnabled = config.iCloudSyncEnabled
         let wasUsingAppleSpeech = selectedBackend.backend == "apple-speech"
             || selectedMeetingTranscriptionBackend.backend == "apple-speech"
@@ -1785,6 +1974,10 @@ public final class MuesliController: NSObject {
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
         mutate(&config)
+        if previousFeedbackCaptureEnabled && !config.enableFeedbackCapture { storedFeedbackCapture?.finish() }
+        if previousFeedbackCaptureEnabled != config.enableFeedbackCapture || previousFeedbackCaptureHotkey != config.feedbackCaptureHotkey {
+            configureFeedbackCaptureHotkeyMonitor()
+        }
         BackendOption.normalizeRestoredSelections(
             in: &config,
             downloadedOptions: downloadedBackendOptions(),
@@ -4746,6 +4939,7 @@ public final class MuesliController: NSObject {
     }
 
     private func validateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if let conflict = feedbackCaptureConflict(hotkey) { return conflict }
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
             return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
@@ -4807,6 +5001,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateComputerUseHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if let conflict = feedbackCaptureConflict(hotkey) { return conflict }
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
             return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
@@ -4828,6 +5023,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateComputerUseHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled, let conflict = feedbackCaptureConflict(config.computerUseHotkey) { return conflict }
         let wasEnabled = config.enableComputerUseHotkey
         if enabled {
             if config.enableQuilMode,
@@ -4881,6 +5077,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateMeetingRecordingHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if let conflict = feedbackCaptureConflict(hotkey) { return conflict }
         if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
             return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Quill", hotkey: config.quilHotkey))
         }
@@ -4901,6 +5098,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateMeetingRecordingHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled, let conflict = feedbackCaptureConflict(config.meetingRecordingHotkey) { return conflict }
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.meetingRecordingHotkey, config.quilHotkey) {
@@ -4925,6 +5123,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateQuilHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if let conflict = feedbackCaptureConflict(hotkey) { return conflict }
         let result = ShortcutHotkeyPolicy.validateQuilHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
@@ -4941,6 +5140,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateQuilModeEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled, let conflict = feedbackCaptureConflict(config.quilHotkey) { return conflict }
         let wasEnabled = config.enableQuilMode
         var validationResult: ShortcutHotkeyUpdateResult = .updated
         if enabled {
@@ -4981,6 +5181,8 @@ public final class MuesliController: NSObject {
         updateConfig { config in
             config.dictationHotkey = .default
             config.dictationCombinationActivation = .pushToTalk
+            config.feedbackCaptureHotkey = .feedbackCaptureDefault
+            config.enableFeedbackCapture = false
             config.quilHotkey = .quilDefault
             config.enableQuilMode = false
             config.computerUseHotkey = .computerUseDefault
@@ -5176,9 +5378,11 @@ public final class MuesliController: NSObject {
         }
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
+        if !feedbackCaptureHotkeyMonitor.isRunning { configureFeedbackCaptureHotkeyMonitor() }
     }
 
     func stopHotkeyMonitor() {
+        feedbackCaptureHotkeyMonitor.stop()
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
@@ -5186,7 +5390,7 @@ public final class MuesliController: NSObject {
 
     /// Recorder owns a temporary pause, never changes feature enablement/config.
     func beginShortcutCapture() -> Bool {
-        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        let monitors = [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
         guard !isCapturingShortcut, dictationState == .idle,
               !isMeetingRecording(), !isStartingMeetingRecording, !isMeetingAudioProcessing,
               !isDictationTestMode, quilTask == nil, computerUseCommandTask == nil,
@@ -5200,7 +5404,7 @@ public final class MuesliController: NSObject {
     func endShortcutCapture() {
         guard isCapturingShortcut else { return }
         isCapturingShortcut = false
-        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor]
+        [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
             .forEach { $0.resumeAfterShortcutCapture() }
     }
 
@@ -5212,7 +5416,7 @@ public final class MuesliController: NSObject {
     /// chord, and a registered chord would intercept Muesli's own paste.
     func pasteShortcutConflict(_ chord: PasteKeyChord) -> Bool {
         let candidate = Self.hotkey(for: chord)
-        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey]
+        return [config.dictationHotkey, config.computerUseHotkey, config.quilHotkey, config.meetingRecordingHotkey, config.feedbackCaptureHotkey]
             .contains { $0.isCombination && ShortcutHotkeyPolicy.hotkeysConflict(candidate, $0) }
     }
 
@@ -7800,6 +8004,14 @@ public final class MuesliController: NSObject {
         endDate: Date?,
         previousMeetingNotes: String? = nil
     ) async throws {
+        if let capture = storedFeedbackCapture {
+            let released = await capture.finishAndReleaseMicrophone()
+            try checkMeetingStartStillCurrent(owner)
+            guard released else {
+                throw ScreenVideoRecorder.error("Feedback microphone teardown is still pending. Try starting the meeting again after it finishes.")
+            }
+        }
+        try checkMeetingStartStillCurrent(owner)
         statusBarController?.setStatus("Meeting transcription will start shortly.")
         statusBarController?.refresh()
         try Task.checkCancellation()
@@ -8569,7 +8781,7 @@ public final class MuesliController: NSObject {
                         earlyRecordingSave = PreparedMeetingRecordingSave(path: nil, error: nil)
                         return
                     }
-                    if let error {
+                    if let error, url == nil {
                         earlyRecordingSave = PreparedMeetingRecordingSave(path: nil, error: .failedToSaveRecording(underlying: error))
                         return
                     }
@@ -8590,6 +8802,12 @@ public final class MuesliController: NSObject {
                             self.presentErrorAlert(title: "Recording Recovery", message: "Audio was saved at \(path), but its recovery reference could not be saved. Keep this location in case meeting finalization fails. \(error.localizedDescription)")
                         }
                         self.attachEarlyMeetingRecording(id: id, path: path)
+                    }
+                    if let error, let path = prepared.path {
+                        self.presentErrorAlert(
+                            title: "Meeting Recording",
+                            message: "The audio was saved at \(path), but the recording writer reported a finalization error. \(error.localizedDescription)"
+                        )
                     }
                 }
                 let result = await self.mergedResumeResult(for: stopped, meetingID: liveMeetingID)
@@ -9017,7 +9235,7 @@ public final class MuesliController: NSObject {
         case .never: return false
         case .always: return true
         case .prompt:
-            if writerFailed { return true }
+            if writerFailed && !hasRecording { return true }
             if hasScreenRecording { return hasRecording }
             return hasRecording ? await prompt() : false
         }
@@ -9289,6 +9507,11 @@ public final class MuesliController: NSObject {
         }
     }
 
+    static func alertFallbackLogMessage(context _: String, title _: String, informativeText _: String) -> String {
+        // Alert copy and context may include meeting titles, recording paths, or other private data.
+        "[muesli-native] unable to present alert.\n"
+    }
+
     @discardableResult
     private func presentAlert(
         _ alert: NSAlert,
@@ -9297,10 +9520,11 @@ public final class MuesliController: NSObject {
     ) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
-            fputs(
-                "[muesli-native] unable to present \(fallbackLogContext) alert: \(alert.messageText) - \(alert.informativeText)\n",
-                stderr
-            )
+            fputs(Self.alertFallbackLogMessage(
+                context: fallbackLogContext,
+                title: alert.messageText,
+                informativeText: alert.informativeText
+            ), stderr)
             statusBarController?.setStatus(alert.messageText)
             statusBarController?.refresh()
             NSSound.beep()
@@ -9388,7 +9612,7 @@ public final class MuesliController: NSObject {
     }
 
     private var isInteractiveAudioActivityInProgress: Bool {
-        dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil
+        storedFeedbackCapture?.ownsMicrophone == true || dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil
             || quilStartedAt != nil || quilTask != nil || isNemotron35Streaming
     }
 
@@ -9465,9 +9689,10 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.start()
     }
 
-    private func startIndependentDictationFeatureHotkeyMonitorsIfNeeded() {
+    func startIndependentDictationFeatureHotkeyMonitorsIfNeeded() {
         startComputerUseHotkeyMonitorIfNeeded()
         startQuilHotkeyMonitorIfNeeded()
+        if !feedbackCaptureHotkeyMonitor.isRunning { configureFeedbackCaptureHotkeyMonitor() }
     }
 
     private func startComputerUseHotkeyMonitorIfNeeded(
@@ -10696,7 +10921,8 @@ public final class MuesliController: NSObject {
         return InteractiveAudioSessionOwnership(
             dictationIsActive: dictationIsActive,
             computerUseIsActive: computerUseIsActive,
-            quilIsActive: quilIsActive
+            quilIsActive: quilIsActive,
+            feedbackCaptureIsActive: storedFeedbackCapture?.ownsMicrophone == true
         )
     }
 
@@ -11251,7 +11477,7 @@ public final class MuesliController: NSObject {
     }
 
     private var canPrimeDictationRecorder: Bool {
-        config.hasCompletedOnboarding
+        storedFeedbackCapture?.ownsMicrophone != true && config.hasCompletedOnboarding
             && hasStarted
             && config.enablePushToTalk
             && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized

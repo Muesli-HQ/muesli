@@ -191,7 +191,9 @@ actor BodhanTranscriber {
     private let runtimeLoader: RuntimeLoader
 
     init(runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
-        try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
+        if ManagedASRModelDownloader.localOnly {
+            guard selected.isDownloaded else { throw CocoaError(.fileNoSuchFile) }
+        } else { try await selected.download(progress: progress, progressSnapshot: progressSnapshot) }
         try Task.checkCancellation()
         let loading = ModelDownloadProgress.preparing(modelID: selected.rawValue, message: "Loading " + selected.name + "…")
         progress?(0.9, loading.message)

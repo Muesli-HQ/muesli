@@ -112,8 +112,12 @@ public enum NativeFileTranscriber {
         return try await infer(wavURL)
     }
 
-    private static func containsCohereSpeech(_ url: URL) async throws -> Bool {
-        let vad = try await VadManager()
+    static func containsCohereSpeech(_ url: URL) async throws -> Bool {
+        let vad = try await GemmaNativeAudioModels.loadVAD()
+        return try await containsCohereSpeech(url, vad: vad)
+    }
+
+    static func containsCohereSpeech(_ url: URL, vad: VadManager) async throws -> Bool {
         // Reuse the bounded PCM reader so even long silent inputs don't need
         // to be loaded into a single in-memory sample array for this guard.
         let reader = try DiarizationPCMWindowReader(url: url)
@@ -132,13 +136,22 @@ public enum NativeFileTranscriber {
         infer: @escaping @Sendable (URL) async throws -> String
     ) async throws -> String {
         let result = try await MeetingRecordingTranscriber().transcribe(url: wavURL, infer: { chunk in
-            let samples = try AudioConverter().resampleAudioFile(chunk)
-            let pcmURL = try WavWriter.writeTemporaryWAV(samples: samples)
-            defer { try? FileManager.default.removeItem(at: pcmURL) }
-            try Task.checkCancellation()
-            return SpeechTranscriptionResult(text: try await infer(pcmURL), segments: [])
+            let text = try await transcribeGemmaWindow(wavURL: chunk, infer: infer)
+            return SpeechTranscriptionResult(text: text, segments: [])
         }, progress: { _, _ in })
         return result.text
+    }
+
+    /// Convert one bounded replay window to PCM16 without splitting it again.
+    static func transcribeGemmaWindow(
+        wavURL: URL,
+        infer: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> String {
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        let pcmURL = try WavWriter.writeTemporaryWAV(samples: samples)
+        defer { try? FileManager.default.removeItem(at: pcmURL) }
+        try Task.checkCancellation()
+        return try await infer(pcmURL)
     }
 
     private static func unsupported(_ model: NativeFileTranscriptionModel) -> NativeFileTranscriptionError {

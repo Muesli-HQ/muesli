@@ -164,10 +164,9 @@
     {
       "identity" : "whisperkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/argmaxinc/WhisperKit.git",
+      "location" : "https://github.com/salmonumbrella/WhisperKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "80d96762fa727f816ffceab76a6529cd12c2726f"
+        "revision" : "bf94f52f0dfd15df51aa9bb0195c663d8a253f07"
       }
     },
     {
