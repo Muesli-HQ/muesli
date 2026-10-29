@@ -6,14 +6,12 @@ enum MedASRError: LocalizedError, Sendable {
     case notLoaded
     case invalidAssets
     case invalidPrediction
-    case accessRequired
 
     var errorDescription: String? {
         switch self {
         case .notLoaded: "MedASR is not ready. Download and prepare it first."
         case .invalidAssets: "MedASR files are incomplete or incompatible. Delete the model and download it again."
         case .invalidPrediction: "MedASR returned an invalid prediction."
-        case .accessRequired: "Accept MedASR's terms on Hugging Face, then sign in with hf auth login."
         }
     }
 }

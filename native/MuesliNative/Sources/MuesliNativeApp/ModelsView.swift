@@ -27,6 +27,7 @@ struct ModelsView: View {
     let appState: AppState
     let controller: MuesliController
 
+    @State private var medASRTermsAccepted = MedASRLicense.shared.isAccepted
     @State private var nemotron35UpdateAvailable = false
     @State private var downloadingModels: Set<String> = []
     @State private var downloadProgress: [String: Double] = [:]
@@ -120,6 +121,7 @@ struct ModelsView: View {
         }
         .background(MuesliTheme.backgroundBase)
         .onAppear {
+            medASRTermsAccepted = MedASRLicense.shared.isAccepted
             checkDownloadedModels()
             checkDownloadedPostProcModels()
             isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
@@ -128,6 +130,7 @@ struct ModelsView: View {
             loadAppleSpeechLanguageOptions()
         }
         .onChange(of: appState.selectedBackend.model) { _, _ in
+            medASRTermsAccepted = MedASRLicense.shared.isAccepted
             syncSelectionsFromActiveBackend()
         }
         .alert(
@@ -1366,10 +1369,17 @@ struct ModelsView: View {
             }
 
             if option == .medASR {
-                Text("[Google](https://huggingface.co/google/medasr) · English · [Access & license](https://huggingface.co/Muesli-HQ/medasr-coreml)")
+                Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
-                    .help("Accept the model's terms on Hugging Face, then sign in locally with hf auth login.")
+                if isActive && !medASRTermsAccepted {
+                    Button("Review terms") {
+                        controller.requestMedASRLicense {
+                            medASRTermsAccepted = true
+                            if appState.selectedBackend == .medASR { controller.selectBackend(.medASR) }
+                        }
+                    }
+                }
             }
 
             if option == .phonon25 {
@@ -1764,6 +1774,13 @@ struct ModelsView: View {
 
     private func startDownload(_ option: BackendOption) {
         guard option.isCompatible() else { return }
+        if option == .medASR, !MedASRLicense.shared.isAccepted {
+            controller.requestMedASRLicense {
+                medASRTermsAccepted = true
+                startDownload(option)
+            }
+            return
+        }
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
         downloadMessages.removeValue(forKey: option.model)

@@ -329,7 +329,7 @@ struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
         abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
     )
 
     static func main() async {
@@ -376,6 +376,7 @@ struct MuesliCLI: AsyncParsableCommand {
         CommandSpecPayload(commands: [
             .init(name: "spec", usage: "muesli-cli spec", summary: "Dump the command tree and CLI schema metadata.", examples: ["muesli-cli spec"]),
             .init(name: "info", usage: "muesli-cli info [--db-path <path>] [--support-dir <dir>]", summary: "Show resolved support and database paths.", examples: ["muesli-cli info", "muesli-cli info --support-dir ~/Library/Application\\ Support/Muesli"]),
+            .init(name: "model-terms", usage: "muesli-cli model-terms medasr [--accept]", summary: "Read MedASR's terms and optionally record acceptance on this Mac.", examples: ["muesli-cli model-terms medasr", "muesli-cli model-terms medasr --accept"]),
             .init(name: "transcribe", usage: "muesli-cli transcribe <file> [--format text|json|markdown] [--model \(TranscribeModel.allCases.map(\.rawValue).joined(separator: "|"))] [--summarize] [--save-meeting] [--title <title>] [--output <path>] [--dictionary <path>]", summary: "Transcribe a local mp3, mp4, m4a, or wav file with Muesli's bundled local ASR models.", examples: ["muesli-cli transcribe call.mp3", "muesli-cli transcribe call.m4a --format json", "muesli-cli transcribe call.wav --model nemotron35 --dictionary dictionary.json"]),
             .init(name: "meetings list", usage: "muesli-cli meetings list [--limit <n>] [--folder-id <id>]", summary: "List recent meetings.", examples: ["muesli-cli meetings list --limit 5", "muesli-cli meetings list --folder-id 2"]),
             .init(name: "meetings get", usage: "muesli-cli meetings get <id>", summary: "Return a full meeting record.", examples: ["muesli-cli meetings get 42"]),

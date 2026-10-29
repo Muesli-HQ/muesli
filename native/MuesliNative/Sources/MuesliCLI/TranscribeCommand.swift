@@ -681,6 +681,9 @@ struct NativeModelsCLITranscriber: AudioTranscribing {
         let text: String
         do {
             text = try await transcribeFile(wavURL, nativeModel, progress)
+        } catch let error as MedASRLicenseError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Run muesli-cli model-terms medasr, then repeat with --accept.")
         } catch let error as NativeFileTranscriptionError {
             throw CLIError.invalidInput(error.localizedDescription,
                 fix: "Choose a different --model, or use a compatible Mac and macOS version.")

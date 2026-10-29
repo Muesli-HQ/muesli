@@ -65,7 +65,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
         let configuration = configuration.copy() as? URLSessionConfiguration ?? configuration
         configuration.timeoutIntervalForRequest = max(configuration.timeoutIntervalForRequest, 60)
         configuration.timeoutIntervalForResource = max(configuration.timeoutIntervalForResource, 180)
-        session = URLSession(configuration: configuration, delegate: HuggingFaceRedirectDelegate(), delegateQueue: nil)
+        session = URLSession(configuration: configuration)
     }
 
     public func resolve(
@@ -178,7 +178,10 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 60
-                HuggingFaceAuthentication.authorize(&request)
+                if let token = Self.huggingFaceToken,
+                   Self.isTrustedHuggingFaceURL(url) {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
                 let result = try await session.data(for: request)
                 // URLSession can complete successfully in the narrow window
                 // after its parent task is cancelled. Do not turn that late
@@ -217,6 +220,12 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
                 return value
             }
         }
+    }
+
+    private static var huggingFaceToken: String? {
+        ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
+            ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"]
     }
 
     private static func treeURL(
@@ -263,6 +272,10 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             && candidate.host?.caseInsensitiveCompare(current.host ?? "") == .orderedSame
     }
 
+    private static func isTrustedHuggingFaceURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.caseInsensitiveCompare("huggingface.co") == .orderedSame
+    }
 }
 
 private extension HuggingFaceModelSelection {

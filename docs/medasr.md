@@ -4,17 +4,20 @@ MedASR provides local English medical dictation and CLI file transcription on ma
 
 ## Setup
 
-1. Accept the model terms at [Muesli-HQ/medasr-coreml](https://huggingface.co/Muesli-HQ/medasr-coreml).
-2. Sign in locally with `hf auth login` using the same Hugging Face account.
-3. Download and select **MedASR** under Settings → Models.
+1. Choose **Download** or **Set Active** on MedASR under Models.
+2. Review the full Google HAI-DEF terms and prohibited-use policy, then choose **Agree & Continue**.
 
-The app and CLI reuse the standard local Hugging Face token file or `HF_TOKEN`. Tokens are used only with HTTPS requests to `huggingface.co`, stripped on CDN redirects, and never stored in app settings or logged. No credential is bundled with Muesli.
+No Hugging Face account or token is required. Cancel starts no download and makes no selection change. Existing installations must also accept before preparation. A versioned acknowledgement is stored locally at `~/Library/Application Support/Muesli/ModelLicenses/medasr.json`, shared by the app and CLI on this Mac. It contains only the terms version and acceptance date; it is not synced or exported. Deleting the weights preserves acceptance; changed terms require renewed acceptance. Voice commands cannot grant acceptance and direct users to Models first.
 
-CLI usage:
+CLI usage (read the terms before recording acceptance):
 
 ```bash
+muesli-cli model-terms medasr
+muesli-cli model-terms medasr --accept
 muesli-cli transcribe recording.wav --model medasr
 ```
+
+The complete terms and policy ship in the app and CLI resources, so they are available before download and offline. The distributed weights retain the license, Notice, prohibited-use policy and conversion modification record. Google's use restrictions are incorporated into the acceptance agreement; Muesli's MIT license does not replace them. The Hugging Face repository also publishes those obligations for direct downloaders.
 
 ## Runtime
 
@@ -28,4 +31,15 @@ The conversion includes Google's license, Notice, prohibited-use policy and modi
 
 ## Regression coverage
 
-Ordinary tests cover model catalog/CLI parity, pinned assets, cancellation and preparation ownership, warmup, overlapping-window boundaries, punctuation, and credential handling. The opt-in `MedASRIntegrationTests` uses `MUESLI_MEDASR_FIXTURE_DIR` containing Google's public `test_audio.wav` and independently generated `reference-features.f32`. It compares the frontend against a float64 reference and transcribes the complete recording through both app and CLI adapters. No patient recordings are required.
+Ordinary tests cover model catalog/CLI parity, pinned assets, cancellation and preparation ownership, warmup, overlapping-window boundaries, punctuation, terms acceptance, and anonymous downloads. The opt-in `MedASRIntegrationTests` uses `MUESLI_MEDASR_FIXTURE_DIR` containing Google's public `test_audio.wav` and independently generated `reference-features.f32` / `reference-features-short.f32`. It compares the frontend against a float64 reference and transcribes the complete recording through both app and CLI adapters. No patient recordings are required.
+
+Generate both independent frontend references, including a short non-hop-aligned
+input with partial-frame and padding coverage:
+
+```bash
+python3 scripts/medasr_frontend_reference.py /path/to/test_audio.wav /path/to/fixtures
+```
+
+Set `MUESLI_MEDASR_ANONYMOUS_DOWNLOAD_TEST=1` to additionally exercise a fresh
+anonymous download of the pinned runtime and legal assets. This opt-in test
+uses a temporary directory and removes its own downloaded copies afterward.

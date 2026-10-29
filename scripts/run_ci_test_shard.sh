@@ -67,7 +67,6 @@ case "${shard}" in
       UpdateFailureGuidanceTests
       WordCountTests
       CustomWordDictionaryTests
-      HuggingFaceAuthenticationTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
       BodhanArtifactValidationTests

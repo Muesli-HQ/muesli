@@ -117,8 +117,10 @@ actor MedASRTranscriber {
     private var pending: Pending?
     private var generation: UInt64 = 0
     private let loader: Loader
+    private let license: MedASRLicense
 
-    init(loader: Loader? = nil) {
+    init(loader: Loader? = nil, license: MedASRLicense = .shared) {
+        self.license = license
         self.loader = loader ?? { progress, snapshot in
             try await Self.loadRuntime(progress: progress, progressSnapshot: snapshot)
         }
@@ -129,6 +131,7 @@ actor MedASRTranscriber {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
+        try license.requireAcceptance()
         if runtime != nil { return }
         let waiter = UUID()
         if pending == nil {
@@ -215,18 +218,12 @@ actor MedASRTranscriber {
     private static func loadRuntime(
         progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?
     ) async throws -> Runtime {
-        do {
-            let loaded = try await ManagedASRModelDownloader.loadValidated(MedASRModel.plan(),
-                progress: progress, progressSnapshot: progressSnapshot) { directory in
-                progress?(0.95, "Loading MedASR...")
-                progressSnapshot?(.preparing(modelID: MedASRModel.id, message: "Loading MedASR..."))
-                return try await MedASRCoreMLRuntime.load(directory: directory)
-            }
-            return Runtime(predict: { try await loaded.predict($0) }, vocabulary: loaded.vocabulary)
-        } catch HuggingFaceModelManifestError.invalidHTTPStatus(let status, _) where status == 401 || status == 403 {
-            throw MedASRError.accessRequired
-        } catch ModelDownloadError.invalidHTTPStatus(let status, _) where status == 401 || status == 403 {
-            throw MedASRError.accessRequired
+        let loaded = try await ManagedASRModelDownloader.loadValidated(MedASRModel.plan(),
+            progress: progress, progressSnapshot: progressSnapshot) { directory in
+            progress?(0.95, "Loading MedASR...")
+            progressSnapshot?(.preparing(modelID: MedASRModel.id, message: "Loading MedASR..."))
+            return try await MedASRCoreMLRuntime.load(directory: directory)
         }
+        return Runtime(predict: { try await loaded.predict($0) }, vocabulary: loaded.vocabulary)
     }
 }

@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// File-transcription models whose implementations live in the app library.
 /// Stable command-line names are separate from provider repository identifiers.
@@ -53,7 +54,8 @@ public enum NativeFileTranscriber {
     public static func transcribe(
         wavURL: URL,
         model: NativeFileTranscriptionModel,
-        progress: @escaping (String) -> Void
+        progress: @escaping (String) -> Void,
+        medASRLicense: MedASRLicense = .shared
     ) async throws -> String {
         try Task.checkCancellation()
         if let reason = model.unavailabilityReason() {
@@ -74,7 +76,7 @@ public enum NativeFileTranscriber {
             // replay windows required by fixed-context transcription engines.
             return try await transcriber.transcribe(wavURL: wavURL).text
         case .medASR:
-            let transcriber = MedASRTranscriber()
+            let transcriber = MedASRTranscriber(license: medASRLicense)
             do {
                 try await transcriber.prepare(progress: report)
                 let result = try await transcriber.transcribe(wavURL: wavURL)

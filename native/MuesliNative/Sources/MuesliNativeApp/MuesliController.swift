@@ -3081,6 +3081,21 @@ public final class MuesliController: NSObject {
         updateConfig { $0.launchAtLogin = reconciled.launchAtLogin }
     }
 
+    /// Manual UI only; canonical voice choices reject unaccepted terms first.
+    func requestMedASRLicense(onAccepted: @escaping () -> Void) {
+        MedASRTermsPresentation.request(present: { [weak self] alert, completion in
+            guard let self else { return }
+            if let host = self.alertPresentationWindow(showHistoryIfNeeded: true),
+               let sheet = host.attachedSheet {
+                host.makeKeyAndOrderFront(nil)
+                sheet.makeKeyAndOrderFront(nil)
+                return
+            }
+            self.presentAlert(alert, fallbackLogContext: "MedASR terms",
+                includeInformativeTextInFallbackLog: false, completion: completion)
+        }, onAccepted: onAccepted)
+    }
+
     func selectBackend(_ option: BackendOption) {
         selectBackend(option, makePrimaryDictationModel: false)
     }
@@ -3170,6 +3185,16 @@ public final class MuesliController: NSObject {
     ) {
         guard option.isCompatible(currentOSVersion: modelOSVersion),
               ensureNoMeetingRetranscription() else { return }
+        if option == .medASR, !MedASRLicense.shared.isAccepted {
+            let previous = appState.selectedBackend
+            let provider = config.dictationProvider
+            requestMedASRLicense { [weak self] in
+                guard let self, self.appState.selectedBackend == previous,
+                      self.config.dictationProvider == provider else { return }
+                self.selectBackend(option, makePrimaryDictationModel: makePrimaryDictationModel)
+            }
+            return
+        }
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {

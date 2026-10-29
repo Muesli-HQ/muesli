@@ -734,6 +734,7 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        if backend.backend == "medasr" { try MedASRLicense.shared.requireAcceptance() }
         if backend.backend == "medasr", meetingHelperTrigger == .modelLibrary {
             try await libraryModelPreparation.run {
                 _ = try await ManagedASRModelDownloader.downloadIfNeeded(MedASRModel.plan(),
