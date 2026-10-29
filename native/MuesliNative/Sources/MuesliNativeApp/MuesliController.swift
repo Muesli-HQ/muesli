@@ -3285,7 +3285,7 @@ public final class MuesliController: NSObject {
         guard dictationBackendPreparation.owns(preparation),
               !selectedDictationProvider.isHosted else { return false }
         if BodhanModel(rawValue: backend.model) != nil || backend.backend == "whisper" || (backend.backend == "gemma4-litert" && GemmaNativeAudioPolicy.isEnabled(for: .e2b)) {
-            indicator.showLoading("Preparing \(backend.label)… Mic off")
+            indicator.showLoading("Preparing \(backend.label)… Dictation mic off")
         }
         do {
             try await transcriptionCoordinator.preloadRequired(
@@ -11068,7 +11068,7 @@ public final class MuesliController: NSObject {
             }
             if plan.localCleanupKey != nil, let cleanupOption {
                 guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else { throw CancellationError() }
-                let message = "Preparing \(cleanupOption.label)… Mic off"
+                let message = "Preparing \(cleanupOption.label)… Dictation mic off"
                 if ownsFeedback() {
                     self.indicator.showLoading(message)
                     self.statusBarController?.setStatus(message)
@@ -11135,7 +11135,7 @@ public final class MuesliController: NSObject {
             quilHotkeyMonitor.cancelToggleMode()
             hotkeyMonitor.cancelToggleMode()
             if ownsFeedback() {
-                indicator.showLoading("Preparing models… Mic off")
+                indicator.showLoading("Preparing models… Dictation mic off")
             }
         }
         return allowed

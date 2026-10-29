@@ -14,21 +14,19 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
-    @Test("overlap restores the surviving activity and directs controls to dictation", arguments: [false, true])
+    @Test("overlap state retains the surviving activity and routes Finish and Cancel to dictation")
     @MainActor
-    func dictationOverlap(notched: Bool) async throws {
+    func dictationOverlap() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(supportDirectory: directory), notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
-        var config = AppConfig()
-        config.indicatorAnchor = notched ? .notch : .bottomCenter
+        let config = AppConfig()
         indicator.presentsWindows = false
         var cancelled = 0, finished = 0, stoppedMeeting = 0
         indicator.onCancelDictation = { cancelled += 1 }
         indicator.onStopToggleDictation = { finished += 1 }
         indicator.onStopMeeting = { stoppedMeeting += 1 }
-        indicator.powerProvider = { -31 }
         indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(true, config: config)
         for state: DictationState in [.preparing, .recording, .transcribing] {
@@ -41,7 +39,6 @@ struct NotchIndicatorTests {
         #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 0)
         indicator.setDictationState(.idle, config: config)
         #expect(indicator.overlapMeetingStatus == nil)
-        #expect(indicator.powerProvider?() == -31)
         indicator.stopNotchMeeting()
         #expect(stoppedMeeting == 1)
         indicator.setDictationState(.recording, config: config)

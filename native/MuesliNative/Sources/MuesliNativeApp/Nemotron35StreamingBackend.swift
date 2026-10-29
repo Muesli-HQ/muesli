@@ -14,17 +14,28 @@ import Foundation
 /// chunk pipeline lives in `NemotronRNNTEngine`.
 @available(macOS 15, iOS 18, *)
 actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
-    private var preprocessor: MLModel?
-    private var encoder: MLModel?
-    private var decoder: MLModel?
-    private var joint: MLModel?
-    private var tokenizer: [Int: String] = [:]
-    private var loaded = false
-    private var loadedRevision: String?
+    typealias Prediction = @Sendable (NemotronRNNTConfig, [Float], inout RNNTStreamState) async throws -> [Int]
+    struct Models: Sendable {
+        let revision: String?
+        let tokenizer: [Int: String]
+        let predict: Prediction
+    }
+    typealias ModelLoader = @Sendable (((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> Models
+    private var models: Models?
+    private let modelLoader: ModelLoader
+    private let revision: @Sendable () -> String?
+    private let onWait: (@Sendable () -> Void)?
     private var isLoading = false
-    private var loadWaiters: [CheckedContinuation<Void, Error>] = []
-    private var loadGeneration = 0
     private let inferenceGate = InferenceGate()
+
+    init(modelLoader: @escaping ModelLoader = {
+        try await Nemotron35StreamingTranscriber.loadModelFiles(progress: $0, progressSnapshot: $1)
+    }, revision: @escaping @Sendable () -> String? = { Nemotron35StreamingTranscriber.installedRevision() },
+         onWait: (@Sendable () -> Void)? = nil) {
+        self.modelLoader = modelLoader
+        self.revision = revision
+        self.onWait = onWait
+    }
 
     /// Selected language `prompt_id` fed to the encoder (101 = auto-detect).
     /// Set from app config via `setPromptId(_:)` before dictation.
@@ -66,56 +77,55 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
-        if loaded, loadedRevision == Self.installedRevision() { return }
-        if isLoading {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                loadWaiters.append(continuation)
-            }
-            return
+        try Task.checkCancellation()
+        // A complete, current model can be observed while a file owns inference.
+        if !isLoading, let models, models.revision == revision() { return }
+        try await withReservation {
+            try await self.prepareModels(progress: progress, progressSnapshot: progressSnapshot)
         }
+    }
 
+    /// The caller owns inferenceGate; preparation must never reacquire it.
+    private func prepareModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
+        if let models, models.revision == revision() { return }
         isLoading = true
-        let generation = loadGeneration
+        defer { isLoading = false }
+        models = nil
         do {
-            try await performLoadModels(progress: progress, progressSnapshot: progressSnapshot, generation: generation)
-            isLoading = false
-            completeLoadWaiters()
+            models = try await modelLoader(progress, progressSnapshot)
+            try Task.checkCancellation()
         } catch {
-            isLoading = false
-            completeLoadWaiters(throwing: error)
+            models = nil
             throw error
         }
     }
 
-    private func performLoadModels(
-        progress: ((Double, String?) -> Void)? = nil,
-        progressSnapshot: ModelDownloadProgressHandler? = nil,
-        generation: Int
-    ) async throws {
+    private static func loadModelFiles(
+        progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws -> Models {
         let modelDir = try await ensureModelsDownloaded(progress: progress, progressSnapshot: progressSnapshot)
-        let installedRevision = Self.installedRevision()
-        if loaded, loadedRevision == installedRevision { return }
-        if loaded {
-            clearLoadedModels()
-        }
-
+        let installedRevision = installedRevision()
         fputs("[nemotron35] loading CoreML models...\n", stderr)
         progressSnapshot?(ModelDownloadProgress.preparing(modelID: Nemotron35ModelStore.repoID, message: "Preparing Nemotron 3.5 Core ML models..."))
         let mlConfig = MLModelConfiguration()
         mlConfig.computeUnits = .all
 
-        preprocessor = try await MLModel.load(
+        let preprocessor = try await MLModel.load(
             contentsOf: modelDir.appendingPathComponent("preprocessor.mlmodelc"), configuration: mlConfig)
-        encoder = try await MLModel.load(
+        let encoder = try await MLModel.load(
             contentsOf: modelDir.appendingPathComponent("encoder.mlmodelc"), configuration: mlConfig)
-        decoder = try await MLModel.load(
+        let decoder = try await MLModel.load(
             contentsOf: modelDir.appendingPathComponent("decoder.mlmodelc"), configuration: mlConfig)
-        joint = try await MLModel.load(
+        let joint = try await MLModel.load(
             contentsOf: modelDir.appendingPathComponent("joint.mlmodelc"), configuration: mlConfig)
 
         // Load tokenizer: {id_string: token_string}
         let tokenizerURL = modelDir.appendingPathComponent("tokenizer.json")
         let tokenizerData = try Data(contentsOf: tokenizerURL)
+        var tokenizer: [Int: String] = [:]
         if let json = try JSONSerialization.jsonObject(with: tokenizerData) as? [String: String] {
             for (key, value) in json {
                 if let id = Int(key) {
@@ -124,36 +134,24 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             }
         }
 
-        guard generation == loadGeneration else {
-            preprocessor = nil; encoder = nil; decoder = nil; joint = nil
-            tokenizer = [:]
-            throw TranscriberError.notLoaded
-        }
-
-        loaded = true
-        loadedRevision = installedRevision
         fputs("[nemotron35] models ready (\(tokenizer.count) vocab tokens)\n", stderr)
+        return Models(revision: installedRevision, tokenizer: tokenizer) { config, samples, state in
+            try await nemotronTranscribeChunk(preprocessor: preprocessor, encoder: encoder,
+                decoder: decoder, joint: joint, config: config, samples: samples, state: &state)
+        }
     }
 
-    private func clearLoadedModels() {
-        preprocessor = nil
-        encoder = nil
-        decoder = nil
-        joint = nil
-        tokenizer = [:]
-        loaded = false
-        loadedRevision = nil
-    }
-
-    private func completeLoadWaiters(throwing error: Error? = nil) {
-        let waiters = loadWaiters
-        loadWaiters.removeAll()
-        for waiter in waiters {
-            if let error {
-                waiter.resume(throwing: error)
-            } else {
-                waiter.resume()
-            }
+    private func withReservation<T>(_ operation: () async throws -> T) async throws -> T {
+        try await inferenceGate.acquire(onWait: onWait)
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            try Task.checkCancellation()
+            await inferenceGate.release()
+            return result
+        } catch {
+            await inferenceGate.release()
+            throw error
         }
     }
 
@@ -165,58 +163,47 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     /// Process one 2240ms audio chunk (35840 samples) and return newly decoded text.
     func transcribeChunk(samples: [Float], state: inout StreamState) async throws -> String {
-        guard loaded, let preprocessor, let encoder, let decoder, let joint else {
-            throw TranscriberError.notLoaded
+        try await withReservation {
+            guard let models = self.models else { throw TranscriberError.notLoaded }
+            return try await self.transcribeChunkReserved(samples: samples, state: &state,
+                models: models, config: self.config)
         }
-        // Actor methods can re-enter while Core ML predictions await. Serialize
-        // shared-model inference while each caller retains its own stream state.
-        try await inferenceGate.acquire()
-        do {
-            try Task.checkCancellation()
-            let newTokens = try await nemotronTranscribeChunk(
-                preprocessor: preprocessor, encoder: encoder, decoder: decoder, joint: joint,
-                config: config, samples: samples, state: &state)
-            let text = nemotronDecodeTokens(
-                newTokens, tokenizer: tokenizer,
-                stripAngleBracketTags: config.stripAngleBracketTags, trim: false)
-            await inferenceGate.release()
-            return text
-        } catch {
-            await inferenceGate.release()
-            throw error
-        }
+    }
+
+    private func transcribeChunkReserved(samples: [Float], state: inout StreamState,
+                                         models: Models, config: NemotronRNNTConfig) async throws -> String {
+        try Task.checkCancellation()
+        let newTokens = try await models.predict(config, samples, &state)
+        return nemotronDecodeTokens(newTokens, tokenizer: models.tokenizer,
+            stripAngleBracketTags: config.stripAngleBracketTags, trim: false)
     }
 
     // MARK: - Convenience (full-file transcription)
 
     func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
-        guard loaded else { throw TranscriberError.notLoaded }
-
-        let samples = try nemotronLoadWavAsFloats(url: wavURL)
-        let start = CFAbsoluteTimeGetCurrent()
-
-        var state = try makeStreamState()
-        var sampleOffset = 0
-
-        while sampleOffset < samples.count {
-            let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
-            let chunk = Array(samples[sampleOffset..<chunkEnd])
-            _ = try await transcribeChunk(samples: chunk, state: &state)
-            sampleOffset += config.chunkSamples
+        try await withReservation {
+            let config = self.config // Prompt changes apply to subsequent work, not this file.
+            try await self.prepareModels()
+            guard let models = self.models else { throw TranscriberError.notLoaded }
+            let samples = try nemotronLoadWavAsFloats(url: wavURL)
+            let start = CFAbsoluteTimeGetCurrent()
+            var state = try nemotronMakeStreamState(config: config)
+            var sampleOffset = 0
+            while sampleOffset < samples.count {
+                let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
+                let chunk = Array(samples[sampleOffset..<chunkEnd])
+                _ = try await self.transcribeChunkReserved(samples: chunk, state: &state,
+                    models: models, config: config)
+                sampleOffset += config.chunkSamples
+            }
+            let text = nemotronDecodeTokens(state.allTokens, tokenizer: models.tokenizer,
+                stripAngleBracketTags: config.stripAngleBracketTags, trim: true)
+            return (text, CFAbsoluteTimeGetCurrent() - start)
         }
-
-        let text = nemotronDecodeTokens(
-            state.allTokens, tokenizer: tokenizer,
-            stripAngleBracketTags: config.stripAngleBracketTags, trim: true)
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        return (text: text, processingTime: elapsed)
     }
 
-    func shutdown() {
-        loadGeneration += 1
-        clearLoadedModels()
-        isLoading = false
-        completeLoadWaiters(throwing: TranscriberError.notLoaded)
+    func shutdown() async {
+        _ = try? await withReservation { self.models = nil }
     }
 
     // MARK: - Model Download
@@ -244,7 +231,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         return local != remote
     }
 
-    private func ensureModelsDownloaded(
+    private static func ensureModelsDownloaded(
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> URL {

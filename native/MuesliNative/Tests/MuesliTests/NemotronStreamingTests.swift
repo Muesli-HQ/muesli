@@ -864,6 +864,82 @@ struct NemotronDictationModePolicyTests {
 struct Nemotron35StreamStateTests {
 
     @available(macOS 15, *)
+    @Test("native ownership permits capture and protects a whole meeting file",
+          arguments: ["capture", "reload", "shutdown", "cancel", "failed-load"])
+    func nativeFileOwnership(scenario: String) async throws {
+        let fixture = NativeNemotronFixture(failLoad: scenario == "failed-load")
+        defer { fixture.release.continuation.finish() }
+        let transcriber = Nemotron35StreamingTranscriber(modelLoader: { _, _ in try fixture.load() },
+            revision: { fixture.snapshot.revision }, onWait: { fixture.update { $0.waits += 1 } })
+        let coordinator = TranscriptionCoordinator()
+        await coordinator.testingInstallNemotron(transcriber)
+        let wav = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 71_681))
+        defer { try? FileManager.default.removeItem(at: wav) }
+        if scenario == "failed-load" {
+            await #expect(throws: NemotronRNNTError.self) {
+                _ = try await coordinator.getLoadedNemotron35Transcriber()
+            }
+            fixture.release.continuation.finish()
+        }
+        _ = try await coordinator.getLoadedNemotron35Transcriber()
+        let file = Task { try await coordinator.transcribeMeeting(at: wav, backend: .nemotron35Multilingual) }
+        if scenario != "failed-load" {
+            #expect(await waitUntil { fixture.snapshot.filePredictions == 1 })
+        }
+        var other: Task<String, Error>?
+        if scenario == "capture" {
+            other = Task {
+                await coordinator.setNemotron35PromptId(102)
+                let ready = try await coordinator.getLoadedNemotron35Transcriber()
+                let recorder = InspectableStreamingDictationRecorder()
+                let controller = StreamingDictationController(transcriber: ready, recorder: recorder,
+                    chunkSamples: ready.chunkSamples)
+                defer { controller.cancel() }
+                #expect(controller.start())
+                recorder.emit(samples: Array(repeating: 0.75, count: ready.chunkSamples))
+                fixture.update { $0.captured = recorder.startCalls == 1 }
+                return await stop(controller)
+            }
+            #expect(await waitUntil { fixture.snapshot.captured }, "Loaded capture must start before the held file is released")
+        } else if scenario == "reload" || scenario == "shutdown" {
+            if scenario == "reload" { fixture.update { $0.revision = "b" } }
+            other = Task {
+                if scenario == "reload" {
+                    try await transcriber.loadModels()
+                } else {
+                    await transcriber.shutdown()
+                }
+                fixture.update { $0.mutated = true }
+                return "mutated"
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 }, "Mutation must actually queue at the native reservation")
+            #expect(!fixture.snapshot.mutated)
+            #expect(fixture.snapshot.loads == 1)
+        } else if scenario == "cancel" {
+            let cancelled = Task {
+                var state = try await transcriber.makeStreamState()
+                return try await transcriber.transcribeChunk(samples: [0.75], state: &state)
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 })
+            cancelled.cancel()
+            await #expect(throws: CancellationError.self) { try await cancelled.value }
+            #expect(fixture.snapshot.predictions == 1)
+        }
+        fixture.release.continuation.finish()
+        let text = try? await file.value.text
+        #expect(text == "Meeting Meeting Meeting", "The entire file must decode using its original models")
+        if let other {
+            let result = try? await other.value
+            #expect(result == (scenario == "capture" ? " Dictation" : "mutated"))
+        }
+        #expect(fixture.snapshot.filePrompts == [101, 101, 101])
+        if scenario == "reload" { #expect(fixture.snapshot.reloadAfterPredictions == 3) }
+        _ = try await coordinator.getLoadedNemotron35Transcriber()
+        var next = try await transcriber.makeStreamState()
+        #expect(try await transcriber.transcribeChunk(samples: [0.75], state: &next) == " Dictation")
+    }
+
+    @available(macOS 15, *)
     @Test("makeStreamState uses the 3.5 multilingual cache shapes")
     func makeStreamStateShapes() async throws {
         let transcriber = Nemotron35StreamingTranscriber()
@@ -909,6 +985,55 @@ struct Nemotron35StreamStateTests {
             transcriber: transcriber as NemotronStreamingTranscribing,
             chunkSamples: 35840
         )
+    }
+}
+
+
+@available(macOS 15, *)
+private final class NativeNemotronFixture: @unchecked Sendable {
+    struct Snapshot {
+        var revision = "a"
+        var loads = 0
+        var predictions = 0
+        var filePredictions = 0
+        var filePrompts: [Int32] = []
+        var reloadAfterPredictions = 0
+        var waits = 0
+        var captured = false
+        var mutated = false
+        var failLoad = false
+    }
+    private let lock = NSLock()
+    private var storage: Snapshot
+    let release = AsyncStream<Void>.makeStream()
+    init(failLoad: Bool) { storage = Snapshot(failLoad: failLoad) }
+    var snapshot: Snapshot { lock.withLock { storage } }
+    func update(_ body: (inout Snapshot) -> Void) { lock.withLock { body(&storage) } }
+    func load() throws -> Nemotron35StreamingTranscriber.Models {
+        let loaded = lock.withLock {
+            storage.loads += 1
+            storage.reloadAfterPredictions = storage.filePredictions
+            let current = storage
+            storage.failLoad = false
+            return current
+        }
+        if loaded.failLoad { throw NemotronRNNTError.notLoaded }
+        let tokenizer = [1: loaded.revision == "a" ? "▁Meeting" : "▁Changed", 2: "▁Dictation"]
+        return .init(revision: loaded.revision, tokenizer: tokenizer) { [self] config, samples, state in
+            let file = (samples.first ?? 0) < 0.5
+            let first = lock.withLock {
+                storage.predictions += 1
+                if file {
+                    storage.filePredictions += 1
+                    storage.filePrompts.append(config.promptId ?? -1)
+                }
+                return storage.predictions == 1
+            }
+            if first { for await _ in release.stream {} }
+            let tokens = [file ? 1 : 2]
+            state.allTokens += tokens
+            return tokens
+        }
     }
 }
 
