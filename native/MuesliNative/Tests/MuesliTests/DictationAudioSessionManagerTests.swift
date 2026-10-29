@@ -759,6 +759,7 @@ final class FakeDictationRecorder: DictationAudioRecording {
     var cancelCalls: Int { observations.withLock { $0.cancel } }
     var startError: Error?
     var onStart: (() -> Void)?
+    var onActivate: (() -> Void)?
     var onStop: (() -> Void)?
     var stopURL: URL?
     var lastWarmInputDeviceID: AudioObjectID?
@@ -785,6 +786,7 @@ final class FakeDictationRecorder: DictationAudioRecording {
 
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {
         activateCalls += 1
+        onActivate?()
         if let activateError {
             throw activateError
         }

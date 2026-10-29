@@ -260,9 +260,11 @@ final class DictationAudioSessionManager: @unchecked Sendable {
 
     @discardableResult
     func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool,
-                        captureInterval: (() -> (() -> Void))? = nil) -> UUID {
+                        captureInterval: (() -> Void)? = nil) -> UUID {
         let sessionID = ensureSession()
         queue.async { [self] in
+            var adoptedInterval = false
+            defer { if !adoptedInterval { captureInterval?() } }
             self.cancelPendingRouteRefreshLocked()
             guard self.sessionHintMatches(sessionID) else {
                 self.emitLatency("stale_session_ignored:\(mode)")
@@ -282,6 +284,8 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             default:
                 break
             }
+            self.endCaptureInterval = captureInterval
+            adoptedInterval = true
             self.stateStorage = .acquiringAudio(sessionID)
             self.emit(.acquiringAudio(sessionID))
             self.emitLatency("threshold_met:\(mode)")
@@ -307,9 +311,6 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 } else {
                     self.emitLatency("activation_prepare_skipped:\(mode):\(self.activationWarmupSkipReason(route: self.routeSnapshot))")
                 }
-                // Arm only prepares the graph. Commit the interval at accepted
-                // Start, before any audio can enter the exported recording.
-                self.endCaptureInterval = captureInterval?()
                 self.activeRecorderRunID = try self.recorder.start()
                 self.emitLatency("activation_end:\(mode)")
                 fputs("[dictation-session] recording mode=\(mode) \(self.routeSnapshot.debugDescription)\n", stderr)

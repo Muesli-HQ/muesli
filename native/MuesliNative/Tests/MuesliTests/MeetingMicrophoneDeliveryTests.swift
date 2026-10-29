@@ -16,7 +16,7 @@ struct MeetingMicrophoneDeliveryTests {
     }()
 
     @Test("ordinary dictation output and capture boundaries preserve meeting PCM",
-          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "meeting-discard"])
+          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "warmup-failure", "meeting-discard"])
     @MainActor
     func dictationDuringMeeting(activeMeeting: Bool, ending: String) async throws {
         _ = Self.disabledTelemetry
@@ -27,6 +27,7 @@ struct MeetingMicrophoneDeliveryTests {
         let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
         try store.migrateIfNeeded()
         let configStore = ConfigStore(supportDirectory: directory)
+        let blockedWarmup = ending == "warmup-failure", activation = ContractGate()
         let streamingPreparation = ending == "nemotron-preparing-cancel"
         let nemotron = streamingPreparation || ending == "nemotron-hold"
         var config = AppConfig()
@@ -36,7 +37,7 @@ struct MeetingMicrophoneDeliveryTests {
         config.soundEnabled = false; config.enableScreenContext = false
         config.onboardingUseCase = OnboardingUseCase.voiceNotes.rawValue
         configStore.save(config)
-        let route = FakeDictationRoute(routeKind: .headphoneLike, preferredInputDeviceID: nil)
+        let route = FakeDictationRoute(routeKind: blockedWarmup ? .speakerLike : .headphoneLike, preferredInputDeviceID: nil)
         let controller = MuesliController(runtime: runtime, dictationStore: store, configStore: configStore,
             audioDuckingController: FakeDuckingManager(), dictationAudioRoutingController: route,
             downloadedBackendOptions: { nemotron ? [.nemotron35Multilingual] : [] })
@@ -80,9 +81,10 @@ struct MeetingMicrophoneDeliveryTests {
             try await session.testingStartCapture()
         }
         let recorder = FakeDictationRecorder()
-        recorder.startError = ending == "failure" ? NSError(domain: "synthetic", code: 1) : nil
+        recorder.startError = ending.hasSuffix("failure") ? NSError(domain: "synthetic", code: 1) : nil
         recorder.stopURL = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 16_000))
         defer { if let url = recorder.stopURL { try? FileManager.default.removeItem(at: url) } }
+        if blockedWarmup { recorder.onActivate = { recorder.onActivate = nil; activation.block() } }
         recorder.onStart = { [weak recorder] in recorder?.onFirstCapturedAudioBuffer?(Date(timeIntervalSinceNow: -1)) }
         let managerQueue = DispatchQueue(label: "overlap.manager"), eventQueue = DispatchQueue(label: "overlap.events")
         let manager = DictationAudioSessionManager(recorder: recorder,
@@ -99,7 +101,7 @@ struct MeetingMicrophoneDeliveryTests {
             if activeMeeting { try producer.emit([8, 8, 8, 8], at: frame) }
         }
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
-        try await flush()
+        if blockedWarmup { try await activation.waitUntilEntered() } else { try await flush() }
         try emit(at: 1500) // Speculative arm/prepare must preserve this packet.
         if ending == "shortcut" { monitor.handleKeyDown(keyCode: 8) }
         let speculative = ending == "tap" || ending == "shortcut"
@@ -107,23 +109,23 @@ struct MeetingMicrophoneDeliveryTests {
         if !speculative {
             if ending == "toggle" || streamingPreparation { controller.testingDictationAction("toggle") }
             else { scheduler.advance(by: 0.30) }
-            try await flush()
-            #expect(recorder.startCalls == (streamingPreparation ? 0 : 1))
-            if ending != "failure" && !streamingPreparation {
+            if !blockedWarmup { try await flush(); #expect(recorder.startCalls == (streamingPreparation ? 0 : 1)) }
+            if !ending.hasSuffix("failure") && !streamingPreparation {
                 for _ in 0..<100 where controller.appState.dictationState != .recording {
                     try await Task.sleep(for: .milliseconds(5))
                 }
             }
         }
-        try emit(at: 2500) // Excluded only for committed, successful capture.
+        try emit(at: 2500) // Accepted startup is private even while preparation is blocked.
         if activeMeeting && ending == "paused" { session.pause() }
         controller.dictationTestCallback = nil // Exercise ordinary transcription and history.
-        let cancelled = ending == "finish-cancel" || speculative || streamingPreparation || ending == "cancel" || ending == "delayed-cancel" || ending == "failure"
+        let cancelled = ending == "finish-cancel" || speculative || streamingPreparation || ending == "cancel" || ending == "delayed-cancel" || ending.hasSuffix("failure")
         let delayed = ending.hasPrefix("delayed-")
         if activeMeeting && ending == "meeting-stop" { controller.stopMeetingRecording() }
         if activeMeeting && ending == "meeting-discard" { controller.testingDictationAction("discard-meeting") }
         if delayed { eventQueue.suspend() }
         clock.withLock { $0 = 3000 }
+        if blockedWarmup { activation.release.signal(); try await flush() }
         if ending == "finish-release" || ending == "finish-cancel" {
             let gate = ContractGate()
             recorder.onStop = { gate.block() }
@@ -178,7 +180,7 @@ struct MeetingMicrophoneDeliveryTests {
             let urls = await session.testingFinishCapture()
             defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
             let expected = Array(repeating: Int16(16383), count: 4)
-                + Array(repeating: Int16(speculative || streamingPreparation || ending == "failure" ? 16383 : 0), count: 4)
+                + Array(repeating: Int16(speculative || ending == "failure" ? 16383 : 0), count: 4)
                 + Array(repeating: Int16(16383), count: 4)
             #expect(retained.withLock { $0 } == expected)
             let pcm = try Data(contentsOf: #require(urls.3)).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }

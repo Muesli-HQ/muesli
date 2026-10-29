@@ -154,7 +154,11 @@ actor TranscriptionCoordinator {
     private let vadLoader: VADLoader
     private let diarizerLoadOperationTimeout: Duration
     private let diarizerDiagnostics: DiarizerPreloadDiagnostics
-    private let modelUseGate = InferenceGate()
+    private let modelUseGates = [
+        "whisper": InferenceGate(), "fluidaudio": InferenceGate(), "parakeet-unified": InferenceGate(),
+        "qwen": InferenceGate(), "sensevoice": InferenceGate(), "bodhan": InferenceGate(),
+        "cohere": InferenceGate(), "nemotron35": InferenceGate(),
+    ]
     private var activeBackend: String?
     private let nativeGemmaReadinessInvalidated: @MainActor @Sendable () -> Void
 
@@ -205,7 +209,7 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Nemotron35StreamingTranscriber {
-        try await withModelReservation {
+        try await withModelReservation(for: "nemotron35") {
             try await self.loadNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
         }
     }
@@ -231,7 +235,7 @@ actor TranscriptionCoordinator {
     }
 
     func unloadNemotron35Transcriber() async {
-        _ = try? await withModelReservation {
+        _ = try? await withModelReservation(for: "nemotron35") {
             if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
                 await transcriber.shutdown()
             }
@@ -239,7 +243,7 @@ actor TranscriptionCoordinator {
     }
 
     func unloadBodhanTranscriber(ifLoadedModelID modelID: String) async {
-        _ = try? await withModelReservation {
+        _ = try? await withModelReservation(for: "bodhan") {
             if #available(macOS 15, *), let transcriber = _bodhanTranscriber as? BodhanTranscriber {
                 await transcriber.shutdown(ifLoadedModelID: modelID)
             }
@@ -260,19 +264,19 @@ actor TranscriptionCoordinator {
     }
 
     func unloadFluidAudioTranscriber(ifLoadedModelID modelID: String) async {
-        _ = try? await withModelReservation {
+        _ = try? await withModelReservation(for: "fluidaudio") {
             await fluidTranscriber.shutdown(ifLoadedModelID: modelID)
         }
     }
 
     func unloadParakeetUnifiedTranscriber() async {
-        _ = try? await withModelReservation {
+        _ = try? await withModelReservation(for: "parakeet-unified") {
             await parakeetUnifiedTranscriber.shutdown()
         }
     }
 
     func unloadQwen3Transcriber() async {
-        _ = try? await withModelReservation {
+        _ = try? await withModelReservation(for: "qwen") {
             if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
                 await transcriber.shutdown()
                 _qwen3Transcriber = nil
@@ -708,27 +712,25 @@ actor TranscriptionCoordinator {
             try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage,
                 progress: progress, progressSnapshot: progressSnapshot, warmup: true)
         }
-        if backend.backend == "gemma4-litert" {
-            try await prepare()
-        } else {
-            try await withModelReservation(prepare)
-        }
+        try await withModelReservation(for: backend.backend, prepare)
 
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
-    /// Actor reentrancy alone cannot reserve a model across preparation and ASR.
-    /// Cleanup and independent streaming sessions retain their existing owners.
-    private func withModelReservation<T>(_ operation: () async throws -> T) async throws -> T {
-        try await modelUseGate.acquire()
+    /// Reserve each mutable transcriber across preparation, file ASR and cleanup.
+    /// Apple leases and Gemma engines already own their lifetimes.
+    private func withModelReservation<T>(for backend: String, _ operation: () async throws -> T) async throws -> T {
+        if backend == "apple-speech" || backend == "gemma4-litert" { return try await operation() }
+        let gate = modelUseGates[backend] ?? modelUseGates["fluidaudio"]!
+        try await gate.acquire()
         do {
             try Task.checkCancellation()
             let result = try await operation()
             try Task.checkCancellation()
-            await modelUseGate.release()
+            await gate.release()
             return result
         } catch {
-            await modelUseGate.release()
+            await gate.release()
             throw error
         }
     }
@@ -1333,19 +1335,15 @@ actor TranscriptionCoordinator {
     }
 
     func shutdown() async {
-        _ = try? await withModelReservation {
-            await fluidTranscriber.shutdown()
-            await parakeetUnifiedTranscriber.shutdown()
-            await whisperTranscriber.shutdown()
-            await senseVoiceTranscriber.shutdown()
-            if #available(macOS 15, *) {
-                if let nemotron35 = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
-                    await nemotron35.shutdown()
-                }
-                await qwen3Transcriber.shutdown()
-                await cohereTranscriber.shutdown()
-                await bodhanTranscriber.shutdown()
-            }
+        _ = try? await withModelReservation(for: "fluidaudio") { await fluidTranscriber.shutdown() }
+        _ = try? await withModelReservation(for: "parakeet-unified") { await parakeetUnifiedTranscriber.shutdown() }
+        _ = try? await withModelReservation(for: "whisper") { await whisperTranscriber.shutdown() }
+        _ = try? await withModelReservation(for: "sensevoice") { await senseVoiceTranscriber.shutdown() }
+        if #available(macOS 15, *) {
+            await unloadNemotron35Transcriber()
+            _ = try? await withModelReservation(for: "qwen") { await qwen3Transcriber.shutdown() }
+            _ = try? await withModelReservation(for: "cohere") { await cohereTranscriber.shutdown() }
+            _ = try? await withModelReservation(for: "bodhan") { await bodhanTranscriber.shutdown() }
         }
         if #available(macOS 15, *) {
             await unloadGemma4LiteRTTranscriber()
@@ -1668,9 +1666,7 @@ actor TranscriptionCoordinator {
                 whisperLanguage: whisperLanguage, qwen3AsrLanguage: qwen3AsrLanguage,
                 parakeetLanguage: parakeetLanguage, appleSpeechLanguage: appleSpeechLanguage)
         }
-        // Gemma's stable per-model engine owns preparation, inference and shutdown.
-        if backend.backend == "gemma4-litert" { return try await infer() }
-        return try await withModelReservation(infer)
+        return try await withModelReservation(for: backend.backend, infer)
     }
 
     private func routePrepared(

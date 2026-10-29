@@ -11176,14 +11176,6 @@ public final class MuesliController: NSObject {
         return (session, session.beginMicrophoneExclusion())
     }
 
-    private func meetingDictationCaptureInterval() -> (() -> (() -> Void))? {
-        guard let session = activeMeetingSession else { return nil }
-        return {
-            let token = session.beginMicrophoneExclusion()
-            return { session.endMicrophoneExclusion(token) }
-        }
-    }
-
     private func bindDictationCapture(_ exclusion: (session: MeetingSession, token: UUID)?, id: UUID?) {
         guard let id else { return }
         dictationCaptureSessionID = id
@@ -11821,6 +11813,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         guard beginHostedDictationIfNeeded() else { return }
+        let exclusion = beginMeetingDictationExclusion()
 
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
         // addition to double-tap handsfree streaming. The hold path uses the normal
@@ -11839,7 +11832,7 @@ public final class MuesliController: NSObject {
             mode: "hold-start",
             duckingEnabled: config.muteSystemAudioDuringDictation && !isMeetingRecording(),
             mediaPauseEnabled: config.pauseMediaDuringDictation && !isMeetingRecording(),
-            captureInterval: meetingDictationCaptureInterval()
+            captureInterval: exclusion.map { exclusion in { exclusion.session.endMicrophoneExclusion(exclusion.token) } }
         )
         bindDictationCapture(nil, id: id)
     }
@@ -11848,6 +11841,7 @@ public final class MuesliController: NSObject {
     private func startNemotronStreamingAsync(
         sessionID: UUID
     ) {
+        let exclusion = meetingDictationExclusions[sessionID]
         Task {
             let transcriber: Nemotron35StreamingTranscriber
             do {
@@ -11880,8 +11874,6 @@ public final class MuesliController: NSObject {
                 let currentPreferredInputDeviceID =
                     self.dictationAudioRoutingController.cachedPreferredInputDeviceIDForDictation()
                 let controller = makeController(currentPreferredInputDeviceID)
-                let exclusion = self.beginMeetingDictationExclusion()
-                self.bindDictationCapture(exclusion, id: sessionID)
                 controller.onPartialText = { [weak self] fullText in
                     guard let self else { return }
                     DispatchQueue.main.async {
@@ -12025,6 +12017,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
         guard beginHostedDictationIfNeeded() else { return false }
+        let exclusion = beginMeetingDictationExclusion()
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
@@ -12045,7 +12038,7 @@ public final class MuesliController: NSObject {
                 nemotron35StreamingSessionID = sessionID
                 previousStreamText = ""
                 dictationStartedAt = Date()
-                bindDictationCapture(nil, id: sessionID)
+                bindDictationCapture(exclusion, id: sessionID)
                 markDictationLatency("sound_start_requested:nemotron-toggle")
                 SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
                 dictationAudioSessionManager.beginExternalSession(
@@ -12066,7 +12059,7 @@ public final class MuesliController: NSObject {
             mode: "toggle",
             duckingEnabled: config.muteSystemAudioDuringDictation && !isMeetingRecording(),
             mediaPauseEnabled: config.pauseMediaDuringDictation && !isMeetingRecording(),
-            captureInterval: meetingDictationCaptureInterval()
+            captureInterval: exclusion.map { exclusion in { exclusion.session.endMicrophoneExclusion(exclusion.token) } }
         )
         bindDictationCapture(nil, id: id)
         return true
