@@ -476,6 +476,14 @@ struct BackendOption: Equatable {
     }
 
     /// Check if this model's files exist on disk.
+    static func feedbackCaptureBackend(preferred: BackendOption?, installed: [BackendOption]) -> BackendOption? {
+        // Measured families first, then the remaining local catalog in catalog order.
+        let ordered = parakeetFamily.filter { $0.backend == "fluidaudio" } + whisperFamily + [appleSpeechAnalyzer] + all
+        let candidates = ordered.filter { installed.contains($0) }
+        return resolveDownloaded(backend: preferred?.backend ?? "", model: preferred?.model ?? "",
+            fallback: nil, downloadedOptions: candidates)
+    }
+
     var isDownloaded: Bool {
         let fm = FileManager.default
         switch backend {

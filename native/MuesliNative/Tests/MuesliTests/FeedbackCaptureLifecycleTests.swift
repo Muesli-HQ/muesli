@@ -294,6 +294,7 @@ struct FeedbackCaptureLifecycleTests {
             let subject = try shortcutController(root: root, monitor: monitor, capture: capture,
                 menuRefresh: { menuOwnership.append(capture.ownsMicrophone) }, indicator: indicator)
             _ = subject.feedbackCapture // Wire the actual owner's monitor, presentation and release callbacks.
+            capture.finalizer.stages = [] // This control fixture must not invoke installed speech models.
             subject.handleFeedbackCaptureToggle(permissions: { granted }, device: { nil })
             try await waitUntil { capture.state?.isRecording == true }
             #expect(menuOwnership == [true], "Accepted Start refreshes menu ownership once")
@@ -454,8 +455,9 @@ struct FeedbackCaptureLifecycleTests {
         }
     }
 
-    @Test func processingDeadlineKeepsJournalAndLateCompletionPreservesNewWarning() async throws {
-        try await withFeedbackStoreAsync { _, root in
+    @Test(arguments: [false, true])
+    func processingDeadlineKeepsJournalAndLateCompletionPreservesNewWarning(recover: Bool) async throws {
+        try await withFeedbackStoreAsync { store, root in
             var resume: CheckedContinuation<Void, Never>?
             let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
                 pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
@@ -464,28 +466,43 @@ struct FeedbackCaptureLifecycleTests {
             controller.finalizer.stages = [.init(name: .render, run: { _, _ in
                 await withCheckedContinuation { resume = $0 }
             })]
-            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
-            try await waitUntil { controller.state?.isRecording == true }
-            #expect(await controller.finishAndReleaseMicrophone())
+            let recovery: Task<Void, Never>?
+            if recover {
+                let manifest = try store.begin(target: feedbackTarget())
+                try WavWriter.writeWAV(samples: Array(repeating: Float(0), count: 1600),
+                    to: store.mediaURL(id: manifest.id, path: "narration.wav"))
+                store.release(id: manifest.id)
+                recovery = Task { await controller.recover() }
+            } else {
+                recovery = nil
+                #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+                try await waitUntil { controller.state?.isRecording == true }
+                #expect(await controller.finishAndReleaseMicrophone())
+            }
             try await waitUntil { resume != nil }
-            let processingPresentation = controller.presentationID
-            let processingID = controller.presentedCaptureID
-            var notice: FeedbackCapturePillState?
-            controller.onStateChanged = { notice = $0 }
-            #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
-            #expect(notice == .busy(activity: "Wait for feedback processing"))
-            #expect(controller.state == .processing)
-            #expect(controller.presentationID == processingPresentation && controller.presentedCaptureID == processingID)
+            if !recover {
+                let processingPresentation = controller.presentationID
+                let processingID = controller.presentedCaptureID
+                var notice: FeedbackCapturePillState?
+                controller.onStateChanged = { notice = $0 }
+                #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+                #expect(notice == .busy(activity: "Wait for feedback processing"))
+                #expect(controller.state == .processing)
+                #expect(controller.presentationID == processingPresentation && controller.presentedCaptureID == processingID)
+            }
             #expect(!(await controller.shutdown()))
-            #expect(!controller.ownsMicrophone && controller.hasAttempt)
-            let id = try #require(controller.presentedCaptureID)
-            let pendingFinalization = FeedbackCapturePillState.failed(stage: "Media finalization",
-                message: "Finalization is still pending", retainedMedia: true)
-            try await waitUntil(description: "pending finalization warning") { controller.state == pendingFinalization }
+            #expect(!controller.ownsMicrophone && controller.hasAttempt == !recover)
+            let id = try #require(recover ? controller.records.first?.id : controller.presentedCaptureID)
+            if !recover {
+                let pendingFinalization = FeedbackCapturePillState.failed(stage: "Media finalization",
+                    message: "Finalization is still pending", retainedMedia: true)
+                try await waitUntil(description: "pending finalization warning") { controller.state == pendingFinalization }
+            }
             #expect(throws: (any Error).self) { try controller.store?.delete(id: id) }
             let denied = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: false)
             #expect(!controller.start(permissions: denied, busyActivity: nil, device: { nil }))
             resume?.resume()
+            await recovery?.value
             try await waitUntil { !controller.hasAttempt }
             #expect(controller.state == .blocked(permission: "Screen Recording"))
         }

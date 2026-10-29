@@ -46,6 +46,31 @@ struct FeedbackCaptureView: View {
                 } else {
                     ContentUnavailableView("Media unavailable", systemImage: "video.slash", description: Text("The saved media may be missing or still recording."))
                 }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Narration").font(.headline)
+                        if manifest?.transcript?.estimated == true, manifest?.transcript?.missing == nil {
+                            Text("Estimated timing").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let transcript = manifest?.transcript {
+                        if let missing = transcript.missing { Text("No transcript: \(missing.reason)").foregroundStyle(.secondary) }
+                        else {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(Array(transcript.segments.enumerated()), id: \.offset) { _, segment in
+                                        Text(String(format: "%d:%02d  %@", segment.t0 / 60_000,
+                                            (segment.t0 / 1000) % 60, segment.text))
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }.textSelection(.enabled)
+                            }.frame(maxHeight: 100)
+                        }
+                    } else {
+                        Text(selected.state == .processing ? "Transcribing narration…" : "No transcript saved")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text(manifest?.state.rawValue.capitalized ?? selected.state.rawValue.capitalized).font(.headline)
                 if manifest?.audio == nil, manifest?.video != nil { Text("Video only · narration unavailable").foregroundStyle(.secondary) }
                 if manifest?.video == nil, manifest?.audio != nil { Text("Audio only · video unavailable").foregroundStyle(.secondary) }

@@ -412,6 +412,11 @@ public final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     private(set) lazy var transcriptionCoordinator = TranscriptionCoordinator(
+        foregroundActivity: { [weak self] in
+            guard let self else { return false }
+            return self.dictationState != .idle || self.isMeetingRecording() || self.isStartingMeetingRecording
+                || self.interactiveAudioSessionOwnership.hasActiveOwner
+        },
         nativeGemmaReadinessInvalidated: { [weak self] in
             self?.nativeRecordingGate.invalidate()
             self?.indicator.hideLoading()
@@ -526,6 +531,16 @@ public final class MuesliController: NSObject {
         if let storedFeedbackCapture { return storedFeedbackCapture }
         let capture = makeFeedbackCapture(dictationStore.resolvedDatabaseURL, configStore.supportDirectory())
         storedFeedbackCapture = capture
+        capture.finalizer.stages.append(.init(name: .transcribe) { [weak self] manifest, context in
+            guard let self else { throw CancellationError() }
+            let coordinator = self.transcriptionCoordinator
+            let preferred = self.selectedDictationProvider == .local ? self.selectedBackend : nil
+            let snapshot = self.config
+            let stage = FeedbackCaptureFinalizer.transcriptionStage { url in
+                try await coordinator.transcribeFeedbackCapture(at: url, preferred: preferred, config: snapshot)
+            }
+            try await stage.run(&manifest, context)
+        })
         capture.onAdmissionReset = { [weak self] in self?.feedbackCaptureHotkeyMonitor.cancelToggleMode() }
         capture.onMicrophoneReleased = { [weak self] in
             guard let self else { return }

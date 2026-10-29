@@ -1,4 +1,5 @@
 import Accelerate
+import AVFoundation
 @preconcurrency import CoreML
 import Foundation
 
@@ -263,15 +264,44 @@ func nemotronTranscribeChunk(
 
 // MARK: - WAV loading
 
-func nemotronLoadWavAsFloats(url: URL) throws -> [Float] {
-    let data = try Data(contentsOf: url)
-    guard data.count > 44 else { throw NemotronRNNTError.decodingFailed("WAV too small") }
-    let pcmData = data.dropFirst(44)
-    let count = pcmData.count / 2
-    var floats = [Float](repeating: 0, count: count)
-    pcmData.withUnsafeBytes { raw in
-        let buf = raw.bindMemory(to: Int16.self)
-        for i in 0..<count { floats[i] = Float(buf[i]) / 32767.0 }
+func nemotronCollectWavSamples(
+    frameCount: Int64,
+    framePosition: () -> Int64,
+    read: (AVAudioFrameCount) throws -> [Float]
+) throws -> [Float] {
+    var samples: [Float] = []
+    samples.reserveCapacity(Int(frameCount))
+    var position = framePosition()
+    while position < frameCount {
+        let chunk = try read(AVAudioFrameCount(frameCount - position))
+        let nextPosition = framePosition()
+        guard !chunk.isEmpty, nextPosition > position, nextPosition <= frameCount else {
+            throw NemotronRNNTError.decodingFailed("WAV contains no readable samples")
+        }
+        guard Int64(samples.count) + Int64(chunk.count) <= frameCount else {
+            throw NemotronRNNTError.decodingFailed("WAV read returned too many samples")
+        }
+        samples.append(contentsOf: chunk)
+        position = nextPosition
     }
-    return floats
+    guard Int64(samples.count) == frameCount else {
+        throw NemotronRNNTError.decodingFailed("WAV read did not return every sample")
+    }
+    return samples
+}
+
+func nemotronLoadWavAsFloats(url: URL) throws -> [Float] {
+    let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+    guard file.length > 0 else { throw NemotronRNNTError.decodingFailed("WAV too small") }
+    guard file.length <= Int64(AVAudioFrameCount.max) else { throw NemotronRNNTError.decodingFailed("WAV too large") }
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+        throw NemotronRNNTError.decodingFailed("Unable to allocate WAV buffer")
+    }
+    return try nemotronCollectWavSamples(frameCount: file.length, framePosition: { file.framePosition }) { frameCount in
+        try file.read(into: buffer, frameCount: frameCount)
+        guard buffer.frameLength > 0, let channel = buffer.floatChannelData?[0] else {
+            throw NemotronRNNTError.decodingFailed("WAV contains no readable samples")
+        }
+        return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    }
 }

@@ -50,6 +50,16 @@ struct FeedbackCaptureStoreTests {
         m.microphoneStartFrame = 32_000; m.videoStartFrame = 36_000; m.alignClocks()
         #expect(m.videoOffsetMs == 250)
         #expect(FeedbackCaptureManifest.milliseconds(frame: 28_000, origin: 32_000) == -250)
+        let legacy = Data(#"{"version":1,"id":"fc-1000-abcd","createdAtMs":1000,"durationMs":0,"state":"recording","target":{"mode":"display","displayId":42,"frame":{"x":-1920,"y":0,"width":1920,"height":1080,"scale":2},"appName":"Fixture Editor"},"failures":[]}"#.utf8)
+        let old = try JSONDecoder().decode(FeedbackCaptureManifest.self, from: legacy)
+        #expect(old == FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget()))
+        #expect(old.transcript == nil)
+        m.transcript = .init(source: "fluidaudio", model: "fixture", text: "Open this.",
+            words: [.init(t0: 50, t1: 500, text: "Open"), .init(t0: 600, t1: 950, text: "this.")],
+            segments: [.init(t0: 50, t1: 950, text: "Open this.")], estimated: false)
+        #expect(try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONEncoder().encode(m)) == m)
+        m.transcript = .unavailable("no on-device speech model installed")
+        #expect(try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONEncoder().encode(m)) == m)
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as? [String: Any])
         json["laterSlice"] = ["anything": true]
         #expect(try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONSerialization.data(withJSONObject: json)) == m)
@@ -111,8 +121,8 @@ struct FeedbackCaptureStoreTests {
             #expect(!FileManager.default.fileExists(atPath: folder.path))
         }
     }
-    @Test func checkpointSurvivesCrashBeforeFinishAndRecoveryIsIdempotent() throws {
-        try withFeedbackStore { store, _, root in
+    @Test @MainActor func checkpointSurvivesCrashBeforeFinishAndRecoveryIsIdempotent() async throws {
+        try await withFeedbackStoreAsync { store, root in
             var m = try store.begin(target: feedbackTarget())
             m.microphoneStartFrame = 1_000_000; try store.checkpoint(m)
             m.videoStartFrame = 1_008_000; m.alignClocks(); try store.checkpoint(m)
@@ -125,7 +135,25 @@ struct FeedbackCaptureStoreTests {
             #expect(try store.get(id: m.id)?.state == .recording) // still owned
             store.release(id: m.id)
             let relaunched = try FeedbackCaptureStore(databaseURL: root.appendingPathComponent("muesli.db"), support: root)
-            try relaunched.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: { _ in 800 })
+            let repaired = try relaunched.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: { _ in 800 })
+            #expect(repaired.count == 1)
+            #expect(try relaunched.get(id: m.id)?.state == .processing)
+            #expect(FileManager.default.fileExists(atPath: try relaunched.mediaURL(id: m.id, path: "unfinished.json").path))
+            #expect(throws: (any Error).self) { try relaunched.delete(id: m.id) }
+            #expect(try relaunched.recover(audioDuration: { _ in Issue.record("Owned recovery was repaired again"); return nil }, videoDuration: { _ in nil }).isEmpty)
+            let stage = FeedbackCaptureFinalizer.transcriptionStage { _ in
+                // Store access during inference must not hold the recovery lock.
+                let records = try await Task.detached { try relaunched.list() }.value
+                #expect(records.first?.state == .processing)
+                return .init(source: "fixture", text: "recovered narration",
+                    words: FeedbackCaptureTranscript.estimatedWords("recovered narration", t0: 0, t1: 1000),
+                    segments: [.init(t0: 0, t1: 1000, text: "recovered narration")], estimated: true)
+            }
+            let result = try await FeedbackCaptureFinalizer(stages: [stage]).finish(try #require(repaired.first),
+                context: .init(store: relaunched, finishPasteboardChangeCount: 0), completionState: .recovered)
+            relaunched.release(id: m.id)
+            #expect(result.transcript?.text == "recovered narration")
+            #expect(try relaunched.get(id: m.id)?.title == "recovered narration")
             let recovered = try relaunched.manifest(id: m.id)
             #expect(recovered.state == .recovered)
             #expect(recovered.microphoneStartFrame == 1_000_000)
@@ -149,7 +177,9 @@ struct FeedbackCaptureStoreTests {
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: m.id, path: "unfinished.json").path))
             #expect(sqlite3_exec(db, "DROP TRIGGER reject_feedback", nil, nil, nil) == SQLITE_OK)
             store.release(id: m.id)
-            try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: { _ in nil })
+            for var item in try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: { _ in nil }) {
+                item.state = .recovered; try store.publish(item); store.release(id: item.id)
+            }
             #expect(try store.get(id: m.id)?.state == .recovered)
             #expect(try store.manifest(id: m.id).audio == "narration.wav")
         }
@@ -166,8 +196,9 @@ struct FeedbackCaptureStoreTests {
             try Data().write(to: store.mediaURL(id: disposable.id, path: "recording.mp4"))
             try WavWriter.header(dataSize: 0).write(to: store.mediaURL(id: disposable.id, path: "narration.wav"))
             store.release(id: disposable.id)
-            do { try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }) }
-            catch { Issue.record("Entirely empty orphan must recover without error: \(error)") }
+            var errors: [String] = []
+            try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }) { id, _ in errors.append(id) }
+            #expect(errors.isEmpty)
             #expect(try store.get(id: empty.id) == nil)
             #expect(!FileManager.default.fileExists(atPath: orphan.path))
             #expect(!FileManager.default.fileExists(atPath: try store.bundleURL(id: disposable.id).path))
@@ -203,10 +234,15 @@ struct FeedbackCaptureStoreTests {
             let neighbor = try store.begin(target: feedbackTarget())
             try Data([4]).write(to: store.mediaURL(id: neighbor.id, path: "recording.mp4"))
             store.release(id: neighbor.id)
-            for _ in 0..<2 {
-                #expect(throws: (any Error).self) { try store.recover(audioDuration: { _ in nil }, videoDuration: {
+            for pass in 0..<2 {
+                errors.removeAll()
+                let pending = try store.recover(audioDuration: { _ in nil }, videoDuration: {
                     FileManager.default.fileExists(atPath: $0.path) ? 750 : nil
-                }) }
+                }) { id, _ in errors.append(id) }
+                #expect(errors.count == negatives.count + uncertain.count + 1)
+                #expect(Set(errors) == Set(negatives.map { $0.0 } + uncertain.map { $0.0 } + ["fc-6-abcd"]))
+                #expect(pending.map(\.id) == (pass == 0 ? [neighbor.id] : []))
+                for var item in pending { item.state = .recovered; try store.publish(item); store.release(id: item.id) }
                 #expect(try store.manifest(id: neighbor.id).state == .recovered)
                 for (id, entry, journal) in uncertain {
                     #expect((try? Data(contentsOf: store.mediaURL(id: id, path: "unfinished.json"))) == journal)
@@ -243,7 +279,9 @@ struct FeedbackCaptureStoreTests {
             }
             if recover {
                 store.release(id: m.id)
-                try store.recover(audioDuration: audio, videoDuration: video)
+                for var item in try store.recover(audioDuration: audio, videoDuration: video) {
+                    item.state = .recovered; try store.publish(item); store.release(id: item.id)
+                }
             } else {
                 let result = store.reconcileMedia(m, audioDuration: audio, videoDuration: video)
                 #expect(result.retainsContent)
@@ -268,8 +306,41 @@ struct FeedbackCaptureStoreTests {
             try Data([1, 2, 3]).write(to: store.mediaURL(id: m.id, path: "recording.mp4"))
             store.release(id: m.id)
             try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil })
-            #expect(try store.get(id: m.id)?.state == .recovered)
+            #expect(try store.get(id: m.id)?.state == .processing)
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: m.id, path: "recording.mp4").path))
+        }
+    }
+    @Test func probeFailureDoesNotReleaseHealthyPendingRecovery() throws {
+        try withFeedbackStore { store, _, _ in
+            let broken = try store.begin(target: feedbackTarget())
+            let healthy = try store.begin(target: feedbackTarget())
+            for capture in [broken, healthy] {
+                try WavWriter.writeWAV(samples: [Float](repeating: 0, count: 16_000),
+                    to: store.mediaURL(id: capture.id, path: "narration.wav"))
+            }
+            store.release(id: broken.id); store.release(id: healthy.id)
+            var errors: [String] = []
+            let pending = try store.recover(audioDuration: { url in
+                if url.deletingLastPathComponent().lastPathComponent == "\(broken.id).capture" {
+                    throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "unreadable audio"])
+                }
+                return 1000
+            }, videoDuration: { _ in nil }) { id, error in
+                errors.append("\(id): \(error.localizedDescription)")
+            }
+            #expect(errors.isEmpty)
+            #expect(Set(pending.map(\.id)) == Set([healthy.id, broken.id]))
+            let brokenManifest = try #require(pending.first { $0.id == broken.id })
+            #expect(brokenManifest.failures.contains { $0.stage == "audio" && $0.message == "unreadable audio" })
+            #expect(throws: (any Error).self) { try store.delete(id: broken.id) }
+            #expect(throws: (any Error).self) { try store.delete(id: healthy.id) }
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: healthy.id, path: "unfinished.json").path))
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: broken.id, path: "unfinished.json").path))
+            var complete = try #require(pending.first { $0.id == healthy.id })
+            complete.state = .recovered
+            try store.publish(complete)
+            store.release(id: complete.id)
+            #expect(try store.get(id: healthy.id)?.state == .recovered)
         }
     }
     @Test func failedFileDeletionKeepsTheRow() throws {

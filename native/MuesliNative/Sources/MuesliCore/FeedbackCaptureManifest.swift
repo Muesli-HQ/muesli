@@ -37,6 +37,7 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     public var video: String?
     public var videoOffsetMs: Int64?
     public var audio: String?
+    public var transcript: FeedbackCaptureTranscript?
     public var failures: [FeedbackCaptureFailure]
     /// Also journaled before Finish, so crash recovery preserves sample zero.
     public var microphoneStartFrame: Int64?
@@ -56,7 +57,7 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     }
     enum CodingKeys: String, CodingKey {
         case version, id, createdAtMs, durationMs, state, target, video, videoOffsetMs, audio, failures
-        case microphoneStartFrame, videoStartFrame
+        case microphoneStartFrame, videoStartFrame, transcript
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -71,6 +72,8 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
         target = try c.decode(FeedbackCaptureTarget.self, forKey: .target)
         video = try c.decodeIfPresent(String.self, forKey: .video)
         audio = try c.decodeIfPresent(String.self, forKey: .audio)
+        // Transcript is derived metadata; corruption here must not hide retained media.
+        transcript = try? c.decode(FeedbackCaptureTranscript.self, forKey: .transcript)
         videoOffsetMs = try c.decodeIfPresent(Int64.self, forKey: .videoOffsetMs)
         microphoneStartFrame = try c.decodeIfPresent(Int64.self, forKey: .microphoneStartFrame)
         videoStartFrame = try c.decodeIfPresent(Int64.self, forKey: .videoStartFrame)

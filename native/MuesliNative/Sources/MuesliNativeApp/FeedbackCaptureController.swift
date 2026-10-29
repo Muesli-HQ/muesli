@@ -268,20 +268,42 @@ final class FeedbackCaptureController {
             DistributedNotificationCenter.default().removeObserver(observer)
         }
     }
+    private var recoveryTask: Task<Void, Never>?
     func recover() async {
+        if let recoveryTask { await recoveryTask.value; return }
+        recoveryTask = Task { await resumeInterruptedCaptures() }
+        await recoveryTask?.value
+        recoveryTask = nil
+    }
+    private func resumeInterruptedCaptures() async {
         guard let store else { return }
+        var presentation = presentationID
         do {
-            let recovery = try await Task.detached(priority: .utility) { () throws -> (recoveredID: String?, errorMessage: String?) in
-                let alreadyRecovered = Set(try store.list().filter { $0.state == .recovered }.map(\.id))
-                var recoveryError: String?
-                do { try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: Self.videoDuration) }
-                catch { recoveryError = error.localizedDescription }
-                let recoveredID = try store.list().first { $0.state == .recovered && !alreadyRecovered.contains($0.id) }?.id
-                return (recoveredID, recoveryError)
+            let (pending, recoveryErrors) = try await Task.detached(priority: .utility) {
+                var errors: [String] = []
+                let pending = try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: Self.videoDuration) {
+                    errors.append("\($0): \($1.localizedDescription)")
+                }
+                return (pending, errors)
             }.value
+            var errors = recoveryErrors
+            if !errors.isEmpty { errorMessage = errors.joined(separator: "\n") }
             await reload()
-            if let recoveryError = recovery.errorMessage { errorMessage = recoveryError }
-            if let recoveredID = recovery.recoveredID, attempt == nil { latestID = recoveredID; present(.recovered, captureID: recoveredID) }
+            for manifest in pending {
+                do {
+                    _ = try await finalizer.finish(manifest,
+                        context: .init(store: store, finishPasteboardChangeCount: NSPasteboard.general.changeCount), completionState: .recovered)
+                    if attempt == nil, presentationID == presentation {
+                        latestID = manifest.id; present(.recovered, captureID: manifest.id)
+                        presentation = presentationID
+                    }
+                } catch {
+                    errors.append("\(manifest.id): \(error.localizedDescription)")
+                    errorMessage = errors.joined(separator: "\n")
+                }
+                await Task.detached { store.release(id: manifest.id) }.value
+                await reload()
+            }
         } catch { errorMessage = error.localizedDescription }
     }
     nonisolated static func videoDuration(_ url: URL) throws -> Int64? {
@@ -490,7 +512,7 @@ final class FeedbackCaptureController {
     }
     @discardableResult func shutdown() async -> Bool {
         finish()
-        let completed = await waitUntil { attempt == nil }
+        let completed = await waitUntil { attempt == nil && recoveryTask == nil }
         if !completed { errorMessage = "Feedback finalization timed out" }
         return completed
     }

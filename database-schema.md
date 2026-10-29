@@ -323,8 +323,8 @@ The idempotent migration creates `feedback_captures` and the
 - `id TEXT PRIMARY KEY`, `created_at REAL` (Unix seconds), `duration_ms INTEGER`;
 - `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
 - `bundle_path TEXT`, relative to the support directory;
-- `title TEXT`, initially the starting app name, never a window title;
-- `body TEXT`, a small JSON projection with `keyframeCount` and `targetApp`.
+- `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
+- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
 
 Captures have no meeting/dictation foreign key and never enter CloudKit, search,
 telemetry, or automatic exports. Media lives in mode-0700
@@ -341,7 +341,23 @@ still-finalizing bundles remain owned until actual writer completion. Recovery
 independently repairs complete surviving PCM samples and validates fragmented
 video through the same media reconciliation used at Finish. Each probe records
 its own failure; one cannot suppress the other. It preserves partial or uncertain
-media and reconciles rows idempotently. Only an interrupted bundle proven
-empty is removed. Journal-backed captures remain openable after row publication
-fails. Deletion uses the store, removes files
+media and claims interrupted bundles for the same finalizer. The journal remains
+while missing transcription resumes, and checkpointed transcripts are reused.
+Completion publishes `recovered` before retiring the journal. Each bundle reports
+recovery errors independently; successfully claimed bundles retain ownership and
+continue finalization even when a sibling fails. Inference holds no store lock.
+Only an interrupted bundle proven empty is removed. Journal-backed captures remain
+openable after row publication fails. Deletion uses the store, removes files
 before its row, and leaves failures visible for retry. No ad hoc SQL cleanup.
+
+The optional version-1 `transcript` contains `source`, optional `model`, `text`,
+`words` and `segments` (`t0`, `t1`, `text`), `estimated`, and optional
+`missing.reason`. Times are integer milliseconds from narration WAV sample zero,
+independent of `videoOffsetMs`. Older manifests omit it; no SQL migration or
+backfill is needed. Store publication maintains title and body projections.
+Narration uses disjoint quiet chunks of at most eight seconds, each decoded once.
+Complete measured words are retained; incomplete chunks estimate their full text.
+Decoder-only padding to 300 ms never extends source-time bounds.
+Missing audio/model, empty output, cancellation, timeout, and decoding errors
+retain playable media and record a named transcription failure. Narration and
+model identifiers remain local-only and do not enter sync or telemetry.

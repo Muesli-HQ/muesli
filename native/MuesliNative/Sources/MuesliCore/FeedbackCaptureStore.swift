@@ -77,13 +77,15 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO feedback_captures VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
         defer { sqlite3_finalize(stmt) }
-        let body = String(decoding: try JSONSerialization.data(withJSONObject: ["keyframeCount": 0, "targetApp": manifest.target.appName]), as: UTF8.self)
+        var projection: [String: Any] = ["keyframeCount": 0, "targetApp": manifest.target.appName]
+        projection["transcriptSource"] = manifest.transcript?.source
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: projection), as: UTF8.self)
         sqlite3_bind_text(stmt, 1, manifest.id, -1, transient)
         sqlite3_bind_double(stmt, 2, Double(manifest.createdAtMs) / 1000)
         sqlite3_bind_int64(stmt, 3, manifest.durationMs)
         sqlite3_bind_text(stmt, 4, manifest.state.rawValue, -1, transient)
         sqlite3_bind_text(stmt, 5, "feedback-captures/\(manifest.id).capture", -1, transient)
-        sqlite3_bind_text(stmt, 6, manifest.target.appName, -1, transient)
+        sqlite3_bind_text(stmt, 6, manifest.transcript?.firstClause ?? manifest.target.appName, -1, transient)
         sqlite3_bind_text(stmt, 7, body, -1, transient)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Save capture: \(String(cString: sqlite3_errmsg(db)))") }
     }
@@ -169,11 +171,13 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         sqlite3_bind_text(stmt, 1, id, -1, transient)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
     }
-    /// Platform media probes repair WAV headers and validate fragmented MP4 playback.
-    public func recover(audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?) throws {
+    /// Repair and claim interrupted bundles. The caller resumes its finalizer before publication.
+    @discardableResult
+    public func recover(audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?,
+                        onError: (String, Error) -> Void = { _, _ in }) throws -> [FeedbackCaptureManifest] {
         lock.lock(); defer { lock.unlock() }
-        guard FileManager.default.fileExists(atPath: root.path) else { return }
-        var firstError: Error?
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        var pending: [FeedbackCaptureManifest] = []
         for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where folder.pathExtension == "capture" {
             let id = folder.deletingPathExtension().lastPathComponent
             do {
@@ -204,13 +208,16 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
                     }
                     try delete(id: id); continue
                 }
-                m.state = .recovered
+                m.state = .processing
                 if !m.failures.contains(where: { $0.stage == "recording" && $0.message == "Recording interrupted" }) {
                     m.failures.append(.init(stage: "recording", message: "Recording interrupted"))
                 }
-                try publish(m)
-            } catch { if firstError == nil { firstError = error } }
+                try checkpoint(m)
+                try save(m)
+                active.insert(id)
+                pending.append(m)
+            } catch { onError(id, error) }
         }
-        if let firstError { throw firstError }
+        return pending
     }
 }
