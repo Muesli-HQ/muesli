@@ -586,7 +586,7 @@ actor TranscriptionCoordinator {
         guard #available(macOS 15, *) else { return }
         try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
             progress("Preparing \(entry.model.label)… Mic off")
-            try await self.nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
+            try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
         }, optionalFailure: { entry, error in
             fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
         })
@@ -717,12 +717,10 @@ actor TranscriptionCoordinator {
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
-    /// Reserve each mutable transcriber across preparation, file ASR and cleanup.
-    /// Apple leases and Gemma engines already own their lifetimes.
     private func withModelReservation<T>(for backend: String, _ operation: () async throws -> T) async throws -> T {
         if backend == "apple-speech" || backend == "gemma4-litert" { return try await operation() }
         let gate = modelUseGates[backend] ?? modelUseGates["fluidaudio"]!
-        try await gate.acquire()
+        try await gate.acquire(onWait: testingASROnWait)
         do {
             try Task.checkCancellation()
             let result = try await operation()
@@ -735,11 +733,13 @@ actor TranscriptionCoordinator {
         }
     }
 
+    private var testingASROnWait: (@Sendable () -> Void)?
     #if DEBUG
     private var testingASRPreparation: (@Sendable (BackendOption) async throws -> Void)?
     private var testingASRInference: (@Sendable (BackendOption, URL) async throws -> SpeechTranscriptionResult)?
-    func testingInstallASR(prepare: @escaping @Sendable (BackendOption) async throws -> Void,
+    func testingInstallASR(onWait: (@Sendable () -> Void)? = nil, prepare: @escaping @Sendable (BackendOption) async throws -> Void,
                            infer: @escaping @Sendable (BackendOption, URL) async throws -> SpeechTranscriptionResult) {
+        testingASROnWait = onWait
         testingASRPreparation = prepare
         testingASRInference = infer
     }

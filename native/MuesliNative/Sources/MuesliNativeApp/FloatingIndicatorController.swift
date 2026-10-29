@@ -198,13 +198,15 @@ final class FloatingIndicatorController: NSObject {
     private var contentView: HoverIndicatorView?
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
+    private(set) var meetingFeedbackMessage: String?
+    private(set) var activityRevision = 0
+    var presentsWindows = true
     private var state: DictationState = .idle
     private var dictationPresentation: DictationState = .idle
     private var meetingPowerProvider: (() -> Float)?
-    private var overlapDetailLabel: NSTextField?
     private var hasDictationOverlap: Bool { isMeetingRecording && dictationPresentation != .idle }
     var overlapMeetingStatus: String? {
-        hasDictationOverlap ? (isMeetingRecordingPaused ? "Meeting paused" : "Meeting recording") : nil
+        (hasDictationOverlap || meetingFeedbackMessage != nil) ? (isMeetingRecordingPaused ? "Meeting paused" : "Meeting recording") : nil
     }
     private var isHovered = false
     private var lastLoadedConfig: AppConfig?
@@ -488,6 +490,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {
+        if recording != isMeetingRecording { activityRevision += 1; meetingFeedbackMessage = nil }
         if recording && !isMeetingRecording { meetingPowerProvider = powerProvider }
         isMeetingRecording = recording
         recordingWaveformMode = .level
@@ -525,7 +528,6 @@ final class FloatingIndicatorController: NSObject {
 
     func setPreparingWaveformWaiting(config: AppConfig) {
         recordingWaveformMode = .waiting
-        if isMeetingRecording { setDictationState(.preparing, config: config) }
         guard state == .preparing else {
             setState(.preparing, config: config)
             return
@@ -536,6 +538,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
+        if paused != isMeetingRecordingPaused { activityRevision += 1; meetingFeedbackMessage = nil }
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
         guard isMeetingRecording else { return }
@@ -721,6 +724,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setDictationState(_ state: DictationState, config: AppConfig) {
+        if state != dictationPresentation { activityRevision += 1; meetingFeedbackMessage = nil }
         dictationPresentation = state
         setState(state, config: config)
     }
@@ -730,6 +734,7 @@ final class FloatingIndicatorController: NSObject {
         // warmup updates. They must not retire a still-active meeting's controls.
         let state: DictationState = isMeetingRecording
             ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
+        guard presentsWindows else { self.state = state; return }
         let restoresMeetingTranscript = isMeetingRecording && !hasDictationOverlap && state == .recording
             && meetingTranscriptPanel.isVisible && config.showMeetingTranscriptOnIndicatorHover
             && config.indicatorAnchor != .notch
@@ -800,7 +805,7 @@ final class FloatingIndicatorController: NSObject {
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
-            if notchIndicator.show(on: screen, title: title,
+            if notchIndicator.show(on: screen, title: meetingFeedbackMessage ?? title,
                 detail: overlapMeetingStatus ?? (state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title),
                 recording: state == .recording, paused: isMeetingRecordingPaused && !hasDictationOverlap,
                 meeting: isMeetingRecording && !hasDictationOverlap,
@@ -890,6 +895,7 @@ final class FloatingIndicatorController: NSObject {
             contentView.layer?.borderWidth = 1.0
             contentView.layer?.borderColor = style.border.cgColor
 
+            iconLabel.alignment = .center
             if state == .recording {
                 // Dictation uses cancel on the left; meetings use native discard/stop buttons.
                 iconLabel.isHidden = isMeetingRecording
@@ -1133,6 +1139,8 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func showNotice(_ message: String, icon: String, duration: TimeInterval, background: NSColor) {
+        if showMeetingFeedback(message, loading: false, duration: duration) { return }
+        guard presentsWindows else { return }
         hideShortcutPillChrome()
         guard state == .idle else { return }
         // A notice takes ownership from loading before either presentation is chosen.
@@ -1218,7 +1226,9 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        if showMeetingFeedback(message, loading: true) { return }
         guard state == .idle, !isMeetingRecording else { return }
+        guard presentsWindows else { isShowingLoading = true; return }
         if isDragging {
             deferredLoadingMessage = message
             return
@@ -1336,7 +1346,26 @@ final class FloatingIndicatorController: NSObject {
         loadingSpinner?.isHidden = true
     }
 
+    private func showMeetingFeedback(_ message: String, loading: Bool, duration: TimeInterval? = nil) -> Bool {
+        guard isMeetingRecording, dictationPresentation == .idle else { return false }
+        meetingFeedbackMessage = message
+        setState(.recording, config: feedbackConfiguration())
+        isShowingLoading = loading
+        if let duration {
+            let owner = activityRevision
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                guard let self, self.activityRevision == owner, self.meetingFeedbackMessage == message else { return }
+                self.hideLoading()
+            }
+        }
+        return true
+    }
+
     func hideLoading() {
+        if meetingFeedbackMessage != nil {
+            meetingFeedbackMessage = nil
+            setState(dictationPresentation, config: feedbackConfiguration())
+        }
         deferredLoadingMessage = nil
         guard isShowingLoading else { return }
         isShowingLoading = false
@@ -1433,7 +1462,6 @@ final class FloatingIndicatorController: NSObject {
         panel = nil
         meetingDiscardButton = nil
         meetingStopButton = nil
-        overlapDetailLabel = nil
         containerView = nil
         contentView = nil
         iconLabel = nil
@@ -1521,7 +1549,7 @@ final class FloatingIndicatorController: NSObject {
         meetingStopButton = configure(meetingStopButton, symbol: "stop.fill",
             label: hasDictationOverlap ? "Finish dictation" : "Stop meeting recording",
             x: hasDictationOverlap ? size.width - 54 : size.width - 23, action: #selector(stopMeetingFromPill))
-        if hasDictationOverlap {
+        if overlapMeetingStatus != nil {
             meetingDiscardButton?.frame = NSRect(x: size.width - 30, y: 9, width: 22, height: 22)
             meetingStopButton?.frame = NSRect(x: size.width - 54, y: 9, width: 20, height: 22)
             meetingStopButton?.isHidden = state != .recording
@@ -1529,25 +1557,19 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func layoutDictationOverlap(in size: NSSize) {
-        guard let status = overlapMeetingStatus, let contentView, let textLabel else {
-            overlapDetailLabel?.isHidden = true
-            return
-        }
-        let detail = overlapDetailLabel ?? NSTextField(labelWithString: "")
-        overlapDetailLabel = detail
-        if detail.superview == nil { contentView.addSubview(detail) }
-        textLabel.stringValue = state == .preparing ? "Preparing dictation" : (state == .recording ? "Listening" : "Transcribing")
+        guard let status = overlapMeetingStatus, let contentView, let textLabel, let detail = iconLabel else { return }
+        textLabel.stringValue = meetingFeedbackMessage ?? (state == .preparing ? "Preparing dictation" : (state == .recording ? "Listening" : "Transcribing"))
         textLabel.font = .systemFont(ofSize: 10, weight: .semibold)
         textLabel.textColor = .white
         textLabel.frame = NSRect(x: 8, y: 22, width: 123, height: 12)
         textLabel.isHidden = false
         textLabel.alphaValue = 1
+        detail.alignment = .left
         detail.stringValue = status
         detail.font = .systemFont(ofSize: 8)
         detail.textColor = .white.withAlphaComponent(0.7)
         detail.frame = NSRect(x: 8, y: 10, width: 123, height: 10)
         detail.isHidden = false
-        iconLabel?.isHidden = true
         wandIconView?.isHidden = true
         if state == .transcribing {
             ensureLoadingSpinner(in: contentView)
@@ -1607,7 +1629,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = hasDictationOverlap ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
+        let startX = overlapMeetingStatus != nil ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
         let minHeight: CGFloat = 4
 
         for i in 0..<barCount {
@@ -1626,7 +1648,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
-        let startX = hasDictationOverlap ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
+        let startX = overlapMeetingStatus != nil ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
@@ -2405,7 +2427,7 @@ final class FloatingIndicatorController: NSObject {
             screen = mainVisibleFrame
         }
         let size: NSSize
-        if hasDictationOverlap {
+        if overlapMeetingStatus != nil {
             size = NSSize(width: 220, height: 40)
         } else { switch state {
         case .idle:

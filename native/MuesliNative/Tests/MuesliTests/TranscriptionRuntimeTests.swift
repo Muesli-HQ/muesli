@@ -84,44 +84,44 @@ struct InferenceGateTests {
 @Suite("TranscriptionCoordinator routing")
 struct TranscriptionCoordinatorTests {
 
-    @Test("self-preparing file backends prepare once inside their inference owner",
+    @Test("self-preparing file backends route without coordinator preparation",
           arguments: ["bodhan", "apple-speech", "nemotron35", "cohere", "gemma4-litert"])
-    func filePreparationOwner(backend: String) async throws {
+    func selfPreparingFileRouting(backend: String) async throws {
         let coordinator = TranscriptionCoordinator(), trace = RequestedModelTrace()
-        await coordinator.testingInstallASR(prepare: { await trace.prepare($0.model) }, infer: { _, _ in
-            .init(text: "accepted", segments: [])
-        })
+        await coordinator.testingInstallASR(prepare: { await trace.prepare($0.model) }, infer: { _, _ in .init(text: "accepted", segments: []) })
         let option = try #require(BackendOption.all.first { $0.backend == backend })
-        let result = try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/synthetic.wav"), backend: option)
-        #expect(result.text == "Accepted")
+        #expect(try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/synthetic.wav"), backend: option).text == "Accepted")
         #expect(await trace.prepared.isEmpty)
     }
 
     @Test("requested models retain ownership while independent backends progress",
-          arguments: ["same-whisper", "different-whisper", "gemma-meeting", "gemma-dictation", "whisper-parakeet", "parakeet-whisper", "whisper-apple", "apple-whisper"])
+          arguments: ["same-whisper", "different-whisper", "gemma-meeting", "gemma-dictation", "whisper-parakeet", "parakeet-whisper", "whisper-apple", "apple-whisper", "cancelled-whisper"])
     func concurrentRequestedModels(scenario: String) async throws {
         let coordinator = TranscriptionCoordinator()
         let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
-        let models = RequestedModelTrace()
-        let independent = scenario != "same-whisper" && scenario != "different-whisper"
+        let models = RequestedModelTrace(), waiting = AsyncStream<Void>.makeStream()
+        defer { waiting.continuation.finish() }
+        let cancelled = scenario == "cancelled-whisper"
+        let independent = !scenario.hasSuffix("whisper") || scenario == "parakeet-whisper" || scenario == "apple-whisper"
         let meeting: BackendOption = scenario == "gemma-meeting" ? .gemma4E2BLiteRT
             : (scenario == "apple-whisper" ? .appleSpeechAnalyzer : (scenario == "parakeet-whisper" || scenario == "gemma-dictation" ? .parakeetEnglish : .whisperSmall))
         let dictation: BackendOption = scenario == "gemma-dictation" ? .gemma4E2BLiteRT
             : (scenario == "whisper-apple" ? .appleSpeechAnalyzer : (scenario == "whisper-parakeet" || scenario == "gemma-meeting" ? .parakeetEnglish : (scenario == "same-whisper" ? meeting : .whisperTiny)))
         let inferred = TranscriptionLifecycleTestCounter(), preloaded = TranscriptionLifecycleTestCounter()
-        await coordinator.testingInstallASR(prepare: { await models.prepare($0.model) }, infer: { backend, url in
+        await coordinator.testingInstallASR(onWait: { waiting.continuation.yield(()) }, prepare: { await models.prepare($0.model) }, infer: { backend, url in
             if url.lastPathComponent == "meeting.wav" { await entered.signal(); await release.wait() }
             if !independent { #expect(await models.loaded == backend.model) }
             return .init(text: independent ? "accepted" : backend.model, segments: [])
         })
         let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: meeting) }
         await entered.wait()
-        let second = Task {
+        var second = Task {
             let result = try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation)
             await inferred.increment()
             return result
         }
         let preload = Task {
+            if cancelled { return }
             try await coordinator.preloadRequired(backend: dictation, includeMeetingHelpers: false)
             await preloaded.increment()
         }
@@ -137,40 +137,26 @@ struct TranscriptionCoordinatorTests {
             #expect(await inferred.value == 1, "Independent dictation must finish while meeting inference is held")
             #expect(await preloaded.value == 1, "Independent preload must finish while meeting inference is held")
         } else {
-            try await Task.sleep(for: .milliseconds(30))
+            var arrivals = waiting.stream.makeAsyncIterator()
+            _ = await arrivals.next()
+            if cancelled {
+                second.cancel()
+                await #expect(throws: CancellationError.self) { try await second.value }
+                second = Task { try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation) }
+            } else {
+                _ = await arrivals.next()
+            }
             #expect(await models.prepared == [meeting.model])
         }
         #expect(await unloaded.value == 0)
         await release.signal()
         await unload.value
         #expect(await unloaded.value == (meeting == .parakeetEnglish ? 1 : 0))
-        let meetingResult = try await first.value
+        #expect(try await first.value.text == (independent ? "Accepted" : meeting.model.capitalized))
         let dictationResult = try await second.value
-        #expect(meetingResult.text == (independent ? "Accepted" : meeting.model.capitalized))
         #expect(dictationResult.text == (independent ? "Accepted" : dictation.model.capitalized))
         try await preload.value
-    }
 
-    @Test("cancelled file ASR waiter cannot prepare or replace the current model")
-    func cancelledModelWaiter() async throws {
-        let coordinator = TranscriptionCoordinator()
-        let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
-        let models = RequestedModelTrace()
-        await coordinator.testingInstallASR(prepare: { await models.prepare($0.model) }, infer: { backend, _ in
-            await entered.signal(); await release.wait()
-            return .init(text: backend.model, segments: [])
-        })
-        let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: .whisperSmall) }
-        await entered.wait()
-        let cancelled = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/dictation.wav"), backend: .whisperTiny) }
-        try await Task.sleep(for: .milliseconds(30))
-        cancelled.cancel()
-        await #expect(throws: CancellationError.self) { try await cancelled.value }
-        #expect(await models.prepared == [BackendOption.whisperSmall.model])
-        await release.signal()
-        _ = try await first.value
-        try await coordinator.preloadRequired(backend: .whisperTiny, includeMeetingHelpers: false)
-        #expect(await models.loaded == BackendOption.whisperTiny.model)
     }
 
     @Test("coordinator initializes without crash")
