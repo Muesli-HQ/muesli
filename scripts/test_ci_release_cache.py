@@ -223,6 +223,8 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&", cleanup)
         self.assertIn("needs.build_release.result == 'success' &&", cleanup)
         self.assertIn("needs.build_release.outputs.cache_save_outcome == 'success'", cleanup)
+        self.assertIn("needs.build_release.outputs.github_cache_backend == 'true'", cleanup)
+        self.assertIn("github_cache_backend: ${{ runner.environment == 'github-hosted' }}", job)
         self.assertIn("continue-on-error: true", cleanup)
         self.assertIn("actions: write", cleanup)
         self.assertEqual(workflow.count("actions: write"), 1)

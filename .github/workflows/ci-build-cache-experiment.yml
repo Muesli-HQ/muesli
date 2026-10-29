@@ -21,6 +21,8 @@ concurrency:
 env:
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
+# Paid runners are reserved for pHequals7 acting on their own work.
+# github.actor stays the original actor on reruns; community/bot work stays on GitHub.
 jobs:
   cold:
     if: >-
@@ -28,7 +30,12 @@ jobs:
       (github.head_ref == 'codex/ci-build-cache-experiment' &&
        contains(github.event.pull_request.labels.*.name, 'ci-cache-benchmark') &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 40
     outputs:
       cache_key: ${{ steps.prepare.outputs.cache_key }}
@@ -75,7 +82,12 @@ jobs:
 
   warm:
     needs: cold
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
