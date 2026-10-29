@@ -140,6 +140,8 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      LINECallDetectionAdapterTests
+      LINECallDetectionCollectorTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
