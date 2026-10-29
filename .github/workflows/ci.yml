@@ -104,6 +104,7 @@ jobs:
         run: |
           python3 ./scripts/test_ci_release_cache.py
           python3 ./scripts/test_ci_release_cache_cleanup.py
+          python3 ./scripts/test_ci_blacksmith_cache.py
 
   # MLX Swift 0.31.6 requires Swift 6.3; Xcode 26.6 is available on macos-26.
   # Drafts get debug tests and packaging feedback; release compilation is
@@ -113,7 +114,11 @@ jobs:
     outputs:
       cache_key: ${{ steps.release-cache.outputs.key }}
       cache_save_outcome: ${{ steps.save-release.outcome }}
-      github_cache_backend: ${{ runner.environment == 'github-hosted' }}
+      cache_lookup_outcome: ${{ steps.lookup-release.outcome }}
+      cache_lookup_hit: ${{ steps.lookup-release.outputs.cache-hit }}
+      cache_existing_key: ${{ steps.lookup-release.outputs.cache-matched-key }}
+      cache_ready: ${{ steps.save-release.outcome == 'success' || (steps.lookup-release.outcome == 'success' && steps.lookup-release.outputs.cache-hit == 'true') }}
+      cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
     if: >-
       needs.changes.outputs.native_or_packaging == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -245,17 +250,15 @@ jobs:
           retention-days: 7
 
   # Only this trusted-main maintenance job can delete caches. PR build jobs keep
-  # read-only repository permissions; cleanup never gates compilation/tests.
-  # Blacksmith uses a separate cache service with its own eviction policy; the
-  # GitHub API cannot enforce our three-snapshot policy on that backend.
+  # read-only repository permissions. Retention uses the build runner's backend
+  # and never receives credentials on PRs or manual feature-branch runs.
   release_cache_cleanup:
     needs: build_release
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
       needs.build_release.result == 'success' &&
-      needs.build_release.outputs.cache_save_outcome == 'success' &&
-      needs.build_release.outputs.github_cache_backend == 'true'
+      needs.build_release.outputs.cache_ready == 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -263,7 +266,11 @@ jobs:
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
-    continue-on-error: true
+    concurrency:
+      group: release-cache-retention-${{ needs.build_release.outputs.cache_backend }}
+      cancel-in-progress: false
+    env:
+      BLACKSMITH_DISABLE_AUTO_UPDATE: '1'
     permissions:
       contents: read
       actions: write
@@ -271,13 +278,31 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Install pinned Blacksmith CLI
+        if: needs.build_release.outputs.cache_backend == 'blacksmith'
+        run: bash scripts/install_blacksmith_cli.sh
+      - name: Authenticate Blacksmith cache maintenance
+        if: needs.build_release.outputs.cache_backend == 'blacksmith'
+        env:
+          BLACKSMITH_CACHE_TOKEN: ${{ secrets.BLACKSMITH_CACHE_TOKEN }}
+        run: |
+          if [[ -z "$BLACKSMITH_CACHE_TOKEN" ]]; then
+            echo "::error::Configure BLACKSMITH_CACHE_TOKEN for Blacksmith cache retention."
+            exit 1
+          fi
+          printf '%s' "$BLACKSMITH_CACHE_TOKEN" | blacksmith auth login \
+            --api-token - --non-interactive --organization Muesli-HQ
       - name: Retain the newest three main release caches
         env:
           GH_TOKEN: ${{ github.token }}
+          CACHE_BACKEND: ${{ needs.build_release.outputs.cache_backend }}
           CACHE_KEY: ${{ needs.build_release.outputs.cache_key }}
           CACHE_SAVE_OUTCOME: ${{ needs.build_release.outputs.cache_save_outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ needs.build_release.outputs.cache_lookup_outcome }}
+          CACHE_LOOKUP_HIT: ${{ needs.build_release.outputs.cache_lookup_hit }}
+          CACHE_EXISTING_KEY: ${{ needs.build_release.outputs.cache_existing_key }}
           CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
-        run: python3 scripts/ci_release_cache_cleanup.py --delete
+        run: python3 scripts/ci_release_cache_cleanup.py --backend "$CACHE_BACKEND" --delete
 
   # Swift tests — includes AppleSpeechAnalyzerBackendTests on macOS 26 in
   # dictation-transcription; a separate same-toolchain job would duplicate it.
@@ -401,7 +426,7 @@ jobs:
   # This is the only required check in branch protection
   ci-gate:
     if: always()
-    needs: [changes, classifier-tests, build_release, test_shards, ai-elements, cli-smoke, update-flow]
+    needs: [changes, classifier-tests, build_release, release_cache_cleanup, test_shards, ai-elements, cli-smoke, update-flow]
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -428,12 +453,13 @@ jobs:
           if [[ "${{ needs.changes.result }}" == "success" ]] && \
              [[ "${{ needs.classifier-tests.result }}" == "success" ]] && \
              [[ "${{ needs.build_release.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.release_cache_cleanup.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.test_shards.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.ai-elements.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.cli-smoke.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.update-flow.result }}" =~ ^(success|skipped)$ ]]; then
-            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, release_cache_cleanup: ${{ needs.release_cache_cleanup.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
           else
-            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, release_cache_cleanup: ${{ needs.release_cache_cleanup.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
             exit 1
           fi

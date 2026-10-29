@@ -222,13 +222,18 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' &&", cleanup)
         self.assertIn("vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&", cleanup)
         self.assertIn("needs.build_release.result == 'success' &&", cleanup)
-        self.assertIn("needs.build_release.outputs.cache_save_outcome == 'success'", cleanup)
-        self.assertIn("needs.build_release.outputs.github_cache_backend == 'true'", cleanup)
-        self.assertIn("github_cache_backend: ${{ runner.environment == 'github-hosted' }}", job)
-        self.assertIn("continue-on-error: true", cleanup)
+        self.assertIn("needs.build_release.outputs.cache_ready == 'true'", cleanup)
+        self.assertIn("cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}", job)
+        self.assertNotIn("continue-on-error: true", cleanup)
+        self.assertIn('scripts/install_blacksmith_cli.sh', cleanup)
+        self.assertEqual(workflow.count('secrets.BLACKSMITH_CACHE_TOKEN'), 1)
+        self.assertIn('secrets.BLACKSMITH_CACHE_TOKEN', cleanup)
+        self.assertIn('CACHE_EXISTING_KEY: ${{ needs.build_release.outputs.cache_existing_key }}', cleanup)
+        self.assertIn("steps.lookup-release.outputs.cache-hit == 'true'", job)
+        self.assertIn('python3 ./scripts/test_ci_blacksmith_cache.py', workflow)
         self.assertIn("actions: write", cleanup)
         self.assertEqual(workflow.count("actions: write"), 1)
-        self.assertNotIn("release_cache_cleanup", workflow.split("  ci-gate:", 1)[1])
+        self.assertIn("release_cache_cleanup", workflow.split("  ci-gate:", 1)[1])
 
 
 if __name__ == "__main__":
