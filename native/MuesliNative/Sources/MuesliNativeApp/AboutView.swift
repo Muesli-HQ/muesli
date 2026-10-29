@@ -158,6 +158,12 @@ struct AboutView: View {
                         name: "WhisperKit by Argmax",
                         description: "Swift Whisper inference on CoreML/ANE powering the app's Whisper Small, Medium, and Large Turbo backends."
                     )
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(name: "MLX and MLX Swift LM by ml-explore",
+                        description: "Native Gemma inference and multi-token prediction. MIT licenses included with the app.")
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(name: "Hugging Face Transformers and XGrammar",
+                        description: "Swift tokenization, Gemma audio algorithms, and constrained tool generation. Apache 2.0 licenses and notices included with the app.")
                 }
 
                 Spacer(minLength: MuesliTheme.spacing32)

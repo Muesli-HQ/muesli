@@ -5,6 +5,7 @@ import SwiftUI
 struct MuesliSettingControl: View {
     let controller: MuesliController
     let id: String
+    var compactAppearance = false
     var allowedChoiceIDs: Set<String>? = nil
     var onShortcutCapture: ((ShortcutAssignment, String) -> Void)? = nil
     @Environment(\.muesliSettingDefinitions) private var definitions
@@ -15,7 +16,33 @@ struct MuesliSettingControl: View {
         Group {
             if let setting = definitions.first(where: { $0.id == id }) {
                 let state = filteredSnapshot(setting)
-                if Set(state.choices.map(\.id)) == ["on", "off"] {
+                if id == "appearance" {
+                    HStack(spacing: 2) {
+                        ForEach(state.choices, id: \.id) { choice in
+                            Button { apply(choice.id) } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: AppAppearanceMode(rawValue: choice.id)?.symbol ?? "desktopcomputer")
+                                    if !compactAppearance { Text(choice.id == "system" ? "System" : choice.label) }
+                                }
+                                .font(.system(size: compactAppearance ? 10 : 12, weight: .medium))
+                                .padding(.horizontal, compactAppearance ? 0 : 10)
+                                .frame(minWidth: 28, minHeight: compactAppearance ? 22 : 28)
+                                .foregroundStyle(state.current == choice.id ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                                .background(RoundedRectangle(cornerRadius: 4)
+                                    .fill(state.current == choice.id ? MuesliTheme.surfaceSelected : Color.clear))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(state.unavailable[choice.id] != nil)
+                            .help(choice.label)
+                            .accessibilityLabel(choice.label)
+                            .accessibilityAddTraits(state.current == choice.id ? .isSelected : [])
+                        }
+                    }
+                    .padding(2)
+                    .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .fixedSize()
+                } else if Set(state.choices.map(\.id)) == ["on", "off"] {
                     HStack {
                         if state.current == "off", state.unavailable["on"] != nil,
                            let requestPermission = setting.requestPermission {

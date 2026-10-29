@@ -100,7 +100,6 @@ struct DashboardRootView: View {
             minWidth: DashboardWindowLayout.minimumContentWidth,
             minHeight: DashboardWindowLayout.minimumContentHeight
         )
-        .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(
                 from: featureTourTargetFrames,

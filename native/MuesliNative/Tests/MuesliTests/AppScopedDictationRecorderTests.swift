@@ -5,6 +5,87 @@ import Testing
 
 @Suite("AppScopedDictationRecorder")
 struct AppScopedDictationRecorderTests {
+    @Test("stop forwards the final drained buffer and rejects late callbacks after reuse")
+    func stopDrainsCurrentRecordingOnly() throws {
+        let child = FakeStreamingRecorder()
+        child.stopSamples = [0.25, -0.5]
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        var received: [[Float]] = []
+        recorder.onAudioBuffer = { received.append($0) }
+        let firstID = try recorder.start()
+        let oldAudio = child.onAudioBuffer
+        _ = recorder.stop()
+        #expect(received == [[0.25, -0.5]])
+        oldAudio?([0.75])
+        #expect(received.count == 1)
+
+        let nextID = try recorder.start()
+        #expect(nextID != firstID)
+        oldAudio?([0.9])
+        child.onAudioBuffer?([0.1])
+        #expect(received == [[0.25, -0.5], [0.1]])
+        recorder.cancel()
+    }
+
+    @Test("cancellation during blocked stop suppresses the remaining drain")
+    func cancelRetiresCallbacksDuringStop() async throws {
+        let child = FakeStreamingRecorder()
+        let stopStarted = AsyncStream<Void>.makeStream()
+        let finishStop = DispatchSemaphore(value: 0)
+        let stopReturned = AsyncStream<Void>.makeStream()
+        let cancelReturned = AsyncStream<Void>.makeStream()
+        child.onStopStarted = { stopStarted.continuation.yield() }
+        child.stopSemaphore = finishStop
+        child.stopSamples = [0.75]
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        let counter = CapturedBufferCounter()
+        recorder.onAudioBuffer = { _ in counter.increment() }
+        _ = try recorder.start()
+        let audio = child.onAudioBuffer
+        // Dedicated threads own the intentionally blocking recorder operations;
+        // neither the test executor nor the shared dispatch pool waits on them.
+        Thread.detachNewThread {
+            _ = recorder.stop()
+            stopReturned.continuation.yield()
+            stopReturned.continuation.finish()
+        }
+        var starts = stopStarted.stream.makeAsyncIterator()
+        _ = await starts.next()
+        stopStarted.continuation.finish()
+        Thread.detachNewThread {
+            recorder.cancel()
+            cancelReturned.continuation.yield()
+            cancelReturned.continuation.finish()
+        }
+        // Observe identity retirement directly through the captured callback.
+        // Cancellation cannot return until the blocked child stop is released.
+        var retired = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            let before = counter.value
+            audio?([0.1])
+            if counter.value == before { retired = true; break }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        // Under a loaded test executor the suspended poll can resume after its
+        // deadline even though cancellation already retired the identity.
+        if !retired {
+            let before = counter.value
+            audio?([0.1])
+            retired = counter.value == before
+        }
+        #expect(retired)
+        let countAtCancellation = counter.value
+        finishStop.signal()
+        var stops = stopReturned.stream.makeAsyncIterator()
+        var cancellations = cancelReturned.stream.makeAsyncIterator()
+        _ = await stops.next()
+        _ = await cancellations.next()
+        #expect(counter.value == countAtCancellation)
+        audio?([0.9])
+        #expect(counter.value == countAtCancellation)
+    }
+
     @Test("accepted audio keeps its original sink when a callback replaces the recording")
     func replacementDuringDelivery() throws {
         let child = FakeStreamingRecorder()
@@ -315,6 +396,9 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
     var onStartStarted: (() -> Void)?
     var startSemaphore: DispatchSemaphore?
     var startError: Error?
+    var onStopStarted: (() -> Void)?
+    var stopSemaphore: DispatchSemaphore?
+    var stopSamples: [Float]?
 
     func prepare() throws {
         prepareCalls += 1
@@ -338,6 +422,10 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
 
     func stop() -> URL? {
         stopCalls += 1
+        let audio = onAudioBuffer
+        onStopStarted?()
+        stopSemaphore?.wait()
+        if let stopSamples { audio?(stopSamples) }
         return nil
     }
 
@@ -348,4 +436,11 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
     func currentPower() -> Float {
         -160
     }
+}
+
+private final class CapturedBufferCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }

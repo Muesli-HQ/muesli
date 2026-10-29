@@ -44,6 +44,7 @@ struct InsightsView: View {
                             activityPanel(snapshot).id(initialSection == .meetings ? InsightsSection.meetings : .words)
                             usagePanel(snapshot).id(InsightsSection.pace)
                             streakPanel(snapshot).id(InsightsSection.streak)
+                            if let cotypist = snapshot.cotypist { cotypistPanel(cotypist) }
                             attributionPanel(snapshot)
                             wordClouds(snapshot)
                             curiosities(snapshot)
@@ -439,6 +440,47 @@ struct InsightsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .insightsPanel()
+    }
+
+    private func cotypistPanel(_ data: InsightsCotypistTotals) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            panelTitle("COTYPIST", subtitle: "Suggestions you accepted as you typed")
+            HStack(spacing: 0) {
+                cotypistDatum(data.wordsAccepted.formatted(), label: "Words written for you")
+                divider
+                cotypistDatum(data.suggestionsAccepted.formatted(), label: "Suggestions accepted")
+                if let rate = data.acceptanceRate {
+                    divider
+                    cotypistDatum(rate.formatted(.percent.precision(.fractionLength(0))),
+                                  label: rangeDays(range) > data.rateDays ? "Taken, last \(data.rateDays) days" : "Of suggestions shown")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .insightsPanel()
+    }
+
+    private func rangeDays(_ range: InsightsRange) -> Int {
+        switch range {
+        case .thirtyDays: 30
+        case .ninetyDays: 90
+        case .twelveMonths: 365
+        case .allTime: .max
+        }
+    }
+
+    private func cotypistDatum(_ value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(value)
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(MuesliTheme.accent)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(InsightsPalette.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
     }
 
     private func streakDatum(_ count: Int, label: String) -> some View {

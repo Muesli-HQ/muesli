@@ -38,6 +38,8 @@ Options:
   --cloud-entitlements    Sign with the default cloud entitlements file.
                           Alias: --with-cloud-entitlements.
   --reset                 Reset onboarding only for the selected lane.
+  --release               Build optimized (Release) instead of Debug, e.g. to judge
+                          on-device model latency. Uses its own build cache.
   --help                  Show this help text.
 
 Default behavior without --lane is unchanged for the app identity: MuesliDev,
@@ -57,6 +59,7 @@ EOF
 
 # Parse args
 RESET=0
+BUILD_CONFIG="debug"
 LANE=""
 ENTITLEMENTS_MODE=""
 ENTITLEMENTS_MODE_EXPLICIT=0
@@ -69,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reset)
       RESET=1
+      shift
+      ;;
+    --release)
+      BUILD_CONFIG="release"
       shift
       ;;
     --lane)
@@ -239,7 +246,7 @@ print('  Onboarding reset (data preserved)')
 fi
 
 # Build with isolated identity
-echo "Building $DEV_APP_NAME (debug, signed)..."
+echo "Building $DEV_APP_NAME ($BUILD_CONFIG, signed)..."
 echo "  Bundle ID:    $DEV_BUNDLE_ID"
 echo "  Data:         $DEV_SUPPORT_DIR"
 echo "  Entitlements: $ENTITLEMENTS_MODE"
@@ -249,7 +256,7 @@ fi
 if [[ -n "$RESOLVED_SIGN_IDENTITY" ]]; then
   echo "  Sign identity: $RESOLVED_SIGN_IDENTITY"
 fi
-env "${BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" debug
+env "${BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" "$BUILD_CONFIG"
 
 echo ""
 echo "Launching $DEV_APP_NAME..."

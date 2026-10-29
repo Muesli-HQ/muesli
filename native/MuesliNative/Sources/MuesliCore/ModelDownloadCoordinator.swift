@@ -314,9 +314,12 @@ public actor ModelDownloadCoordinator {
     ///
     /// Requests with the same model, canonical destination, and manifest contents
     /// share one in-flight job and each caller receives its own progress callbacks.
+    /// Opt-in caller-owned downloads stop when their last waiting caller cancels;
+    /// cancellation never interrupts a transfer still awaited by another caller.
     public func download(
         _ manifest: ModelDownloadManifest,
         to directory: URL,
+        cancelWhenUnobserved: Bool = false,
         progress: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
@@ -326,12 +329,18 @@ public actor ModelDownloadCoordinator {
         try validateManifestPaths(manifest, in: directory)
         let callerID = UUID()
         let jobKey = makeJobKey(for: manifest, directory: directory)
+        // A canceled job still owns its partial files until finish runs. Drain it
+        // before registering a fresh caller, and recheck after actor reentrancy.
+        while let previous = inFlight[jobKey], previous.isCancelled {
+            _ = try? await previous.value
+            try Task.checkCancellation()
+        }
         if inFlight[jobKey] != nil {
             if let progress {
                 progressHandlers[jobKey, default: [:]][callerID] = progress
             }
             defer { removeProgressHandler(callerID, for: jobKey) }
-            try await waitForCompletion(of: jobKey, callerID: callerID)
+            try await waitForCompletion(of: jobKey, callerID: callerID, cancelWhenUnobserved: cancelWhenUnobserved)
             try Task.checkCancellation()
             return
         }
@@ -358,8 +367,8 @@ public actor ModelDownloadCoordinator {
         // A caller's cancellation detaches that caller from the shared
         // completion signal. The shared job may still be needed by another
         // caller; explicit model cancellation through cancel(modelID:) is
-        // what stops the shared transfer.
-        try await waitForCompletion(of: jobKey, callerID: callerID)
+        // what stops the shared transfer unless cancelWhenUnobserved is requested.
+        try await waitForCompletion(of: jobKey, callerID: callerID, cancelWhenUnobserved: cancelWhenUnobserved)
         try Task.checkCancellation()
     }
 
@@ -728,26 +737,29 @@ public actor ModelDownloadCoordinator {
         }
     }
 
-    private func waitForCompletion(of jobKey: DownloadJobKey, callerID: UUID) async throws {
+    private func waitForCompletion(of jobKey: DownloadJobKey, callerID: UUID, cancelWhenUnobserved: Bool) async throws {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if Task.isCancelled {
+                    if cancelWhenUnobserved && completionWaiters[jobKey, default: [:]].isEmpty { inFlight[jobKey]?.cancel() }
                     continuation.resume(throwing: CancellationError())
                 } else {
                     completionWaiters[jobKey, default: [:]][callerID] = continuation
                 }
             }
         }, onCancel: {
-            Task { await self.cancelWaiter(callerID, for: jobKey) }
+            Task { await self.cancelWaiter(callerID, for: jobKey, cancelWhenUnobserved: cancelWhenUnobserved) }
         })
     }
 
-    private func cancelWaiter(_ callerID: UUID, for jobKey: DownloadJobKey) {
+    private func cancelWaiter(_ callerID: UUID, for jobKey: DownloadJobKey, cancelWhenUnobserved: Bool) {
         guard let continuation = completionWaiters[jobKey]?[callerID] else { return }
         completionWaiters[jobKey]?[callerID] = nil
         if completionWaiters[jobKey]?.isEmpty == true {
             completionWaiters[jobKey] = nil
+            if cancelWhenUnobserved { inFlight[jobKey]?.cancel() }
         }
+        removeProgressHandler(callerID, for: jobKey)
         continuation.resume(throwing: CancellationError())
     }
 

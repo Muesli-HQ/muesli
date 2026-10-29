@@ -575,7 +575,7 @@ enum MeetingPlatform: Equatable {
         guard let host = url.host?.lowercased() else { return nil }
         if host.hasSuffix("zoom.us") { return .zoom }
         if host == "meet.google.com" { return .googleMeet }
-        if host.hasSuffix("teams.microsoft.com") { return .teams }
+        if host.hasSuffix("teams.microsoft.com") || host == "teams.live.com" { return .teams }
         if host.hasSuffix("webex.com") { return .webex }
         if host == "facetime.apple.com" { return .facetime }
         if host == "app.slack.com" && url.path.hasPrefix("/huddle/") { return .slack }
