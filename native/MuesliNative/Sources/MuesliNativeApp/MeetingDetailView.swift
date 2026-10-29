@@ -94,7 +94,10 @@ struct MeetingDetailView: View {
     @State private var showRecordingDetails = false
     @State private var hasNotesSelection = false
     private var isInProgress: Bool { meeting?.status == .recording || meeting?.status == .processing }
-    @State private var isSummarizing = false
+    private var isSummarizing: Bool {
+        guard let id = meeting?.id else { return false }
+        return appState.summarizingMeetingIDs.contains(id)
+    }
     private var isRetranscribing: Bool {
         guard let id = meeting?.id else { return false }
         return appState.meetingRetranscriptions[id]?.isRunning == true
@@ -847,15 +850,10 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func compactHeaderActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
+            pipelineStatusChips(for: meeting)
             recordingRecoveryHeaderAction(for: meeting)
             resumeChooserIfAvailable(for: meeting)
             exportMenu(for: meeting)
-
-            if isSummarizing {
-                ProgressView()
-                    .controlSize(.small)
-                    .help("Summarizing meeting")
-            }
 
             if isEditingNotes || isEditingTranscript {
                 editButton(for: meeting)
@@ -865,11 +863,55 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Summarize with the backend chosen in Settings, or open Settings when it is not usable yet.
+    private func summarizeWithSettings(_ meeting: MeetingRecord) {
+        if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
+            beginSummary(for: meeting)
+        } else {
+            controller.openHistoryWindow(tab: .settings)
+        }
+    }
+
+    @ViewBuilder
+    private func resummarizeMenuItems(for meeting: MeetingRecord) -> some View {
+        if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
+            Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                beginSummary(for: meeting)
+            }
+        } else {
+            Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
+                controller.openHistoryWindow(tab: .settings)
+            }
+        }
+        Divider()
+        ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
+            if controller.canUseSummaryProvider(provider) {
+                Menu(provider.label) {
+                    ForEach(provider.summaryModels(config: appState.config,
+                        openRouterModels: appState.openRouterSummaryModels
+                    ), id: \.id) { model in
+                        Button(model.label) {
+                            beginSummary(for: meeting, summaryConfig: provider.summaryConfiguration(from: appState.config, model: model.id))
+                        }
+                    }
+                    if provider == .openRouter {
+                        if case .failed = appState.openRouterSummaryCatalogState {
+                            Divider()
+                            Button("Retry Loading Models") {
+                                controller.loadOpenRouterModels(.text, force: true)
+                            }
+                        } else if appState.openRouterSummaryCatalogState == .loading {
+                            Text("Loading models…")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func beginSummary(for meeting: MeetingRecord, summaryConfig: AppConfig? = nil) {
         guard !isSummarizing else { return }
-        isSummarizing = true
         let completion: (Result<Void, Error>) -> Void = { [meeting] result in
-            isSummarizing = false
             switch result {
             case .success:
                 if let updated = controller.meeting(id: meeting.id) {
@@ -940,22 +982,166 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func retranscribeAction(for meeting: MeetingRecord, accessibilityIdentifier: String) -> some View {
-        if meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+        if hasSavedRecording(meeting),
            meeting.status != .recording, meeting.status != .noteOnly {
             Menu {
-                let models = BackendOption.downloadedMeetingTranscription
-                if models.isEmpty { Text("Download a meeting model in Settings") }
-                ForEach(models, id: \.model) { model in
-                    Button(model.label) {
-                        pendingRetranscriptionBackend = model
-                    }
-                }
+                retranscribeModelItems()
             } label: {
                 Label("Re-transcribe", systemImage: "waveform")
             }
             .disabled(!controller.canRetranscribeMeeting(meeting) || isSummarizing || isEditingNotes || isEditingTranscript)
             .accessibilityIdentifier(accessibilityIdentifier)
         }
+    }
+
+    @ViewBuilder
+    private func retranscribeModelItems() -> some View {
+        let models = BackendOption.downloadedMeetingTranscription
+        if models.isEmpty { Text("Download a meeting model in Settings") }
+        ForEach(models, id: \.model) { model in
+            Button(model.label) {
+                pendingRetranscriptionBackend = model
+            }
+        }
+    }
+
+    private func hasSavedRecording(_ meeting: MeetingRecord) -> Bool {
+        meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    @ViewBuilder
+    private func pipelineStatusChips(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: 6) {
+            transcriptionChip(for: meeting)
+            summaryChip(for: meeting)
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func transcriptionChip(for meeting: MeetingRecord) -> some View {
+        let status = MeetingPipelineStatus.transcription(for: meeting, isRunning: isRetranscribing)
+        let chip = stageChip(title: "Transcript", systemImage: "waveform", status: status)
+        switch status {
+        case .failed(let reason) where hasSavedRecording(meeting):
+            splitStageChip(title: "Transcript", systemImage: "waveform", status: status,
+                           help: "Transcription failed: \(reason)",
+                           menuHelp: "Choose a model to re-transcribe the saved recording",
+                           action: nil) {
+                retranscribeModelItems()
+            }
+            .accessibilityIdentifier("meeting.status.transcription.failed")
+        case .failed(let reason):
+            chip.help("Transcription failed: \(reason)")
+        case .working:
+            chip.help("Transcribing the recording")
+        case .succeeded:
+            chip.help("Transcribed")
+        }
+    }
+
+    @ViewBuilder
+    private func summaryChip(for meeting: MeetingRecord) -> some View {
+        let status = MeetingPipelineStatus.summary(for: meeting, isRunning: isSummarizing)
+        let chip = stageChip(title: "Summary", systemImage: "sparkles", status: status)
+        switch status {
+        case .failed(let reason):
+            splitStageChip(title: "Summary", systemImage: "sparkles", status: status,
+                           help: "Summary failed: \(reason)\nClick to retry with \(appState.selectedMeetingSummaryBackend.label).",
+                           menuHelp: "Retry with another backend",
+                           action: { summarizeWithSettings(meeting) }) {
+                resummarizeMenuItems(for: meeting)
+            }
+            .disabled(isRetranscribing)
+            .accessibilityIdentifier("meeting.status.summary.failed")
+        case .working:
+            chip.help("Summarizing meeting")
+        case .succeeded:
+            chip.help("Notes generated")
+        }
+    }
+
+    private func stageTint(_ status: MeetingStageStatus) -> Color {
+        switch status {
+        case .working: MuesliTheme.textSecondary
+        case .succeeded: .green
+        case .failed: .red
+        }
+    }
+
+    private func stageChipContent(title: String, systemImage: String, status: MeetingStageStatus) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+            switch status {
+            case .working:
+                ProgressView().controlSize(.mini)
+            case .succeeded:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.green)
+            case .failed:
+                Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+            }
+        }
+        .foregroundStyle(MuesliTheme.textPrimary)
+        .padding(.horizontal, MuesliTheme.spacing8)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func stageChip(title: String, systemImage: String, status: MeetingStageStatus) -> some View {
+        let tint = stageTint(status)
+        return stageChipContent(title: title, systemImage: systemImage, status: status)
+            .background(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).fill(tint.opacity(0.14)))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(tint.opacity(0.35), lineWidth: 1))
+    }
+
+    /// A failed chip that offers a way to recover: the left segment runs `action` (or only explains,
+    /// when nil) and the chevron segment opens `menuItems`. Built as a Button next to a Menu, like
+    /// `resumeRecordingButton`: a `Menu` whose label is a styled HStack is flattened by macOS to its
+    /// first icon and text, which drops the red tint and the x.
+    private func splitStageChip<MenuItems: View>(
+        title: String,
+        systemImage: String,
+        status: MeetingStageStatus,
+        help: String,
+        menuHelp: String,
+        action: (() -> Void)?,
+        @ViewBuilder menuItems: () -> MenuItems
+    ) -> some View {
+        let tint = stageTint(status)
+        let fill = tint.opacity(0.14)
+        let content = stageChipContent(title: title, systemImage: systemImage, status: status)
+        return HStack(spacing: 1) {
+            Group {
+                if let action {
+                    Button(action: action) { content.background(fill) }
+                        .buttonStyle(.plain)
+                } else {
+                    content.background(fill)
+                }
+            }
+            .help(help)
+
+            Menu {
+                menuItems()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, 7)
+                    .frame(maxHeight: .infinity)
+                    .background(fill)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(menuHelp)
+        }
+        .fixedSize()
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(tint.opacity(0.35), lineWidth: 1))
     }
 
     @ViewBuilder
@@ -1362,39 +1548,7 @@ struct MeetingDetailView: View {
             .disabled(meeting.status == .processing || isSummarizing)
 
             Menu {
-                if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
-                    Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
-                        beginSummary(for: meeting)
-                    }
-                } else {
-                    Button("Configure \(appState.selectedMeetingSummaryBackend.label) in Settings…") {
-                        controller.openHistoryWindow(tab: .settings)
-                    }
-                }
-                Divider()
-                ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
-                    if controller.canUseSummaryProvider(provider) {
-                        Menu(provider.label) {
-                            ForEach(provider.summaryModels(config: appState.config,
-                                openRouterModels: appState.openRouterSummaryModels
-                            ), id: \.id) { model in
-                                Button(model.label) {
-                                    beginSummary(for: meeting, summaryConfig: provider.summaryConfiguration(from: appState.config, model: model.id))
-                                }
-                            }
-                            if provider == .openRouter {
-                                if case .failed = appState.openRouterSummaryCatalogState {
-                                    Divider()
-                                    Button("Retry Loading Models") {
-                                        controller.loadOpenRouterModels(.text, force: true)
-                                    }
-                                } else if appState.openRouterSummaryCatalogState == .loading {
-                                    Text("Loading models…")
-                                }
-                            }
-                        }
-                    }
-                }
+                resummarizeMenuItems(for: meeting)
             } label: {
                 Label(primarySummaryActionLabel(for: meeting), systemImage: "sparkles")
             }
@@ -2110,9 +2264,7 @@ struct MeetingDetailView: View {
         guard let meetingID = transcriptResummaryPromptMeetingID else { return }
         transcriptResummaryPromptMeetingID = nil
         guard let updatedMeeting = controller.meeting(id: meetingID) else { return }
-        isSummarizing = true
         controller.resummarize(meeting: updatedMeeting) { [meetingID] result in
-            isSummarizing = false
             switch result {
             case .success:
                 if let refreshed = controller.meeting(id: meetingID) {

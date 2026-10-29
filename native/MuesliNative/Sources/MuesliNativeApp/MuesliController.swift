@@ -6111,6 +6111,7 @@ public final class MuesliController: NSObject {
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.appState.summarizingMeetingIDs.remove(meeting.id) }
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
             do {
@@ -6150,6 +6151,7 @@ public final class MuesliController: NSObject {
                 }
             }
         }
+        appState.summarizingMeetingIDs.insert(meeting.id)
     }
 
     func cancelMeetingRetranscription(id: Int64) {

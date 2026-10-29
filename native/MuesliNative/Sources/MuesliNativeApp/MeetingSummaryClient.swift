@@ -440,6 +440,19 @@ enum MeetingSummaryClient {
             && [existingNotes, previousMeetingNotes].allSatisfy { ["", emptyRecordingNotes].contains(trimmed($0)) }
     }
 
+    private static let summaryFailureLead = "Muesli could not generate structured meeting notes.\n\n"
+
+    /// The error text a failed summary stored in the notes, or nil when the notes are not a failure.
+    static func summaryFailureReason(from notes: String) -> String? {
+        guard isSummaryFailureNotes(notes), let lead = notes.range(of: summaryFailureLead) else { return nil }
+        let rest = notes[lead.upperBound...]
+        let end = ["\n\n### Written notes", "\n\n## Raw Transcript"]
+            .compactMap { rest.range(of: $0)?.lowerBound }
+            .min() ?? rest.endIndex
+        let reason = rest[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? nil : reason
+    }
+
     static func summaryFailureNotes(transcript: String, meetingTitle: String, error: Error, manualNotes: String? = nil) -> String {
         let trimmedTitle = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -447,7 +460,7 @@ enum MeetingSummaryClient {
         if !trimmedTitle.isEmpty {
             sections.append("Meeting: \(trimmedTitle)")
         }
-        sections.append("Muesli could not generate structured meeting notes.\n\n\(error.localizedDescription)")
+        sections.append("\(summaryFailureLead)\(error.localizedDescription)")
         if !trimmedManualNotes.isEmpty {
             sections.append("### Written notes\n\n\(trimmedManualNotes)")
         }

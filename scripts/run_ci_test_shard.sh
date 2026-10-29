@@ -196,6 +196,7 @@ case "${shard}" in
       CustomLLMRequestHeadersTests
       SettingsModelFieldTests
       MeetingSummaryClientTests
+      MeetingPipelineStatusTests
       MeetingChatStoreTests
       MeetingChatRetrievalTests
       MeetingChatClientTests
