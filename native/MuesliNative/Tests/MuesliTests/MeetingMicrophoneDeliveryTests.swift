@@ -4,10 +4,369 @@ import Foundation
 import MuesliCore
 import os
 import Testing
+import TelemetryDeck
 @testable import MuesliNativeApp
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    private static let disabledTelemetry: Void = {
+        let config = TelemetryDeck.Config(appID: "00000000-0000-0000-0000-000000000000")
+        config.analyticsDisabled = true
+        TelemetryDeck.initialize(config: config)
+    }()
+
+    @Test("ordinary dictation output and capture boundaries preserve meeting PCM",
+          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "nemotron-preparing-finish", "nemotron-preparing-restart", "warmup-failure", "meeting-discard", "pending-release", "pending-shortcut", "ready", "optional-failure", "preparation-failure", "stale-ready", "activity-ready"])
+    @MainActor
+    func dictationDuringMeeting(activeMeeting: Bool, ending: String) async throws {
+        _ = Self.disabledTelemetry
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runtime = RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
+        let configStore = ConfigStore(supportDirectory: directory)
+        let blockedWarmup = ending == "warmup-failure", activation = ContractGate()
+        let streamingPreparation = ending.hasPrefix("nemotron-preparing")
+        let startupFinish = ending == "nemotron-preparing-finish"
+        let nemotron = streamingPreparation || ending == "nemotron-hold"
+        var config = AppConfig()
+        if nemotron { config.sttBackend = BackendOption.nemotron35Multilingual.backend; config.sttModel = BackendOption.nemotron35Multilingual.model }
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.customLLM.backend
+        config.customLLMURL = ""; config.customLLMModel = ""; config.meetingSummaryRetryCount = 0
+        config.soundEnabled = false; config.enableScreenContext = false
+        config.onboardingUseCase = OnboardingUseCase.voiceNotes.rawValue
+        configStore.save(config)
+        try store.migrateIfNeeded()
+        let route = FakeDictationRoute(routeKind: blockedWarmup ? .speakerLike : .headphoneLike, preferredInputDeviceID: nil)
+        let controller = MuesliController(runtime: runtime, dictationStore: store, configStore: configStore,
+            audioDuckingController: FakeDuckingManager(), dictationAudioRoutingController: route,
+            downloadedBackendOptions: { nemotron ? [.nemotron35Multilingual] : [] })
+        controller.testingIndicator.presentsWindows = false
+        let loading = AsyncStream<Void>.makeStream(), startup = AsyncStream<Void>.makeStream()
+        defer { loading.continuation.finish(); startup.continuation.finish() }
+        controller.testingBeforeNemotronStart = {
+            startup.continuation.yield(())
+            for await _ in loading.stream {}
+            throw CancellationError()
+        }
+        controller.dictationTestCallback = { _ in } // Admission only; cleared before normal output.
+        await controller.transcriptionCoordinator.testingInstallASR(prepare: { _ in }, infer: { _, url in
+            let samples = try nemotronLoadWavAsFloats(url: url)
+            var text: [String] = []
+            if samples.contains(where: { abs($0 - 0.5) < 0.001 }) { text.append("Meeting speech.") }
+            if samples.contains(where: { abs($0 - 0.25) < 0.001 }) { text.append("Private note.") }
+            return .init(text: text.joined(separator: " "), segments: [])
+        })
+        let producer = ContractProducer(useQueue: true)
+        let resumed = DispatchSemaphore(value: 0)
+        producer.afterResume = { resumed.signal() }
+        let clock = OSAllocatedUnfairLock(initialState: Int64(1000))
+        let session = MeetingSession(title: "synthetic admission", calendarEventID: nil,
+            backend: .parakeetEnglish, runtime: runtime, config: { var c = config; c.diarizeMicrophoneAudio = true; return c }(),
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: controller.transcriptionCoordinator,
+            meetingMicRecorder: RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+                StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming)),
+            systemAudioCapture: ContractSystemAudio(),
+            aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()), microphoneClock: { clock.withLock { $0 } })
+        session.testingConsumeChunk = { _, _, _ in } // Pause rotation uses the existing synthetic sink.
+        session.liveTitleProvider = { "synthetic admission" }
+        if activeMeeting {
+            _ = try store.insertMeeting(title: "synthetic admission", calendarEventID: nil,
+                startTime: Date(), endTime: Date(), rawTranscript: "", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+            try await session.testingStartCapture()
+        }
+        let recorder = FakeDictationRecorder()
+        recorder.startError = ending.hasSuffix("failure") ? NSError(domain: "synthetic", code: 1) : nil
+        recorder.stopURL = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 16_000))
+        defer { if let url = recorder.stopURL { try? FileManager.default.removeItem(at: url) } }
+        if blockedWarmup { recorder.onActivate = { recorder.onActivate = nil; activation.block() } }
+        recorder.onStart = { [weak recorder] in recorder?.onFirstCapturedAudioBuffer?(Date(timeIntervalSinceNow: -1)) }
+        let managerQueue = DispatchQueue(label: "overlap.manager"), eventQueue = DispatchQueue(label: "overlap.events")
+        let manager = DictationAudioSessionManager(recorder: recorder,
+            duckingController: FakeDuckingManager(), routingController: route, queue: managerQueue, eventQueue: eventQueue)
+        let scheduler = HotkeyMonitorTests.ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        controller.testingInstallDictationCapture(manager, meeting: activeMeeting ? session : nil, hotkey: monitor)
+        controller.testingIndicator.setMeetingRecording(activeMeeting, config: config)
+        if ["ready", "optional-failure", "preparation-failure", "stale-ready", "activity-ready"].contains(ending) {
+            controller.dictationTestCallback = nil // Exercise ordinary transcription and history.
+            let entered = AsyncStream<Void>.makeStream()
+            defer { entered.continuation.finish() }
+            controller.testingPreparationPlan = .init(dictation: nil, cleanup: nil, quill: nil, localCleanupKey: "synthetic")
+            controller.testingPrepareModels = {
+                entered.continuation.yield(())
+                for await _ in loading.stream { break }
+                if ending == "preparation-failure" { throw NSError(domain: "synthetic", code: 2) }
+                return ending != "optional-failure"
+            }
+            controller.testingDictationAction("models-ready")
+            var arrivals = entered.stream.makeAsyncIterator()
+            _ = await arrivals.next()
+            #expect(controller.testingIndicator.isShowingLoading)
+            #expect(controller.testingIndicator.overlapMeetingStatus == (activeMeeting ? "Meeting recording" : nil))
+            if ending == "stale-ready" { controller.testingPreparationPlan = .init(dictation: nil, cleanup: nil, quill: nil) }
+            if ending == "activity-ready" { controller.testingIndicator.setDictationState(.recording, config: config) }
+            loading.continuation.finish()
+            await controller.testingWaitForModels()
+            #expect(recorder.startCalls == 0)
+            #expect(controller.testingIndicator.meetingFeedbackMessage == (activeMeeting && !ending.hasSuffix("-ready") ?
+                (ending == "ready" ? "Ready — start recording" : (ending == "optional-failure" ? "Dictation ready — cleanup unavailable" : "Model preparation failed. Try again.")) : nil))
+            if activeMeeting {
+                let urls = await session.testingFinishCapture() // Flushes the final partial AEC frame.
+                for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }
+            }
+            return
+        }
+        if activeMeeting && ending == "hold" {
+            let calibration = try await controller.transcriptionCoordinator.transcribeMeeting(
+                at: #require(recorder.stopURL), backend: .parakeetEnglish)
+            #expect(calibration.text == "Private note.", "The same meeting oracle must recognize unredacted private PCM")
+        }
+        func flush() async throws {
+            try await MeetingCaptureLifecycle.onDriverQueue { managerQueue.sync {}; eventQueue.sync {} }
+            for _ in 0..<5 { await Task.yield() }
+        }
+        func emit(at frame: Int64) throws {
+            if activeMeeting { try producer.emit(Array(repeating: frame == 2500 ? 4 : 8, count: 4), at: frame) }
+        }
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        if blockedWarmup { try await activation.waitUntilEntered() } else { try await flush() }
+        try emit(at: 1500) // Speculative arm/prepare must preserve this packet.
+        if ending == "shortcut" { monitor.handleKeyDown(keyCode: 8) }
+        let speculative = ending == "tap" || ending == "shortcut"
+        clock.withLock { $0 = 2000 }
+        if !speculative {
+            if ending == "toggle" || streamingPreparation { controller.testingDictationAction("toggle") }
+            else { scheduler.advance(by: 0.30) }
+            if !blockedWarmup { try await flush(); #expect(recorder.startCalls == (streamingPreparation ? 0 : 1)) }
+            if !ending.hasSuffix("failure") && !streamingPreparation {
+                for _ in 0..<100 where controller.appState.dictationState != .recording {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+            }
+        }
+        if startupFinish {
+            var arrivals = startup.stream.makeAsyncIterator()
+            _ = await arrivals.next() // Finish only after the throwing startup hook is suspended.
+            #expect(manager.hasActiveSession && controller.appState.dictationState == .preparing)
+            #expect(controller.testingMeetingExclusionCount == (activeMeeting ? 1 : 0))
+        }
+        try emit(at: 2500) // Accepted startup is private even while preparation is blocked.
+        if activeMeeting && ending == "paused" { session.pause() }
+        controller.dictationTestCallback = nil
+        let cancelled = ending == "finish-cancel" || speculative || streamingPreparation || ending == "cancel" || ending == "delayed-cancel" || ending.hasSuffix("failure")
+        let delayed = ending.hasPrefix("delayed-")
+        if activeMeeting && ending == "meeting-stop" { controller.stopMeetingRecording() }
+        if activeMeeting && ending == "meeting-discard" { controller.testingDictationAction("discard-meeting") }
+        if delayed { eventQueue.suspend() }
+        clock.withLock { $0 = 3000 }
+        if blockedWarmup { activation.release.signal(); try await flush() }
+        let restarted = ending == "nemotron-preparing-restart" && activeMeeting
+        if restarted {
+            #expect(controller.testingMeetingExclusionCount == 1)
+            controller.stopMeetingRecording()
+            for _ in 0..<200 where session.capturePhase.isRecording { try await Task.sleep(for: .milliseconds(5)) }
+            controller.testingDictationAction("meeting-restart")
+            #expect(controller.testingMeetingExclusionCount == 0, "Meeting restart must retire the old exact token")
+        }
+        if ending == "finish-release" || ending == "finish-cancel" || ending.hasPrefix("pending-") {
+            let gate = ContractGate()
+            recorder.onStop = { gate.block() }
+            controller.testingDictationAction("stop") // Same action as overlap Finish while held.
+            try await gate.waitUntilEntered()
+            if ending.hasPrefix("pending-") {
+                controller.dictationTestCallback = { _ in }
+                monitor.handleFlagsChanged(keyCode: 55, flags: [])
+                monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+                for action in ["prepare", "arm", "start", "toggle"] { controller.testingDictationAction(action) }
+                #expect(manager.currentSessionID == nil, "Pending Stop must reject every new admission")
+                if ending == "pending-shortcut" { monitor.handleKeyDown(keyCode: 8) }
+                monitor.handleFlagsChanged(keyCode: 55, flags: [])
+                controller.dictationTestCallback = nil
+            }
+            if ending == "finish-cancel" { controller.testingDictationAction("cancel") }
+            monitor.handleFlagsChanged(keyCode: 55, flags: [])
+            if ending == "finish-release" { controller.testingDictationAction("stop") }
+            recorder.onStop = nil
+            gate.release.signal()
+        } else if startupFinish {
+            controller.testingDictationAction("stop")
+            #expect(controller.appState.dictationState == .idle, "Finish before controller creation must remain terminal idle")
+            #expect(!manager.hasActiveSession && controller.testingMeetingExclusionCount == 0)
+        } else if ending == "toggle" || delayed || ending == "cancel" || streamingPreparation {
+            controller.testingDictationAction(cancelled ? "cancel" : "stop")
+        } else {
+            monitor.handleFlagsChanged(keyCode: 55, flags: [])
+            scheduler.advance(by: 1)
+        }
+        try await MeetingCaptureLifecycle.onDriverQueue { managerQueue.sync {} }
+        if activeMeeting && ending == "paused" {
+            #expect(session.isPaused) // Dictation never resumes a user-paused meeting.
+            session.resume()
+            let result = try await MeetingCaptureLifecycle.onDriverQueue { resumed.wait(timeout: .now() + 5) }
+            #expect(result == .success)
+        }
+        if delayed { clock.withLock { $0 = 4000 } }
+        if ending != "meeting-stop" && ending != "meeting-discard" && !restarted { try emit(at: 3500) }
+        loading.continuation.finish()
+        if delayed { eventQueue.resume() }
+        try await flush()
+        for _ in 0..<200 where controller.appState.dictationState != .idle { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!manager.hasActiveSession)
+        #expect(try store.recentDictations().map(\.rawText) == (cancelled ? [] : ["Private note."]))
+        #expect(recorder.stopCalls == (cancelled && ending != "finish-cancel" ? 0 : 1))
+        if ending.hasPrefix("pending-") || startupFinish {
+            #expect(controller.appState.dictationState == .idle)
+            recorder.stopURL = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 16_000))
+            controller.dictationTestCallback = { _ in }
+            controller.testingDictationAction("start")
+            for _ in 0..<100 where controller.appState.dictationState != .recording { try await Task.sleep(for: .milliseconds(5)) }
+            controller.dictationTestCallback = nil
+            controller.testingDictationAction("stop")
+            let expectedOutput = startupFinish ? ["Private note."] : ["Private note.", "Private note."]
+            for _ in 0..<200 where try store.recentDictations().count < expectedOutput.count { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(try store.recentDictations().map(\.rawText) == expectedOutput, "The next capture must complete normally")
+        }
+        if activeMeeting && ending == "hold" { controller.stopMeetingRecording() }
+        if activeMeeting && (ending == "hold" || ending == "meeting-stop" || ending == "meeting-discard" || restarted) {
+            if ending == "meeting-discard" { await session.testingWaitForDiscard() }
+            else {
+                for _ in 0..<200 where try store.recentMeetings().first?.rawTranscript.isEmpty != false {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                let transcript = try #require(store.recentMeetings().first).rawTranscript
+                #expect(transcript.contains("Meeting speech."))
+                #expect(!transcript.contains("Private note."))
+            }
+            #expect(!session.capturePhase.isRecording)
+            return
+        }
+        if activeMeeting {
+            #expect(session.capturePhase.isRecording)
+            let urls = await session.testingFinishCapture()
+            defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+            let edge = Array(repeating: Int16(16383), count: 4)
+            let expected = edge + Array(repeating: Int16(speculative || ending == "failure" ? 8191 : 0), count: 4) + edge
+            let pcm = try Data(contentsOf: #require(urls.3)).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+            #expect(pcm == expected)
+        }
+    }
+
+    @Test("closed exclusions sanitize delayed and handoff PCM at every retained sink", arguments: [false, true], [false, true])
+    func excludedMicrophoneSinks(delayedReference: Bool, handoffRoute: Bool) async throws {
+        let old = ContractProducer(useQueue: true), next = ContractProducer(useQueue: false)
+        let worker = DispatchQueue(label: "exclusion.handoff")
+        let route = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: StreamingMeetingMicRecorderAdapter(recorder: old, kind: .systemDefaultStreaming),
+            appScopedRecorder: StreamingMeetingMicRecorderAdapter(recorder: next, kind: .appScopedAudioQueue),
+            handoffWorkerQueue: worker)
+        let system = ContractSystemAudio(), processor = ContractAecProcessor(output: 0.5)
+        let session = MeetingSession(title: "exclusion sinks", calendarEventID: nil, backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()), menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: Self.micDiarizationConfig,
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: processor))
+        let video = OSAllocatedUnfairLock(initialState: [Int16]())
+        session.setScreenAudioSink { samples, mic, _ in if mic { video.withLock { $0 += samples } } }
+        try await session.testingStartCapture()
+        let partialEngine = ExclusionPartialEngine(), partial = MeetingStreamingPartialSession(engine: partialEngine, label: "exclusion")
+        await partial.connect()
+        session.testingInstallMicPartial(partial)
+        defer { partial.stop() }
+        let reference = [Int16](repeating: 100, count: 10)
+        if !delayedReference { system.onPCMSamples?(reference) }
+        let token = session.beginMicrophoneExclusion(at: 102)
+        try old.emit([1, 2, 3, 4], at: 100) // Spans the opening boundary.
+        try await MeetingCaptureLifecycle.onDriverQueue { route.drainAcceptedAudio() }
+        session.endMicrophoneExclusion(token, at: 107)
+        session.endMicrophoneExclusion(UUID(), at: 0) // A foreign take cannot change it.
+        if handoffRoute {
+            let promoted = DispatchSemaphore(value: 0)
+            let handoff = route.onHandoffOutcome
+            route.onHandoffOutcome = { outcome in
+                handoff?(outcome)
+                if outcome == .promoted { promoted.signal() }
+            }
+            #expect(route.requestHealthRecovery(.init(reason: "exclusion", requiresNonZeroSamples: false)) == .initiated)
+            try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
+            try next.emit([5, 6, 7], at: 104)
+            let promotion = try await MeetingCaptureLifecycle.onDriverQueue { promoted.wait(timeout: .now() + 5) }
+            try #require(promotion == .success)
+            try next.emit([8, 9, 10], at: 107)
+        } else {
+            try old.emit([5, 6, 7], at: 104) // Delayed until after the window closed.
+            try old.emit([8, 9, 10], at: 107)
+        }
+        if delayedReference { system.onPCMSamples?(reference) }
+        let urls = await session.testingFinishCapture()
+        defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        func pcm(_ url: URL?) throws -> [Int16] {
+            try Data(contentsOf: #require(url)).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        }
+        let expected: [Int16] = [16383, 16383, 0, 0, 0, 0, 0, 16383, 16383, 16383]
+        #expect(try pcm(urls.0) == expected)
+        #expect(try pcm(urls.1) == reference)
+        #expect(try pcm(urls.2) == expected.map { Int16((Int($0) + 100) / 2) })
+        #expect(try pcm(urls.3) == expected)
+        #expect(video.withLock { $0 } == expected)
+        if !handoffRoute {
+            _ = await partial.finish()
+            let partialSamples = await partialEngine.samples
+            #expect(Array(partialSamples.prefix(10)) == expected.map { Float($0) / 32767 })
+        }
+        session.testingPipelineBarrier {
+            #expect(processor.input.prefix(10).map { Int16($0 * 32767) } ==
+                [2047, 4095, 0, 0, 0, 0, 0, 16383, 18431, 20479])
+        }
+        let exclusions = MeetingMicrophoneExclusions()
+        let empty = exclusions.begin(at: 30)
+        exclusions.end(empty, at: 29)
+        #expect(exclusions.hasExclusions, "Even an empty attempt suppresses raw diagnostic audio for the session lifetime")
+        let first = exclusions.begin(at: 4), overlap = exclusions.begin(at: 8)
+        exclusions.end(overlap, at: 12)
+        exclusions.end(first, at: 10) // Close out of order and merge overlap.
+        let adjacent = exclusions.begin(at: 12), separated = exclusions.begin(at: 16)
+        exclusions.end(separated, at: 18)
+        exclusions.end(adjacent, at: 14)
+        exclusions.end(first, at: 100) // Duplicate and foreign closes cannot erase a real gap.
+        exclusions.end(UUID(), at: 100)
+        exclusions.end(empty, at: 100)
+        let active = exclusions.begin(at: 20)
+        let input = MicrophoneCaptureAudio(samples: Array(1...24), startFrame: 0, admitted: delayedReference)
+        let open = exclusions.redact(input)
+        let closedPCM: [Int16] = [1, 2, 3, 4] + Array(repeating: 0, count: 10) + [15, 16, 0, 0, 19, 20, 0, 0, 23, 24]
+        #expect(open.samples == Array(closedPCM.prefix(22)) + [0, 0])
+        exclusions.end(active, at: 22)
+        let late = exclusions.redact(input) // Old audio is still protected after later closes.
+        #expect(late.samples == closedPCM)
+        #expect(input.samples == Array(1...24))
+        #expect(open.startFrame == input.startFrame && late.endFrame == input.endFrame)
+        #expect(open.admitted == input.admitted && late.admitted == input.admitted)
+        let emptyAudio = MicrophoneCaptureAudio(samples: [1, 2], startFrame: 30, admitted: true)
+        #expect(exclusions.redact(emptyAudio).samples == emptyAudio.samples)
+
+        let history = MeetingMicrophoneExclusions()
+        for index in 0..<4_096 {
+            let start = Int64(index * 8 + 2)
+            let token = history.begin(at: start)
+            history.end(token, at: start + 2)
+        }
+        for start: Int64 in [0, 2_048 * 8, 4_095 * 8, 1_234 * 8 + 4] {
+            let audio = MicrophoneCaptureAudio(samples: [10, 11, 12, 13, 14, 15], startFrame: start, admitted: !delayedReference)
+            let result = history.redact(audio, inspectClosedProbes: { probes in
+                #expect(probes <= 16, "Selection must examine logarithmic history plus actual matches")
+                #expect(history.hasExclusions) // Inspection runs after the owner lock is released.
+            })
+            #expect(result.samples == (start % 8 == 0 ? [10, 11, 0, 0, 14, 15] : audio.samples))
+            #expect(audio.samples == [10, 11, 12, 13, 14, 15])
+            #expect(result.startFrame == audio.startFrame && result.endFrame == audio.endFrame)
+            #expect(result.admitted == audio.admitted)
+        }
+
+    }
+
     @Test("delivery fence includes queued first replacement audio; cancel invalidates it", arguments: [false, true])
     func queuedSelectionFence(cancel: Bool) {
         let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
@@ -92,6 +451,8 @@ struct MeetingMicrophoneDeliveryTests {
             StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
         var config = Self.micDiarizationConfig
         config.enableLiveStreamingPartials = false
+        let coordinator = TranscriptionCoordinator()
+        await coordinator.testingInstallASR(prepare: { _ in }, infer: { _, _ in .init(text: "", segments: []) })
         let initial = MeetingTemplates.resolveSnapshot(id: MeetingTemplates.autoID, customTemplates: [])
         let selected = MeetingTemplateSnapshot(id: "selected", name: "Interview", kind: .custom, prompt: "Interview notes")
         let session = MeetingSession(title: "Interview", calendarEventID: nil,
@@ -99,15 +460,19 @@ struct MeetingMicrophoneDeliveryTests {
             runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
                                   menuIcon: nil, appIcon: nil, bundlePath: nil),
             config: config, templateSnapshot: initial,
-            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
-            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+            transcriptionCoordinator: coordinator, meetingMicRecorder: route,
+            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor(output: 0.5)))
         try await session.testingStartCapture()
+        try producer.emit([1, 2, 3], at: 100) // Partial AEC frame must be cleaned before production Stop finalizes the writer.
         let result = try await session.stop(template: selected)
         defer {
             for url in [result.retainedRecordingURL, result.systemRecordingURL].compactMap({ $0 }) {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        let pcm = try Data(contentsOf: #require(result.retainedRecordingURL)).dropFirst(44)
+            .withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        #expect(pcm == [16_383, 16_383, 16_383])
         #expect(result.templateSnapshot.id == selected.id)
         #expect(result.templateSnapshot.prompt == selected.prompt)
         #expect(result.rawTranscript.isEmpty)
@@ -1030,9 +1395,20 @@ private final class ContractSystemAudio: SystemAudioCapturing {
 private final class ContractAecProcessor: MeetingAecProcessor {
     let name = "test", frameSize = 4, sampleRate = 16_000
     var events: [String] = [] // Session pipeline queue only.
+    var input: [Float] = []
+    private let output: Float?
+    init(output: Float? = nil) { self.output = output }
     func reset() { events.append("reset") }
     func processFrame(mic: [Float], reference: [Float]) throws -> [Float] {
         events.append("process")
-        return mic
+        input += mic
+        return output.map { Array(repeating: $0, count: mic.count) } ?? mic
     }
+}
+
+private actor ExclusionPartialEngine: MeetingStreamingPartialEngine {
+    private(set) var samples: [Float] = []
+    func setPartialHandler(_ handler: @escaping @Sendable (String) -> Void) {}
+    func process(samples: [Float]) { self.samples += samples }
+    func shutdown() {}
 }

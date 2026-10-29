@@ -12,16 +12,6 @@ actor ModelLibraryPreparation {
     ) async throws {
         try Task.checkCancellation()
         try await download()
-        try await gate.acquire(onWait: onQueued)
-        do {
-            // A queued caller can be cancelled just as the permit is handed over.
-            try Task.checkCancellation()
-            try await prepare()
-            try Task.checkCancellation()
-            await gate.release()
-        } catch {
-            await gate.release()
-            throw error
-        }
+        try await gate.withReservation(onWait: onQueued, prepare)
     }
 }

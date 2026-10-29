@@ -14,6 +14,176 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("overlap state retains the surviving activity and routes Finish and Cancel to dictation")
+    @MainActor
+    func dictationOverlap() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory), notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        let config = AppConfig()
+        indicator.presentsWindows = false
+        var cancelled = 0, finished = 0, stoppedMeeting = 0
+        var meetingPauses = 0, meetingDiscards = 0
+        indicator.onCancelDictation = { cancelled += 1 }
+        indicator.onStopToggleDictation = { finished += 1 }
+        indicator.onStopMeeting = { stoppedMeeting += 1 }
+        indicator.onToggleMeetingPause = { meetingPauses += 1 }
+        indicator.onDiscardMeeting = { meetingDiscards += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Owned warmup")
+        #expect(indicator.meetingFeedbackMessage == "Owned warmup" && indicator.isShowingLoading)
+        #expect(indicator.overlapMeetingStatus == "Meeting recording")
+        indicator.cancelNotchActivity()
+        #expect(meetingDiscards == 1 && cancelled == 0)
+        indicator.hideLoading()
+        #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+        #expect(indicator.state == .recording && indicator.overlapMeetingStatus == nil)
+        indicator.toggleNotchMeetingPause()
+        indicator.stopNotchMeeting()
+        #expect(meetingPauses == 1 && stoppedMeeting == 1)
+        for ending in ["end", "hide", "pause", "resume", "dictation", "meeting", "notice"] {
+            indicator.setMeetingRecordingPaused(ending == "resume", config: config)
+            indicator.pointerInteractionBegan()
+            indicator.showLoading("First progress")
+            indicator.showLoading("Latest progress")
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading,
+                "Loading must remain deferred throughout a drag")
+            switch ending {
+            case "hide": indicator.hideLoading()
+            case "pause": indicator.setMeetingRecordingPaused(true, config: config)
+            case "resume": indicator.setMeetingRecordingPaused(false, config: config)
+            case "dictation":
+                indicator.setDictationState(.preparing, config: config)
+                indicator.setDictationState(.idle, config: config)
+            case "meeting":
+                indicator.setMeetingRecording(false, config: config)
+                indicator.setMeetingRecording(true, config: config)
+            case "notice": indicator.showWarning("Newer notice")
+            default: break
+            }
+            indicator.pointerInteractionEnded()
+            #expect(indicator.meetingFeedbackMessage == (ending == "end" ? "Latest progress" : (ending == "notice" ? "Newer notice" : nil)))
+            #expect(indicator.isShowingLoading == (ending == "end"))
+            indicator.hideLoading()
+        }
+        indicator.setMeetingRecordingPaused(false, config: config)
+        // No panel is created: exercise the production redraw decision with an
+        // existing floating panel as input, separately from loading ownership.
+        for loading in [false, true] {
+            for paused in [true, false] {
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+                if loading { indicator.showLoading("Preparing dictation") }
+                else { indicator.showWarning("Try dictation again") }
+                #expect(indicator.isShowingLoading == loading)
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: !paused, hasPanel: true, config: config))
+                #expect(indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config),
+                    "A pause transition must redraw retired feedback on an existing floating panel")
+                indicator.setMeetingRecordingPaused(paused, config: config)
+                #expect(indicator.meetingFeedbackMessage == nil)
+                #expect(!indicator.isShowingLoading, "Retired loading must not keep meeting hover controls disabled")
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+            }
+        }
+        for takeover in [false, true] {
+            indicator.showLoading("Preparing dictation")
+            #expect(indicator.meetingFeedbackMessage != nil && indicator.isShowingLoading)
+            if takeover { indicator.setDictationState(.preparing, config: config) }
+            else { indicator.setMeetingRecording(false, config: config) }
+            #expect(indicator.state == (takeover ? .preparing : .idle))
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+            indicator.setDictationState(.idle, config: config)
+            indicator.setMeetingRecording(true, config: config)
+        }
+        indicator.setMeetingRecording(false, config: config)
+        indicator.showLoading("Unrelated background loading")
+        indicator.setDictationState(.idle, config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.meetingFeedbackMessage == nil && indicator.isShowingLoading)
+        indicator.hideLoading()
+        indicator.setMeetingRecording(true, config: config)
+        for target: DictationState in [.idle, .recording] {
+            indicator.setDictationState(.preparing, config: config)
+            indicator.setPreparingWaveformWaiting(config: config)
+            #expect(indicator.recordingWaveformMode == .waiting)
+            indicator.setDictationState(.preparing, config: config)
+            #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
+            let bounds = CGRect(x: 0, y: 0, width: 220, height: 40)
+            let initial = (0..<5).map { indicator.standingWaveformFrame(index: $0, amplitude: 1 / 11, bounds: bounds) }
+            for waiting in [false, true] {
+                for value: CGFloat in [0, 0.5, 1] {
+                    let frames = (0..<5).map { index in
+                        let weight = IndicatorWaveformDynamics.standingWeight(index: index, count: 5)
+                        let amplitude = waiting ? 0.28 + (sin(value * 5.8 + CGFloat(index) * 0.72) + 1) * 0.22 * weight : value * weight
+                        return indicator.standingWaveformFrame(index: index, amplitude: amplitude, bounds: bounds)
+                    }
+                    #expect(frames.allSatisfy { $0.minX >= 135 && $0.maxX <= 166 }, "Bars must stay between the labels and controls")
+                    #expect(frames.map(\.minX) == initial.map(\.minX))
+                }
+            }
+            indicator.setDictationState(target, config: config)
+            #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+            indicator.setDictationState(.idle, config: config)
+        }
+        indicator.setMeetingRecordingPaused(true, config: config)
+        for state: DictationState in [.preparing, .recording, .transcribing] {
+            indicator.setDictationState(state, config: config)
+            #expect(indicator.overlapMeetingStatus == "Meeting paused")
+            notch.onCancel?()
+            if state == .recording { notch.onStopRecording?() }
+            indicator.stopNotchMeeting()
+        }
+        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 1)
+        indicator.setDictationState(.idle, config: config)
+        #expect(indicator.overlapMeetingStatus == nil)
+        indicator.stopNotchMeeting()
+        #expect(stoppedMeeting == 2)
+        indicator.setDictationState(.recording, config: config)
+        #expect(indicator.overlapMeetingStatus == "Meeting paused")
+        indicator.setRecordingWaveformWaiting(config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+        #expect(indicator.overlapMeetingStatus == nil)
+        let ordinary = CGRect(x: 0, y: 0, width: 76, height: 22)
+        #expect(indicator.standingWaveformFrame(index: 0, amplitude: 0, bounds: ordinary) ==
+            IndicatorWaveformDynamics.standingBarFrame(index: 0, amplitude: 0, bounds: ordinary))
+        indicator.cancelNotchActivity()
+        #expect(cancelled == 4)
+
+        var transcriptVisible = true, geometry = "expanded"
+        var effects: [String] = []
+        var compactWrites: [() -> Void] = [], completions: [() -> Void] = []
+        let applyGeometry: (Bool, @escaping () -> Void) -> Void = { animated, completion in
+            let compact = { geometry = "compact"; effects.append("compact") }
+            if animated { compactWrites.append(compact) } else { compact() }
+            effects.append("layout")
+            completions.append { effects.append("completion"); completion() }
+        }
+        let restore = { transcriptVisible = true; geometry = "expanded"; effects.append("restore") }
+        for _ in 0..<2 {
+            let restores = transcriptVisible
+            transcriptVisible = false // The renderer normalizes expanded content before compact layout.
+            effects.removeAll()
+            FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: restores, geometry: applyGeometry, restore: restore)
+            #expect(transcriptVisible && geometry == "expanded", "Each refresh must restore before returning")
+            #expect(effects == ["compact", "layout", "restore"])
+            #expect(compactWrites.isEmpty, "Restoring refreshes cannot leave a deferred compact frame")
+        }
+        transcriptVisible = false
+        geometry = "compact" // Collapse before ordinary animation completions are delivered.
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact", "A stale completion cannot reopen a collapsed transcript")
+        compactWrites.removeAll()
+        completions.removeAll()
+        effects.removeAll()
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry, restore: restore)
+        #expect(effects == ["layout"] && compactWrites.count == 1 && completions.count == 1)
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+    }
+
     @Test("Idle feedback uses the selected notch and retains its message",
           arguments: [NotchStatus.loading, .warning, .success, .cursor])
     @MainActor

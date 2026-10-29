@@ -266,9 +266,11 @@ struct StreamingDictationControllerTests {
     }
 
     @available(macOS 15, *)
-    @Test("chunk transcription failure cancels mic session and permits retry")
-    func chunkTranscriptionFailureCancelsMicSessionAndPermitsRetry() async {
-        let transcriber = ThrowingChunkStreamingTranscriber()
+    @Test("chunk transcription failure cancels mic session and permits retry", arguments: ["active", "stop-failure", "stop-cancel"])
+    func chunkTranscriptionFailureCancelsMicSessionAndPermitsRetry(ending: String) async {
+        let release = AsyncStream<Void>.makeStream()
+        defer { release.continuation.finish() }
+        let transcriber = ThrowingChunkStreamingTranscriber(release: ending == "active" ? nil : release.stream)
         let recorder = InspectableStreamingDictationRecorder()
         let failures = FailureCounter()
         let controller = StreamingDictationController(
@@ -280,13 +282,30 @@ struct StreamingDictationControllerTests {
         }
 
         #expect(controller.start() == true)
-        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
-        #expect(await waitUntil { recorder.cancelCalls == 1 && failures.value == 1 })
+        let oldCallback = recorder.onAudioBuffer
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960 + (ending == "active" ? 0 : 17)))
+        if ending != "active" {
+            for _ in 0..<200 where await transcriber.transcribeCalls == 0 { try? await Task.sleep(for: .milliseconds(5)) }
+            #expect(await transcriber.transcribeCalls == 1)
+            let completions = FailureCounter()
+            controller.stop { text in
+                #expect(text.isEmpty)
+                completions.increment()
+            }
+            #expect(completions.value == 0)
+            if ending == "stop-cancel" { controller.cancel() }
+            release.continuation.finish()
+            #expect(await waitUntil { completions.value == 1 }, "Terminal inference failure must finish even with a queued tail")
+        }
+        #expect(await waitUntil { recorder.cancelCalls == (ending == "stop-failure" ? 0 : 1) && failures.value == (ending == "active" ? 1 : 0) })
 
         #expect(await transcriber.transcribeCalls == 1)
-        #expect(recorder.cancelCalls == 1)
-        #expect(failures.value == 1)
+        #expect(recorder.cancelCalls == (ending == "stop-failure" ? 0 : 1))
+        #expect(failures.value == (ending == "active" ? 1 : 0))
         #expect(controller.start() == true)
+        oldCallback?([Float](repeating: 0.9, count: 8960))
+        try? await Task.sleep(for: .milliseconds(25))
+        #expect(await transcriber.transcribeCalls == 1, "Retired capture cannot enter a replacement session")
         controller.cancel()
     }
 
@@ -581,6 +600,8 @@ private actor ImmediateStreamingTranscriber: NemotronStreamingTranscribing {
 @available(macOS 15, *)
 private actor ThrowingChunkStreamingTranscriber: NemotronStreamingTranscribing {
     private(set) var transcribeCalls = 0
+    private let release: AsyncStream<Void>?
+    init(release: AsyncStream<Void>? = nil) { self.release = release }
 
     func makeStreamState() async throws -> RNNTStreamState {
         try makeTestNemotronStreamState()
@@ -591,6 +612,7 @@ private actor ThrowingChunkStreamingTranscriber: NemotronStreamingTranscribing {
         state: inout RNNTStreamState
     ) async throws -> String {
         transcribeCalls += 1
+        if let release { for await _ in release {} }
         throw NSError(domain: "ThrowingChunkStreamingTranscriber", code: 1)
     }
 }
@@ -864,6 +886,119 @@ struct NemotronDictationModePolicyTests {
 struct Nemotron35StreamStateTests {
 
     @available(macOS 15, *)
+    @Test("native predictions yield to dictation and retain file snapshots",
+          arguments: ["capture", "slow-first", "reload", "shutdown", "cancel", "active-cancel", "failed-load"])
+    func nativeFileOwnership(scenario: String) async throws {
+        let fixture = NativeNemotronFixture(failLoad: scenario == "failed-load", orderedTail: scenario == "capture")
+        defer {
+            fixture.release.continuation.finish()
+            fixture.finalRelease.continuation.finish()
+        }
+        let transcriber = Nemotron35StreamingTranscriber(modelLoader: { _, _ in try fixture.load() },
+            revision: { fixture.snapshot.revision }, onWait: { fixture.update {
+                $0.waits += 1
+            } })
+        let coordinator = TranscriptionCoordinator()
+        await coordinator.testingInstallNemotron(transcriber)
+        let wav = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 71_681))
+        defer { try? FileManager.default.removeItem(at: wav) }
+        if scenario == "failed-load" {
+            await #expect(throws: NemotronRNNTError.self) {
+                _ = try await coordinator.getLoadedNemotron35Transcriber()
+            }
+            fixture.release.continuation.finish()
+        }
+        _ = try await coordinator.getLoadedNemotron35Transcriber()
+        let file = Task { try await coordinator.transcribeMeeting(at: wav, backend: .nemotron35Multilingual) }
+        if scenario != "failed-load" {
+            #expect(await waitUntil { fixture.snapshot.filePredictions == 1 })
+        }
+        var other: Task<String, Error>?
+        if scenario == "capture" || scenario == "slow-first" {
+            other = Task {
+                await coordinator.setNemotron35PromptId(102)
+                let ready = try await coordinator.getLoadedNemotron35Transcriber()
+                let recorder = InspectableStreamingDictationRecorder()
+                let controller = StreamingDictationController(transcriber: ready, recorder: recorder,
+                    chunkSamples: ready.chunkSamples)
+                defer { controller.cancel() }
+                recorder.onStop = { fixture.update { $0.finishStarted = true } }
+                #expect(controller.start())
+                recorder.emit(samples: Array(repeating: 0.75, count: ready.chunkSamples + 17))
+                fixture.update { $0.captured = recorder.startCalls == 1 }
+                let result = await stop(controller)
+                fixture.update { $0.dictationFinished = true }
+                return result
+            }
+            #expect(await waitUntil { fixture.snapshot.captured }, "Loaded capture must start before the held prediction is released")
+            #expect(await waitUntil { fixture.snapshot.waits == 1 }, "Dictation must actually queue")
+        } else if scenario == "reload" || scenario == "shutdown" {
+            if scenario == "reload" { fixture.update { $0.revision = "b" } }
+            other = Task {
+                if scenario == "reload" {
+                    try await transcriber.loadModels()
+                } else {
+                    await transcriber.shutdown()
+                }
+                fixture.update { $0.mutated = true }
+                return "mutated"
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 }, "Mutation must actually queue at the native reservation")
+            #expect(!fixture.snapshot.mutated)
+            #expect(fixture.snapshot.loads == 1)
+        } else if scenario == "active-cancel" {
+            file.cancel()
+            other = Task {
+                var state = try await transcriber.makeStreamState()
+                return try await transcriber.transcribeChunk(samples: [0.75], state: &state)
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 })
+            #expect(fixture.snapshot.predictions == 1, "Cancellation must retain ownership until the prediction unwinds")
+        } else if scenario == "cancel" {
+            let cancelled = Task {
+                var state = try await transcriber.makeStreamState()
+                return try await transcriber.transcribeChunk(samples: [0.75], state: &state)
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 })
+            cancelled.cancel()
+            await #expect(throws: CancellationError.self) { try await cancelled.value }
+            #expect(fixture.snapshot.predictions == 1)
+        }
+        if scenario == "slow-first" {
+            #expect(await waitUntil { fixture.snapshot.finishStarted }, "Finish must have stopped capture before the held prediction wait")
+            try await Task.sleep(for: .seconds(3))
+            #expect(!fixture.snapshot.dictationFinished, "Accepted inference must outlive the former 2.49-second drain deadline")
+            #expect(fixture.snapshot.filePredictions == 1 && fixture.snapshot.dictationPredictions == 0)
+        }
+        fixture.release.continuation.finish()
+        if scenario != "active-cancel" { #expect(await waitUntil { fixture.snapshot.filePredictions == 3 }) }
+        if scenario == "capture" {
+            // Longer than the ordinary 2.49s Finish deadline, while no dictation
+            // prediction itself is stalled. Both queued chunks must finish first.
+            try await Task.sleep(for: .seconds(3))
+            #expect(fixture.snapshot.dictationPredictions == 2)
+            #expect(fixture.snapshot.dictationFinished)
+        }
+        if scenario == "reload" || scenario == "shutdown" {
+            #expect(await waitUntil { fixture.snapshot.mutated }, "Mutation must complete between file predictions")
+        }
+        fixture.finalRelease.continuation.finish()
+        let text = try? await file.value.text
+        #expect(text == (scenario == "active-cancel" ? nil : "Meeting Meeting Meeting"), "The file must retain its original models or report cancellation")
+        if let other {
+            let result = try? await other.value
+            let expected = scenario == "capture" || scenario == "slow-first" ? " Dictation Dictation"
+                : (scenario == "active-cancel" ? " Dictation" : "mutated")
+            #expect(result == expected)
+        }
+        #expect(fixture.snapshot.filePrompts == (scenario == "active-cancel" ? [101] : [101, 101, 101]))
+        if scenario == "reload" { #expect(fixture.snapshot.reloadAfterPredictions == 1) }
+        _ = try await coordinator.getLoadedNemotron35Transcriber()
+        var next = try await transcriber.makeStreamState()
+        #expect(try await transcriber.transcribeChunk(samples: [0.75], state: &next) == " Dictation")
+    }
+
+    @available(macOS 15, *)
     @Test("makeStreamState uses the 3.5 multilingual cache shapes")
     func makeStreamStateShapes() async throws {
         let transcriber = Nemotron35StreamingTranscriber()
@@ -909,6 +1044,73 @@ struct Nemotron35StreamStateTests {
             transcriber: transcriber as NemotronStreamingTranscribing,
             chunkSamples: 35840
         )
+    }
+}
+
+
+@available(macOS 15, *)
+private final class NativeNemotronFixture: @unchecked Sendable {
+    struct Snapshot {
+        var revision = "a"
+        var loads = 0
+        var predictions = 0
+        var filePredictions = 0
+        var dictationPredictions = 0
+        var dictationFinished = false
+        var finishStarted = false
+        var filePrompts: [Int32] = []
+        var reloadAfterPredictions = 0
+        var waits = 0
+        var captured = false
+        var mutated = false
+        var failLoad = false
+    }
+    private let lock = NSLock()
+    private var storage: Snapshot
+    private let orderedTail: Bool
+    let release = AsyncStream<Void>.makeStream()
+    let finalRelease = AsyncStream<Void>.makeStream()
+    init(failLoad: Bool, orderedTail: Bool) {
+        storage = Snapshot(failLoad: failLoad)
+        self.orderedTail = orderedTail
+    }
+    var snapshot: Snapshot { lock.withLock { storage } }
+    func update(_ body: (inout Snapshot) -> Void) { lock.withLock { body(&storage) } }
+    func load() throws -> Nemotron35StreamingTranscriber.Models {
+        let loaded = lock.withLock {
+            storage.loads += 1
+            storage.reloadAfterPredictions = storage.filePredictions
+            let current = storage
+            storage.failLoad = false
+            return current
+        }
+        if loaded.failLoad { throw NemotronRNNTError.notLoaded }
+        let tokenizer = [1: loaded.revision == "a" ? "▁Meeting" : "▁Changed", 2: "▁Dictation"]
+        return .init(revision: loaded.revision, tokenizer: tokenizer) { [self] config, samples, state in
+            let file = (samples.first ?? 0) < 0.5
+            if orderedTail && file && snapshot.filePredictions == 1 && snapshot.captured && snapshot.dictationPredictions == 1 {
+                #expect(await waitUntil { self.snapshot.waits == 3 }, "Tail arrival must precede file prediction 2 entry")
+            }
+            let first = lock.withLock {
+                storage.predictions += 1
+                if file {
+                    storage.filePredictions += 1
+                    storage.filePrompts.append(config.promptId ?? -1)
+                } else { storage.dictationPredictions += 1 }
+                return storage.predictions == 1
+            }
+            if first {
+                // Model prediction may ignore cancellation; ownership must last until it returns.
+                await Task { for await _ in release.stream {} }.value
+            }
+            if orderedTail && !file && snapshot.dictationPredictions == 1 && snapshot.captured {
+                #expect(await waitUntil { self.snapshot.waits == 2 }, "File prediction 2 must queue before dictation yields")
+            }
+            if file && snapshot.filePredictions == 3 { for await _ in finalRelease.stream {} }
+            let tokens = [file ? 1 : 2]
+            state.allTokens += tokens
+            return tokens
+        }
     }
 }
 
