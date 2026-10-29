@@ -11778,6 +11778,14 @@ public final class MuesliController: NSObject {
             finishNemotronStreamingStop(finalText: text, startedAt: dictationStartedAt ?? Date(), sessionID: sessionID)
         }
     }
+
+    func finishStandardFormattingForTesting(_ text: String) {
+        completeDictationPaste(text: text, duration: 1, appContext: "", startedAt: Date(),
+            formattingRules: config.dictationAppFormattingRules, backend: "synthetic",
+            bodhanMeasurement: nil,
+            transcriptionModel: DictationModelIdentity(backend: "synthetic", model: "test", name: "Test"),
+            latencyTrace: nil)
+    }
     #endif
 
     private func captureDictationCorrectionTargetApp() {
@@ -12304,8 +12312,8 @@ public final class MuesliController: NSObject {
     }
 
     /// One completion path for standard and buffered streaming dictation. Failed
-    /// dispatches retain the original transcript in History without claiming an app
-    /// received it; only dispatched text starts correction monitoring.
+    /// dispatches save the original transcript without claiming an app received it.
+    /// Recovery messages reflect the insert result; only dispatched text starts correction monitoring.
     private func completeDictationPaste(
         text: String,
         duration: TimeInterval,
@@ -12362,14 +12370,21 @@ public final class MuesliController: NSObject {
                 self.markDictationLatency("user_visible_completion", trace: latencyTrace)
             }, onClipboardSettled: { [weak self] in
                 guard let self else { return }
-                self.finishStandardDictationBookkeeping(
+                let didPersist = self.finishStandardDictationBookkeeping(
                     text: didDispatchPaste ? preparedText : text, duration: duration,
                     appContext: appContext, startedAt: startedAt, outputMode: .paste,
                     targetApp: completionTargetApp, backend: backend,
                     bodhanMeasurement: bodhanMeasurement, transcriptionModel: transcriptionModel)
-                let warning: String? = !didDispatchPaste
-                    ? "Dictation wasn't pasted. Find it in History."
-                    : (recoveredAfterFailure ? "Streaming stopped early. Partial dictation recovered." : nil)
+                let warning: String?
+                if !didPersist {
+                    warning = didDispatchPaste
+                        ? "Dictation was pasted, but could not be saved to History."
+                        : "Dictation wasn't pasted and could not be saved to History."
+                } else if !didDispatchPaste {
+                    warning = "Dictation wasn't pasted. Find it in History."
+                } else {
+                    warning = recoveredAfterFailure ? "Streaming stopped early. Partial dictation recovered." : nil
+                }
                 if let warning {
                     #if DEBUG
                     if let hooks { hooks.warning(warning) }
@@ -12410,6 +12425,9 @@ public final class MuesliController: NSObject {
     /// For paste output, runs only once the pasteboard has either been restored or superseded
     /// by a newer copy. Persistence and dashboard queries therefore cannot lengthen transcript
     /// ownership of the clipboard or the visible Transcribing state.
+    /// Returns whether the History insert succeeded so recovery messages describe
+    /// an actual saved record, even when clipboard delivery and persistence differ.
+    @discardableResult
     private func finishStandardDictationBookkeeping(
         text: String,
         duration: TimeInterval,
@@ -12420,8 +12438,8 @@ public final class MuesliController: NSObject {
         backend: String,
         bodhanMeasurement: BodhanWBCSMeasurement?,
         transcriptionModel: DictationModelIdentity
-    ) {
-        _ = try? dictationStore.insertDictation(
+    ) -> Bool {
+        let savedID = try? dictationStore.insertDictation(
             text: text,
             durationSeconds: duration,
             appContext: appContext,
@@ -12432,7 +12450,7 @@ public final class MuesliController: NSObject {
             bodhanMeasurement: bodhanMeasurement,
             transcriptionModel: transcriptionModel
         )
-        scheduleICloudSyncAfterLocalChange()
+        if savedID != nil { scheduleICloudSyncAfterLocalChange() }
         statusBarController?.refresh()
         if let historyWindowController {
             // reload() already calls syncAppState(); do not repeat the full query set.
@@ -12444,6 +12462,7 @@ public final class MuesliController: NSObject {
             "backend": backend,
             "paste_method": outputMode.pasteMethod,
         ])
+        return savedID != nil
     }
 
     private func finishStandardDictationStop(

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import MuesliCore
+import SQLite3
 import Testing
 import TelemetryDeck
 @testable import MuesliNativeApp
@@ -149,6 +150,67 @@ struct DictationAppFormattingTests {
         #expect(deliveries == (outcome == "ownership" ? 0 : 1))
         #expect(controller.appState.pendingDiagnosticIncident == nil)
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
+    }
+
+    @Test("History recovery messages reflect actual persistence for every paste completion path",
+          arguments: ["standard", "buffered", "recovered"],
+          ["saved/pasted", "saved/rejected", "openFailure/pasted", "openFailure/rejected", "writeFailure/pasted", "writeFailure/rejected"])
+    @MainActor
+    func historyRecoveryMessage(path: String, outcome: String) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        let didPersist = outcome.hasPrefix("saved/")
+        let didPaste = outcome.hasSuffix("/pasted")
+        let databaseURL = database.resolvedDatabaseURL
+        if outcome.hasPrefix("openFailure/") {
+            // This is a disposable synthetic database with no long-lived connection.
+            // A directory at the database path forces SQLite open to fail.
+            try FileManager.default.removeItem(at: databaseURL)
+            try FileManager.default.createDirectory(at: databaseURL, withIntermediateDirectories: false)
+        } else if outcome.hasPrefix("writeFailure/") {
+            // Keep reads available while rejecting the real store API's insert.
+            var db: OpaquePointer?
+            try #require(sqlite3_open(databaseURL.path, &db) == SQLITE_OK)
+            defer { sqlite3_close(db) }
+            try #require(sqlite3_exec(db,
+                "CREATE TRIGGER reject_dictation BEFORE INSERT ON dictations BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END",
+                nil, nil, nil) == SQLITE_OK)
+        }
+        var warnings: [String] = []
+        var pasteAttempts = 0
+        var settlements = 0
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in Issue.record("Buffered text must not type live") },
+            dispatchPaste: { _ in pasteAttempts += 1; return didPaste },
+            warning: { warnings.append($0) })
+        await withCheckedContinuation { continuation in
+            controller.dictationOutputTestHooks?.settled = { settlements += 1; continuation.resume() }
+            if path == "standard" {
+                controller.finishStandardFormattingForTesting("History fixture.")
+            } else {
+                let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
+                controller.receiveStreamingFormattingForTesting("History fixture.", sessionID: id)
+                controller.finishStreamingFormattingForTesting("History fixture.", sessionID: id,
+                    failure: path == "recovered")
+            }
+        }
+        if !didPersist {
+            #expect(warnings == [didPaste
+                ? "Dictation was pasted, but could not be saved to History."
+                : "Dictation wasn't pasted and could not be saved to History."])
+        } else if !didPaste {
+            #expect(warnings == ["Dictation wasn't pasted. Find it in History."])
+        } else {
+            #expect(warnings == (path == "recovered" ? ["Streaming stopped early. Partial dictation recovered."] : []))
+        }
+        if !outcome.hasPrefix("openFailure/") {
+            let records = try database.recentDictations()
+            #expect(records.count == (didPersist ? 1 : 0))
+            if didPersist { #expect(records.first?.rawText == "History fixture.") }
+        }
+        #expect(pasteAttempts == 1)
+        #expect(settlements == 1)
+        #expect(board.string(forType: .string) == "original clipboard")
     }
 
     @Test("Buffered stop retains the spoken unlock and an unruled recipient's original text")
