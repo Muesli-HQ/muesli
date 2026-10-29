@@ -980,11 +980,11 @@ struct FloatingIndicatorPointerInteractionTests {
         }
         indicator.powerProvider = { -24 }
         indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Warming up dictation")
+        indicator.hideLoading()
         try await Task.sleep(for: .milliseconds(350))
         let originalFrame = try #require(indicator.currentFrame)
         for _ in 0..<6 {
-            indicator.showLoading("Warming up dictation")
-            indicator.hideLoading()
             indicator.setHovered(true)
             let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
                 .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
@@ -1035,9 +1035,9 @@ struct FloatingIndicatorPointerInteractionTests {
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var pauseCount = 0
         indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.powerProvider = { -24 }
         indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(paused, config: config)
-        indicator.powerProvider = { -24 }
         try await Task.sleep(for: .milliseconds(350))
         indicator.setHovered(true)
         let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }

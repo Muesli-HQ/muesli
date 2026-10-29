@@ -149,6 +149,39 @@ struct NotchIndicatorTests {
             IndicatorWaveformDynamics.standingBarFrame(index: 0, amplitude: 0, bounds: ordinary))
         indicator.cancelNotchActivity()
         #expect(cancelled == 4)
+
+        var transcriptVisible = true, geometry = "expanded"
+        var effects: [String] = []
+        var compactWrites: [() -> Void] = [], completions: [() -> Void] = []
+        let applyGeometry: (Bool, @escaping () -> Void) -> Void = { animated, completion in
+            let compact = { geometry = "compact"; effects.append("compact") }
+            if animated { compactWrites.append(compact) } else { compact() }
+            effects.append("layout")
+            completions.append { effects.append("completion"); completion() }
+        }
+        let restore = { transcriptVisible = true; geometry = "expanded"; effects.append("restore") }
+        for _ in 0..<2 {
+            let restores = transcriptVisible
+            transcriptVisible = false // The renderer normalizes expanded content before compact layout.
+            effects.removeAll()
+            FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: restores, geometry: applyGeometry, restore: restore)
+            #expect(transcriptVisible && geometry == "expanded", "Each refresh must restore before returning")
+            #expect(effects == ["compact", "layout", "restore"])
+            #expect(compactWrites.isEmpty, "Restoring refreshes cannot leave a deferred compact frame")
+        }
+        transcriptVisible = false
+        geometry = "compact" // Collapse before ordinary animation completions are delivered.
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact", "A stale completion cannot reopen a collapsed transcript")
+        compactWrites.removeAll()
+        completions.removeAll()
+        effects.removeAll()
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry, restore: restore)
+        #expect(effects == ["layout"] && compactWrites.count == 1 && completions.count == 1)
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
     }
 
     @Test("Idle feedback uses the selected notch and retains its message",

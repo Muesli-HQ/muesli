@@ -745,6 +745,15 @@ final class FloatingIndicatorController: NSObject {
         setState(state, config: config)
     }
 
+    static func applyTransitionGeometry(
+        restoresTranscript: Bool,
+        geometry: (Bool, @escaping () -> Void) -> Void,
+        restore: @escaping () -> Void
+    ) {
+        geometry(!restoresTranscript) {}
+        if restoresTranscript { restore() }
+    }
+
     func setState(_ requestedState: DictationState, config: AppConfig) {
         // The shared indicator also receives dictation completion/failure and
         // warmup updates. They must not retire a still-active meeting's controls.
@@ -898,11 +907,8 @@ final class FloatingIndicatorController: NSObject {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = restoresMeetingTranscript ? 0 : duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            context.allowsImplicitAnimation = true
+            context.allowsImplicitAnimation = !restoresMeetingTranscript
 
-            panel.animator().setFrame(targetFrame, display: true)
-            panel.animator().alphaValue = style.alpha
-            contentView.animator().frame = NSRect(origin: .zero, size: targetFrame.size)
             contentView.layer?.cornerRadius = targetFrame.height / 2
             contentView.layer?.backgroundColor = style.background.cgColor
             contentView.layer?.borderWidth = 1.0
@@ -961,13 +967,6 @@ final class FloatingIndicatorController: NSObject {
                 self.contentView?.updateTrackingAreas()
                 self.reconcileIdleHover()
             }
-            // Animator proxies can apply even zero-duration geometry later.
-            // Expand only after the compact frame transition has finished.
-            guard restoresMeetingTranscript,
-                  self.isMeetingRecording, self.state == .recording,
-                  self.lastLoadedConfig?.showMeetingTranscriptOnIndicatorHover == true,
-                  !self.notchIndicator.isVisible else { return }
-            self.showMeetingTranscript()
         }
 
         // Manage SF Symbol effects — stop everything first, then start for the new state.
@@ -996,9 +995,25 @@ final class FloatingIndicatorController: NSObject {
             break
         }
 
-        layoutMeetingControls(in: targetFrame.size)
-        layoutDictationOverlap(in: targetFrame.size)
-        layoutComputerUseStopButton(in: targetFrame.size)
+        Self.applyTransitionGeometry(restoresTranscript: restoresMeetingTranscript, geometry: { animated, completion in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = restoresMeetingTranscript ? 0 : duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = animated
+                (animated ? panel.animator() : panel).setFrame(targetFrame, display: true)
+                (animated ? panel.animator() : panel).alphaValue = style.alpha
+                (animated ? contentView.animator() : contentView).frame = NSRect(origin: .zero, size: targetFrame.size)
+            } completionHandler: { completion() }
+            layoutMeetingControls(in: targetFrame.size)
+            layoutDictationOverlap(in: targetFrame.size)
+            layoutComputerUseStopButton(in: targetFrame.size)
+        }, restore: { [weak self] in
+            guard let self, self.panel === panel,
+                  self.isMeetingRecording, self.state == .recording,
+                  self.lastLoadedConfig?.showMeetingTranscriptOnIndicatorHover == true,
+                  !self.notchIndicator.isVisible else { return }
+            self.showMeetingTranscript()
+        })
         if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
         panel.orderFrontRegardless()
         if state == .preparing {
