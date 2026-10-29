@@ -556,8 +556,9 @@ enum ComputerUseToolExecutor {
         // PasteController intentionally does not invoke callbacks for empty input.
         guard !text.isEmpty else { return .failed("No text to paste.") }
 
-        let didDispatch: Bool = await withCheckedContinuation { continuation in
+        let outcome: (dispatched: Bool, lostClipboardOwnership: Bool) = await withCheckedContinuation { continuation in
             var dispatched = false
+            var lostClipboardOwnership = false
             PasteController.paste(
                 text: text,
                 pasteboard: pasteboard,
@@ -565,11 +566,19 @@ enum ComputerUseToolExecutor {
                 targetApplicationProvider: targetApplicationProvider,
                 simulatePasteAction: simulatePasteAction,
                 onPasteDispatched: { dispatched = true },
-                onPasteFinished: { _ in continuation.resume(returning: dispatched) }
+                onPasteFinished: { _ in
+                    continuation.resume(returning: (dispatched, lostClipboardOwnership))
+                },
+                onLifecycleEvent: { event in
+                    if event == .clipboardOwnershipLost { lostClipboardOwnership = true }
+                }
             )
         }
         guard !Task.isCancelled else { return .cancelled() }
-        guard didDispatch else {
+        guard outcome.dispatched else {
+            if outcome.lostClipboardOwnership {
+                return .failed("Paste was skipped because the clipboard changed. Your current clipboard contents were preserved. Try again.")
+            }
             return .failed("Paste shortcut could not be dispatched. Check the keyboard layout or configured paste shortcut.")
         }
 
