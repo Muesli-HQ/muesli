@@ -231,6 +231,25 @@ actor InferenceGate {
     private var isProcessing = false
     private var waiters: [Waiter] = []
 
+    /// Keep the permit until the caller's operation unwinds, including cancellation.
+    nonisolated func withReservation<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        onWait: (@Sendable () -> Void)? = nil,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await acquire(onWait: onWait)
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            try Task.checkCancellation()
+            await release()
+            return result
+        } catch {
+            await release()
+            throw error
+        }
+    }
+
     func acquire(onWait: (@Sendable () -> Void)? = nil) async throws {
         try Task.checkCancellation()
         if !isProcessing {

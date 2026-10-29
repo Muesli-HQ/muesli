@@ -78,9 +78,9 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         try Task.checkCancellation()
-        // A complete, current model can be observed while a file owns inference.
+        // A complete, current model can be observed while a prediction owns inference.
         if !isLoading, let models, models.revision == revision() { return }
-        try await withReservation {
+        try await inferenceGate.withReservation(onWait: onWait) {
             try await self.prepareModels(progress: progress, progressSnapshot: progressSnapshot)
         }
     }
@@ -141,20 +141,6 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         }
     }
 
-    private func withReservation<T>(_ operation: () async throws -> T) async throws -> T {
-        try await inferenceGate.acquire(onWait: onWait)
-        do {
-            try Task.checkCancellation()
-            let result = try await operation()
-            try Task.checkCancellation()
-            await inferenceGate.release()
-            return result
-        } catch {
-            await inferenceGate.release()
-            throw error
-        }
-    }
-
     // MARK: - Streaming API
 
     func makeStreamState() throws -> StreamState {
@@ -163,7 +149,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     /// Process one 2240ms audio chunk (35840 samples) and return newly decoded text.
     func transcribeChunk(samples: [Float], state: inout StreamState) async throws -> String {
-        try await withReservation {
+        try await inferenceGate.withReservation(onWait: onWait) {
             guard let models = self.models else { throw TranscriberError.notLoaded }
             return try await self.transcribeChunkReserved(samples: samples, state: &state,
                 models: models, config: self.config)
@@ -181,29 +167,33 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     // MARK: - Convenience (full-file transcription)
 
     func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
-        try await withReservation {
+        let (models, config) = try await inferenceGate.withReservation(onWait: onWait) {
             let config = self.config // Prompt changes apply to subsequent work, not this file.
             try await self.prepareModels()
             guard let models = self.models else { throw TranscriberError.notLoaded }
-            let samples = try nemotronLoadWavAsFloats(url: wavURL)
-            let start = CFAbsoluteTimeGetCurrent()
-            var state = try nemotronMakeStreamState(config: config)
-            var sampleOffset = 0
-            while sampleOffset < samples.count {
-                let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
-                let chunk = Array(samples[sampleOffset..<chunkEnd])
-                _ = try await self.transcribeChunkReserved(samples: chunk, state: &state,
-                    models: models, config: config)
-                sampleOffset += config.chunkSamples
-            }
-            let text = nemotronDecodeTokens(state.allTokens, tokenizer: models.tokenizer,
-                stripAngleBracketTags: config.stripAngleBracketTags, trim: true)
-            return (text, CFAbsoluteTimeGetCurrent() - start)
+            return (models, config)
         }
+        // The immutable bundle retains every model and tokenizer across reload/shutdown.
+        let samples = try nemotronLoadWavAsFloats(url: wavURL)
+        let start = CFAbsoluteTimeGetCurrent()
+        var state = try nemotronMakeStreamState(config: config)
+        var sampleOffset = 0
+        while sampleOffset < samples.count {
+            let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
+            let chunk = Array(samples[sampleOffset..<chunkEnd])
+            _ = try await inferenceGate.withReservation(onWait: onWait) {
+                try await self.transcribeChunkReserved(samples: chunk, state: &state,
+                    models: models, config: config)
+            }
+            sampleOffset += config.chunkSamples
+        }
+        let text = nemotronDecodeTokens(state.allTokens, tokenizer: models.tokenizer,
+            stripAngleBracketTags: config.stripAngleBracketTags, trim: true)
+        return (text, CFAbsoluteTimeGetCurrent() - start)
     }
 
     func shutdown() async {
-        _ = try? await withReservation { self.models = nil }
+        _ = try? await inferenceGate.withReservation(onWait: onWait) { self.models = nil }
     }
 
     // MARK: - Model Download

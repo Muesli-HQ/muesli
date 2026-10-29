@@ -48,8 +48,12 @@ struct MeetingMicrophoneDeliveryTests {
             throw CancellationError()
         }
         controller.dictationTestCallback = { _ in } // Admission only; cleared before normal output.
-        await controller.transcriptionCoordinator.testingInstallASR(prepare: { _ in }, infer: { backend, _ in
-            .init(text: backend == .parakeetEnglish ? "Meeting speech." : "Private note.", segments: [])
+        await controller.transcriptionCoordinator.testingInstallASR(prepare: { _ in }, infer: { _, url in
+            let samples = try nemotronLoadWavAsFloats(url: url)
+            var text: [String] = []
+            if samples.contains(where: { abs($0 - 0.5) < 0.001 }) { text.append("Meeting speech.") }
+            if samples.contains(where: { abs($0 - 0.25) < 0.001 }) { text.append("Private note.") }
+            return .init(text: text.joined(separator: " "), segments: [])
         })
         let producer = ContractProducer(useQueue: true)
         let resumed = DispatchSemaphore(value: 0)
@@ -112,12 +116,17 @@ struct MeetingMicrophoneDeliveryTests {
             }
             return
         }
+        if activeMeeting && ending == "hold" {
+            let calibration = try await controller.transcriptionCoordinator.transcribeMeeting(
+                at: #require(recorder.stopURL), backend: .parakeetEnglish)
+            #expect(calibration.text == "Private note.", "The same meeting oracle must recognize unredacted private PCM")
+        }
         func flush() async throws {
             try await MeetingCaptureLifecycle.onDriverQueue { managerQueue.sync {}; eventQueue.sync {} }
             for _ in 0..<5 { await Task.yield() }
         }
         func emit(at frame: Int64) throws {
-            if activeMeeting { try producer.emit([8, 8, 8, 8], at: frame) }
+            if activeMeeting { try producer.emit(Array(repeating: frame == 2500 ? 4 : 8, count: 4), at: frame) }
         }
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
         if blockedWarmup { try await activation.waitUntilEntered() } else { try await flush() }
@@ -205,7 +214,8 @@ struct MeetingMicrophoneDeliveryTests {
             for _ in 0..<200 where try store.recentDictations().count < 2 { try await Task.sleep(for: .milliseconds(5)) }
             #expect(try store.recentDictations().count == 2, "The next capture must complete normally")
         }
-        if activeMeeting && (ending == "meeting-stop" || ending == "meeting-discard" || restarted) {
+        if activeMeeting && ending == "hold" { controller.stopMeetingRecording() }
+        if activeMeeting && (ending == "hold" || ending == "meeting-stop" || ending == "meeting-discard" || restarted) {
             if ending == "meeting-discard" { await session.testingWaitForDiscard() }
             else {
                 for _ in 0..<200 where try store.recentMeetings().first?.rawTranscript.isEmpty != false {
@@ -223,7 +233,7 @@ struct MeetingMicrophoneDeliveryTests {
             let urls = await session.testingFinishCapture()
             defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
             let edge = Array(repeating: Int16(16383), count: 4)
-            let expected = edge + Array(repeating: Int16(speculative || ending == "failure" ? 16383 : 0), count: 4) + edge
+            let expected = edge + Array(repeating: Int16(speculative || ending == "failure" ? 8191 : 0), count: 4) + edge
             let pcm = try Data(contentsOf: #require(urls.3)).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
             #expect(pcm == expected)
         }

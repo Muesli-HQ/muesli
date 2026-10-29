@@ -709,17 +709,7 @@ actor TranscriptionCoordinator {
     private func withModelReservation<T>(for backend: String, _ operation: () async throws -> T) async throws -> T {
         if backend == "apple-speech" || backend == "gemma4-litert" || backend == "nemotron35" { return try await operation() }
         let gate = modelUseGates[backend] ?? modelUseGates["fluidaudio"]!
-        try await gate.acquire(onWait: testingASROnWait)
-        do {
-            try Task.checkCancellation()
-            let result = try await operation()
-            try Task.checkCancellation()
-            await gate.release()
-            return result
-        } catch {
-            await gate.release()
-            throw error
-        }
+        return try await gate.withReservation(onWait: testingASROnWait, operation)
     }
 
     private var testingASROnWait: (@Sendable () -> Void)?

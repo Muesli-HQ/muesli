@@ -864,13 +864,19 @@ struct NemotronDictationModePolicyTests {
 struct Nemotron35StreamStateTests {
 
     @available(macOS 15, *)
-    @Test("native ownership permits capture and protects a whole meeting file",
-          arguments: ["capture", "reload", "shutdown", "cancel", "failed-load"])
+    @Test("native predictions yield to dictation and retain file snapshots",
+          arguments: ["capture", "reload", "shutdown", "cancel", "active-cancel", "failed-load"])
     func nativeFileOwnership(scenario: String) async throws {
         let fixture = NativeNemotronFixture(failLoad: scenario == "failed-load")
-        defer { fixture.release.continuation.finish() }
+        defer {
+            fixture.release.continuation.finish()
+            fixture.finalRelease.continuation.finish()
+        }
         let transcriber = Nemotron35StreamingTranscriber(modelLoader: { _, _ in try fixture.load() },
-            revision: { fixture.snapshot.revision }, onWait: { fixture.update { $0.waits += 1 } })
+            revision: { fixture.snapshot.revision }, onWait: { fixture.update {
+                $0.waits += 1
+                if $0.filePredictions == 2 && $0.dictationPredictions == 1 { $0.tailQueued = true }
+            } })
         let coordinator = TranscriptionCoordinator()
         await coordinator.testingInstallNemotron(transcriber)
         let wav = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 71_681))
@@ -896,11 +902,14 @@ struct Nemotron35StreamStateTests {
                     chunkSamples: ready.chunkSamples)
                 defer { controller.cancel() }
                 #expect(controller.start())
-                recorder.emit(samples: Array(repeating: 0.75, count: ready.chunkSamples))
+                recorder.emit(samples: Array(repeating: 0.75, count: ready.chunkSamples + 17))
                 fixture.update { $0.captured = recorder.startCalls == 1 }
-                return await stop(controller)
+                let result = await stop(controller)
+                fixture.update { $0.dictationFinished = true }
+                return result
             }
-            #expect(await waitUntil { fixture.snapshot.captured }, "Loaded capture must start before the held file is released")
+            #expect(await waitUntil { fixture.snapshot.captured }, "Loaded capture must start before the held prediction is released")
+            #expect(await waitUntil { fixture.snapshot.waits == 1 }, "Dictation must actually queue")
         } else if scenario == "reload" || scenario == "shutdown" {
             if scenario == "reload" { fixture.update { $0.revision = "b" } }
             other = Task {
@@ -915,6 +924,14 @@ struct Nemotron35StreamStateTests {
             #expect(await waitUntil { fixture.snapshot.waits == 1 }, "Mutation must actually queue at the native reservation")
             #expect(!fixture.snapshot.mutated)
             #expect(fixture.snapshot.loads == 1)
+        } else if scenario == "active-cancel" {
+            file.cancel()
+            other = Task {
+                var state = try await transcriber.makeStreamState()
+                return try await transcriber.transcribeChunk(samples: [0.75], state: &state)
+            }
+            #expect(await waitUntil { fixture.snapshot.waits == 1 })
+            #expect(fixture.snapshot.predictions == 1, "Cancellation must retain ownership until the prediction unwinds")
         } else if scenario == "cancel" {
             let cancelled = Task {
                 var state = try await transcriber.makeStreamState()
@@ -926,14 +943,28 @@ struct Nemotron35StreamStateTests {
             #expect(fixture.snapshot.predictions == 1)
         }
         fixture.release.continuation.finish()
+        if scenario != "active-cancel" { #expect(await waitUntil { fixture.snapshot.filePredictions == 3 }) }
+        if scenario == "capture" {
+            // Longer than the ordinary 2.49s Finish deadline, while no dictation
+            // prediction itself is stalled. Both queued chunks must finish first.
+            try await Task.sleep(for: .seconds(3))
+            #expect(fixture.snapshot.dictationPredictions == 2)
+            #expect(fixture.snapshot.dictationFinished)
+        }
+        if scenario == "reload" || scenario == "shutdown" {
+            #expect(await waitUntil { fixture.snapshot.mutated }, "Mutation must complete between file predictions")
+        }
+        fixture.finalRelease.continuation.finish()
         let text = try? await file.value.text
-        #expect(text == "Meeting Meeting Meeting", "The entire file must decode using its original models")
+        #expect(text == (scenario == "active-cancel" ? nil : "Meeting Meeting Meeting"), "The file must retain its original models or report cancellation")
         if let other {
             let result = try? await other.value
-            #expect(result == (scenario == "capture" ? " Dictation" : "mutated"))
+            let expected = scenario == "capture" ? " Dictation Dictation"
+                : (scenario == "active-cancel" ? " Dictation" : "mutated")
+            #expect(result == expected)
         }
-        #expect(fixture.snapshot.filePrompts == [101, 101, 101])
-        if scenario == "reload" { #expect(fixture.snapshot.reloadAfterPredictions == 3) }
+        #expect(fixture.snapshot.filePrompts == (scenario == "active-cancel" ? [101] : [101, 101, 101]))
+        if scenario == "reload" { #expect(fixture.snapshot.reloadAfterPredictions == 1) }
         _ = try await coordinator.getLoadedNemotron35Transcriber()
         var next = try await transcriber.makeStreamState()
         #expect(try await transcriber.transcribeChunk(samples: [0.75], state: &next) == " Dictation")
@@ -996,6 +1027,9 @@ private final class NativeNemotronFixture: @unchecked Sendable {
         var loads = 0
         var predictions = 0
         var filePredictions = 0
+        var dictationPredictions = 0
+        var dictationFinished = false
+        var tailQueued = false
         var filePrompts: [Int32] = []
         var reloadAfterPredictions = 0
         var waits = 0
@@ -1006,6 +1040,7 @@ private final class NativeNemotronFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Snapshot
     let release = AsyncStream<Void>.makeStream()
+    let finalRelease = AsyncStream<Void>.makeStream()
     init(failLoad: Bool) { storage = Snapshot(failLoad: failLoad) }
     var snapshot: Snapshot { lock.withLock { storage } }
     func update(_ body: (inout Snapshot) -> Void) { lock.withLock { body(&storage) } }
@@ -1026,10 +1061,18 @@ private final class NativeNemotronFixture: @unchecked Sendable {
                 if file {
                     storage.filePredictions += 1
                     storage.filePrompts.append(config.promptId ?? -1)
-                }
+                } else { storage.dictationPredictions += 1 }
                 return storage.predictions == 1
             }
-            if first { for await _ in release.stream {} }
+            if first {
+                // Model prediction may ignore cancellation; ownership must last until it returns.
+                await Task { for await _ in release.stream {} }.value
+            }
+            if file && snapshot.filePredictions == 2 && snapshot.captured && snapshot.dictationPredictions == 1 {
+                // Observe actual tail arrival before letting the file enqueue its final prediction.
+                #expect(await waitUntil { self.snapshot.tailQueued || self.snapshot.dictationPredictions == 2 })
+            }
+            if file && snapshot.filePredictions == 3 { for await _ in finalRelease.stream {} }
             let tokens = [file ? 1 : 2]
             state.allTokens += tokens
             return tokens

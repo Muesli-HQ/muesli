@@ -89,7 +89,8 @@ struct TranscriptionCoordinatorTests {
     func selfPreparingFileRouting(backend: String) async throws {
         let coordinator = TranscriptionCoordinator(), trace = RequestedModelTrace()
         await coordinator.testingInstallASR(prepare: { await trace.prepare($0.model) }, infer: { _, _ in .init(text: "accepted", segments: []) })
-        let option = try #require(BackendOption.all.first { $0.backend == backend })
+        let option = BackendOption(backend: backend, model: "synthetic", label: "Mock backend",
+            sizeLabel: "test", description: "Synthetic routing fixture", recommended: false)
         #expect(try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/synthetic.wav"), backend: option).text == "Accepted")
         #expect(await trace.prepared.isEmpty)
     }
