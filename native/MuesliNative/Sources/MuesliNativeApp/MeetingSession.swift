@@ -789,8 +789,12 @@ final class MeetingSession {
         // reject samples in the stopping phase. Only now is the coordinator's episode
         // state final; close any open degradation episode as unrecovered.
         micRecoveryCoordinator.finishMeeting()
-        let retainedRecordingURL = retainedRecordingWriter?.stop()
+        let retainedRecordingResult = retainedRecordingWriter?.stopRecording()
         retainedRecordingWriter = nil
+        if let error = retainedRecordingResult?.error {
+            retainedRecordingWriterError = error
+        }
+        let retainedRecordingURL = retainedRecordingResult?.recordingURL
         if stoppedCapture.timedOut {
             fputs("[meeting] capture shutdown deadline exceeded; preserving completed chunks while drivers retire\n", stderr)
             onCaptureShutdownTimedOut?()

@@ -83,7 +83,7 @@ struct MeetingMediaView: View {
 
 /// Avoid the system _AVKit_SwiftUI VideoPlayer metadata crash on macOS 26.6.2.
 /// AppKit owns the transport controls while SwiftUI only hosts the native view.
-private struct MeetingVideoPlayerView: NSViewRepresentable {
+struct MeetingVideoPlayerView: NSViewRepresentable {
     let player: AVPlayer
 
     func makeNSView(context: Context) -> AVPlayerView {

@@ -476,6 +476,14 @@ struct BackendOption: Equatable {
     }
 
     /// Check if this model's files exist on disk.
+    static func feedbackCaptureBackend(preferred: BackendOption?, installed: [BackendOption]) -> BackendOption? {
+        // Measured families first, then the remaining local catalog in catalog order.
+        let ordered = parakeetFamily.filter { $0.backend == "fluidaudio" } + whisperFamily + [appleSpeechAnalyzer] + all
+        let candidates = ordered.filter { installed.contains($0) }
+        return resolveDownloaded(backend: preferred?.backend ?? "", model: preferred?.model ?? "",
+            fallback: nil, downloadedOptions: candidates)
+    }
+
     var isDownloaded: Bool {
         let fm = FileManager.default
         switch backend {
@@ -2027,6 +2035,7 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
     static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+    static let feedbackCaptureDefault = HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 1)
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
         label: "⌘⇧R",
@@ -2169,6 +2178,9 @@ struct AppConfig: Codable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var feedbackCaptureHotkey: HotkeyConfig = .feedbackCaptureDefault
+    var enableFeedbackCapture: Bool = false
+    var feedbackCaptureDrawModifier: FeedbackCaptureDrawModifier = .shift
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -2352,6 +2364,9 @@ struct AppConfig: Codable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case feedbackCaptureHotkey = "feedback_capture_hotkey"
+        case enableFeedbackCapture = "feedback_capture"
+        case feedbackCaptureDrawModifier = "feedback_capture_draw_modifier"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -2510,6 +2525,9 @@ struct AppConfig: Codable {
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
             .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
+        feedbackCaptureHotkey = (try? c.decode(HotkeyConfig.self, forKey: .feedbackCaptureHotkey)) ?? defaults.feedbackCaptureHotkey
+        feedbackCaptureDrawModifier = (try? c.decode(FeedbackCaptureDrawModifier.self, forKey: .feedbackCaptureDrawModifier)) ?? .shift
+        enableFeedbackCapture = (try? c.decode(Bool.self, forKey: .enableFeedbackCapture)) ?? defaults.enableFeedbackCapture
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))

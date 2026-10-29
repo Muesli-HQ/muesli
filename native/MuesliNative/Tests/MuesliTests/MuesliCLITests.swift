@@ -35,6 +35,10 @@ struct MuesliCLITests {
         #expect(names.contains("meetings update-notes"))
         #expect(names.contains("dictations list"))
         #expect(names.contains("dictations get"))
+        #expect(names.contains("captures list"))
+        #expect(names.contains("captures get"))
+        #expect(names.contains("captures frames"))
+        #expect(names.contains("captures zoom"))
 
         let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
         #expect(transcribeSpec?.usage.contains("nemotron35") == true)
