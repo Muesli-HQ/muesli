@@ -49,6 +49,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
     case streaming
     case postProcessing
     case quill
+    case cotypist
 
     var id: String { rawValue }
 
@@ -58,7 +59,15 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
         case .streaming: return "Live Meetings"
         case .postProcessing: return "Cleanup"
         case .quill: return "Quill"
+        case .cotypist: return "Cotypist"
         }
+    }
+}
+
+extension ModelsCategory {
+    /// Categories shown in Models: Cotypist only in builds that bundle it.
+    @MainActor static var visible: [ModelsCategory] {
+        allCases.filter { $0 != .cotypist || CotypistSetup.isAvailable }
     }
 }
 
@@ -269,6 +278,8 @@ final class AppState {
     var dictationOriginFilter: RecordOriginFilter = .all
     var dictationApplicationFilter: DictationTargetApplication?
     var dictationTargetApplications: [DictationTargetApplication] = []
+    /// Dictation apps plus apps with Cotypist sessions.
+    var timelineTargetApplications: [DictationTargetApplication] = []
     var hasMoreDictations: Bool = true
     var meetingOriginFilter: RecordOriginFilter = .all
 
