@@ -24,10 +24,50 @@ struct NotchIndicatorTests {
         let config = AppConfig()
         indicator.presentsWindows = false
         var cancelled = 0, finished = 0, stoppedMeeting = 0
+        var meetingPauses = 0, meetingDiscards = 0
         indicator.onCancelDictation = { cancelled += 1 }
         indicator.onStopToggleDictation = { finished += 1 }
         indicator.onStopMeeting = { stoppedMeeting += 1 }
+        indicator.onToggleMeetingPause = { meetingPauses += 1 }
+        indicator.onDiscardMeeting = { meetingDiscards += 1 }
         indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Owned warmup")
+        #expect(indicator.meetingFeedbackMessage == "Owned warmup" && indicator.isShowingLoading)
+        #expect(indicator.overlapMeetingStatus == "Meeting recording")
+        indicator.cancelNotchActivity()
+        #expect(meetingDiscards == 1 && cancelled == 0)
+        indicator.hideLoading()
+        #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+        #expect(indicator.state == .recording && indicator.overlapMeetingStatus == nil)
+        indicator.toggleNotchMeetingPause()
+        indicator.stopNotchMeeting()
+        #expect(meetingPauses == 1 && stoppedMeeting == 1)
+        for ending in ["end", "hide", "pause", "resume", "dictation", "meeting", "notice"] {
+            indicator.setMeetingRecordingPaused(ending == "resume", config: config)
+            indicator.pointerInteractionBegan()
+            indicator.showLoading("First progress")
+            indicator.showLoading("Latest progress")
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading,
+                "Loading must remain deferred throughout a drag")
+            switch ending {
+            case "hide": indicator.hideLoading()
+            case "pause": indicator.setMeetingRecordingPaused(true, config: config)
+            case "resume": indicator.setMeetingRecordingPaused(false, config: config)
+            case "dictation":
+                indicator.setDictationState(.preparing, config: config)
+                indicator.setDictationState(.idle, config: config)
+            case "meeting":
+                indicator.setMeetingRecording(false, config: config)
+                indicator.setMeetingRecording(true, config: config)
+            case "notice": indicator.showWarning("Newer notice")
+            default: break
+            }
+            indicator.pointerInteractionEnded()
+            #expect(indicator.meetingFeedbackMessage == (ending == "end" ? "Latest progress" : (ending == "notice" ? "Newer notice" : nil)))
+            #expect(indicator.isShowingLoading == (ending == "end"))
+            indicator.hideLoading()
+        }
+        indicator.setMeetingRecordingPaused(false, config: config)
         // No panel is created: exercise the production redraw decision with an
         // existing floating panel as input, separately from loading ownership.
         for loading in [false, true] {
@@ -62,6 +102,29 @@ struct NotchIndicatorTests {
         #expect(indicator.meetingFeedbackMessage == nil && indicator.isShowingLoading)
         indicator.hideLoading()
         indicator.setMeetingRecording(true, config: config)
+        for target: DictationState in [.idle, .recording] {
+            indicator.setDictationState(.preparing, config: config)
+            indicator.setPreparingWaveformWaiting(config: config)
+            #expect(indicator.recordingWaveformMode == .waiting)
+            indicator.setDictationState(.preparing, config: config)
+            #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
+            let bounds = CGRect(x: 0, y: 0, width: 220, height: 40)
+            let initial = (0..<5).map { indicator.standingWaveformFrame(index: $0, amplitude: 1 / 11, bounds: bounds) }
+            for waiting in [false, true] {
+                for value: CGFloat in [0, 0.5, 1] {
+                    let frames = (0..<5).map { index in
+                        let weight = IndicatorWaveformDynamics.standingWeight(index: index, count: 5)
+                        let amplitude = waiting ? 0.28 + (sin(value * 5.8 + CGFloat(index) * 0.72) + 1) * 0.22 * weight : value * weight
+                        return indicator.standingWaveformFrame(index: index, amplitude: amplitude, bounds: bounds)
+                    }
+                    #expect(frames.allSatisfy { $0.minX >= 135 && $0.maxX <= 166 }, "Bars must stay between the labels and controls")
+                    #expect(frames.map(\.minX) == initial.map(\.minX))
+                }
+            }
+            indicator.setDictationState(target, config: config)
+            #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+            indicator.setDictationState(.idle, config: config)
+        }
         indicator.setMeetingRecordingPaused(true, config: config)
         for state: DictationState in [.preparing, .recording, .transcribing] {
             indicator.setDictationState(state, config: config)
@@ -70,15 +133,20 @@ struct NotchIndicatorTests {
             if state == .recording { notch.onStopRecording?() }
             indicator.stopNotchMeeting()
         }
-        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 0)
+        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 1)
         indicator.setDictationState(.idle, config: config)
         #expect(indicator.overlapMeetingStatus == nil)
         indicator.stopNotchMeeting()
-        #expect(stoppedMeeting == 1)
+        #expect(stoppedMeeting == 2)
         indicator.setDictationState(.recording, config: config)
         #expect(indicator.overlapMeetingStatus == "Meeting paused")
+        indicator.setRecordingWaveformWaiting(config: config)
         indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
         #expect(indicator.overlapMeetingStatus == nil)
+        let ordinary = CGRect(x: 0, y: 0, width: 76, height: 22)
+        #expect(indicator.standingWaveformFrame(index: 0, amplitude: 0, bounds: ordinary) ==
+            IndicatorWaveformDynamics.standingBarFrame(index: 0, amplitude: 0, bounds: ordinary))
         indicator.cancelNotchActivity()
         #expect(cancelled == 4)
     }

@@ -243,7 +243,7 @@ final class FloatingIndicatorController: NSObject {
     private var amplitudeTimer: Timer?
     private var smoothedAmplitude: CGFloat = 0
     private var waveformAnimationMode: WaveformAnimationMode = .level
-    private var recordingWaveformMode: WaveformAnimationMode = .level
+    private(set) var recordingWaveformMode: WaveformAnimationMode = .level
     private var waveformAnimationStartedAt = Date()
     fileprivate var isDragging = false
     var powerProvider: (() -> Float)?
@@ -269,7 +269,7 @@ final class FloatingIndicatorController: NSObject {
     private var computerUseCursorReturnFrame: NSRect?
     private var computerUseCursorPoint = CGPoint.zero
 
-    private enum WaveformAnimationMode {
+    enum WaveformAnimationMode {
         case level
         case waiting
     }
@@ -739,6 +739,7 @@ final class FloatingIndicatorController: NSObject {
         if state != dictationPresentation {
             activityRevision += 1
             retireMeetingFeedback()
+            recordingWaveformMode = .level
         }
         dictationPresentation = state
         setState(state, config: config)
@@ -795,9 +796,6 @@ final class FloatingIndicatorController: NSObject {
             hideInstructionProgress()
         } else if !instructionTranscriptShowsProgress {
             hideInstructionProgress()
-        }
-        if state != .recording {
-            recordingWaveformMode = .level
         }
         if state != .idle {
             hoverExitWorkItem?.cancel()
@@ -1363,6 +1361,11 @@ final class FloatingIndicatorController: NSObject {
 
     private func showMeetingFeedback(_ message: String, loading: Bool, duration: TimeInterval? = nil) -> Bool {
         guard isMeetingRecording, dictationPresentation == .idle else { return false }
+        if loading && isDragging {
+            deferredLoadingMessage = message
+            return true
+        }
+        deferredLoadingMessage = nil
         meetingFeedbackMessage = message
         setState(.recording, config: feedbackConfiguration())
         isShowingLoading = loading
@@ -1377,9 +1380,9 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func retireMeetingFeedback() {
+        deferredLoadingMessage = nil
         guard meetingFeedbackMessage != nil else { return }
         meetingFeedbackMessage = nil
-        deferredLoadingMessage = nil
         isShowingLoading = false
         hideInstructionProgress()
     }
@@ -1643,24 +1646,23 @@ final class FloatingIndicatorController: NSObject {
         removeStopLayer()
     }
 
+    func standingWaveformFrame(index: Int, count: Int = 5, amplitude: CGFloat, bounds: CGRect) -> CGRect {
+        IndicatorWaveformDynamics.standingBarFrame(index: index, count: count, amplitude: amplitude,
+            bounds: bounds, overlapsMeeting: overlapMeetingStatus != nil)
+    }
+
     private func setupWaveformBars(in frameSize: NSSize) {
         barLayers.forEach { $0.removeFromSuperlayer() }
         barLayers.removeAll()
         guard let layer = contentView?.layer else { return }
 
         let barCount = 5
-        let barWidth: CGFloat = 3
-        let barSpacing: CGFloat = 3
-        let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = overlapMeetingStatus != nil ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
-        let minHeight: CGFloat = 4
-
         for i in 0..<barCount {
             let bar = CALayer()
             bar.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
-            bar.cornerRadius = barWidth / 2
-            let x = startX + CGFloat(i) * (barWidth + barSpacing)
-            bar.frame = CGRect(x: x, y: (frameSize.height - minHeight) / 2, width: barWidth, height: minHeight)
+            bar.frame = standingWaveformFrame(index: i, count: barCount, amplitude: 1 / 11,
+                bounds: CGRect(origin: .zero, size: frameSize))
+            bar.cornerRadius = bar.frame.width / 2
             layer.addSublayer(bar)
             barLayers.append(bar)
         }
@@ -1668,19 +1670,12 @@ final class FloatingIndicatorController: NSObject {
 
     private func updateWaveformBarsLayout(in frameSize: NSSize) {
         guard !barLayers.isEmpty else { return }
-        let barWidth: CGFloat = 3
-        let barSpacing: CGFloat = 3
-        let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
-        let startX = overlapMeetingStatus != nil ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
-            var frame = bar.frame
-            frame.origin.x = startX + CGFloat(i) * (barWidth + barSpacing)
-            frame.origin.y = (frameSize.height - frame.height) / 2
-            frame.size.width = barWidth
-            bar.frame = frame
-            bar.cornerRadius = barWidth / 2
+            bar.frame = standingWaveformFrame(index: i, count: barLayers.count,
+                amplitude: (bar.frame.height - 3) / 11, bounds: CGRect(origin: .zero, size: frameSize))
+            bar.cornerRadius = bar.frame.width / 2
         }
         CATransaction.commit()
     }
@@ -1744,7 +1739,7 @@ final class FloatingIndicatorController: NSObject {
                 amplitude = 0.28 + (sin(phase) + 1) * 0.22 * m
                 bar.opacity = Float(0.38 + (sin(phase) + 1) * 0.18)
             }
-            bar.frame = IndicatorWaveformDynamics.standingBarFrame(
+            bar.frame = standingWaveformFrame(
                 index: i, count: barLayers.count, amplitude: amplitude, bounds: contentView.bounds)
         }
         CATransaction.commit()

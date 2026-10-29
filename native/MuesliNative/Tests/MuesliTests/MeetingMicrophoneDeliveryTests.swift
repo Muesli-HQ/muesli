@@ -320,6 +320,51 @@ struct MeetingMicrophoneDeliveryTests {
             #expect(processor.input.prefix(10).map { Int16($0 * 32767) } ==
                 [2047, 4095, 0, 0, 0, 0, 0, 16383, 18431, 20479])
         }
+        let exclusions = MeetingMicrophoneExclusions()
+        let empty = exclusions.begin(at: 30)
+        exclusions.end(empty, at: 29)
+        #expect(exclusions.hasExclusions, "Even an empty attempt suppresses raw diagnostic audio for the session lifetime")
+        let first = exclusions.begin(at: 4), overlap = exclusions.begin(at: 8)
+        exclusions.end(overlap, at: 12)
+        exclusions.end(first, at: 10) // Close out of order and merge overlap.
+        let adjacent = exclusions.begin(at: 12), separated = exclusions.begin(at: 16)
+        exclusions.end(separated, at: 18)
+        exclusions.end(adjacent, at: 14)
+        exclusions.end(first, at: 100) // Duplicate and foreign closes cannot erase a real gap.
+        exclusions.end(UUID(), at: 100)
+        exclusions.end(empty, at: 100)
+        let active = exclusions.begin(at: 20)
+        let input = MicrophoneCaptureAudio(samples: Array(1...24), startFrame: 0, admitted: delayedReference)
+        let open = exclusions.redact(input)
+        let closedPCM: [Int16] = [1, 2, 3, 4] + Array(repeating: 0, count: 10) + [15, 16, 0, 0, 19, 20, 0, 0, 23, 24]
+        #expect(open.samples == Array(closedPCM.prefix(22)) + [0, 0])
+        exclusions.end(active, at: 22)
+        let late = exclusions.redact(input) // Old audio is still protected after later closes.
+        #expect(late.samples == closedPCM)
+        #expect(input.samples == Array(1...24))
+        #expect(open.startFrame == input.startFrame && late.endFrame == input.endFrame)
+        #expect(open.admitted == input.admitted && late.admitted == input.admitted)
+        let emptyAudio = MicrophoneCaptureAudio(samples: [1, 2], startFrame: 30, admitted: true)
+        #expect(exclusions.redact(emptyAudio).samples == emptyAudio.samples)
+
+        let history = MeetingMicrophoneExclusions()
+        for index in 0..<4_096 {
+            let start = Int64(index * 8 + 2)
+            let token = history.begin(at: start)
+            history.end(token, at: start + 2)
+        }
+        for start: Int64 in [0, 2_048 * 8, 4_095 * 8, 1_234 * 8 + 4] {
+            let audio = MicrophoneCaptureAudio(samples: [10, 11, 12, 13, 14, 15], startFrame: start, admitted: !delayedReference)
+            let result = history.redact(audio, inspectClosedProbes: { probes in
+                #expect(probes <= 16, "Selection must examine logarithmic history plus actual matches")
+                #expect(history.hasExclusions) // Inspection runs after the owner lock is released.
+            })
+            #expect(result.samples == (start % 8 == 0 ? [10, 11, 0, 0, 14, 15] : audio.samples))
+            #expect(audio.samples == [10, 11, 12, 13, 14, 15])
+            #expect(result.startFrame == audio.startFrame && result.endFrame == audio.endFrame)
+            #expect(result.admitted == audio.admitted)
+        }
+
     }
 
     @Test("delivery fence includes queued first replacement audio; cancel invalidates it", arguments: [false, true])
@@ -406,6 +451,8 @@ struct MeetingMicrophoneDeliveryTests {
             StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
         var config = Self.micDiarizationConfig
         config.enableLiveStreamingPartials = false
+        let coordinator = TranscriptionCoordinator()
+        await coordinator.testingInstallASR(prepare: { _ in }, infer: { _, _ in .init(text: "", segments: []) })
         let initial = MeetingTemplates.resolveSnapshot(id: MeetingTemplates.autoID, customTemplates: [])
         let selected = MeetingTemplateSnapshot(id: "selected", name: "Interview", kind: .custom, prompt: "Interview notes")
         let session = MeetingSession(title: "Interview", calendarEventID: nil,
@@ -413,15 +460,19 @@ struct MeetingMicrophoneDeliveryTests {
             runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
                                   menuIcon: nil, appIcon: nil, bundlePath: nil),
             config: config, templateSnapshot: initial,
-            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
-            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+            transcriptionCoordinator: coordinator, meetingMicRecorder: route,
+            systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor(output: 0.5)))
         try await session.testingStartCapture()
+        try producer.emit([1, 2, 3], at: 100) // Partial AEC frame must be cleaned before production Stop finalizes the writer.
         let result = try await session.stop(template: selected)
         defer {
             for url in [result.retainedRecordingURL, result.systemRecordingURL].compactMap({ $0 }) {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        let pcm = try Data(contentsOf: #require(result.retainedRecordingURL)).dropFirst(44)
+            .withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        #expect(pcm == [16_383, 16_383, 16_383])
         #expect(result.templateSnapshot.id == selected.id)
         #expect(result.templateSnapshot.prompt == selected.prompt)
         #expect(result.rawTranscript.isEmpty)

@@ -18,38 +18,76 @@ struct MicrophoneCaptureAudio: Sendable {
 /// Session-owned, capture-clock redaction. Closed windows deliberately survive
 /// Stop and route handoff: native buffers and AEC output can arrive much later.
 final class MeetingMicrophoneExclusions {
-    private struct Window { let start: Int64; var end: Int64? }
     private let lock = NSLock()
-    private var windows: [UUID: Window] = [:]
+    private var active: [UUID: Int64] = [:]
+    private var closed: [Range<Int64>] = []
+    private var everExcluded = false
 
-    var hasExclusions: Bool { lock.withLock { !windows.isEmpty } }
+    var hasExclusions: Bool { lock.withLock { everExcluded } }
 
     func begin(at frame: Int64) -> UUID {
         lock.withLock {
             let token = UUID()
-            windows[token] = Window(start: frame)
+            active[token] = frame
+            everExcluded = true
             return token
         }
     }
 
     func end(_ token: UUID, at frame: Int64) {
         lock.withLock {
-            guard let window = windows[token], window.end == nil else { return }
-            windows[token]?.end = max(window.start, frame)
+            guard let start = active.removeValue(forKey: token) else { return }
+            var end = max(start, frame)
+            guard start < end else { return }
+            var lower = 0, upper = closed.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if closed[middle].upperBound < start { lower = middle + 1 }
+                else { upper = middle }
+            }
+            var mergedStart = start, next = lower
+            while next < closed.count, closed[next].lowerBound <= end {
+                mergedStart = min(mergedStart, closed[next].lowerBound)
+                end = max(end, closed[next].upperBound)
+                next += 1
+            }
+            closed.replaceSubrange(lower..<next, with: [mergedStart..<end])
         }
     }
 
-    func redact(_ audio: MicrophoneCaptureAudio) -> MicrophoneCaptureAudio {
-        let snapshot = lock.withLock { Array(windows.values) }
-        var result = audio
-        for window in snapshot {
-            let start = max(audio.startFrame, window.start)
-            let end = min(audio.endFrame, window.end ?? audio.endFrame)
-            if start < end {
-                let range = Int(start - audio.startFrame)..<Int(end - audio.startFrame)
-                result.samples.replaceSubrange(range, with: repeatElement(0, count: range.count))
+    func redact(_ audio: MicrophoneCaptureAudio, inspectClosedProbes: ((Int) -> Void)? = nil) -> MicrophoneCaptureAudio {
+        var probes = 0
+        let intersections: [Range<Int64>] = lock.withLock {
+            var ranges: [Range<Int64>] = []
+            var lower = 0, upper = closed.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                probes += 1
+                if closed[middle].upperBound <= audio.startFrame { lower = middle + 1 }
+                else { upper = middle }
             }
+            var next = lower
+            while next < closed.count {
+                let window = closed[next]
+                probes += 1
+                if window.lowerBound >= audio.endFrame { break }
+                let start = max(audio.startFrame, window.lowerBound)
+                let end = min(audio.endFrame, window.upperBound)
+                if start < end { ranges.append(start..<end) }
+                next += 1
+            }
+            for start in active.values {
+                let clippedStart = max(audio.startFrame, start)
+                if clippedStart < audio.endFrame { ranges.append(clippedStart..<audio.endFrame) }
+            }
+            return ranges
         }
+        var result = audio
+        for window in intersections {
+            let range = Int(window.lowerBound - audio.startFrame)..<Int(window.upperBound - audio.startFrame)
+            result.samples.replaceSubrange(range, with: repeatElement(0, count: range.count))
+        }
+        inspectClosedProbes?(probes)
         return result
     }
 }
