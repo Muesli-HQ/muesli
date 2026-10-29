@@ -52,7 +52,7 @@ struct MeetingRecordingStopResult {
     let error: Error?
 }
 
-final class MeetingRecordingWriter {
+final class MeetingRecordingWriter: FeedbackCaptureAudioWriting {
     private final class ExportSessionBox: @unchecked Sendable {
         let session: AVAssetExportSession
 
@@ -91,6 +91,14 @@ final class MeetingRecordingWriter {
         try fileHandle.write(contentsOf: WavWriter.header(dataSize: 0))
         lock.withLock {
             $0 = State(fileHandle: fileHandle, fileURL: fileURL)
+        }
+    }
+
+    /// Sets sample zero before feedback capture's first microphone block arrives.
+    func setMicrophoneOrigin(at frame: Int64) {
+        lock.withLock { state in
+            guard state.firstFrame == nil, state.bytesWritten == 0 else { return }
+            state.firstFrame = frame
         }
     }
 

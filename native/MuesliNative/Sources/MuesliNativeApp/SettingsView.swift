@@ -747,7 +747,7 @@ struct SettingsView: View {
 
             settingsSection("Experimental") {
                 settingsRow("Scrawl") { settingsControl("feedback_capture") }
-                settingsDescription("Scrawl saves the display video and microphone narration locally. It does not save an interaction or keystroke log.")
+                settingsDescription("Scrawl saves display video, microphone narration, and on-device transcripts locally. It records pointer clicks, drags, and scrolls within the capture target. Keystrokes are not recorded.")
                 compactActionButton("Open Scrawl captures…") { controller.openFeedbackCaptures() }
             }
 

@@ -541,6 +541,9 @@ public final class MuesliController: NSObject {
             }
             try await stage.run(&manifest, context)
         })
+        capture.finalizer.prepareThumbnails = FeedbackCaptureFinalizer.prepareContextThumbnails
+        capture.finalizer.stages += FeedbackCaptureFinalizer.contextStages()
+        capture.finalizer.stages.append(FeedbackCaptureFinalizer.copyStage())
         capture.onAdmissionReset = { [weak self] in self?.feedbackCaptureHotkeyMonitor.cancelToggleMode() }
         capture.onMicrophoneReleased = { [weak self] in
             guard let self else { return }
@@ -564,6 +567,9 @@ public final class MuesliController: NSObject {
                 open: { [weak capture] in if capture?.presentationID == presentation { capture?.open(id: captureID) } },
                 repairPermission: { [weak self, weak capture] in
                     if capture?.presentationID == presentation { self?.repairFeedbackCapturePermission() }
+                }, copy: { [weak capture] in
+                    guard capture?.presentationID == presentation, let captureID else { return }
+                    Task { [weak capture] in _ = await capture?.copy(id: captureID, expectedPresentationID: presentation) }
                 })
         }
         return capture

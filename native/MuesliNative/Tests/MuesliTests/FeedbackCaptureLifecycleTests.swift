@@ -579,6 +579,54 @@ struct FeedbackCaptureLifecycleTests {
         }
     }
 
+    @Test func failedRecoveryRefreshesDeleteAvailabilityForUnchangedProcessingRow() async throws {
+        try await withFeedbackStoreAsync { _, root in
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"),
+                supportDirectory: root, observeSystem: false)
+            let store = try #require(controller.store)
+            var interrupted = try store.begin(target: feedbackTarget())
+            interrupted.state = .processing
+            try store.checkpoint(interrupted)
+            try store.save(interrupted)
+            #expect(store.isActive(id: interrupted.id))
+            #expect(await controller.reload(requestedID: interrupted.id))
+
+            _ = NSApplication.shared
+            let attribute = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+            let previous = NSApp.accessibilityAttributeValue(attribute)
+            NSApp.accessibilitySetValue(true, forAttribute: attribute)
+            defer { NSApp.accessibilitySetValue(previous, forAttribute: attribute) }
+            let panel = FeedbackCapturePillTests.HiddenPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            let hosting = NSHostingView(rootView: FeedbackCaptureView(controller: controller, selectedID: interrupted.id))
+            panel.contentView = hosting
+            defer { panel.contentView = nil; panel.close(); store.release(id: interrupted.id) }
+
+            let fixture = FeedbackCapturePillTests()
+            try await waitUntil(description: "processing detail loads while recovery owns the capture") {
+                let elements = fixture.accessibilityElements(hosting)
+                guard let delete = elements.first(where: { $0.accessibilityLabel() == "Delete…" }) else { return false }
+                return !delete.isAccessibilityEnabled()
+                    && !elements.contains { $0.accessibilityRole() == .progressIndicator || $0.accessibilityRole() == .busyIndicator }
+            }
+            #expect(store.isActive(id: interrupted.id))
+
+            try Data("not json".utf8).write(to: try store.mediaURL(id: interrupted.id, path: "unfinished.json"))
+            store.release(id: interrupted.id)
+            await controller.recover()
+
+            #expect(!store.isActive(id: interrupted.id))
+            #expect(!controller.hasAttempt)
+            #expect(controller.records.first { $0.id == interrupted.id }?.state == .processing)
+            try await waitUntil(description: "Delete becomes available after failed recovery") {
+                fixture.accessibilityElements(hosting).contains {
+                    $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled()
+                }
+            }
+            await controller.shutdown()
+        }
+    }
+
     @Test func partialRecoveryShowsHealthyCaptureAlongsideFailure() async throws {
         try await withFeedbackStoreAsync { store, root in
             let healthy = try store.begin(target: feedbackTarget())

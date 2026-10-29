@@ -447,7 +447,7 @@ final class FloatingIndicatorController: NSObject {
     func showFeedbackCapture(_ state: FeedbackCapturePillState?, config: AppConfig,
                              power: @escaping () -> Float, finish: @escaping () -> Void,
                              discard: @escaping () -> Void, open: @escaping () -> Void,
-                             repairPermission: @escaping () -> Void) {
+                             repairPermission: @escaping () -> Void, copy: (() -> Void)? = nil) {
         guard let state else {
             feedbackCapturePanel?.orderOut(nil); feedbackCapturePanel?.contentView = nil
             if feedbackCaptureIsPresented {
@@ -460,7 +460,7 @@ final class FloatingIndicatorController: NSObject {
         if case .busy = state { preservesActivity = true } else { preservesActivity = false }
         if !preservesActivity { feedbackCaptureIsPresented = true }
         let view = FeedbackCapturePillView(state: state, power: power, finish: finish,
-            discard: discard, open: open, repairPermission: repairPermission)
+            discard: discard, open: open, repairPermission: repairPermission, copy: copy)
         if !preservesActivity, config.indicatorAnchor == .notch, let screen = NSScreen.main,
            notchIndicator.showFeedbackCapture(on: screen, view: view) {
             feedbackCapturePanel?.orderOut(nil)

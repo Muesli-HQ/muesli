@@ -58,6 +58,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     }
     public func checkpoint(_ manifest: FeedbackCaptureManifest) throws {
         lock.lock(); defer { lock.unlock() }
+        try validatePaths(manifest)
         try JSONEncoder().encode(manifest).write(to: mediaURL(id: manifest.id, path: "unfinished.json"), options: .atomic)
     }
     public func isActive(id: String) -> Bool { lock.withLock { active.contains(id) } }
@@ -70,14 +71,19 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         guard result.id == id else { throw failure("Capture identity mismatch") }
         return result
     }
+    private func validatePaths(_ manifest: FeedbackCaptureManifest) throws {
+        for path in [manifest.audio, manifest.video, manifest.contactSheet].compactMap({ $0 }) + manifest.keyframes.map(\.file) {
+            _ = try mediaURL(id: manifest.id, path: path)
+        }
+    }
     public func save(_ manifest: FeedbackCaptureManifest) throws {
         lock.lock(); defer { lock.unlock() }
         _ = try bundleURL(id: manifest.id)
-        for path in [manifest.audio, manifest.video].compactMap({ $0 }) { _ = try mediaURL(id: manifest.id, path: path) }
+        try validatePaths(manifest)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO feedback_captures VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
         defer { sqlite3_finalize(stmt) }
-        var projection: [String: Any] = ["keyframeCount": 0, "targetApp": manifest.target.appName]
+        var projection: [String: Any] = ["keyframeCount": manifest.keyframes.count, "targetApp": manifest.target.appName]
         projection["transcriptSource"] = manifest.transcript?.source
         let body = String(decoding: try JSONSerialization.data(withJSONObject: projection), as: UTF8.self)
         sqlite3_bind_text(stmt, 1, manifest.id, -1, transient)
@@ -136,7 +142,16 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     public func reconcileMedia(_ recording: FeedbackCaptureManifest,
         audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?) -> (manifest: FeedbackCaptureManifest, retainsContent: Bool) {
         var m = recording
-        var retainsContent = false
+        let log = try? mediaURL(id: m.id, path: "events.jsonl")
+        if let log, FileManager.default.fileExists(atPath: log.path) {
+            do {
+                let replay = FeedbackCaptureEvents.replay(try Data(contentsOf: log), target: m.target)
+                m.events = replay.events
+                for issue in replay.failures where !m.failures.contains(issue) { m.failures.append(issue) }
+            } catch { m.failures.append(.init(stage: "events", message: error.localizedDescription)) }
+        }
+        m.durationMs = max(m.durationMs, m.events.map(\.end).max() ?? 0)
+        var retainsContent = !m.events.isEmpty
         for (path, stage, probe) in [("narration.wav", "audio", audioDuration), ("recording.mp4", "video", videoDuration)] {
             do {
                 let url = try mediaURL(id: m.id, path: path)

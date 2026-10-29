@@ -45,6 +45,90 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Scrawl storage")
 struct FeedbackCaptureStoreTests {
+    @Test func survivingEventsEnterRecoveryWithoutPlayableMedia() throws {
+        try withFeedbackStore { store, _, _ in
+            let m = try store.begin(target: feedbackTarget())
+            let log = Data("{\"kind\":\"click\",\"t\":1200,\"x\":0.5,\"y\":0.25,\"button\":0}\n".utf8)
+            try log.write(to: store.mediaURL(id: m.id, path: "events.jsonl"))
+            store.release(id: m.id)
+            var errors: [String] = []
+            let pending = try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }) {
+                errors.append($1.localizedDescription)
+            }
+            #expect(errors.isEmpty)
+            #expect(pending.map(\.id) == [m.id])
+            #expect(pending.first?.durationMs == 1200)
+            #expect(store.isActive(id: m.id))
+            #expect(try Data(contentsOf: store.mediaURL(id: m.id, path: "events.jsonl")) == log)
+        }
+    }
+    @Test func versionOneContextFieldsSurviveRoundTrip() throws {
+        let m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as? [String: Any])
+        json["events"] = [["kind": "click", "t": 100, "x": 0.5, "y": 0.25, "button": 0]]
+        json["inputGaps"] = [["t0": 50, "t1": 75]]
+        json["keyframes"] = [["index": 1, "t": 350, "reason": "click", "file": "frames/frame-01.png",
+            "eventIndex": 0, "said": "Open this.", "saidRange": ["from": 0, "to": 2]]]
+        json["contactSheet"] = "contact-sheet.png"
+        let decoded = try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONSerialization.data(withJSONObject: json))
+        let output = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
+        for key in ["events", "inputGaps", "keyframes", "contactSheet"] {
+            #expect(NSDictionary(dictionary: [key: json[key]!]).isEqual(to: [key: output[key] as Any]), "Lost \(key)")
+        }
+    }
+    @Test func truncatedEventTailPreservesCompleteRecordsAndNamesFailure() throws {
+        try withFeedbackStore { store, _, _ in
+            let m = try store.begin(target: feedbackTarget())
+            let usable: [FeedbackCaptureEvent] = [
+                .scroll(t: 2000, x: 0.2, y: 0.4, dx: 1e308, dy: 3),
+                .scroll(t: 2100, x: 0.2, y: 0.4, dx: 1e308, dy: 3),
+                .click(t: 3000, x: 0.7, y: 0.8, button: 1)
+            ]
+            let unsafe = FeedbackCaptureEvent.click(t: Int64.max, x: 0.5, y: 0.5, button: 0)
+            var log = Data()
+            for event in [usable[0], unsafe, usable[1], usable[2]] {
+                log.append(try JSONEncoder().encode(event)); log.append(10)
+            }
+            log.append(Data("{\"kind\":\"click\"".utf8))
+            try log.write(to: store.mediaURL(id: m.id, path: "events.jsonl"))
+            store.release(id: m.id)
+            let pending = try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            let result = try #require(pending.first)
+            #expect(result.durationMs == 3000 && result.events == usable)
+            #expect(result.failures.contains { $0.stage == "events" && $0.message.contains("record 2") })
+            #expect(result.failures.contains { $0.stage == "events" && $0.message.localizedCaseInsensitiveContains("truncated") })
+            #expect(try store.manifest(id: m.id) == result)
+            #expect(result.version == 1)
+            #expect(try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONEncoder().encode(result)) == result)
+            #expect(try Data(contentsOf: store.mediaURL(id: m.id, path: "events.jsonl")) == log)
+        }
+    }
+    @Test func contextPathsAreContainedAndKeyframeProjectionMatchesManifest() throws {
+        try withFeedbackStore { store, db, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.events = [.click(t: 800, x: 0.5, y: 0.5, button: 0)]
+            m.keyframes = [.init(index: 1, t: 1000, reason: "click", file: "frames/frame-01.png", eventIndex: 0,
+                said: "", saidRange: .init(from: 0, to: 0))]
+            m.contactSheet = "contact-sheet.png"
+            try store.save(m)
+            var statement: OpaquePointer?
+            #expect(sqlite3_prepare_v2(db, "SELECT body FROM feedback_captures", -1, &statement, nil) == SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            #expect(sqlite3_step(statement) == SQLITE_ROW)
+            let data = Data(String(cString: sqlite3_column_text(statement, 0)).utf8)
+            let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(body["keyframeCount"] as? Int == 1)
+            m.contactSheet = "../escape.png"
+            #expect(throws: (any Error).self) { try store.save(m) }
+            m.contactSheet = nil
+            m.keyframes[0].file = "/tmp/escape.png"
+            #expect(throws: (any Error).self) { try store.publish(m) }
+            m.keyframes[0].file = "frames/frame-01.png"
+            m.state = .processing
+            let final = store.reconcileMedia(m, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            #expect(final.retainsContent && final.manifest.durationMs == 800)
+        }
+    }
     @Test func manifestVersionAndUnknownFields() throws {
         var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
         m.microphoneStartFrame = 32_000; m.videoStartFrame = 36_000; m.alignClocks()
@@ -80,6 +164,35 @@ struct FeedbackCaptureStoreTests {
             .init(stage: "audio", message: "input removed"),
             .init(stage: "video", message: "capture stopped")
         ])
+    }
+    @Test func malformedS3SidecarsDoNotBlockInterruptedRecovery() throws {
+        try withFeedbackStore { store, _, _ in
+            let manifest = try store.begin(target: feedbackTarget())
+            var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest)) as? [String: Any])
+            json["events"] = [["kind": "futureGesture", "t": 100, "x": 0.5, "y": 0.5]]
+            json["inputGaps"] = [["t0": 50, "t1": 75], ["t0": "malformed", "t1": 100], ["t0": 200, "t1": 250]]
+            json["keyframes"] = [["index": 1, "t": "malformed", "reason": "click", "file": "frames/frame-01.png",
+                "said": "", "saidRange": ["from": 0, "to": 0]]]
+            json["contactSheet"] = ["malformed"]
+            try JSONSerialization.data(withJSONObject: json).write(to: store.mediaURL(id: manifest.id, path: "unfinished.json"))
+            let eventLog = Data("{\"kind\":\"click\",\"t\":300,\"x\":0.25,\"y\":0.75,\"button\":0}\n".utf8)
+            try eventLog.write(to: store.mediaURL(id: manifest.id, path: "events.jsonl"))
+            try Data([0]).write(to: store.mediaURL(id: manifest.id, path: "recording.mp4"))
+            store.release(id: manifest.id)
+
+            var errors: [String] = []
+            let recovered = try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in 500 }) {
+                errors.append($1.localizedDescription)
+            }
+            #expect(errors.isEmpty)
+            let result = try #require(recovered.first)
+            #expect(result.id == manifest.id)
+            #expect(result.events == [.click(t: 300, x: 0.25, y: 0.75, button: 0)])
+            #expect(result.inputGaps == [.init(t0: 50, t1: 75), .init(t0: 200, t1: 250)])
+            #expect(result.keyframes.isEmpty)
+            #expect(result.contactSheet == nil)
+            #expect(store.isActive(id: manifest.id))
+        }
     }
     @Test func catalogSkipsUnknownStatesWithoutHidingKnownCaptures() throws {
         try withFeedbackStore { store, db, _ in

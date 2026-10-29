@@ -330,8 +330,19 @@ Captures have no meeting/dictation foreign key and never enter CloudKit, search,
 telemetry, or automatic exports. Media lives in mode-0700
 `feedback-captures/fc-<epochms>-<4 hex>.capture/` directories. `capture.json`
 uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
-Readers ignore unknown fields and reject unsupported versions. Future produced
-payloads must decode older slice-1 manifests without requiring those fields.
+Readers ignore unknown fields and reject unsupported versions. Version 1 also
+contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional
+`contactSheet`; older manifests decode without these fields. Event coordinates
+are normalized to the fixed display with a top-left origin. Events are tagged
+`click`, `drag`, or `scroll`, with capture-relative millisecond times. Keyframes
+store `index`, decoded capture time `t`, `reason`, relative `file`, optional
+`eventIndex`, `said`, and a half-open `saidRange {from,to}` into transcript words.
+Malformed optional sidecars are tolerated independently: rebuildable `events`,
+`keyframes`, and `contactSheet` fall back to empty or nil, while malformed
+`inputGaps` entries are skipped individually.
+Action anchors drive narration partitioning separately from decoded frame times.
+All artifact paths pass the store's bundle containment checks. The row's
+`keyframeCount` reflects the published frames, including partial render results.
 
 Before capture, `unfinished.json` journals the manifest atomically. The first
 microphone host frame and first accepted video host frame are checkpointed as
@@ -343,6 +354,10 @@ video through the same media reconciliation used at Finish. Each probe records
 its own failure; one cannot suppress the other. It preserves partial or uncertain
 media and claims interrupted bundles for the same finalizer. The journal remains
 while missing transcription resumes, and checkpointed transcripts are reused.
+Complete surviving `events.jsonl` records are replayed and merged; a truncated
+tail records an `events` failure without discarding earlier usable events.
+Event-only bundles retain ownership, contribute to duration, and enter the same
+finalizer even without playable media. Unknown contents still prevent deletion.
 Completion publishes `recovered` before retiring the journal. Each bundle reports
 recovery errors independently; successfully claimed bundles retain ownership and
 continue finalization even when a sibling fails. Inference holds no store lock.
@@ -361,3 +376,12 @@ Decoder-only padding to 300 ms never extends source-time bounds.
 Missing audio/model, empty output, cancellation, timeout, and decoding errors
 retain playable media and record a named transcription failure. Narration and
 model identifiers remain local-only and do not enter sync or telemetry.
+
+Finalization prepares thumbnails alongside transcription, selects and annotates
+frames under `frames/`, writes `contact-sheet.png`, then atomically writes
+`summary.md` before publication. Thumbnail and render deadlines cancel native
+decoding and reject its late results. Failed illustrations leave narration in
+the summary as unillustrated text. Automatic clipboard delivery follows durable
+publication only when the clipboard is unchanged since Finish; explicit Copy
+reads the saved summary. Recovery regenerates local artifacts without automatic
+copying. Clipboard delivery state is transient and is not a manifest promise.
