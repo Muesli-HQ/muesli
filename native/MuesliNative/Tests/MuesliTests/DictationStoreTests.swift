@@ -2794,6 +2794,26 @@ struct DictationStoreTests {
         #expect(updated?.savedRecordingPath == "/tmp/retained.wav")
     }
 
+    @Test("live meetings retain their creation folder through completion", arguments: ["all", "folder", "nested"])
+    func liveMeetingKeepsCreationFolder(destination: String) throws {
+        let store = try makeStore()
+        let parentID = try store.createFolder(name: "Project")
+        let nestedID = try store.createFolder(name: "Subproject", parentID: parentID)
+        let folderID: Int64? = destination == "all" ? nil : (destination == "nested" ? nestedID : parentID)
+        let start = Date()
+        let id = try store.createLiveMeeting(title: "Quick Note", calendarEventID: nil, startTime: start, folderID: folderID)
+        #expect(try store.meeting(id: id)?.folderID == folderID)
+        try store.completeLiveMeeting(id: id, title: "Recorded meeting", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(60), rawTranscript: "Meeting transcript",
+            formattedNotes: "Summary", micAudioPath: nil, systemAudioPath: nil)
+        let completed = try #require(try store.meeting(id: id))
+        #expect(completed.status == .completed)
+        #expect(completed.folderID == folderID)
+        if let folderID {
+            #expect(try store.recentMeetings(folderID: folderID).contains { $0.id == id })
+        }
+    }
+
     // MARK: - Folder CRUD
 
     @Test("create and list folders")

@@ -3,6 +3,7 @@ import AVFoundation
 import SwiftUI
 import MuesliCore
 import TelemetryDeck
+import UniformTypeIdentifiers
 
 private struct MicrophoneOption: Identifiable {
     let uid: String?
@@ -127,6 +128,7 @@ struct SettingsView: View {
 
     let appState: AppState
     let controller: MuesliController
+    @ObservedObject private var cotypist = CotypistSetup.shared
 
     private enum OpenAIConnectionTestState: Equatable {
         case idle
@@ -246,6 +248,12 @@ struct SettingsView: View {
         if usesUnifiedMeetingTranscript {
             return "Creates the live and final transcript."
         }
+        if selected == .selectedModelBuffered {
+            guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
+                return "Choose Parakeet or Whisper as the final model to enable this preview."
+            }
+            return "Previews the selected Parakeet or Whisper model while recording. Completed segments remain authoritative."
+        }
         return "Adds a low-latency preview."
     }
 
@@ -276,7 +284,7 @@ struct SettingsView: View {
         var models = downloadedPostProcOptions
             .filter(\.supportsQuil)
             .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             models.append(.gemma4(model))
         }
         return models
@@ -325,8 +333,10 @@ struct SettingsView: View {
     }
 
     private var cleanupModelUsesFixedPrompt: Bool {
-        appState.selectedPostProcessorBackend == .local
-            && appState.activePostProcessor.inputFormat == .s1Mini
+        (appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat != .configurable)
+            || (appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).isCleanupOnly)
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
@@ -578,9 +588,16 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
@@ -737,6 +754,10 @@ struct SettingsView: View {
             }
 
             permissionsSection
+
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
@@ -1003,6 +1024,14 @@ struct SettingsView: View {
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
             }
+            if appState.dictationProvider == .local,
+               displayedDictationBackend?.supportsBufferedLiveTranscription == true {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Watch text appear during hands-free mode") {
+                    settingsControl("buffered_live_dictation")
+                }
+                settingsDescription("Preview as you speak; apply enabled cleanup when you stop.")
+            }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
@@ -1145,7 +1174,7 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
                 "Show transcript on hover",
-                description: "Show recent transcript beside the waveform.",
+                description: "Show live transcript when hovering over the pill or notch.",
                 controlWidth: meetingControlWidth
             ) {
                 settingsControl("meeting_hover_transcript")
@@ -1168,6 +1197,14 @@ struct SettingsView: View {
             }
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Identify in-room speakers",
+                description: "Speaker playback may cause duplicate labels; headphones help.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("diarize_microphone")
+            }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
@@ -1576,7 +1613,9 @@ struct SettingsView: View {
     private var fixedCleanupPromptNotice: some View {
         settingsRow(
             "Cleanup prompt",
-            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            description: appState.selectedPostProcessorBackend == .gemma4LiteRT
+                ? "Muesli Pro Cleanup uses its trained cleanup instructions. Custom presets do not apply."
+                : (appState.activePostProcessor.inputFormat.isTrainedV12 ? "This model uses its trained cleanup instructions. Custom presets do not apply." : "S1-mini uses Superwhisper’s built-in normalization instructions."),
             controlWidth: meetingControlWidth
         ) {
             Text("Built in")
@@ -1926,7 +1965,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
-                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                    description: "Suggest words from corrections using Accessibility."
                 ) {
                     settingsControl("dictionary_suggestions")
                     .help("Briefly reads focused app text after dictation to detect corrections.")
@@ -1935,7 +1974,15 @@ struct SettingsView: View {
 
             dictationCleanupSettingsSection
 
+            settingsSection("App Formatting") {
+                DictationFormattingSettingsView(appState: appState, controller: controller)
+            }
+
             quilSettingsSection
+
+            if CotypistSetup.isAvailable {
+                cotypistSettingsSection
+            }
 
             settingsSection("Advanced") {
                 settingsRow("Paste shortcut", controlWidth: meetingControlWidth) {
@@ -1959,6 +2006,363 @@ struct SettingsView: View {
             }
         }
     }
+
+    /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
+    /// selects it, or opens Keyboard settings with a guide until the user has added it.
+    private var cotypistSettingsSection: some View {
+        settingsSection("Cotypist (experimental)") {
+            settingsRow("Typeahead suggestions", description: cotypistStatus) {
+                settingsControl("cotypist_enabled")
+            }
+            if cotypist.state == .addingInputSource {
+                compactActionButton("Show setup guide", systemImage: "keyboard") {
+                    cotypist.showGuide()
+                }
+                .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.modelState != .ready {
+                cotypistModelRow
+                    .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.state == .on {
+                cotypistKeyHints
+                    .padding(.bottom, MuesliTheme.spacing12)
+                cotypistOptions
+            }
+        }
+    }
+
+    /// Shown only while Cotypist is on: off, none of them do anything.
+    @ViewBuilder
+    private var cotypistOptions: some View {
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistModelLine
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Suggestion length", description: "How far ahead each suggestion reaches.") {
+            settingsControl("cotypist_length")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("How often to suggest", description: "Fewer shows only suggestions the model is sure of.") {
+            settingsControl("cotypist_frequency")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Finish half-typed words", description: appState.config.cotypistCompleteWords
+            ? "Pause inside a word to see the rest of it."
+            : "Off: suggestions appear only after a space or punctuation.") {
+            settingsControl("cotypist_complete_words")
+        }
+        if appState.config.cotypistCompleteWords {
+            cotypistSubRow("Pause before completing") {
+                settingsControl("cotypist_word_pause")
+            }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Use on-screen text", description: "Reads the window around the text field. Off while a meeting records.") {
+            settingsControl("cotypist_screen_context")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistQuietApps
+            .padding(.top, MuesliTheme.spacing4)
+    }
+
+    private var cotypistStatus: String {
+        switch cotypist.state {
+        case .on:
+            "Suggests the next words as you type, in any app."
+        case .addingInputSource:
+            cotypist.suggestsRelogin
+                ? "\(CotypistSetup.displayName) isn't listed yet. Log out and back in, then turn this on again."
+                : "Add \(CotypistSetup.displayName) in Keyboard settings. It turns on as soon as it's added."
+        case .off:
+            "Local typeahead in every app, running on this Mac."
+        }
+    }
+
+    /// The selected typeahead model, until it's on this Mac: its size, download progress, or what
+    /// went wrong. Models › Cotypist has the full choice.
+    private var cotypistModelRow: some View {
+        let model = appState.config.cotypistModel
+        return HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "cpu")
+                .font(.system(size: 14))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Typeahead model: \(model.label)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                switch cotypist.modelState {
+                case .downloading(let fraction):
+                    ProgressView(value: fraction).tint(MuesliTheme.accent)
+                    Text("Downloading… \(Int(fraction * 100))% of \(model.sizeLabel)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                case .failed(let message):
+                    Text("Download failed: \(message)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.recording)
+                        .lineLimit(2)
+                case .unavailable:
+                    Text("Coming soon. Choose another model in Models.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                default:
+                    Text("\(model.sizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            switch cotypist.modelState {
+            case .missing, .failed:
+                compactActionButton("Download", systemImage: "arrow.down.circle") { cotypist.downloadModelIfNeeded() }
+            default:
+                compactActionButton("Models", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    /// The model in use, with a way to change it, once Cotypist is set up.
+    private var cotypistModelLine: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Text("Model")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Spacer()
+            Text(appState.config.cotypistModel.label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            compactActionButton("Change", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+        }
+        .frame(minHeight: 32)
+    }
+
+    /// The keys, shown once Cotypist is on.
+    private var cotypistKeyHints: some View {
+        HStack(spacing: MuesliTheme.spacing16) {
+            cotypistKeyHint(["Tab"], "Accept")
+            cotypistKeyHint(["⌥", "→"], "Accept one word")
+            Text("Keep typing to ignore")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func cotypistKeyHint(_ keys: [String], _ action: String) -> some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+                }
+            }
+            Text(action)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A setting that refines the row above it: indented, without its own divider.
+    private func cotypistSubRow(_ label: String, @ViewBuilder control: () -> some View) -> some View {
+        HStack {
+            Text(label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer(minLength: 20)
+            ZStack(alignment: .trailing) {
+                Color.clear.frame(width: controlWidth, height: 1)
+                control().frame(maxWidth: controlWidth)
+            }
+        }
+        .padding(.leading, MuesliTheme.spacing16)
+        .frame(minHeight: 32)
+        .padding(.bottom, MuesliTheme.spacing8)
+    }
+
+    // MARK: Cotypist quiet apps
+
+    private var cotypistQuietApps: some View {
+        let quiet = appState.config.cotypistDisabledApps
+        let recommended = CotypistQuietApps.recommended(excluding: quiet)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            settingsRow("Quiet in these apps", description: "Cotypist won't suggest anything in apps you add here.") {
+                cotypistAddAppMenu(excluding: quiet)
+            }
+            if quiet.isEmpty {
+                cotypistQuietAppsEmptyState
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: MuesliTheme.spacing8)],
+                          alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(quiet, id: \.self) { bundleID in
+                        cotypistQuietAppChip(bundleID)
+                    }
+                }
+            }
+            if !recommended.isEmpty {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text("Suggested")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    ForEach(recommended, id: \.self) { bundleID in
+                        cotypistRecommendedAppButton(bundleID)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.bottom, MuesliTheme.spacing4)
+    }
+
+    private var cotypistQuietAppsEmptyState: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("On in every app")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Add password managers, or apps with their own autocomplete like code editors.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        )
+    }
+
+    private func cotypistQuietAppChip(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return HStack(spacing: MuesliTheme.spacing8) {
+            cotypistAppIcon(bundleID, size: 20)
+            Text(name)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button {
+                controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "off")
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .background(MuesliTheme.surfaceBorder.opacity(0.6))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Turn Cotypist back on in \(name)")
+            .accessibilityLabel("Remove \(name)")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+    }
+
+    private func cotypistRecommendedAppButton(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return Button {
+            controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on")
+        } label: {
+            HStack(spacing: 5) {
+                cotypistAppIcon(bundleID, size: 14)
+                Text(name).lineLimit(1)
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Keep Cotypist quiet in \(name)")
+    }
+
+    /// Open apps first, then any app from the Applications folder.
+    private func cotypistAddAppMenu(excluding quiet: [String]) -> some View {
+        Menu {
+            let running = CotypistQuietApps.running(excluding: quiet)
+            if !running.isEmpty {
+                Section("Open apps") {
+                    ForEach(running, id: \.bundleID) { app in
+                        Button {
+                            controller.setSettingFromUI(CotypistQuietApps.settingID(app.bundleID), value: "on")
+                        } label: {
+                            Label {
+                                Text(app.name)
+                            } icon: {
+                                if let icon = CotypistQuietApps.menuIcon(of: app.bundleID) { Image(nsImage: icon) }
+                            }
+                        }
+                    }
+                }
+            }
+            Button("Choose from Applications…") { chooseCotypistQuietApp(excluding: quiet) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
+                Text("Add app")
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private func chooseCotypistQuietApp(excluding quiet: [String]) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Cotypist won't suggest anything in the apps you choose."
+        panel.begin { response in
+            guard response == .OK else { return }
+            let chosen = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }.filter { !quiet.contains($0) }
+            CotypistQuietApps.chosen.append(contentsOf: chosen)
+            for bundleID in chosen { controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on") }
+        }
+    }
+
+    @ViewBuilder
+    private func cotypistAppIcon(_ bundleID: String, size: CGFloat) -> some View {
+        if let icon = CotypistQuietApps.icon(of: bundleID) {
+            Image(nsImage: icon).resizable().scaledToFit().frame(width: size, height: size)
+        } else {
+            Image(systemName: "app.dashed")
+                .resizable().scaledToFit().frame(width: size, height: size)
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+    }
+
 
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -2167,6 +2571,10 @@ struct SettingsView: View {
                 }
                 .help("How far ahead to show scheduled meetings and check meeting reminders.")
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Only show events with a meeting link", controlWidth: meetingControlWidth) {
+                    settingsControl("calendar_meeting_links_only")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
 
@@ -2204,7 +2612,7 @@ struct SettingsView: View {
                     settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
-                    settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
+                    settingsDescription("On external displays, the notch appears at the top center.")
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else {
@@ -2225,8 +2633,8 @@ struct SettingsView: View {
             }
 
             settingsSection("Appearance") {
-                settingsRow("Dark mode") {
-                    settingsControl("dark_mode")
+                settingsRow("Theme") {
+                    settingsControl("appearance")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {

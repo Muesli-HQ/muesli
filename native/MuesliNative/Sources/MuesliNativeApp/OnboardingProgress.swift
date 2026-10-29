@@ -133,6 +133,10 @@ struct OnboardingProgress: Codable {
         userName = try c.decode(String.self, forKey: .userName)
         selectedBackendKey = try c.decode(String.self, forKey: .selectedBackendKey)
         selectedModelKey = try c.decode(String.self, forKey: .selectedModelKey)
+        if let selected = BackendOption.resolve(backend: selectedBackendKey, model: selectedModelKey) {
+            selectedBackendKey = selected.backend
+            selectedModelKey = selected.model
+        }
         selectedCohereLanguageCode = CohereTranscribeLanguage.resolvedCode(
             try c.decodeIfPresent(String.self, forKey: .selectedCohereLanguageCode)
         )

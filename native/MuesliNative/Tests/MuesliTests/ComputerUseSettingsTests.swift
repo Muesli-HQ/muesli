@@ -466,7 +466,7 @@ struct ComputerUseSettingsTests {
         for setting in settings {
             #expect(Set(setting.choices.map(\.id)).count == setting.choices.count)
         }
-        #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex FP16" } })
+        #expect(settings.contains { $0.id == "dictation_model" && $0.choices.contains { $0.label == "Bodhan Flex Pro" } })
         #expect(!settings.contains { $0.id.localizedCaseInsensitiveContains("api_key") })
         #expect(settings.first { $0.id == "cleanup_preset" }?.voiceRestriction != nil)
         #expect(settings.first { $0.id == "quill_source" }?.followUpSelections[QuilModelSourceOption.localModels.id] == "quill_local_model")
@@ -901,6 +901,24 @@ struct ComputerUseSettingsTests {
         let runtime = RuntimePaths(repoRoot: root, menuIcon: nil, appIcon: nil, bundlePath: nil)
         let subject = MuesliController(runtime: runtime, dictationStore: database, configStore: config)
         try await exercise(subject, config)
+    }
+
+    @Test("Calendar link filtering uses the shared settings executor and persists both choices")
+    func calendarMeetingLinkSetting() async throws {
+        try await withShortcutSettings { controller, store in
+            let settings = controller.settingsDefinitions()
+            let setting = try #require(settings.first { $0.id == "calendar_meeting_links_only" })
+            #expect(setting.snapshot(config: controller.config).current == "on")
+            _ = try await MuesliSettings.apply(.init(setting: setting.id, value: "off"),
+                settings: settings, snapshots: [setting.snapshot(config: controller.config)],
+                config: { controller.config }, persistedConfig: { store.load() })
+            #expect(!controller.config.calendarMeetingLinksOnly)
+            #expect(!controller.appState.config.calendarMeetingLinksOnly)
+            #expect(!store.load().calendarMeetingLinksOnly)
+            try await controller.applySetting(setting.id, value: "on")
+            #expect(controller.appState.config.calendarMeetingLinksOnly)
+            #expect(store.load().calendarMeetingLinksOnly)
+        }
     }
 
     @Test("source-only voice requests ask for a model without changing settings", arguments: [0, 1, 2])

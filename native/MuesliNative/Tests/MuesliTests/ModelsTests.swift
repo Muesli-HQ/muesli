@@ -99,6 +99,8 @@ struct BackendOptionTests {
     @Test(
         "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
         arguments: [
+            BackendOption.parakeetRedux,
+            BackendOption.phonon25,
             BackendOption.nemotron35Multilingual,
             BackendOption.qwen3Asr,
             BackendOption.cohereTranscribe,
@@ -167,6 +169,53 @@ struct BackendOptionTests {
     func onboardingRejectsNonOnboardingModels() {
         #expect(BackendOption.resolvedOnboardingBackend(.gemma4E2BLiteRT, currentOSVersion: Self.macOS15) == .onboardingDefault)
         #expect(BackendOption.resolvedOnboardingBackend(.appleSpeechAnalyzer, currentOSVersion: Self.macOS26) == .onboardingDefault)
+    }
+
+    @Test("model menus hide unsupported OS choices but retain supported Parakeet variants", arguments: [14, 15, 26])
+    func modelChoicesRespectOSVersion(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let options = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(options.contains(.parakeetRedux) == (major >= 15))
+        #expect(options.contains(.phonon25) == (major >= 15))
+        #expect(options.contains(.appleSpeechAnalyzer) == (major >= 26 && BackendOption.all.contains(.appleSpeechAnalyzer)))
+        #expect(options.contains(.parakeetUnified))
+        #expect(options.contains(.parakeetMultilingual))
+        #expect(options.contains(.parakeetEnglish))
+        #expect(options.allSatisfy { $0.isCompatible(currentOSVersion: version) })
+        let variants = BackendOption.compatibleOptions(BackendOption.parakeetFamily, currentOSVersion: version)
+        #expect(variants.contains(.parakeetRedux) == (major >= 15))
+        #expect(!variants.contains(.phonon25))
+    }
+
+    @Test("unsupported cached models are available only for cleanup", arguments: [14, 15])
+    func incompatibleDownloadsRemainDeletable(_ major: Int) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: 8, patchVersion: 0)
+        let gemmaCleanup = BackendOption.gemma4LiteRT(.muesliCleanupV2)
+        let cached: Set<String> = [BackendOption.parakeetRedux.model, BackendOption.parakeetEnglish.model, gemmaCleanup.model]
+        let cleanup = BackendOption.incompatibleDownloadedOptions(cached, currentOSVersion: version)
+        #expect(cleanup == (major == 14 ? [.parakeetRedux, gemmaCleanup] : []))
+        #expect(!BackendOption.all.contains(gemmaCleanup))
+        #expect(BackendOption.incompatibleDownloadedOptions([], currentOSVersion: version).isEmpty)
+        let selectable = BackendOption.compatibleOptions(currentOSVersion: version)
+        #expect(!cleanup.contains(where: { selectable.contains($0) }))
+    }
+
+    @Test("cached Redux cannot displace a supported downloaded model on macOS 14")
+    func restoredDownloadedReduxRespectsOSVersion() {
+        let redux = BackendOption.parakeetRedux
+        let downloaded: [BackendOption] = [redux, .parakeetEnglish]
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS14
+        ) == .parakeetEnglish)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: redux,
+            downloadedOptions: [redux], currentOSVersion: Self.macOS14
+        ) == nil)
+        #expect(BackendOption.resolveDownloaded(
+            backend: redux.backend, model: redux.model, fallback: .parakeetEnglish,
+            downloadedOptions: downloaded, currentOSVersion: Self.macOS15
+        ) == redux)
     }
 
     @Test("model descriptions explain usage without implementation jargon")
@@ -272,20 +321,78 @@ struct BackendOptionTests {
         }
     }
 
+    @Test("Redux is selectable for dictation and meetings without changing defaults")
+    func parakeetReduxCatalog() {
+        let redux = BackendOption.parakeetRedux
+        #expect(BackendOption.all.contains(redux))
+        #expect(BackendOption.parakeetFamily.contains(redux))
+        #expect(BackendOption.resolve(backend: redux.backend, model: redux.model) == redux)
+        #expect(redux.supportsMeetingTranscription)
+        #expect(redux.supportsHostedDictationFallback)
+        #expect(!redux.isStreamingDictationBackend)
+        #expect(!redux.recommended)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(BackendOption.parakeetMultilingual.isCompatible(currentOSVersion: Self.macOS14))
+        #expect(BackendOption.parakeetEnglish.isCompatible(currentOSVersion: Self.macOS14))
+    }
+
+    @Test("FluidAudio model routing keeps Redux separate from v2 and v3")
+    func parakeetReduxRouting() {
+        for (option, version) in [
+            (BackendOption.parakeetEnglish, AsrModelVersion.v2),
+            (.parakeetMultilingual, .v3), (.parakeetRedux, .redux),
+        ] {
+            let resolved = FluidAudioModel.version(for: option.model)
+            #expect(resolved == version)
+            let plan = FluidAudioModel.plan(for: option.model)
+            #expect(plan.modelID == option.model)
+            #expect(plan.cacheDirectory == AsrModels.defaultCacheDirectory(for: version))
+        }
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetMultilingual.model, deletingModelID: BackendOption.parakeetRedux.model))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetRedux.model, deletingModelID: BackendOption.parakeetMultilingual.model))
+        #expect(FluidAudioUnloadPolicy.shouldUnload(loadedModelID: BackendOption.parakeetRedux.model, deletingModelID: BackendOption.parakeetRedux.model))
+    }
+
     @Test("Parakeet deletion unloads only the matching runtime variant")
     func parakeetDeletionUnloadPolicy() {
         #expect(FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: .v2,
-            deletingVersion: .v2
+            loadedModelID: BackendOption.parakeetEnglish.model,
+            deletingModelID: BackendOption.parakeetEnglish.model
         ))
         #expect(!FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: .v3,
-            deletingVersion: .v2
+            loadedModelID: BackendOption.parakeetMultilingual.model,
+            deletingModelID: BackendOption.parakeetEnglish.model
         ))
         #expect(!FluidAudioUnloadPolicy.shouldUnload(
-            loadedVersion: nil,
-            deletingVersion: .v3
+            loadedModelID: nil,
+            deletingModelID: BackendOption.parakeetMultilingual.model
         ))
+    }
+
+    @Test("Phonon has its own identity despite sharing the v3 decoder contract")
+    func phonon25RoutingAndDeletion() {
+        let phonon = BackendOption.phonon25
+        #expect(!BackendOption.parakeetFamily.contains(phonon))
+        #expect(BackendOption.all.contains(phonon))
+        #expect(phonon.supportsMeetingTranscription)
+        #expect(phonon.supportsHostedDictationFallback)
+        #expect(!phonon.isStreamingDictationBackend)
+        #expect(!phonon.recommended)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(FluidAudioModel.version(for: phonon.model) == .v3)
+        #expect(FluidAudioModel.plan(for: phonon.model).modelID == phonon.model)
+        #expect(FluidAudioModel.plan(for: phonon.model).cacheDirectory != FluidAudioModel.plan(for: BackendOption.parakeetMultilingual.model).cacheDirectory)
+        let options: [BackendOption] = [.parakeetEnglish, .parakeetMultilingual, .parakeetRedux, .phonon25]
+        for loaded in options {
+            for deleted in options {
+                #expect(FluidAudioUnloadPolicy.shouldUnload(loadedModelID: loaded.model, deletingModelID: deleted.model) == (loaded == deleted))
+            }
+        }
+        let restored = BackendOption.resolveDownloaded(
+            backend: phonon.backend, model: phonon.model, fallback: .parakeetEnglish,
+            downloadedOptions: [phonon, .parakeetEnglish], currentOSVersion: Self.macOS14
+        )
+        #expect(restored == .parakeetEnglish)
     }
 
     @Test("Cohere uses cohere backend")
@@ -339,7 +446,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
-        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
+        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~3.55 GB")
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
@@ -347,7 +454,7 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E4BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E4BLiteRT.model == Gemma4LiteRTModel.e4b.repoID)
         #expect(BackendOption.gemma4E4BLiteRT.label == "Gemma 4 E4B")
-        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~3.7 GB")
+        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~5.15 GB")
         #expect(BackendOption.experimental.contains(.gemma4E4BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E4BLiteRT))
     }
@@ -539,17 +646,22 @@ struct PostProcessorOptionTests {
         #expect(Set(ids).count == ids.count, "Duplicate id in PostProcessorOption.all")
     }
 
-    @Test("all options have unique filenames")
+    @Test("all options have unique cached model paths")
     func uniqueFilenames() {
-        let filenames = PostProcessorOption.all.map(\.filename)
-        #expect(Set(filenames).count == filenames.count, "Duplicate filename in PostProcessorOption.all")
+        let filenames = PostProcessorOption.all.map { $0.modelURL.path }
+        #expect(Set(filenames).count == filenames.count, "Duplicate model path in PostProcessorOption.all")
     }
 
-    @Test("all options use HTTPS GGUF downloads")
+    @Test("all options use HTTPS downloads with verified MLX manifests")
     func validDownloadMetadata() {
         for option in PostProcessorOption.all {
             #expect(option.downloadURL.scheme == "https", "Non-HTTPS download URL for \(option.id)")
-            #expect(option.filename.lowercased().hasSuffix(".gguf"), "Non-GGUF filename for \(option.id)")
+            if option.modelURL.pathExtension == "safetensors" {
+                #expect(option.managedModel != nil)
+                #expect(option.managedModel?.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
+            } else {
+                #expect(option.modelURL.pathExtension == "gguf")
+            }
             #expect(!option.label.isEmpty, "Empty label for \(option.id)")
             #expect(!option.description.isEmpty, "Empty description for \(option.id)")
             #expect(!option.sizeLabel.isEmpty, "Empty size label for \(option.id)")
@@ -586,16 +698,18 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
-    @Test("cached legacy v2 remains runnable but is not downloadable")
-    func cachedLegacyV2RemainsRunnable() {
-        #expect(!PostProcessorOption.all.contains(PostProcessorOption.legacyV2))
-        #expect(!PostProcessorOption.legacyV2.isDownloadable)
-        #expect(PostProcessorOption.resolve(id: PostProcessorOption.legacyV2.id) == PostProcessorOption.legacyV2)
-        #expect(PostProcessorOption.runtimeOption(
-            id: PostProcessorOption.legacyV2.id,
-            downloadedIDs: [PostProcessorOption.legacyV2.id],
-            hasDevOverride: false
-        ) == PostProcessorOption.legacyV2)
+    @Test("retired Lite selections migrate without exposing old downloads")
+    func retiredLiteMigration() throws {
+        for old in [PostProcessorOption.legacyV2, .finetunedV3] {
+            #expect(!PostProcessorOption.all.contains(old))
+            #expect(!old.isDownloadable)
+            #expect(PostProcessorOption.resolve(id: old.id) == .finetunedV4)
+            #expect(PostProcessorOption.runtimeOption(id: old.id, downloadedIDs: [old.id], hasDevOverride: false) == nil)
+            let data = Data("{\"active_post_processor_id\":\"\(old.id)\"}".utf8)
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+            #expect(config.activePostProcessorId == PostProcessorOption.finetunedV4.id)
+        }
+        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
     }
 
     @Test("resolveDownloaded prefers selected downloaded option")
@@ -648,7 +762,7 @@ struct PostProcessorOptionTests {
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: [],
             hasDevOverride: true
-        ) == PostProcessorOption.finetunedV3)
+        ) == PostProcessorOption.finetunedV4)
     }
 
     @Test("runtimeOption returns nil without a download or dev override")
@@ -1013,6 +1127,20 @@ struct MeetingSummaryBackendTests {
 @Suite("AppConfig")
 struct AppConfigTests {
 
+    @Test("Calendar meeting-link filter defaults on and preserves a saved opt-out")
+    func calendarMeetingLinkFilterPersistence() throws {
+        #expect(AppConfig().calendarMeetingLinksOnly)
+        for json in ["{}", #"{"calendar_meeting_links_only":"invalid"}"#] {
+            #expect(try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8)).calendarMeetingLinksOnly)
+        }
+        var config = AppConfig()
+        config.calendarMeetingLinksOnly = false
+        let data = try JSONEncoder().encode(config)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["calendar_meeting_links_only"] as? Bool == false)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).calendarMeetingLinksOnly == false)
+    }
+
     @Test("default values")
     func defaults() {
         let config = AppConfig()
@@ -1083,6 +1211,7 @@ struct AppConfigTests {
         #expect(config.userName.isEmpty)
         #expect(config.customMeetingTemplates.isEmpty)
         #expect(config.meetingHookEnabled == false)
+        #expect(config.diarizeMicrophoneAudio == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
         #expect(config.autoExportMarkdownEnabled == false)
@@ -1283,6 +1412,7 @@ struct AppConfigTests {
             )
         ]
         config.meetingHookEnabled = true
+        config.diarizeMicrophoneAudio = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
         config.autoExportMarkdownEnabled = true
@@ -1376,6 +1506,7 @@ struct AppConfigTests {
         #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
         #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
         #expect(decoded.meetingHookEnabled == true)
+        #expect(decoded.diarizeMicrophoneAudio == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
         #expect(decoded.autoExportMarkdownEnabled == true)
@@ -1517,6 +1648,7 @@ struct AppConfigTests {
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
         #expect(json["custom_meeting_templates"] != nil)
         #expect(json["meeting_hook_enabled"] != nil)
+        #expect(json["diarize_microphone_audio"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
         #expect(json["auto_export_markdown_enabled"] != nil)
@@ -3212,8 +3344,121 @@ struct HotkeyMonitorTests {
         monitor.handleRegisteredHotKeyPressForTests()
         scheduler.advance(by: 0.06)
         monitor.handleRegisteredHotKeyReleaseForTests()
-        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: []))
         #expect(events == ["toggle-start", "toggle-stop", "toggle-start", "cancel"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @MainActor
+    private func makeMeetingStyleChordMonitor(
+        _ scheduler: ManualHotkeyScheduler,
+        events: @escaping (String) -> Void
+    ) -> HotkeyMonitor {
+        let monitor = scheduler.makeMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        monitor.doubleTapEnabled = false
+        monitor.escapeCancelsToggleSession = false
+        monitor.onToggleStart = { events("toggle-start") }
+        monitor.onToggleStop = { events("toggle-stop") }
+        monitor.onCancel = { events("cancel") }
+        return monitor
+    }
+
+    @Test("Escape passes through an established toggle when the monitor opts out")
+    @MainActor
+    func escapeKeepsOptedOutToggleSession() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        // The next full press still ends the session.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("opt-out leaves Escape on a pending first press unchanged")
+    @MainActor
+    func optOutKeepsPendingFirstPressEscape() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+
+        // The monitor still reports the abandoned gesture through onCancel; the
+        // meeting controller leaves onCancel unset, so it is silent there.
+        #expect(events == ["cancel"])
+        #expect(!monitor.isToggleRecording)
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("Escape cancels a pending second press but keeps the opted-out toggle")
+    @MainActor
+    func escapeCancelsPendingStopPressButKeepsToggle() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        // Start pressing the chord to stop, then back out with Escape before the hold fires.
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.02)
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        scheduler.advance(by: 1)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start", "toggle-stop"])
+    }
+
+    @Test("Escape leaves the toggle-start chord held without stopping the toggle")
+    @MainActor
+    func escapeKeepsHeldToggleStartChordActive() {
+        let scheduler = ManualHotkeyScheduler()
+        var events: [String] = []
+        let monitor = makeMeetingStyleChordMonitor(scheduler) { events.append($0) }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        #expect(events == ["toggle-start"])
+
+        let consumed = monitor.handleCombinationForTests(type: .keyDown, keyCode: 53, flags: [.command, .shift])
+        #expect(!consumed)
+        #expect(events == ["toggle-start"])
+        #expect(monitor.isToggleRecording)
+
+        scheduler.advance(by: 1)
+        #expect(events == ["toggle-start"])
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        #expect(events == ["toggle-start", "toggle-stop"])
         #expect(!monitor.isToggleRecording)
     }
 

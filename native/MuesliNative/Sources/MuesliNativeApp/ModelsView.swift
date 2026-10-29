@@ -41,6 +41,7 @@ struct ModelsView: View {
     @State private var selectedBodhanCoreModel: String
     @State private var selectedBodhanFlexModel: String
     @State private var showExperimental: Bool
+    @State private var showUnavailableDownloads = false
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
     @State private var isDownloadingLiveCaptionModel = false
@@ -56,6 +57,10 @@ struct ModelsView: View {
     @State private var downloadedPostProcModels: Set<String> = []
     @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
     @State private var postProcModelToDelete: PostProcessorOption?
+
+    // Cotypist
+    @ObservedObject private var cotypist = CotypistSetup.shared
+    @State private var cotypistModelToDelete: CotypistModel?
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -84,12 +89,14 @@ struct ModelsView: View {
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Choose the dictation, live meeting, cleanup, and Quill models that fit how you speak and work.")
+                    Text(CotypistSetup.isAvailable
+                         ? "Choose the dictation, live meeting, cleanup, Quill, and Cotypist models that fit how you speak and work."
+                         : "Choose the dictation, live meeting, cleanup, and Quill models that fit how you speak and work.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
                     Picker("Model category", selection: modelsCategorySelection) {
-                        ForEach(ModelsCategory.allCases) { category in
+                        ForEach(ModelsCategory.visible) { category in
                             Text(category.title).tag(category)
                         }
                     }
@@ -101,6 +108,7 @@ struct ModelsView: View {
                     .featureTourTarget(.modelLibrary)
 
                     selectedCategoryContent
+                    unavailableDownloadsSection
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
             .padding(.top, MuesliTheme.pageTop)
@@ -178,6 +186,33 @@ struct ModelsView: View {
 
     }
 
+    @ViewBuilder
+    private var unavailableDownloadsSection: some View {
+        let options = BackendOption.incompatibleDownloadedOptions(downloadedModels)
+        if !options.isEmpty {
+            DisclosureGroup("Unavailable downloads", isExpanded: $showUnavailableDownloads) {
+                VStack(spacing: MuesliTheme.spacing12) {
+                    ForEach(options, id: \.model) { option in
+                        HStack {
+                            Text(option.label)
+                            Spacer()
+                            Button("Delete", role: .destructive) {
+                                modelToDelete = option
+                            }
+                            .disabled(!controller.canModifyModelFiles)
+                        }
+                    }
+                }
+                .padding(.top, MuesliTheme.spacing12)
+            }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(MuesliTheme.spacing16)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        }
+    }
+
     private var modelsCategorySelection: Binding<ModelsCategory> {
         Binding(
             get: { appState.selectedModelsCategory },
@@ -196,7 +231,7 @@ struct ModelsView: View {
     private var selectedCategoryContent: some View {
         switch appState.selectedModelsCategory {
         case .dictation:
-            ForEach(BackendOption.systemManaged, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.systemManaged), id: \.model) { option in
                 let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
                     ? .appleSpeechCard
                     : nil
@@ -215,7 +250,7 @@ struct ModelsView: View {
                 defaultBadge: "Recommended: Unified",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
-                options: BackendOption.parakeetFamily
+                options: BackendOption.compatibleOptions(BackendOption.parakeetFamily)
             )
             .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
             .featureTourTarget(.parakeetFamilyCard)
@@ -226,10 +261,16 @@ struct ModelsView: View {
                 defaultBadge: "Default: Small",
                 logo: "openai-logo",
                 selection: $selectedWhisperModel,
-                options: BackendOption.whisperFamily
+                options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
             )
 
-            modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            if BackendOption.phonon25.isCompatible() {
+                modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
+            }
+
+            if BackendOption.cohereTranscribe.isCompatible() {
+                modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            }
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
                 .id(FeatureTourTarget.bodhanFlexCard.rawValue)
@@ -241,6 +282,8 @@ struct ModelsView: View {
             postProcessorSection
         case .quill:
             quillSection
+        case .cotypist:
+            cotypistSection
         }
     }
 
@@ -333,7 +376,7 @@ struct ModelsView: View {
                 )
             }
 
-            ForEach(BackendOption.streaming, id: \.model) { option in
+            ForEach(BackendOption.compatibleOptions(BackendOption.streaming), id: \.model) { option in
                 if let liveCaptionBackend = MeetingLiveCaptionBackend(rawValue: option.backend) {
                     modelCard(
                         option: option,
@@ -591,7 +634,7 @@ struct ModelsView: View {
 
             if showExperimental {
                 VStack(spacing: MuesliTheme.spacing12) {
-                    ForEach(BackendOption.experimental, id: \.model) { option in
+                    ForEach(BackendOption.compatibleOptions(BackendOption.experimental), id: \.model) { option in
                         if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
                             modelCard(
                                 option: option,
@@ -620,7 +663,7 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
-        let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
+        let variants = BackendOption.compatibleOptions(BackendOption.bodhanFamily).filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
         if let selected = variants.first(where: { $0.model == selection.wrappedValue }) ?? variants.first {
             modelCard(option: selected, logo: "bodhan-logo",
                          title: isCore ? "Bodhan Core" : "Bodhan Flex",
@@ -657,15 +700,160 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
-                ForEach(Gemma4LiteRTModel.allCases) { model in
+                ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(displayedPostProcessorOptions) { option in
+                ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
         }
+    }
+
+    // MARK: - Cotypist
+
+    private var cotypistSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                Text("COTYPIST")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .textCase(.uppercase)
+                    .padding(.leading, 2)
+                Text("The model that suggests your next words as you type. All run on this Mac; smaller ones answer faster.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.leading, 2)
+            }
+            .padding(.top, MuesliTheme.spacing8)
+
+            VStack(spacing: MuesliTheme.spacing12) {
+                ForEach(CotypistModel.allCases) { model in
+                    cotypistModelCard(model)
+                }
+            }
+        }
+        .alert("Delete \(cotypistModelToDelete?.label ?? "model")?", isPresented: Binding(
+            get: { cotypistModelToDelete != nil },
+            set: { if !$0 { cotypistModelToDelete = nil } }
+        )) {
+            Button("Delete", role: .destructive) {
+                if let model = cotypistModelToDelete { cotypist.delete(model) }
+                cotypistModelToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { cotypistModelToDelete = nil }
+        } message: {
+            Text("Its files are removed from this Mac. You can download it again later.")
+        }
+    }
+
+    private func cotypistModelCard(_ model: CotypistModel) -> some View {
+        let state = cotypist.state(of: model)
+        let isSelected = appState.config.cotypistModel == model
+        let isInUse = isSelected && state == .ready
+
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                brandLogo(model.logo)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text(model.label)
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        if model.isRecommended {
+                            Text("Recommended")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(MuesliTheme.accent)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        Text(model.sizeLabel)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    Text(model.summary)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
+                Spacer()
+
+                if isInUse {
+                    Text("Cotypist Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.success.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if state == .ready {
+                    Text("Downloaded")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if case .downloading(let fraction) = state {
+                downloadProgressView(for: "cotypist-" + model.rawValue, fallbackProgress: fraction,
+                                     snapshot: cotypist.downloadSnapshots[model])
+            }
+            if case .failed(let message) = state {
+                Text("Download failed: \(message)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                switch state {
+                case .downloading:
+                    cotypistCardButton("Pause", prominent: false) { cotypist.cancelDownload(model) }
+                case .ready:
+                    if !isSelected {
+                        cotypistCardButton("Use for Cotypist") { controller.setSettingFromUI("cotypist_model", value: model.rawValue) }
+                        Button { cotypistModelToDelete = model } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.red.opacity(0.6))
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete \(model.label)")
+                    }
+                case .missing, .failed:
+                    cotypistCardButton("Download") { cotypist.download(model) }
+                case .unavailable:
+                    Text("Coming soon")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(isInUse ? MuesliTheme.accent.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: isInUse ? 1.5 : 1)
+        )
+    }
+
+    private func cotypistCardButton(_ title: String, prominent: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(prominent ? MuesliTheme.accent : MuesliTheme.textSecondary)
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, 4)
+            .background(prominent ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
     }
 
     private var quillSection: some View {
@@ -676,10 +864,10 @@ struct ModelsView: View {
             Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
-            ForEach(Gemma4LiteRTModel.allCases) { model in
+            ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
-            ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
+            ForEach(PostProcessorOption.all.filter(\.supportsQuil)) { option in
                 postProcModelCard(option, forQuill: true)
             }
         }
@@ -704,7 +892,7 @@ struct ModelsView: View {
 
         return modelCard(
             option: option,
-            logo: "google-logo",
+            logo: model.isCleanupOnly ? "muesli_app_icon" : "google-logo",
             isActive: isDownloaded
                 && (forQuill
                     ? appState.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend && appState.config.quilModel == model.repoID
@@ -716,7 +904,7 @@ struct ModelsView: View {
                     controller.selectGemma4PostProcessor(model)
                 }
             },
-            description: forQuill
+            description: model.isCleanupOnly ? option.description : forQuill
                 ? "An experimental local model for rewriting and generating text with Quill. Shares its download with dictation and cleanup."
                 : "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
             activeLabel: forQuill ? "Quill Selected" : "Cleanup Active",
@@ -759,7 +947,7 @@ struct ModelsView: View {
                 Spacer()
 
                 if isActive {
-                    Text(forQuill ? "Quill Selected" : "Active")
+                    Text(forQuill ? "Quill Selected" : "Cleanup Active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -800,7 +988,7 @@ struct ModelsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button(forQuill ? "Use for Quill" : "Set Active") {
+                        Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
@@ -921,6 +1109,12 @@ struct ModelsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
+            if selectedOption == .parakeetRedux {
+                Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
             if selectedOption.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
@@ -937,24 +1131,7 @@ struct ModelsView: View {
                 }
             }
 
-            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
-                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
-                    Text("Language")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 64, alignment: .leading)
-
-                    MuesliSettingControl(controller: controller, id: "parakeet_language")
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 220, alignment: .leading)
-                    .disabled(incompatibilityReason != nil)
-                }
-
-                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
+            parakeetLanguageControls(for: selectedOption)
 
             if showsDownloadStatus, incompatibilityReason == nil {
                 downloadProgressView(
@@ -1014,9 +1191,11 @@ struct ModelsView: View {
         for modelID: String,
         fallbackProgress: Double,
         fallbackMessage: String? = nil,
-        isDownloading: Bool = true
+        isDownloading: Bool = true,
+        snapshot externalSnapshot: ModelDownloadProgress? = nil
     ) -> some View {
-        if let snapshot = downloadSnapshots[modelID] {
+        // Downloads this view doesn't own (Cotypist's) pass their snapshot in.
+        if let snapshot = externalSnapshot ?? downloadSnapshots[modelID] {
             VStack(alignment: .leading, spacing: 4) {
                 if snapshot.phase != .preparing {
                     ProgressView(value: snapshot.fractionCompleted ?? fallbackProgress)
@@ -1145,6 +1324,7 @@ struct ModelsView: View {
     }
 
     private func logoForBackend(_ option: BackendOption) -> String? {
+        if option == .phonon25 { return "fermion-logo" }
         switch option.backend {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
@@ -1233,6 +1413,28 @@ struct ModelsView: View {
         }
     }
 
+    @ViewBuilder
+    private func parakeetLanguageControls(for option: BackendOption) -> some View {
+        if option.backend == BackendOption.parakeetMultilingual.backend {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                Text("Language")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 64, alignment: .leading)
+
+                MuesliSettingControl(controller: controller, id: "parakeet_language")
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 220, alignment: .leading)
+                .disabled(option.incompatibilityReason() != nil)
+            }
+
+            Text(option == .phonon25 ? "Filters writing script." : "Filters writing script; Parakeet v2 ignores this setting.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+    }
+
     private func modelCard(
         option: BackendOption,
         logo: String? = nil,
@@ -1313,6 +1515,14 @@ struct ModelsView: View {
                 }
             }
 
+            if option == .phonon25 {
+                Text("[Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5) · [Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
+            parakeetLanguageControls(for: option)
+
             if option.backend == BackendOption.cohereTranscribe.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
@@ -1350,7 +1560,7 @@ struct ModelsView: View {
                             ForEach(BackendOption.bodhanFamily.filter {
                                 BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
                             }, id: \.model) { variant in
-                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                Text(BodhanModel(rawValue: variant.model)?.tierName ?? "Pro")
                                     .tag(variant.model)
                             }
                         }
@@ -1553,6 +1763,7 @@ struct ModelsView: View {
                     withAnimation {
                         downloadingPostProcModels.remove(option.id)
                         downloadedPostProcModels.insert(option.id)
+                        controller.refreshCleanupAvailability()
                         downloadProgressPostProc.removeValue(forKey: option.id)
                         downloadMessages.removeValue(forKey: option.id)
                         downloadSnapshots.removeValue(forKey: option.id)
@@ -1597,7 +1808,7 @@ struct ModelsView: View {
     }
 
     private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws {
-        let manifest = ModelDownloadManifest(
+        let manifest = option.managedModel?.manifest(id: option.id) ?? ModelDownloadManifest(
             id: option.id,
             version: "main",
             files: [ModelDownloadFile(relativePath: option.filename, remoteURL: option.downloadURL)],
@@ -1610,13 +1821,18 @@ struct ModelsView: View {
                 downloadSnapshots[option.id] = snapshot
             }
         }
-        try Task.checkCancellation()
+        // The coordinator verifies every managed file's size and SHA-256 on its
+        // own actor before returning. Do not rehash multi-GB weights on the UI actor.
+        // Legacy GGUF downloads additionally need this four-byte format check.
         do {
-            try validateGGUFHeader(at: option.modelURL)
+            if option.modelURL.pathExtension == "gguf" {
+                try validateGGUFHeader(at: option.modelURL)
+            }
         } catch {
             try? FileManager.default.removeItem(at: option.modelURL)
             throw error
         }
+        try Task.checkCancellation()
     }
 
     private func validateGGUFHeader(at url: URL) throws {
@@ -1641,6 +1857,7 @@ struct ModelsView: View {
                 guard downloadGenerations[option.id] == cancellationGeneration else { return }
                 if option.isDownloaded {
                     downloadedPostProcModels.insert(option.id)
+                    controller.refreshCleanupAvailability()
                     downloadMessages.removeValue(forKey: option.id)
                     downloadSnapshots.removeValue(forKey: option.id)
                 } else {
@@ -1676,27 +1893,14 @@ struct ModelsView: View {
         }
         try? FileManager.default.removeItem(at: option.cacheDirectory)
         downloadedPostProcModels.remove(option.id)
+        controller.refreshCleanupAvailability()
         downloadSnapshots.removeValue(forKey: option.id)
         downloadGenerations.removeValue(forKey: option.id)
     }
 
     private func checkDownloadedPostProcModels() {
-        downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.downloaded {
-            if option.isDownloaded {
-                downloadedPostProcModels.insert(option.id)
-            }
-        }
-    }
-
-    /// The retired v2 cleanup model stays visible only for people who already
-    /// have it installed. Deleting it removes the card, and the model cannot
-    /// be downloaded again.
-    private var displayedPostProcessorOptions: [PostProcessorOption] {
-        PostProcessorOption.all
-            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
-                ? [.legacyV2]
-                : [])
+        downloadedPostProcModels = PostProcessorOption.downloadedIDs
+        controller.refreshCleanupAvailability()
     }
 
     // MARK: - Actions
@@ -1919,9 +2123,9 @@ struct ModelsView: View {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
-            let fallback = downloadedModels
-                .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
+            let fallback = BackendOption.compatibleOptions().first {
+                $0 != option && downloadedModels.contains($0.model)
+            } ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]
@@ -1988,13 +2192,10 @@ struct ModelsView: View {
                 fileManager: fm
             )
         case "fluidaudio":
-            let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
-                ifLoadedVersion: version
+                ifLoadedModelID: option.model
             )
-            let plan = version == .v2
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: option.model)
             try plan.delete(fileManager: fm)
         case "parakeet-unified":
             await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
@@ -2016,7 +2217,7 @@ struct ModelsView: View {
 
     private func checkDownloadedModels() {
         let fm = FileManager.default
-        for option in BackendOption.all {
+        for option in BackendOption.all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(BackendOption.gemma4LiteRT) {
             if isModelDownloaded(option, fm: fm) {
                 downloadedModels.insert(option.model)
             }
@@ -2058,9 +2259,7 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
-            let plan = option.model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: option.model)
             return plan.isAvailableLocally(fileManager: fm)
         case "parakeet-unified":
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
