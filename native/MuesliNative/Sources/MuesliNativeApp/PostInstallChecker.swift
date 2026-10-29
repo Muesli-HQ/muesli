@@ -352,7 +352,10 @@ enum PostInstallChecker {
     // MARK: - Case 2: Eject mounted DMG
 
     private static func checkForMountedDMG(appName: String, bundleName: String) async {
-        guard let volumeURL = findMountedInstallerVolume(appName: appName, bundleName: bundleName) else { return }
+        let found = await Task.detached(priority: .utility) {
+            findMountedInstallerVolume(appName: appName, bundleName: bundleName)
+        }.value
+        guard let volumeURL = found else { return }
         let volumePath = volumeURL.path
         let sourceDMGPath = await Task.detached(priority: .utility) {
             findSourceDMGPathSync(volumePath: volumePath)
@@ -435,14 +438,39 @@ enum PostInstallChecker {
         }
     }
 
-    // P2: use mountedVolumeURLs instead of contentsOfDirectory("/Volumes") — avoids
-    // stale symlinks, firmlinks, and hidden entries that can appear under /Volumes.
-    private static func findMountedInstallerVolume(appName: String, bundleName: String) -> URL? {
-        guard let volumes = FileManager.default.mountedVolumeURLs(
-            includingResourceValuesForKeys: [.volumeNameKey],
-            options: [.skipHiddenVolumes]
-        ) else { return nil }
-        return volumes.first { url in
+    struct MountedFileSystem: Equatable, Sendable {
+        let path: String
+        let isLocal: Bool
+        let isBrowsable: Bool
+    }
+
+    /// Reads the kernel's mount table with MNT_NOWAIT, which returns cached data and never
+    /// contacts a file server. `mountedVolumeURLs` stats every mount instead, and a stale
+    /// SMB share (an unreachable Time Machine server) blocked it, freezing launch.
+    nonisolated static func mountedFileSystems() -> [MountedFileSystem] {
+        let count = getfsstat(nil, 0, MNT_NOWAIT)
+        guard count > 0 else { return [] }
+        let buffer = UnsafeMutablePointer<statfs>.allocate(capacity: Int(count))
+        defer { buffer.deallocate() }
+        let filled = getfsstat(buffer, Int32(MemoryLayout<statfs>.stride * Int(count)), MNT_NOWAIT)
+        guard filled > 0 else { return [] }
+        return UnsafeBufferPointer(start: buffer, count: Int(filled)).map { fs in
+            let path = withUnsafeBytes(of: fs.f_mntonname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            return MountedFileSystem(
+                path: path,
+                isLocal: fs.f_flags & UInt32(MNT_LOCAL) != 0,
+                isBrowsable: fs.f_flags & UInt32(MNT_DONTBROWSE) == 0
+            )
+        }
+    }
+
+    /// An installer DMG mounts as a local, browsable volume; network and hidden mounts are never stat'ed.
+    nonisolated static func installerVolumeCandidates(_ mounts: [MountedFileSystem]) -> [URL] {
+        mounts.filter { $0.isLocal && $0.isBrowsable }.map { URL(fileURLWithPath: $0.path, isDirectory: true) }
+    }
+
+    nonisolated private static func findMountedInstallerVolume(appName: String, bundleName: String) -> URL? {
+        installerVolumeCandidates(mountedFileSystems()).first { url in
             let name = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? ""
             guard name == appName else { return false }
             return FileManager.default.fileExists(
