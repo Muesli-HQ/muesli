@@ -186,13 +186,14 @@ final class MeetingSession {
     func beginStoppingCapture() { captureLifecycle.requestStop() }
     private let neuralAec: MeetingNeuralAec
     private let microphoneExclusions = MeetingMicrophoneExclusions()
+    private let microphoneClock: () -> Int64
 
-    func beginMicrophoneExclusion(at frame: Int64 = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())) -> UUID {
-        microphoneExclusions.begin(at: frame)
+    func beginMicrophoneExclusion(at frame: Int64? = nil) -> UUID {
+        microphoneExclusions.begin(at: frame ?? microphoneClock())
     }
 
-    func endMicrophoneExclusion(_ token: UUID, at frame: Int64 = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())) {
-        microphoneExclusions.end(token, at: frame)
+    func endMicrophoneExclusion(_ token: UUID, at frame: Int64? = nil) {
+        microphoneExclusions.end(token, at: frame ?? microphoneClock())
     }
     private let inputObservationQueue = DispatchQueue(label: "com.muesli.meeting-input-controls")
     private let inputMuted = OSAllocatedUnfairLock<Bool?>(initialState: nil)
@@ -298,7 +299,8 @@ final class MeetingSession {
         transcriptionCoordinator: TranscriptionCoordinator,
         meetingMicRecorder: MeetingMicRecording = RouteAwareMeetingMicRecorder(),
         systemAudioCapture: SystemAudioCapturing? = nil,
-        aec: MeetingNeuralAec = MeetingNeuralAec()
+        aec: MeetingNeuralAec = MeetingNeuralAec(),
+        microphoneClock: @escaping () -> Int64 = { MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) }
     ) {
         self.title = title
         self.calendarEventID = calendarEventID
@@ -309,6 +311,7 @@ final class MeetingSession {
         self.transcriptionCoordinator = transcriptionCoordinator
         self.meetingMicRecorder = meetingMicRecorder
         self.neuralAec = aec
+        self.microphoneClock = microphoneClock
         if let systemAudioCapture {
             self.systemAudioRecorder = systemAudioCapture
         } else if config.useCoreAudioTap {
@@ -317,7 +320,8 @@ final class MeetingSession {
             self.systemAudioRecorder = SystemAudioRecorder()
         }
         inputObserver = CoreAudioMicrophoneActivityObserver(queue: inputObservationQueue, observesMute: true)
-        captureLifecycle = MeetingCaptureLifecycle(microphone: meetingMicRecorder, systemAudio: systemAudioRecorder)
+        captureLifecycle = MeetingCaptureLifecycle(microphone: meetingMicRecorder, systemAudio: systemAudioRecorder,
+            microphoneClock: microphoneClock)
         micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] trigger in
             guard let meetingMicRecorder else { return .unavailable }
             return meetingMicRecorder.requestHealthRecovery(trigger)

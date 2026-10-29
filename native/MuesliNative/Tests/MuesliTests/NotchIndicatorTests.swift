@@ -44,9 +44,15 @@ struct NotchIndicatorTests {
                     .first { $0.toolTip == "Cancel dictation" })
                 #expect(pill.hitTest(NSPoint(x: cancel.frame.midX, y: cancel.frame.midY)) === cancel)
                 cancel.performClick(nil)
+                if state == .recording {
+                    let finish = try #require(pill.subviews.compactMap { $0 as? NSButton }
+                        .first { $0.toolTip == "Finish dictation" })
+                    #expect(pill.hitTest(NSPoint(x: finish.frame.midX, y: finish.frame.midY)) === finish)
+                    finish.performClick(nil)
+                }
             }
             if notched { notch.onCancel?() }
-            if state == .recording { notch.onStopRecording?() }
+            if notched && state == .recording { notch.onStopRecording?() }
             indicator.stopNotchMeeting()
         }
         #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 0)

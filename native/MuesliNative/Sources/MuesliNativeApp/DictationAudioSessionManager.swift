@@ -148,6 +148,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private var externalSessionActive = false
     private var routeRefreshGeneration = 0
     private var activeRecorderRunID: UUID?
+    private var endCaptureInterval: (() -> Void)?
     private var failedSessionID: UUID?
     private let sessionHintLock = NSLock()
     private var sessionHint: UUID?
@@ -258,7 +259,8 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     @discardableResult
-    func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) -> UUID {
+    func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool,
+                        captureInterval: (() -> (() -> Void))? = nil) -> UUID {
         let sessionID = ensureSession()
         queue.async { [self] in
             self.cancelPendingRouteRefreshLocked()
@@ -305,6 +307,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 } else {
                     self.emitLatency("activation_prepare_skipped:\(mode):\(self.activationWarmupSkipReason(route: self.routeSnapshot))")
                 }
+                // Arm only prepares the graph. Commit the interval at accepted
+                // Start, before any audio can enter the exported recording.
+                self.endCaptureInterval = captureInterval?()
                 self.activeRecorderRunID = try self.recorder.start()
                 self.emitLatency("activation_end:\(mode)")
                 fputs("[dictation-session] recording mode=\(mode) \(self.routeSnapshot.debugDescription)\n", stderr)
@@ -350,6 +355,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.emitLatency("stop")
             self.recorder.keepsAudioGraphWarm = false
             let wavURL = self.recorder.stop()
+            self.finishCaptureInterval()
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
@@ -366,6 +372,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             let sessionID = self.stateStorage.sessionID ?? requestedSessionID
             self.recorder.keepsAudioGraphWarm = false
             self.recorder.cancel()
+            self.finishCaptureInterval()
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
@@ -572,7 +579,14 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         )
     }
 
+    private func finishCaptureInterval() {
+        let end = endCaptureInterval
+        endCaptureInterval = nil
+        end?()
+    }
+
     private func failCurrentSession(error: Error) {
+        finishCaptureInterval()
         let sessionID = stateStorage.sessionID
         if let sessionID {
             failedSessionID = sessionID

@@ -1651,7 +1651,13 @@ actor TranscriptionCoordinator {
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         try await withModelReservation {
-            try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage)
+            self.activeBackend = backend.backend
+            switch backend.backend {
+            case "bodhan", "apple-speech", "nemotron35", "cohere", "gemma4-litert":
+                break // These file adapters prepare within the reserved inference.
+            default:
+                try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage)
+            }
             try Task.checkCancellation()
             #if DEBUG
             if let infer = self.testingASRInference { return try await infer(backend, url) }

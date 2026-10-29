@@ -417,8 +417,7 @@ final class FloatingIndicatorController: NSObject {
     func handleClick(atX x: CGFloat? = nil) {
         // Meeting commands belong to the explicit buttons. The waveform/body
         // remains available for dragging without accidentally ending a meeting.
-        guard !isMeetingRecording || hasDictationOverlap else { return }
-        if hasDictationOverlap { return } // Native finish/cancel buttons own overlap clicks.
+        guard !isMeetingRecording else { return }
         if isComputerUseCancellationAvailable {
             if (x ?? 0) < 34 { onCancelComputerUse?() }
             return

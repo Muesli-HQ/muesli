@@ -84,6 +84,19 @@ struct InferenceGateTests {
 @Suite("TranscriptionCoordinator routing")
 struct TranscriptionCoordinatorTests {
 
+    @Test("self-preparing file backends prepare once inside their inference owner",
+          arguments: ["bodhan", "apple-speech", "nemotron35", "cohere", "gemma4-litert"])
+    func filePreparationOwner(backend: String) async throws {
+        let coordinator = TranscriptionCoordinator(), trace = RequestedModelTrace()
+        await coordinator.testingInstallASR(prepare: { await trace.prepare($0.model) }, infer: { _, _ in
+            .init(text: "accepted", segments: [])
+        })
+        let option = try #require(BackendOption.all.first { $0.backend == backend })
+        let result = try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/synthetic.wav"), backend: option)
+        #expect(result.text == "Accepted")
+        #expect(await trace.prepared.isEmpty)
+    }
+
     @Test("meeting and dictation reserve their requested model through inference", arguments: [false, true])
     func concurrentRequestedModels(sameModel: Bool) async throws {
         let coordinator = TranscriptionCoordinator()
