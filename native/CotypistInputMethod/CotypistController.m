@@ -33,31 +33,6 @@ static void KeepContextTail(NSMutableString *typed) {
     [typed deleteCharactersInRange:[typed rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, typed.length - kContextChars)]];
 }
 
-// Diagnostics for the experiment: request outcomes and timings only, never typed text. Written on
-// a serial queue so a key never waits on the disk; the file starts over past 1 MB.
-static const unsigned long long kLogLimit = 1 << 20;
-
-static void HelperLog(NSString *format, ...) {
-    va_list args;
-    va_start(args, format);
-    NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
-    NSData *data = [[NSString stringWithFormat:@"%@ %@\n", [NSDate date], line] dataUsingEncoding:NSUTF8StringEncoding];
-    static dispatch_queue_t queue;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ queue = dispatch_queue_create("com.muesli.cotypist.log", DISPATCH_QUEUE_SERIAL); });
-    dispatch_async(queue, ^{
-        NSString *path = [@"~/Library/Logs/MuesliCotypist.log" stringByExpandingTildeInPath];
-        NSFileManager *files = [NSFileManager defaultManager];
-        if ([[files attributesOfItemAtPath:path error:nil] fileSize] > kLogLimit) [files removeItemAtPath:path error:nil];
-        if (![files fileExistsAtPath:path]) [files createFileAtPath:path contents:nil attributes:nil];
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-        [handle seekToEndOfFile];
-        [handle writeData:data];
-        [handle closeFile];
-    });
-}
-
 #pragma mark - Muesli socket
 
 static NSString *SocketPath(void) {
@@ -79,7 +54,6 @@ static NSDictionary *SendToMuesli(NSDictionary *request, NSTimeInterval timeout)
     int noSigPipe = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
     if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-        HelperLog(@"connect failed (%s) to %@", strerror(errno), SocketPath());
         close(fd);
         return nil;
     }
@@ -238,6 +212,7 @@ static NSUInteger NextWordLength(NSString *text) {
             return;
         case 36: case 76: case 53:                // Return, Enter, Escape: sent or abandoned
         case 123: case 124: case 125: case 126:   // arrows: the record no longer matches the caret
+        case 48:  // Tab that didn't accept a suggestion: shell completion and the like rewrite the line
             [_typed setString:@""];
             return;
     }
@@ -245,6 +220,12 @@ static NSUInteger NextWordLength(NSString *text) {
     // matches what's before the caret.
     if (mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) { [_typed setString:@""]; return; }
     NSString *chars = event.characters;
+    // Forward delete, Home, End, Page Up/Down and F-keys arrive as private-use characters: they
+    // edit or move without typing anything.
+    if (chars.length && [chars characterAtIndex:0] >= 0xF700 && [chars characterAtIndex:0] <= 0xF8FF) {
+        [_typed setString:@""];
+        return;
+    }
     if (chars.length && [chars characterAtIndex:0] >= 0x20) {
         [_typed appendString:chars];
         KeepContextTail(_typed);
@@ -263,8 +244,6 @@ static NSUInteger NextWordLength(NSString *text) {
     } else if (selection.length > 0) {
         return;  // a selection: typing would replace it, nothing to continue
     }
-    // No app here: which app the user types in is kept only for suggestions they accept.
-    HelperLog(@"request field=%lu typed=%lu midWord=%d", (unsigned long)field.length, (unsigned long)_typed.length, _midWord);
     NSDictionary *base = @{
         @"type": @"suggest",
         @"app": bundleID ?: @"",
@@ -288,8 +267,6 @@ static NSUInteger NextWordLength(NSString *text) {
     first[@"firstWordOnly"] = @YES;
     AskMuesli(first, ^(NSDictionary *one) {
         [CotypistController applySettings:one];
-        HelperLog(@"stage1 %@ text=%lu rejection=%@ source=%@ model=%@ms", generation == self->_generation ? @"current" : @"stale",
-                  (unsigned long)[one[@"text"] length], one[@"rejection"], one[@"source"], one[@"modelMs"]);
         if (generation != self->_generation) return;
         NSString *firstText = one[@"text"];
         if (firstText.length) {
@@ -337,7 +314,6 @@ static NSUInteger NextWordLength(NSString *text) {
     record[@"type"] = @"outcome";
     record[@"outcome"] = accepted.length && ![outcome isEqual:@"accepted"] ? @"partial" : outcome;
     record[@"accepted"] = accepted;
-    if (accepted.length) HelperLog(@"%@ app=%@ chars=%lu", record[@"outcome"], record[@"app"], (unsigned long)accepted.length);
     TellMuesli(record);
     _shown = nil;
 }
