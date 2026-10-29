@@ -56,7 +56,8 @@ Dictionary correction monitoring starts only after a successful paste.
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
   a five-second busy timeout.
-- `dictations` and `meetings` are the timeline history roots. Chat threads are
+- `dictations` and `meetings` are the timeline history roots, joined by
+  `cotypist_sessions` (experimental typeahead, dev builds). Chat threads are
   separate durable records in `meeting_chat_sessions`; Timeline remains a query,
   not a separate table.
 - History deletion is soft at first through `deleted_at`. Old tombstones are
@@ -66,7 +67,8 @@ Dictionary correction monitoring starts only after a successful paste.
   field.
 - People, folders, computer-use traces, live checkpoints, resume snapshots,
   media paths and video records, chat history and memory, import provenance,
-  destination-app attribution, and Insights data are local-only.
+  destination-app attribution, Cotypist typeahead history, and Insights data are
+  local-only.
 - Global search uses parameterized `LIKE` queries. Ask Meetings has a separate
   FTS5 index, `meeting_chat_fts`, over revisioned meeting passages. Its FTS shadow
   tables are SQLite-managed implementation details, not application records.
@@ -89,6 +91,7 @@ erDiagram
     meetings ||--o{ meeting_video_clips : "owns local video"
     meetings ||--o{ meeting_imports : "has import provenance"
     dictations ||--o| bodhan_wbcs_measurements : "has speech measurement"
+    cotypist_sessions ||--o{ cotypist_suggestions : "groups suggestions in one app"
 
     meeting_chat_sessions ||--o{ meeting_chat_turns : "orders exchanges"
     meeting_chat_sessions ||--o{ meeting_chat_session_meetings : "anchors or selects"
@@ -245,6 +248,41 @@ Bodhan speech windows: a dictation primary/FK, version, language-sample BLOB, an
 optional run-length BLOB. It survives later text edits because it describes the
 original speech. Deletion removes it. Unlike the Insights token caches, it cannot
 be reconstructed from edited transcript text; older dictations are not backfilled.
+
+### Cotypist typeahead history
+
+Experimental, dev builds only. Written by `DictationStore.recordCotypistSuggestion`
+when the Cotypist input method reports what happened to a suggestion it showed.
+Local-only: neither table has sync identity or participates in iCloud sync.
+
+#### `cotypist_suggestions`
+
+- One row per suggestion shown: `suggestion_text` (model output), `accepted_text`
+  (what Tab or ⌥→ inserted, empty when not taken), `outcome`
+  (`accepted`/`partial`/`ignored`/`dismissed`), `trigger` (`boundary`/`mid-word`),
+  word counts, first-word log-probability, stage latencies, `context_source` and `model`
+- `context_before` is the user's own text: the sentence the suggestion continued,
+  at most about 120 characters. It is stored only for accepted and partial
+  suggestions, the ones the timeline shows; it is blank otherwise.
+- `target_app_name` and `target_app_bundle_id` are likewise stored only for accepted
+  and partial suggestions. A suggestion that wasn't taken keeps no app; one shown
+  while an app's session is open (started by an accepted suggestion) counts toward
+  that session's "shown" total through `session_id`.
+- `session_id` is set when an app's session is open (see below); `NULL` otherwise
+- Retention: rows with nothing accepted are pruned after 90 days and capped at the
+  newest 5,000. Accepted rows live as long as their session.
+
+#### `cotypist_sessions`
+
+- A run of Cotypist use in one app, the timeline record. An accepted suggestion
+  joins the app's open session or starts one; a suggestion that wasn't taken only
+  counts toward an open session. Ten minutes without a suggestion in that app
+  (`last_activity_at`, Unix time) closes it.
+- `timestamp` (ISO-8601 start), `target_app_name`, `target_app_bundle_id`, `source`
+  (`cotypist`) and `deleted_at` mirror the dictation columns so the timeline's date,
+  origin and app filters apply unchanged; `deleted_at` stays `NULL`.
+- Removing a session from the timeline hard-deletes it and its suggestions in one
+  transaction, text included. There are no tombstones to keep for sync.
 
 ### Organization and state
 
