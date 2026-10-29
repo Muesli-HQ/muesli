@@ -28,6 +28,23 @@ struct NotchIndicatorTests {
         indicator.onStopToggleDictation = { finished += 1 }
         indicator.onStopMeeting = { stoppedMeeting += 1 }
         indicator.setMeetingRecording(true, config: config)
+        // No panel is created: exercise the production redraw decision with an
+        // existing floating panel as input, separately from loading ownership.
+        for loading in [false, true] {
+            for paused in [true, false] {
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+                if loading { indicator.showLoading("Preparing dictation") }
+                else { indicator.showWarning("Try dictation again") }
+                #expect(indicator.isShowingLoading == loading)
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: !paused, hasPanel: true, config: config))
+                #expect(indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config),
+                    "A pause transition must redraw retired feedback on an existing floating panel")
+                indicator.setMeetingRecordingPaused(paused, config: config)
+                #expect(indicator.meetingFeedbackMessage == nil)
+                #expect(!indicator.isShowingLoading, "Retired loading must not keep meeting hover controls disabled")
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+            }
+        }
         indicator.setMeetingRecordingPaused(true, config: config)
         for state: DictationState in [.preparing, .recording, .transcribing] {
             indicator.setDictationState(state, config: config)

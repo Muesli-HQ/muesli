@@ -537,16 +537,31 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
+    func shouldRefreshMeetingPausePresentation(paused: Bool, hasPanel: Bool, config: AppConfig) -> Bool {
+        state != .recording || !hasPanel || config.indicatorAnchor == .notch
+            || (paused != isMeetingRecordingPaused && meetingFeedbackMessage != nil)
+    }
+
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
-        if paused != isMeetingRecordingPaused { activityRevision += 1; meetingFeedbackMessage = nil }
+        let refreshPresentation = shouldRefreshMeetingPausePresentation(
+            paused: paused, hasPanel: panel != nil, config: config)
+        if paused != isMeetingRecordingPaused {
+            activityRevision += 1
+            if meetingFeedbackMessage != nil {
+                meetingFeedbackMessage = nil
+                deferredLoadingMessage = nil
+                isShowingLoading = false
+                loadingSpinner?.stopAnimation(nil)
+                loadingSpinner?.isHidden = true
+            }
+        }
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
         guard isMeetingRecording else { return }
         if hasDictationOverlap { setState(dictationPresentation, config: config); return }
-        // Updating the hover control must keep its panel open so Resume stays
-        // under the pointer. Only rebuild a missing presentation or the notch.
-        guard state != .recording || panel == nil || config.indicatorAnchor == .notch else { return }
-        hideMeetingTranscript()
+        // Preserve ordinary floating hover controls. A feedback refresh uses
+        // setState's existing restoration of an expanded meeting transcript.
+        guard refreshPresentation else { return }
         setState(.recording, config: config)
     }
 
