@@ -16,23 +16,24 @@ struct InstallerVolumeScanTests {
     }
 
     @Test("the kernel mount table lists the root volume as local, and never a network mount as local")
-    func mountTableReadsWithoutContactingServers() {
+    func mountTableReadsWithoutContactingServers() throws {
         let mounts = PostInstallChecker.mountedFileSystems()
         #expect(mounts.contains { $0.path == "/" && $0.isLocal })
 
         // Cross-check against mount(8): an smbfs, nfs, afpfs or webdav mount must never be marked local.
-        let network = Set(Self.networkMountPoints())
+        let network = Set(try Self.networkMountPoints())
         #expect(!mounts.contains { network.contains($0.path) && $0.isLocal })
     }
 
-    private static func networkMountPoints() -> [String] {
+    private static func networkMountPoints() throws -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
         process.standardOutput = pipe
-        guard (try? process.run()) != nil else { return [] }
+        try process.run()
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         process.waitUntilExit()
+        try #require(process.terminationStatus == 0, "mount(8) exited with \(process.terminationStatus)")
         return output.split(separator: "\n").compactMap { line in
             guard ["(smbfs", "(nfs", "(afpfs", "(webdav"].contains(where: { line.contains($0) }),
                   let on = line.range(of: " on "), let paren = line.range(of: " (", range: on.upperBound..<line.endIndex)
