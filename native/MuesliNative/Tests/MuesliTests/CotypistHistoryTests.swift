@@ -114,8 +114,9 @@ struct CotypistHistoryTests {
         sqlite3_open(url.path, &db)
         // As an older build wrote it: an untaken suggestion with its app.
         let inserted = sqlite3_exec(db, """
-            INSERT INTO cotypist_suggestions (timestamp, target_app_name, target_app_bundle_id, trigger, suggestion_text, outcome)
-            VALUES ('2026-10-01T00:00:00Z', 'Signal', 'org.whispersystems.signal-desktop', 'boundary', 'later', 'ignored')
+            INSERT INTO cotypist_suggestions (timestamp, target_app_name, target_app_bundle_id, trigger, suggestion_text, outcome, context_source)
+            VALUES ('2026-10-01T00:00:00Z', 'Signal', 'org.whispersystems.signal-desktop', 'boundary', 'later', 'ignored',
+                    'keystrokes(ax=true front=org.whispersystems.signal-desktop text=0)')
             """, nil, nil, nil)
         sqlite3_close(db)
         #expect(inserted == SQLITE_OK)
@@ -123,11 +124,16 @@ struct CotypistHistoryTests {
         sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil)
         defer { sqlite3_close(db) }
         var statement: OpaquePointer?
-        sqlite3_prepare_v2(db, "SELECT outcome, target_app_bundle_id || target_app_name FROM cotypist_suggestions ORDER BY id", -1, &statement, nil)
+        sqlite3_prepare_v2(db, "SELECT context_source, target_app_bundle_id || target_app_name FROM cotypist_suggestions ORDER BY id", -1, &statement, nil)
         defer { sqlite3_finalize(statement) }
         var apps: [String] = []
-        while sqlite3_step(statement) == SQLITE_ROW { apps.append(String(cString: sqlite3_column_text(statement, 1))) }
+        var sources: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            sources.append(String(cString: sqlite3_column_text(statement, 0)))
+            apps.append(String(cString: sqlite3_column_text(statement, 1)))
+        }
         #expect(apps == ["com.apple.NotesNotes", ""])
+        #expect(!sources[1].contains("signal"))
     }
 
     @Test("prunes old untaken suggestions without waiting for a new one")

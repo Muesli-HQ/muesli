@@ -508,6 +508,8 @@ public final class DictationStore {
         UPDATE cotypist_suggestions SET target_app_name = '', target_app_bundle_id = ''
         WHERE outcome NOT IN ('accepted', 'partial') AND (target_app_name <> '' OR target_app_bundle_id <> '')
         """, db: db)
+        // Early builds recorded the frontmost app in the keystroke fallback's source.
+        try exec("UPDATE cotypist_suggestions SET context_source = 'keystrokes' WHERE context_source LIKE 'keystrokes(%'", db: db)
         // Early development builds kept the user's sentence for suggestions that weren't taken.
         try exec("UPDATE cotypist_suggestions SET context_before = '' WHERE accepted_text = '' AND context_before <> ''", db: db)
         // Retention holds even when no new suggestions arrive to trigger pruning.

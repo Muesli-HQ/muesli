@@ -257,9 +257,8 @@ final class CotypistService {
         let text = captured.bundleID == bundleID ? captured.documentContext : ""
         if let prompt = CotypistAgentPrompt.context(screen: text) { return (prompt, "agent-prompt", captured.documentIdentifier) }
         if !text.isEmpty { return (text, "accessibility", captured.documentIdentifier) }
-        // Why the fallback: permission, the frontmost app, how much text it exposed (lengths only).
-        return (typed, "keystrokes(ax=\(AXIsProcessTrusted()) front=\(captured.bundleID) text=\(captured.documentContext.count))",
-                captured.documentIdentifier)
+        // The source is stored with every suggestion shown, so it names no app.
+        return (typed, "keystrokes", captured.documentIdentifier)
     }
 
     /// The focused app's text before the caret and its document identity (window title when it has
