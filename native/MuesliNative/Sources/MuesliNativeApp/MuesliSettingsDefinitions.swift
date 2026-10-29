@@ -308,6 +308,15 @@ extension MuesliController {
             }
         }
         toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
+        toggle("buffered_live_dictation", "Watch text appear during hands-free mode", \.enableBufferedLiveDictation,
+            unavailable: { enabled in
+                guard enabled else { return nil }
+                guard self.selectedDictationProvider == .local,
+                      self.selectedBackend.supportsBufferedLiveTranscription else {
+                    return "Select a local Parakeet, Whisper, or Bodhan model first."
+                }
+                return self.selectedBackend.isDownloaded ? nil : "Download the selected dictation model first."
+            })
         let localPlanners = ComputerUseLocalPlanner.models.filter(\.available)
         // Backend is derived from the selected model, so existing configurations
         // and direct voice model selections remain consistent without migration.
@@ -487,7 +496,12 @@ extension MuesliController {
         }
         add("live_transcript", "Meeting live transcript model", [Choice(id: "off", label: "Off")] + MeetingLiveCaptionBackend.allCases.map { .init(id: $0.rawValue, label: $0.settingsLabel) },
             read: { $0.enableLiveStreamingPartials ? $0.resolvedMeetingLiveCaptionBackend.rawValue : "off" }, unavailable: { value in
-                value == "off" || MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true ? nil : "Download this live transcript model from Models first."
+                if value == MeetingLiveCaptionBackend.selectedModelBuffered.rawValue {
+                    let selected = self.appState.selectedMeetingTranscriptionBackend
+                    return selected.supportsBufferedLiveTranscription && selected.isDownloaded
+                        ? nil : "Select a downloaded Parakeet, Whisper, or Bodhan final meeting model first."
+                }
+                return value == "off" || MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true ? nil : "Download this live transcript model from Models first."
             }) { value in
             self.updateConfig {
                 $0.enableLiveStreamingPartials = value != "off"

@@ -185,6 +185,7 @@ final class NotchIndicatorController {
     private var title = "Ready"
     private var detail = ""
     private var recording = false
+    private(set) var cursorInsertionStopped = false
     private var paused = false
     private var meeting = false
     private var handsFree = false
@@ -302,7 +303,8 @@ final class NotchIndicatorController {
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
-              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil) -> Bool {
+              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
+              cursorInsertionStopped: Bool = false) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         let continuesStatus = status != nil && self.status == status && isVisible
         requiresReview = false
@@ -339,6 +341,7 @@ final class NotchIndicatorController {
         self.title = title
         self.detail = detail
         self.recording = recording
+        self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
         self.paused = paused
         if !meeting || !recording {
             closeMeetingTranscript()
@@ -387,6 +390,7 @@ final class NotchIndicatorController {
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
         status = nil
+        cursorInsertionStopped = false
         statusDismissAt = nil
         outcome = nil
         requiresReview = false
@@ -497,7 +501,8 @@ final class NotchIndicatorController {
             hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
             onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
-            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
+            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) },
+            cursorInsertionStopped: cursorInsertionStopped)
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
             hosting.rootView = view
         } else {
@@ -703,6 +708,7 @@ private struct NotchIndicatorView: View {
     let onToggleInstruction: () -> Void
     let power: () -> Float
     var onHover: (Bool) -> Void = { _ in }
+    var cursorInsertionStopped = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var edgeIntensity = 0.18
@@ -733,14 +739,19 @@ private struct NotchIndicatorView: View {
                 Button(action: onOpenHome) {
                     HStack(spacing: 5) {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 16, height: 16)
-                        Text(title).font(.system(size: 10, weight: .semibold))
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(title).font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
+                            if cursorInsertionStopped {
+                                Text("Still recording").font(.system(size: 9))
+                            }
+                        }.lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(title). Open Muesli home")
-                .help("Open Muesli home")
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open Muesli home")
+                .help(cursorInsertionStopped ? detail : "Open Muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")

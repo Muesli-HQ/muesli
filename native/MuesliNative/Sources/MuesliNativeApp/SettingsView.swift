@@ -246,6 +246,12 @@ struct SettingsView: View {
         if usesUnifiedMeetingTranscript {
             return "Creates the live and final transcript."
         }
+        if selected == .selectedModelBuffered {
+            guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
+                return "Choose Parakeet or Whisper as the final model to enable this preview."
+            }
+            return "Previews the selected Parakeet or Whisper model while recording. Completed segments remain authoritative."
+        }
         return "Adds a low-latency preview."
     }
 
@@ -1015,6 +1021,14 @@ struct SettingsView: View {
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
+            }
+            if appState.dictationProvider == .local,
+               displayedDictationBackend?.supportsBufferedLiveTranscription == true {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Watch text appear during hands-free mode") {
+                    settingsControl("buffered_live_dictation")
+                }
+                settingsDescription("Preview as you speak; apply enabled cleanup when you stop.")
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1949,7 +1963,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
-                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                    description: "Suggest words from corrections using Accessibility."
                 ) {
                     settingsControl("dictionary_suggestions")
                     .help("Briefly reads focused app text after dictation to detect corrections.")

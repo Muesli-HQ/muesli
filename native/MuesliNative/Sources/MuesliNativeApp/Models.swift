@@ -338,6 +338,11 @@ struct BackendOption: Equatable {
         Self.streaming.contains(self)
     }
 
+    /// Buffered previews are deliberately opt-in and independent of native streaming.
+    var supportsBufferedLiveTranscription: Bool {
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self) || Self.bodhanFamily.contains(self)
+    }
+
     var supportsHostedDictationFallback: Bool {
         !isStreamingDictationBackend
     }
@@ -1042,6 +1047,7 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     case parakeetRealtimeEOU = "parakeet_realtime_eou"
     case appleSpeech = "apple-speech"
     case nemotron35 = "nemotron35"
+    case selectedModelBuffered = "selected_model_buffered"
 
     static let defaultBackend: Self = .parakeetRealtimeEOU
 
@@ -1050,6 +1056,7 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.label
         case .appleSpeech: return BackendOption.appleSpeechAnalyzer.label
         case .nemotron35: return BackendOption.nemotron35Multilingual.label
+        case .selectedModelBuffered: return "Selected final model"
         }
     }
 
@@ -1058,6 +1065,7 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
         case .parakeetRealtimeEOU: return "\(label) (live preview only)"
         case .appleSpeech: return "\(label) (live + final)"
         case .nemotron35: return "\(label) (live + final)"
+        case .selectedModelBuffered: return "\(label) (experimental preview)"
         }
     }
 
@@ -1066,6 +1074,8 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     var isDownloaded: Bool {
         switch self {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.isDownloaded()
+        // This adapter has no model of its own. Callers also validate the selected model.
+        case .selectedModelBuffered: return true
         case .appleSpeech:
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
@@ -2222,6 +2232,7 @@ struct AppConfig: Codable {
         }
     }
     var enableDoubleTapDictation: Bool = true
+    var enableBufferedLiveDictation: Bool = false
     /// Only applies when the dictation shortcut is a key combination.
     var dictationCombinationActivation: HotkeyMonitor.CombinationActivation = .pushToTalk
     var isDictationCombinationToggle: Bool {
@@ -2394,6 +2405,7 @@ struct AppConfig: Codable {
         case darkMode = "dark_mode"
         case followSystemAppearance = "follow_system_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case enableBufferedLiveDictation = "enable_buffered_live_dictation"
         case dictationCombinationActivation = "dictation_combination_activation"
         case pasteShortcut = "paste_shortcut"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
@@ -2595,6 +2607,7 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        enableBufferedLiveDictation = (try? c.decode(Bool.self, forKey: .enableBufferedLiveDictation)) ?? defaults.enableBufferedLiveDictation
         dictationCombinationActivation = (try? c.decode(
             HotkeyMonitor.CombinationActivation.self,
             forKey: .dictationCombinationActivation

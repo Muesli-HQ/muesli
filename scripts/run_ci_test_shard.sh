@@ -72,12 +72,25 @@ case "${shard}" in
       BodhanArtifactValidationTests
       BodhanLifecycleTests
       DictationBackendPreparationTests
+      BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
     )
     ;;
   dictation-transcription)
     filters=(
       FluidAudioTranscriberTests
+      BufferedTranscriptionSessionTests
+      BufferedTranscriptionContinuityTests
+      BufferedAdapterConfidenceTests
+      BufferedDictationFinalizerTests
+      BufferedDictationRecoveryTests
+      BufferedDictationPreviewDeliveryTests
+      LiveDictationTextTargetTests
+      LiveDictationKeyboardInputTests
+      LiveDictationFinalPasteTests
+      WhisperPreviewSegmentSeekerTests
+      WhisperPreviewPresentationTests
+      BufferedLiveTranscriptionPolicyTests
       FluidAudioModelLoadTests
       ModelLibraryPreparationTests
       ParakeetModelPreparationTests
@@ -141,6 +154,7 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
@@ -230,10 +244,11 @@ if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi
 args=("${build_args[@]}")
-if [[ "${shard}" == meetings ]]; then
-  # Concurrent suites can starve the utility-priority caption tasks on small
-  # runners. Serialize test cases, preserving concurrency exercised inside each
-  # test, rather than weakening their deadlines or changing production QoS.
+if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
+  # Hundreds of concurrent cases can starve caption tasks and diarizer preload
+  # coordination, including their setup handshakes, on small runners. Serialize
+  # cases while preserving concurrency exercised inside each test, rather than
+  # weakening their deadlines or changing production QoS.
   args+=(--no-parallel)
 fi
 for filter in "${filters[@]}"; do

@@ -103,6 +103,23 @@ enum BodhanModel: String, CaseIterable, Sendable {
         }
     }
 
+    /// Preview reloads must fail without repairing or downloading missing assets.
+    func validateCachedArtifacts() async throws {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("artifacts.json")),
+              let manifest = try? JSONDecoder().decode(Artifacts.self, from: data) else {
+            throw NSError(domain: "BodhanASR", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "The selected Bodhan model is not cached."])
+        }
+        let entries = Dictionary((manifest.files + nativeAssetSupplement).map { ($0.path, $0) },
+                                 uniquingKeysWith: { first, _ in first })
+        let missing = requiredFiles.filter { entries[$0] == nil }
+        let invalid = try await Self.invalidCachedArtifacts(requiredFiles.compactMap { entries[$0] }, at: directory)
+        guard missing.isEmpty, invalid.isEmpty else {
+            throw NSError(domain: "BodhanASR", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "The cached Bodhan model is incomplete or failed its integrity check."])
+        }
+    }
+
     func download(progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?) async throws {
         func invalidateCompiledEncoder() throws {
             guard localOverride == nil else { return }

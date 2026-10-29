@@ -581,6 +581,19 @@ public final class MuesliController: NSObject {
         session: any HostedDictationSession
     )?
     private var dictationTranscriptionTask: (id: UUID, task: Task<Void, Never>)?
+    private struct BufferedDictationContext {
+        let id: UUID
+        let session: BufferedTranscriptionSession
+        let target: LiveDictationTextTarget
+        let delivery: BufferedDictationPreviewDelivery
+        let backend: BackendOption
+        let whisperLanguage: WhisperKitLanguage
+        let parakeetLanguage: ParakeetLanguage
+    }
+    private var bufferedDictationContext: BufferedDictationContext?
+    private var bufferedCaptureTask: Task<Void, Never>?
+    private var bufferedCaptureID: UUID?
+    private var finalizingBufferedTarget: (id: UUID, target: LiveDictationTextTarget)?
     private var cleanupWarmupTask: Task<Void, Never>?
     private var cleanupWarmupTraceID: UUID?
     private var dictationLatencyTraceID: UUID?
@@ -3207,7 +3220,8 @@ public final class MuesliController: NSObject {
     // MARK: - Dictation Provider
 
     private func canChangePrimaryDictationModel() -> Bool {
-        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
+        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil,
+              bufferedDictationContext == nil, finalizingBufferedTarget == nil else {
             statusBarController?.setStatus("Finish the current dictation before changing models")
             return false
         }
@@ -9293,12 +9307,13 @@ public final class MuesliController: NSObject {
     private func presentAlert(
         _ alert: NSAlert,
         fallbackLogContext: String,
+        includeInformativeTextInFallbackLog: Bool = true,
         completion: ((NSApplication.ModalResponse) -> Void)? = nil
     ) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
             fputs(
-                "[muesli-native] unable to present \(fallbackLogContext) alert: \(alert.messageText) - \(alert.informativeText)\n",
+                "[muesli-native] unable to present \(fallbackLogContext) alert: \(alert.messageText) - \(includeInformativeTextInFallbackLog ? alert.informativeText : "[redacted]")\n",
                 stderr
             )
             statusBarController?.setStatus(alert.messageText)
@@ -11241,6 +11256,8 @@ public final class MuesliController: NSObject {
     }
 
     private func beginDictationOutput(mode: DictationOutputMode? = nil) {
+        // A previous dictation observer must never interpret live revisions as corrections.
+        dictationCorrectionMonitor.cancel()
         currentDictationOutputMode = mode ?? defaultDictationOutputMode
         appState.isVoiceNoteRecording = currentDictationOutputMode == .voiceNote
     }
@@ -11711,9 +11728,149 @@ public final class MuesliController: NSObject {
 
     private func cancelHostedDictation() {
         detachHostedDictation()?.cancel()
+        cancelBufferedDictation()
+    }
+
+    /// Only hands-free local dictation opts in. A missing safe target preserves
+    /// the existing paste-on-stop behavior without attempting speculative writes.
+    private func beginBufferedDictationIfNeeded() {
+        indicator.setCursorInsertionStopped(false, config: config)
+        guard config.enableBufferedLiveDictation,
+              selectedDictationProvider == .local,
+              selectedBackend.supportsBufferedLiveTranscription,
+              // Only an explicit formatting rule for the starting app buffers output.
+              !buffersStreamingDictation,
+              currentDictationOutputMode == .paste,
+              !isDictationTestMode else { return }
+        let previewTrace = currentDictationLatencyTrace
+        let id = UUID()
+        let backend = selectedBackend
+        let whisperLanguage = config.resolvedWhisperLanguage
+        let parakeetLanguage = config.resolvedParakeetLanguage
+        let bodhanLanguage = config.resolvedBodhanLanguage
+        let bodhanOutputMode = config.resolvedBodhanOutputMode
+        guard let captureApplication = NSWorkspace.shared.frontmostApplication else { return }
+        let pendingAudio = BufferedDictationCaptureAudio()
+        bufferedCaptureID = id
+        dictationAudioSessionManager.onAudioBuffer = { samples in pendingAudio.append(samples) }
+        // Capture runs concurrently with recorder startup. Preserve initial PCM
+        // while bounded AX capture is pending, then hand it off in sample order.
+        bufferedCaptureTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let target = await LiveDictationTextTarget.capture(application: captureApplication, onDiagnostic: { [weak self] reason in
+                self?.markDictationLatency("buffered_target:\(reason)", trace: previewTrace)
+            })
+            guard !Task.isCancelled, self.bufferedCaptureID == id else { target?.cancel(); return }
+            self.bufferedCaptureTask = nil
+            self.bufferedCaptureID = nil
+            guard let target else {
+                self.dictationAudioSessionManager.onAudioBuffer = nil
+                self.statusBarController?.setStatus("Live updates unavailable here; text will paste when you stop")
+                return
+            }
+            self.completeBufferedDictationCapture(target: target, id: id, backend: backend,
+                whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage,
+                bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                pendingAudio: pendingAudio, previewTrace: previewTrace)
+        }
+    }
+
+    private func completeBufferedDictationCapture(target: LiveDictationTextTarget, id: UUID,
+        backend: BackendOption, whisperLanguage: WhisperKitLanguage, parakeetLanguage: ParakeetLanguage,
+        bodhanLanguage: BodhanLanguage, bodhanOutputMode: BodhanOutputMode,
+        pendingAudio: BufferedDictationCaptureAudio, previewTrace: DictationLatencyTraceToken?) {
+        target.onSuspended = { [weak self] in
+            guard let self, self.bufferedDictationContext?.id == id else { return }
+            self.indicator.setCursorInsertionStopped(true, config: self.config)
+            self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
+        }
+        let delivery = BufferedDictationPreviewDelivery(deliver: { update in
+            await target.update(committedText: update.committedText, tail: update.tail)
+        }, onResult: { [weak self] update, accepted in
+            guard let self else { return }
+            self.markDictationLatency("buffered_preview revision=\(update.revision) committed=\(update.committedText.utf16.count) draft=\(update.tail.utf16.count) accepted=\(accepted)", trace: previewTrace)
+            guard let current = self.bufferedDictationContext, current.id == id else { return }
+            if !accepted {
+                // Delivery safety and recognition completeness are independent.
+                // Keep decoding for history; the target still refuses unsafe writes.
+                current.delivery.close()
+                if target.isSuspended {
+                    self.indicator.setCursorInsertionStopped(true, config: self.config)
+                    self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
+                }
+            }
+        })
+        do {
+            let session = try transcriptionCoordinator.makeBufferedTranscriptionSession(
+                backend: backend,
+                whisperLanguage: whisperLanguage,
+                parakeetLanguage: parakeetLanguage,
+                bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                onUpdate: { [weak self] update in
+                    Task { @MainActor [weak self] in
+                        guard let self, let current = self.bufferedDictationContext,
+                              current.id == id else { return }
+                        current.delivery.offer(update)
+                    }
+                },
+                onFailure: { [weak self] error in
+                    let category = (error as? BufferedTranscriptionSession.Failure).map { String(describing: $0) }
+                        ?? String(describing: type(of: error))
+                    Task { @MainActor [weak self] in
+                        guard let self, self.bufferedDictationContext?.id == id else { return }
+                        self.markDictationLatency("buffered_preview_failed:\(category)", trace: previewTrace)
+                        // Preserve the target lease for the existing recovery path;
+                        // failed inference must never trigger a duplicate normal paste.
+                        self.indicator.setLiveTranscriptionFailed(config: self.config)
+                        self.statusBarController?.setStatus(self.indicator.insertionStoppedDetail)
+                    }
+                },
+                onDiagnostic: { [weak self] event in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.bufferedDictationContext?.id == id else { return }
+                        self.markDictationLatency("buffered_\(event)", trace: previewTrace)
+                    }
+                }
+            )
+            bufferedDictationContext = BufferedDictationContext(
+                id: id, session: session, target: target, delivery: delivery, backend: backend,
+                whisperLanguage: whisperLanguage, parakeetLanguage: parakeetLanguage
+            )
+            guard pendingAudio.attach({ session.enqueue($0) }) else {
+                cancelBufferedDictation()
+                dictationAudioSessionManager.onAudioBuffer = nil
+                statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
+                return
+            }
+            markDictationLatency("buffered_preview_started", trace: previewTrace)
+        } catch {
+            markDictationLatency("buffered_preview_start_failed", trace: previewTrace)
+            dictationAudioSessionManager.onAudioBuffer = nil
+            target.cancel()
+            statusBarController?.setStatus("Live updates unavailable; text will paste when you stop")
+        }
+    }
+
+    private func cancelBufferedDictationCapture() {
+        bufferedCaptureID = nil
+        bufferedCaptureTask?.cancel()
+        bufferedCaptureTask = nil
+    }
+
+    private func cancelBufferedDictation() {
+        indicator.setCursorInsertionStopped(false, config: config)
+        cancelBufferedDictationCapture()
+        bufferedDictationContext?.delivery.close()
+        bufferedDictationContext?.session.cancel()
+        bufferedDictationContext?.target.cancel()
+        bufferedDictationContext = nil
+        finalizingBufferedTarget?.target.cancel()
+        finalizingBufferedTarget = nil
     }
 
     private func cancelInFlightDictationTranscription() {
+        finalizingBufferedTarget?.target.cancel()
+        finalizingBufferedTarget = nil
         let hostedSession = finalizingHostedDictationSession?.session
         let transcriptionTask = dictationTranscriptionTask?.task
         finalizingHostedDictationSession = nil
@@ -11723,6 +11880,10 @@ public final class MuesliController: NSObject {
     }
 
     private func clearInFlightDictationTranscription(id: UUID) {
+        if finalizingBufferedTarget?.id == id {
+            finalizingBufferedTarget?.target.cancel()
+            finalizingBufferedTarget = nil
+        }
         if finalizingHostedDictationSession?.id == id {
             finalizingHostedDictationSession = nil
         }
@@ -12059,6 +12220,7 @@ public final class MuesliController: NSObject {
             }
         }
 
+        beginBufferedDictationIfNeeded()
         dictationAudioSessionManager.beginRecording(
             mode: "toggle",
             duckingEnabled: config.muteSystemAudioDuringDictation,
@@ -12470,8 +12632,20 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         hostedSession: (any HostedDictationSession)?
     ) {
+        cancelBufferedDictationCapture()
+        let liveContext = bufferedDictationContext
+        indicator.setCursorInsertionStopped(false, config: config)
+        bufferedDictationContext = nil
+        liveContext?.delivery.close()
+        if let diagnostics = liveContext?.session.diagnostics {
+            markDictationLatency("buffered_preview_stop samples=\(diagnostics.receivedSamples) decodes=\(diagnostics.decodeCount) revisions=\(diagnostics.revision) closed=\(diagnostics.closed)")
+        }
+        // Close live delivery now. Recognition drains the remaining tail below;
+        // structural failure preserves the recording for explicit recovery.
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
+            liveContext?.session.cancel()
+            liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
             clearCapturedDictationSessionContext()
@@ -12484,6 +12658,8 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
+            liveContext?.session.cancel()
+            liveContext?.target.cancel()
             hostedSession?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
             try? FileManager.default.removeItem(at: wavURL)
@@ -12508,7 +12684,8 @@ public final class MuesliController: NSObject {
         // Test mode always exercises the selected local model. Normal dictation
         // uses the configured provider while retaining the local selection for
         // an instant switch back.
-        let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
+        let transcriptionBackend = liveContext?.backend
+            ?? (isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend)
         let hostedFallbackBackend = isTestMode || hostedSession == nil
             ? nil
             : BackendOption.resolveHostedDictationFallback(
@@ -12518,7 +12695,8 @@ public final class MuesliController: NSObject {
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let bodhanTranscriptionLanguage = config.resolvedBodhanLanguage
         let bodhanTranscriptionOutputMode = config.resolvedBodhanOutputMode
-        let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
+        let whisperTranscriptionLanguage = liveContext?.whisperLanguage ?? config.resolvedWhisperLanguage
+        let parakeetTranscriptionLanguage = liveContext?.parakeetLanguage ?? config.resolvedParakeetLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
         let formattingRules = capturedDictationFormattingRules
@@ -12527,13 +12705,20 @@ public final class MuesliController: NSObject {
             ?? startingTargetApp?.appContext
             ?? ""
         let transcriptionTaskID = UUID()
+        if let liveContext {
+            finalizingBufferedTarget = (transcriptionTaskID, liveContext.target)
+        }
         if !isTestMode, let hostedSession {
             finalizingHostedDictationSession = (transcriptionTaskID, hostedSession)
         }
         let task = Task { [weak self] in
             guard let self else { return }
+            var preserveRecordingForRecovery = false
             defer {
-                try? FileManager.default.removeItem(at: wavURL)
+                liveContext?.session.cancel()
+                if !preserveRecordingForRecovery {
+                    try? FileManager.default.removeItem(at: wavURL)
+                }
                 if !isTestMode {
                     self.clearInFlightDictationTranscription(id: transcriptionTaskID)
                 }
@@ -12579,7 +12764,7 @@ public final class MuesliController: NSObject {
                             bodhanOutputMode: bodhanTranscriptionOutputMode,
                             whisperLanguage: whisperTranscriptionLanguage,
                             qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                            parakeetLanguage: self.config.resolvedParakeetLanguage,
+                            parakeetLanguage: parakeetTranscriptionLanguage,
                             appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                             enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                             customWords: self.serializedCustomWords(),
@@ -12595,20 +12780,40 @@ public final class MuesliController: NSObject {
                 } else {
                     let ppOption = self.runtimePostProcessorOption()
                     await self.configureTranscriptCleanupForRuntime(option: ppOption)
-                    let result = try await self.transcriptionCoordinator.transcribeDictation(
-                        at: wavURL,
-                        backend: transcriptionBackend,
-                        cohereLanguage: transcriptionLanguage,
-                        bodhanLanguage: bodhanTranscriptionLanguage,
-                        bodhanOutputMode: bodhanTranscriptionOutputMode,
-                        whisperLanguage: whisperTranscriptionLanguage,
-                        qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                        parakeetLanguage: self.config.resolvedParakeetLanguage,
-                        appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
-                        enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                        customWords: self.serializedCustomWords(),
-                        appContext: promptContext,
-                        timingRequestID: completionLatencyTrace?.id.uuidString
+                    let result = try await BufferedDictationFinalizer.transcribe(
+                        session: liveContext?.session,
+                        recordedSampleCount: liveContext == nil ? nil
+                            : BufferedDictationFinalizer.recordedSampleCount(at: wavURL),
+                        onDecision: { decision in
+                            self.markDictationLatency("buffered_finalization:\(decision)", trace: completionLatencyTrace)
+                        },
+                        reuse: { transcript in
+                            await self.transcriptionCoordinator.finalizeDictationTranscript(
+                                SpeechTranscriptionResult(text: transcript, segments: [],
+                                    bodhanMeasurement: liveContext?.session.bodhanMeasurement(for: transcript)),
+                                backend: transcriptionBackend,
+                                enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                                customWords: self.serializedCustomWords(),
+                                appContext: promptContext,
+                                timingRequestID: completionLatencyTrace?.id.uuidString
+                            )
+                        }, nonStreaming: {
+                            try await self.transcriptionCoordinator.transcribeDictation(
+                                at: wavURL,
+                                backend: transcriptionBackend,
+                                cohereLanguage: transcriptionLanguage,
+                                bodhanLanguage: bodhanTranscriptionLanguage,
+                                bodhanOutputMode: bodhanTranscriptionOutputMode,
+                                whisperLanguage: whisperTranscriptionLanguage,
+                                qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                                parakeetLanguage: parakeetTranscriptionLanguage,
+                                appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                                enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                                customWords: self.serializedCustomWords(),
+                                appContext: promptContext,
+                                timingRequestID: completionLatencyTrace?.id.uuidString
+                            )
+                        }
                     )
                     rawText = result.text
                     completionModel = DictationModelIdentity(backend: transcriptionBackend.backend,
@@ -12645,17 +12850,73 @@ public final class MuesliController: NSObject {
                 }
                 guard !text.isEmpty else {
                     await MainActor.run {
+                        // Empty final recognition is not permission to erase a
+                        // previously visible hypothesis or the user's selection.
+                        liveContext?.target.cancel()
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
                         self.meetingMonitor.resumeAfterCooldown()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                         self.finishDictationLatencyTrace("empty_transcription", trace: completionLatencyTrace)
+                        if liveContext?.target.hasAttemptedWrite == true {
+                            self.indicator.showWarning("No final transcript; provisional text remains", icon: "!", duration: 4)
+                        }
                     }
                     return
                 }
+                let liveDelivered: Bool?
+                if let liveContext {
+                    liveDelivered = try await BufferedDictationFinalizer.deliver(
+                        text: text,
+                        target: liveContext.target,
+                        isCurrent: { self.isCurrentDictationTranscription(id: transcriptionTaskID) },
+                        correctionMonitoringEnabled: { self.config.enableDictionaryCorrectionPrompts },
+                        onDelivered: { finalText in
+                            self.dictationCorrectionMonitor.start(
+                                originalText: finalText,
+                                appContext: storageContext,
+                                targetApp: startingTargetApp
+                            ) { [weak self] suggestion in
+                                self?.addDictionarySuggestion(suggestion)
+                            }
+                        }
+                    )
+                    try Task.checkCancellation()
+                    guard self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }
+                } else {
+                    liveDelivered = nil
+                }
                 await MainActor.run {
-                    if outputMode == .paste {
+                    if let liveContext {
+                        let delivered = liveDelivered == true
+                        self.markDictationLatency("buffered_final delivered=\(delivered) attempted=\(liveContext.target.hasAttemptedWrite) inserted=\(liveContext.target.hasInsertedText)", trace: completionLatencyTrace)
+                        // No normal paste fallback: even an AX error may have
+                        // partially mutated the field. Preserve the final in history.
+                        self.releaseStandardDictationState()
+                        let saved = self.finishStandardDictationBookkeeping(
+                            text: text, duration: duration, appContext: storageContext,
+                            startedAt: startedAt, outputMode: outputMode,
+                            targetApp: startingTargetApp, backend: completionBackend,
+                            bodhanMeasurement: bodhanMeasurement, transcriptionModel: completionModel
+                        )
+                        if delivered {
+                            self.indicator.showDictationCompletion()
+                        } else if saved {
+                            self.indicator.showWarning("Live insertion stopped; dictation saved in history", icon: "!", duration: 4)
+                        } else {
+                            // The safe fallback depends on persistence. If it
+                            // fails, retain a user-visible copy without changing
+                            // either the destination field or the clipboard.
+                            let alert = NSAlert()
+                            alert.messageText = "Dictation could not be inserted or saved"
+                            alert.informativeText = text
+                            alert.addButton(withTitle: "OK")
+                            self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery",
+                                              includeInformativeTextInFallbackLog: false) { _ in }
+                        }
+                        self.finishDictationLatencyTrace("buffered_live_completed", trace: completionLatencyTrace)
+                    } else if outputMode == .paste {
                         self.completeDictationPaste(text: text, duration: duration,
                             appContext: storageContext, startedAt: startedAt,
                             formattingRules: formattingRules, backend: completionBackend,
@@ -12694,6 +12955,48 @@ public final class MuesliController: NSObject {
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionCancelled))
                     self.finishDictationLatencyTrace("transcription_cancelled", trace: completionLatencyTrace)
                 }
+            } catch let streamError as BufferedDictationFinalizer.IncompleteStream {
+                guard self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }
+                // Do not replace the safe visible prefix with an incomplete
+                // hypothesis. Preserve the source for an explicit later retry.
+                liveContext?.target.cancel()
+                let recoveryURL: URL
+                let recoveryMessage: String
+                do {
+                    recoveryURL = try BufferedDictationRecovery.save(
+                        wavURL: wavURL, transcript: streamError.partialText,
+                        directory: self.configStore.supportDirectory()
+                            .appendingPathComponent("Dictation Recovery", isDirectory: true)
+                    )
+                    recoveryMessage = "The recording and available transcript were saved for recovery. Text already inserted has been left in place."
+                } catch {
+                    // A full disk or permissions error must not let the defer
+                    // delete the only remaining recording.
+                    preserveRecordingForRecovery = true
+                    recoveryURL = wavURL
+                    if let textURL = try? BufferedDictationRecovery.saveTranscript(streamError.partialText, beside: wavURL) {
+                        recoveryMessage = "The recovery copy could not be saved. The original recording remains at \(wavURL.path), with the available transcript at \(textURL.path)."
+                    } else {
+                        recoveryMessage = "The recording remains at \(wavURL.path). The available transcript could not be saved; copy it here before closing:\n\n\(streamError.partialText)"
+                    }
+                }
+                self.clearCapturedDictationSessionContext()
+                self.resetDictationOutputMode()
+                self.setState(.idle)
+                self.meetingMonitor.resumeAfterCooldown()
+                self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
+                self.finishDictationLatencyTrace("buffered_live_incomplete:\(streamError.reason)", trace: completionLatencyTrace)
+                let alert = NSAlert()
+                alert.messageText = "Live transcription could not finish"
+                alert.informativeText = recoveryMessage
+                alert.addButton(withTitle: "Show Recording")
+                alert.addButton(withTitle: "OK")
+                self.presentAlert(alert, fallbackLogContext: "buffered dictation recovery",
+                                  includeInformativeTextInFallbackLog: false) { response in
+                    if response == .alertFirstButtonReturn {
+                        NSWorkspace.shared.activateFileViewerSelecting([recoveryURL])
+                    }
+                }
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
                 guard isTestMode || self.isCurrentDictationTranscription(id: transcriptionTaskID) else {
@@ -12716,6 +13019,9 @@ public final class MuesliController: NSObject {
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                     self.finishDictationLatencyTrace("transcription_failed", trace: completionLatencyTrace)
+                    if liveContext?.target.hasAttemptedWrite == true {
+                        self.indicator.showWarning("Final transcription failed; provisional text remains", icon: "!", duration: 4)
+                    }
                 }
             }
         }
@@ -12985,4 +13291,34 @@ func selectCurrentOrNearbyCachedCalendarEvent(
                 calendarOccurrence: $0.resolvedCalendarOccurrence
             )
         }
+}
+
+/// Keeps recorder startup independent of AX while preserving the exact PCM
+/// prefix. Capture is bounded; overflow disables live insertion instead of
+/// pretending a partial stream covers the recording.
+final class BufferedDictationCaptureAudio: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private var consume: (@Sendable ([Float]) -> Void)?
+    private var overflowed = false
+
+    func append(_ values: [Float]) {
+        lock.withLock {
+            if let consume { consume(values); return }
+            guard !overflowed, samples.count + values.count <= 16000 * 3 else {
+                overflowed = true; samples.removeAll(); return
+            }
+            samples.append(contentsOf: values)
+        }
+    }
+
+    func attach(_ consume: @escaping @Sendable ([Float]) -> Void) -> Bool {
+        lock.withLock {
+            guard !overflowed else { return false }
+            consume(samples)
+            samples.removeAll()
+            self.consume = consume
+            return true
+        }
+    }
 }

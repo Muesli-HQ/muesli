@@ -133,6 +133,80 @@ actor TranscriptionCoordinator {
     private let libraryModelPreparation: ModelLibraryPreparation
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
+
+    /// Constructs a preview session over already-loaded models. No microphone,
+    /// download, cleanup, or durable transcript ownership belongs to this layer.
+    nonisolated func makeBufferedTranscriptionSession(
+        backend: BackendOption,
+        whisperLanguage: WhisperKitLanguage,
+        parakeetLanguage: ParakeetLanguage,
+        bodhanLanguage: BodhanLanguage = .defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
+        onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws -> BufferedTranscriptionSession {
+        guard backend.supportsBufferedLiveTranscription else {
+            throw NSError(domain: "MuesliBufferedTranscription", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet, WhisperKit, or Bodhan model."])
+        }
+        if backend.backend == "bodhan" {
+            let metadata = BodhanPreviewMetadata()
+            return BufferedTranscriptionSession(decodeWithoutTimings: { samples in
+                try await self.transcribeBufferedBodhan(samples: samples, modelID: backend.model,
+                    language: bodhanLanguage, outputMode: bodhanOutputMode,
+                    onLanguageSample: { metadata.append($0) })
+            }, measurement: { text in
+                metadata.measurement(text: text, modelID: backend.model, outputMode: bodhanOutputMode)
+            }, onSilentAudio: { metadata.advanceSilentAudio(samples: $0) }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        if backend.backend == "whisper" {
+            let transcriber = whisperTranscriber
+            let expectedModel = backend.model
+            return BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel
+                )
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel,
+                    requiresWordTimings: false
+                ).text
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        if backend == .parakeetUnified {
+            let transcriber = parakeetUnifiedTranscriber
+            return BufferedTranscriptionSession(decode: { samples in
+                try await transcriber.transcribePreview(samples: samples)
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(samples: samples, requiresWordTimings: false).text
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        let transcriber = fluidTranscriber
+        let version = FluidAudioModel.version(for: backend.model)
+        return BufferedTranscriptionSession(decode: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: version
+            )
+        }, decodeWithoutTimings: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: version, requiresWordTimings: false
+            ).text
+        }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+    }
+    private func transcribeBufferedBodhan(samples: [Float], modelID: String,
+                                         language: BodhanLanguage, outputMode: BodhanOutputMode,
+                                         onLanguageSample: @Sendable (BodhanLanguageSample) -> Void) async throws -> String {
+        guard #available(macOS 15, *) else {
+            throw NSError(domain: "BodhanASR", code: 32,
+                          userInfo: [NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later."])
+        }
+        return try await bodhanTranscriber.transcribePreview(samples: samples, modelID: modelID,
+                                                            language: language, outputMode: outputMode, onLanguageSample: onLanguageSample)
+    }
+
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?
@@ -1084,7 +1158,7 @@ actor TranscriptionCoordinator {
                     TranscriptCleanupDebugLogger.timing("asr_failed", since: asrStart, detail: backend.backend)
                 }
             }
-            var result = try await route(
+            let result = try await route(
                 url: url,
                 backend: backend,
                 cohereLanguage: cohereLanguage,
@@ -1097,16 +1171,38 @@ actor TranscriptionCoordinator {
             )
             asrSucceeded = true
             TranscriptCleanupDebugLogger.timing("asr_completed", since: asrStart, detail: backend.backend)
+            return await finalizeDictationTranscript(
+                result, backend: backend, enablePostProcessor: enablePostProcessor,
+                customWords: customWords, appContext: appContext,
+                timingRequestID: timingRequestID
+            )
+        }
+    }
+
+    /// Both full-recording ASR and a verified, drained stream use exactly the
+    /// same artifact removal, optional local cleanup, and custom dictionary.
+    func finalizeDictationTranscript(
+        _ transcript: SpeechTranscriptionResult,
+        backend: BackendOption,
+        enablePostProcessor: Bool = false,
+        customWords: [[String: Any]] = [],
+        appContext: String? = nil,
+        timingRequestID: String? = nil
+    ) async -> SpeechTranscriptionResult {
+        await TranscriptCleanupDebugLogger.$requestID.withValue(
+            timingRequestID ?? TranscriptCleanupDebugLogger.requestID ?? UUID().uuidString
+        ) {
             // WBCS describes the original Bodhan transcription of spoken words.
             // Cleanup and custom-word replacement can change displayed text, so
             // preserve the ASR measurement separately from that final text.
+            var result = transcript
             let rawASRText = result.text
             let bodhanMeasurement = result.bodhanMeasurement
             result = removeArtifacts(result)
             if !result.text.isEmpty {
                 Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
             }
-            // Capture this after ASR awaits. The snapshot is then passed through the
+            // Capture this after recognition finishes. The snapshot is then passed through the
             // complete cleanup path, so a model switch cannot change the model or
             // empty-output policy for this dictation.
             let postProcessorSnapshot = currentPostProcessorSnapshot()
@@ -1120,7 +1216,7 @@ actor TranscriptionCoordinator {
             ) ?? removeFillersWithLogging(result)
             TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
                                                 detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
-            let final = applyCustomWords(result, customWords: customWords)
+            let final = removeArtifacts(applyCustomWords(result, customWords: customWords), preservingLayout: true)
             TranscriptCleanupDebugLogger.append(
                 status: "dictation_final", cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId, asrBackend: backend.backend,
@@ -1308,9 +1404,11 @@ actor TranscriptionCoordinator {
         removeFillers(removeArtifacts(result))
     }
 
-    private func removeArtifacts(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
-        let filtered = TranscriptionEngineArtifactsFilter.apply(result.text)
-        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments)
+    private func removeArtifacts(_ result: SpeechTranscriptionResult, preservingLayout: Bool = false) -> SpeechTranscriptionResult {
+        let filtered = preservingLayout
+            ? TranscriptionEngineArtifactsFilter.applyPreservingLayout(result.text)
+            : TranscriptionEngineArtifactsFilter.apply(result.text)
+        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments, preservingLayout: preservingLayout)
         return SpeechTranscriptionResult(text: filtered, segments: segments)
     }
 
@@ -1588,7 +1686,7 @@ actor TranscriptionCoordinator {
             let language = backend.supportsWhisperLanguageSelection
                 ? whisperLanguage
                 : WhisperKitLanguage.defaultLanguage
-            return try await transcribeWithWhisperKit(url: url, language: language)
+            return try await transcribeWithWhisperKit(url: url, language: language, expectedModel: backend.model)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "parakeet-unified":
@@ -1612,15 +1710,16 @@ actor TranscriptionCoordinator {
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:
-            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
+            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage,
+                expectedModelID: backend.model)
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedModelID: String) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedModelID: expectedModelID)
         fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
@@ -1649,10 +1748,11 @@ actor TranscriptionCoordinator {
 
     private func transcribeWithWhisperKit(
         url: URL,
-        language: WhisperKitLanguage
+        language: WhisperKitLanguage,
+        expectedModel: String
     ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
-        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language)
+        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language, expectedModel: expectedModel)
         fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(

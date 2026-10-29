@@ -14,6 +14,48 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("Insertion-stop notice persists during recording and resets before the next session", arguments: [false, true], [false, true])
+    @MainActor
+    func cursorStopNoticeLifecycle(useNotch: Bool, decoderFailed: Bool) throws {
+        _ = NSApplication.shared
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        if useNotch { config.indicatorAnchor = .notch }
+        store.save(config)
+        indicator.setToggleDictation(true, config: config)
+        indicator.setCursorInsertionStopped(true, config: config)
+        if decoderFailed {
+            indicator.setLiveTranscriptionFailed(config: config)
+            // Late cursor loss cannot hide the failure or promise a full result.
+            indicator.setCursorInsertionStopped(true, config: config)
+            #expect(indicator.insertionStopReason == .transcriptionFailed)
+            #expect(indicator.insertionStoppedDetail.contains("available transcript"))
+            #expect(indicator.insertionStoppedDetail.contains("recovery when you stop"))
+            #expect(!indicator.insertionStoppedDetail.contains("final dictation"))
+        } else {
+            #expect(indicator.insertionStopReason == .cursorOwnershipLost)
+        }
+        indicator.setState(.recording, config: config)
+        #expect(indicator.cursorInsertionStopped)
+        #expect(notch.cursorInsertionStopped == useNotch)
+        var stops = 0
+        indicator.onStopToggleDictation = { stops += 1 }
+        // The warning must not take ownership away from recording controls.
+        indicator.handleClick()
+        #expect(stops == 1)
+        indicator.setState(.transcribing, config: config)
+        #expect(!indicator.cursorInsertionStopped)
+        #expect(!notch.cursorInsertionStopped)
+        indicator.setState(.idle, config: config)
+        indicator.setToggleDictation(true, config: config)
+        #expect(!indicator.cursorInsertionStopped)
+    }
+
     @Test("Idle feedback uses the selected notch and retains its message",
           arguments: [NotchStatus.loading, .warning, .success, .cursor])
     @MainActor

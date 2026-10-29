@@ -459,13 +459,36 @@ final class MeetingSession {
             fputs("[meeting-partials] \(backend.label) not downloaded; using committed live captions only\n", stderr)
             return
         }
+        let selectedBackend = currentBackend()
+        if backend == .selectedModelBuffered,
+           (!selectedBackend.supportsBufferedLiveTranscription || !selectedBackend.isDownloaded) {
+            fputs("[meeting-partials] Selected meeting model unavailable for buffered captions; using committed live captions only\n", stderr)
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
                     nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
-                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                    bufferedSessionFactory: { [transcriptionCoordinator = self.transcriptionCoordinator,
+                        whisperLanguage = self.config.resolvedWhisperLanguage,
+                        parakeetLanguage = self.config.resolvedParakeetLanguage,
+                        bodhanLanguage = self.config.resolvedBodhanLanguage,
+                        bodhanOutputMode = self.config.resolvedBodhanOutputMode] onUpdate, onFailure in
+                        try transcriptionCoordinator.makeBufferedTranscriptionSession(
+                            backend: selectedBackend,
+                            whisperLanguage: whisperLanguage,
+                            parakeetLanguage: parakeetLanguage,
+                            bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                            onUpdate: onUpdate,
+                            onFailure: onFailure,
+                            onDiagnostic: { event in
+                                fputs("[meeting-partials] buffered_\(event)\n", stderr)
+                            }
+                        )
+                    }
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
                       self.partialSessionsStorage.withLock({ !$0.isShutDown }) else {
@@ -537,7 +560,8 @@ final class MeetingSession {
         end: TimeInterval
     ) async -> [SpeechSegment] {
         // Apple chunks already chose their authoritative result before any batch work.
-        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech else { return segments }
+        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech,
+              config.resolvedMeetingLiveCaptionBackend != .selectedModelBuffered else { return segments }
         let prefersStreamingTranscript = config.enableLiveStreamingPartials
             && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
         guard (segments.isEmpty || prefersStreamingTranscript),
