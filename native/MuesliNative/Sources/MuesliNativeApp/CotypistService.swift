@@ -243,10 +243,34 @@ final class CotypistService {
     }
 
     /// After the user picks a model: load it now, while they're in Settings, not on their next keystroke.
+    /// Only while Cotypist is on; otherwise it loads when Cotypist is turned on.
     func modelChanged() {
         let model = config().cotypistModel
-        guard CotypistSetup.isAvailable, model.isDownloaded, engineModel != model else { return }
+        guard CotypistSetup.isAvailable, CotypistSetup.shared.state == .on, server != nil,
+              model.isDownloaded, engineModel != model else { return }
         Task { _ = try? await loadEngine(model) }
+    }
+
+    /// The model holds hundreds of megabytes to gigabytes. Turning Cotypist off frees it; turning it
+    /// on loads it ahead of the first suggestion (or once the input source has been added).
+    func cotypistToggled(on: Bool) {
+        on ? modelChanged() : unloadEngine()
+    }
+
+    private func unloadEngine() {
+        guard engineTask != nil else { return }
+        engineTask?.cancel()
+        // The task holds the engine as its result: nothing may keep a reference to it, or the weights
+        // stay alive past the cache clear below and land in MLX's buffer cache instead.
+        engineTask = nil
+        engineModel = nil
+        log("engine released")
+        Task.detached(priority: .utility) {
+            // A suggestion in flight finishes and lets go of the engine; then MLX's buffer cache, which
+            // now holds the freed weights, goes back to the system.
+            try? await Task.sleep(for: .seconds(1))
+            CotypistEngine.releaseCachedMemory()
+        }
     }
 
     // MARK: - Context

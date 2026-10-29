@@ -437,7 +437,10 @@ if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
     -framework Cocoa -framework InputMethodKit -framework Security \
     "$ROOT/native/CotypistInputMethod/main.m" "$ROOT/native/CotypistInputMethod/CotypistController.m" \
     -o "$COTYPIST_DIR/Contents/MacOS/MuesliCotypist"
-  sips -s format tiff -z 32 32 "$ROOT/assets/muesli.icns" --out "$COTYPIST_DIR/Contents/Resources/icon.tiff" >/dev/null
+  # The white Muesli mark the menu bar uses, as a template: macOS tints it for the menu bar and the
+  # input-switch indicator, like other keyboard icons, instead of showing the blue app icon.
+  tiffutil -cathidpicheck "$ROOT/assets/menu_m_template.png" "$ROOT/assets/menu_m_template@2x.png" \
+    -out "$COTYPIST_DIR/Contents/Resources/icon.tiff" >/dev/null
   # The input mode's display name in System Settings and the input menu (otherwise its raw ID).
   mkdir -p "$COTYPIST_DIR/Contents/Resources/en.lproj"
   printf '"%s" = "%s";\n"%s" = "%s";\n"CFBundleName" = "%s";\n' \
@@ -466,6 +469,7 @@ if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   <key>TISIntendedLanguage</key><string>en</string>
   <key>tsInputMethodCharacterRepertoireKey</key><array><string>Latn</string></array>
   <key>tsInputMethodIconFileKey</key><string>icon.tiff</string>
+  <key>TISIconIsTemplate</key><true/>
   <key>ComponentInputModeDict</key>
   <dict>
     <key>tsInputModeListKey</key>
@@ -477,6 +481,7 @@ if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
         <key>tsInputModeMenuIconFileKey</key><string>icon.tiff</string>
         <key>tsInputModeAlternateMenuIconFileKey</key><string>icon.tiff</string>
         <key>tsInputModePaletteIconFileKey</key><string>icon.tiff</string>
+        <key>TISIconIsTemplate</key><true/>
         <key>tsInputModeDefaultStateKey</key><true/>
         <key>tsInputModeIsVisibleKey</key><true/>
         <key>tsInputModePrimaryInScriptKey</key><true/>

@@ -152,7 +152,7 @@ struct TimelineView: View {
 
     private var emptyStateTitle: String {
         if let application = appState.timelineApplicationFilter {
-            return "No dictations for \(application.name)"
+            return "No activity for \(application.name)"
         }
         switch appState.timelineOriginFilter {
         case .all: return "No activity yet"

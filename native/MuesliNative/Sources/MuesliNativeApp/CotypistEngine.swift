@@ -227,6 +227,9 @@ actor CotypistEngine {
     private let container: ModelContainer
     private let state = CotypistState()
 
+    /// Returns buffers MLX keeps for reuse to the system, once the last engine has been released.
+    static func releaseCachedMemory() { Memory.clearCache() }
+
     init(directory: URL = CotypistModel.defaultModel.directory) async throws {
         // The text-only Gemma class: faster than the multimodal one when no MTP drafter is used
         // (the Gemma drafters on disk are matched to the instruct model, not this base model).

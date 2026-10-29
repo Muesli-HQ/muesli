@@ -85,8 +85,11 @@ final class CotypistSetup: ObservableObject {
         refresh()
     }
 
+    /// The Settings toggle (and voice). The model is loaded and freed here, not when the keyboard
+    /// is switched: a quick switch away and back keeps suggestions instant.
     func setOn(_ on: Bool) {
         on ? turnOn() : turnOff()
+        CotypistService.shared.cotypistToggled(on: on)
     }
 
     func turnOn() {
