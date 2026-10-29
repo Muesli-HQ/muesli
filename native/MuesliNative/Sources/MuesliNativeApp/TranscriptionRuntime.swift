@@ -154,6 +154,7 @@ actor TranscriptionCoordinator {
     private let vadLoader: VADLoader
     private let diarizerLoadOperationTimeout: Duration
     private let diarizerDiagnostics: DiarizerPreloadDiagnostics
+    private let modelUseGate = InferenceGate()
     private var activeBackend: String?
     private let nativeGemmaReadinessInvalidated: @MainActor @Sendable () -> Void
 
@@ -204,6 +205,16 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Nemotron35StreamingTranscriber {
+        try await withModelReservation {
+            try await self.loadNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
+        }
+    }
+
+    @available(macOS 15, *)
+    private func loadNemotron35Transcriber(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> Nemotron35StreamingTranscriber {
         let transcriber = nemotron35Transcriber
         await transcriber.setPromptId(nemotron35PromptId)
         try await transcriber.loadModels(progress: progress, progressSnapshot: progressSnapshot)
@@ -220,18 +231,26 @@ actor TranscriptionCoordinator {
     }
 
     func unloadNemotron35Transcriber() async {
-        if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
-            await transcriber.shutdown()
+        _ = try? await withModelReservation {
+            if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
+                await transcriber.shutdown()
+            }
         }
     }
 
     func unloadBodhanTranscriber(ifLoadedModelID modelID: String) async {
-        if #available(macOS 15, *), let transcriber = _bodhanTranscriber as? BodhanTranscriber {
-            await transcriber.shutdown(ifLoadedModelID: modelID)
+        _ = try? await withModelReservation {
+            if #available(macOS 15, *), let transcriber = _bodhanTranscriber as? BodhanTranscriber {
+                await transcriber.shutdown(ifLoadedModelID: modelID)
+            }
         }
     }
 
     func unloadGemma4LiteRTTranscriber() async {
+        _ = try? await withModelReservation { await self.releaseGemma4LiteRTTranscriber() }
+    }
+
+    private func releaseGemma4LiteRTTranscriber() async {
         // Invalidate before suspension so a cached plan cannot admit recording.
         await nativeGemmaReadinessInvalidated()
         if #available(macOS 15, *) {
@@ -245,17 +264,23 @@ actor TranscriptionCoordinator {
     }
 
     func unloadFluidAudioTranscriber(ifLoadedModelID modelID: String) async {
-        await fluidTranscriber.shutdown(ifLoadedModelID: modelID)
+        _ = try? await withModelReservation {
+            await fluidTranscriber.shutdown(ifLoadedModelID: modelID)
+        }
     }
 
     func unloadParakeetUnifiedTranscriber() async {
-        await parakeetUnifiedTranscriber.shutdown()
+        _ = try? await withModelReservation {
+            await parakeetUnifiedTranscriber.shutdown()
+        }
     }
 
     func unloadQwen3Transcriber() async {
-        if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
-            await transcriber.shutdown()
-            _qwen3Transcriber = nil
+        _ = try? await withModelReservation {
+            if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
+                await transcriber.shutdown()
+                _qwen3Transcriber = nil
+            }
         }
     }
 
@@ -559,12 +584,14 @@ actor TranscriptionCoordinator {
 
     func prepareNativeGemmaModels(_ plan: GemmaPreparationPlan, progress: @escaping @Sendable (String) -> Void) async throws {
         guard #available(macOS 15, *) else { return }
-        try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
-            progress("Preparing \(entry.model.label)… Mic off")
-            try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
-        }, optionalFailure: { entry, error in
-            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
-        })
+        try await withModelReservation {
+            try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
+                progress("Preparing \(entry.model.label)… Mic off")
+                try await self.nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
+            }, optionalFailure: { entry, error in
+                fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+            })
+        }
     }
 
     @available(macOS 15, *)
@@ -680,13 +707,51 @@ actor TranscriptionCoordinator {
             }
             return
         }
-        activeBackend = backend.backend
-
         if includeMeetingHelpers {
             await preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
-        try Task.checkCancellation()
+        try await withModelReservation {
+            try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage,
+                progress: progress, progressSnapshot: progressSnapshot, warmup: true)
+        }
 
+        await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
+    }
+
+    /// Actor reentrancy alone cannot reserve a model across preparation and ASR.
+    /// Cleanup and independent streaming sessions retain their existing owners.
+    private func withModelReservation<T>(_ operation: () async throws -> T) async throws -> T {
+        try await modelUseGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            try Task.checkCancellation()
+            await modelUseGate.release()
+            return result
+        } catch {
+            await modelUseGate.release()
+            throw error
+        }
+    }
+
+    #if DEBUG
+    private var testingASRPreparation: (@Sendable (BackendOption) async throws -> Void)?
+    private var testingASRInference: (@Sendable (BackendOption, URL) async throws -> SpeechTranscriptionResult)?
+    func testingInstallASR(prepare: @escaping @Sendable (BackendOption) async throws -> Void,
+                           infer: @escaping @Sendable (BackendOption, URL) async throws -> SpeechTranscriptionResult) {
+        testingASRPreparation = prepare
+        testingASRInference = infer
+    }
+    #endif
+
+    private func prepareASR(backend: BackendOption, appleSpeechLanguage: String,
+                            progress: ((Double, String?) -> Void)? = nil,
+                            progressSnapshot: ModelDownloadProgressHandler? = nil,
+                            warmup: Bool = false) async throws {
+        activeBackend = backend.backend
+        #if DEBUG
+        if let testingASRPreparation { try await testingASRPreparation(backend); return }
+        #endif
         switch backend.backend {
         case "fluidaudio":
             try await fluidTranscriber.loadModels(
@@ -705,6 +770,7 @@ actor TranscriptionCoordinator {
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
+            guard warmup else { return }
             // Warmup ANE/GPU so first dictation doesn't pay CoreML compilation cost
             fputs("[muesli-native] WhisperKit warmup: running silent audio for CoreML compilation...\n", stderr)
             let warming = ModelDownloadProgress.preparing(
@@ -719,7 +785,8 @@ actor TranscriptionCoordinator {
             progressSnapshot?(warming.replacing(phase: .ready, message: "Model ready"))
         case "nemotron35":
             if #available(macOS 15, *) {
-                let transcriber = try await getLoadedNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
+                let transcriber = try await loadNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
+                guard warmup else { return }
                 // Warmup ANE so first dictation starts instantly
                 fputs("[muesli-native] Nemotron 3.5 warmup: running silent chunk for ANE compilation...\n", stderr)
                 var state = try await transcriber.makeStreamState()
@@ -789,8 +856,6 @@ actor TranscriptionCoordinator {
                 NSLocalizedDescriptionKey: "Unknown transcription backend: \(backend.backend)",
             ])
         }
-
-        await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
@@ -1269,21 +1334,23 @@ actor TranscriptionCoordinator {
     }
 
     func shutdown() async {
-        await fluidTranscriber.shutdown()
-        await parakeetUnifiedTranscriber.shutdown()
-        await whisperTranscriber.shutdown()
-        await senseVoiceTranscriber.shutdown()
-        if #available(macOS 15, *) {
-            if let nemotron35 = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
-                await nemotron35.shutdown()
+        _ = try? await withModelReservation {
+            await fluidTranscriber.shutdown()
+            await parakeetUnifiedTranscriber.shutdown()
+            await whisperTranscriber.shutdown()
+            await senseVoiceTranscriber.shutdown()
+            if #available(macOS 15, *) {
+                if let nemotron35 = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
+                    await nemotron35.shutdown()
+                }
+                await qwen3Transcriber.shutdown()
+                await cohereTranscriber.shutdown()
+                await bodhanTranscriber.shutdown()
+                await releaseGemma4LiteRTTranscriber()
             }
-            await qwen3Transcriber.shutdown()
-            if let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
-                await postProcessor.shutdown()
-            }
-            await cohereTranscriber.shutdown()
-            await bodhanTranscriber.shutdown()
-            await unloadGemma4LiteRTTranscriber()
+        }
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.shutdown()
         }
     }
 
@@ -1583,6 +1650,30 @@ actor TranscriptionCoordinator {
         parakeetLanguage: ParakeetLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
+        try await withModelReservation {
+            try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage)
+            try Task.checkCancellation()
+            #if DEBUG
+            if let infer = self.testingASRInference { return try await infer(backend, url) }
+            #endif
+            return try await self.routePrepared(url: url, backend: backend, cohereLanguage: cohereLanguage,
+                bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                whisperLanguage: whisperLanguage, qwen3AsrLanguage: qwen3AsrLanguage,
+                parakeetLanguage: parakeetLanguage, appleSpeechLanguage: appleSpeechLanguage)
+        }
+    }
+
+    private func routePrepared(
+        url: URL,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage,
+        bodhanLanguage: BodhanLanguage,
+        bodhanOutputMode: BodhanOutputMode,
+        whisperLanguage: WhisperKitLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
+        parakeetLanguage: ParakeetLanguage,
+        appleSpeechLanguage: String
+    ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
             let language = backend.supportsWhisperLanguageSelection
@@ -1779,7 +1870,7 @@ actor TranscriptionCoordinator {
     private func transcribeWithNemotron35(url: URL) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Nemotron 3.5: \(url.lastPathComponent)\n", stderr)
-            let transcriber = try await getLoadedNemotron35Transcriber()
+            let transcriber = try await loadNemotron35Transcriber()
             let result = try await transcriber.transcribe(wavURL: url)
             fputs("[muesli-native] Nemotron 3.5 result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)

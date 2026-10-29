@@ -15,6 +15,45 @@ struct MicrophoneCaptureAudio: Sendable {
 
 }
 
+/// Session-owned, capture-clock redaction. Closed windows deliberately survive
+/// Stop and route handoff: native buffers and AEC output can arrive much later.
+final class MeetingMicrophoneExclusions {
+    private struct Window { let start: Int64; var end: Int64? }
+    private let lock = NSLock()
+    private var windows: [UUID: Window] = [:]
+
+    var hasExclusions: Bool { lock.withLock { !windows.isEmpty } }
+
+    func begin(at frame: Int64) -> UUID {
+        lock.withLock {
+            let token = UUID()
+            windows[token] = Window(start: frame)
+            return token
+        }
+    }
+
+    func end(_ token: UUID, at frame: Int64) {
+        lock.withLock {
+            guard let window = windows[token], window.end == nil else { return }
+            windows[token]?.end = max(window.start, frame)
+        }
+    }
+
+    func redact(_ audio: MicrophoneCaptureAudio) -> MicrophoneCaptureAudio {
+        let snapshot = lock.withLock { Array(windows.values) }
+        var result = audio
+        for window in snapshot {
+            let start = max(audio.startFrame, window.start)
+            let end = min(audio.endFrame, window.end ?? audio.endFrame)
+            if start < end {
+                let range = Int(start - audio.startFrame)..<Int(end - audio.startFrame)
+                result.samples.replaceSubrange(range, with: repeatElement(0, count: range.count))
+            }
+        }
+        return result
+    }
+}
+
 /// Meeting consumers use this path; dictation keeps its existing Float callback.
 protocol MicrophoneCaptureReporting: BufferedMicrophoneAdmissionControlling {
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)? { get set }

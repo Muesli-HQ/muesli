@@ -185,6 +185,15 @@ final class MeetingSession {
     var capturePhase: MeetingCapturePhase { captureLifecycle.phase }
     func beginStoppingCapture() { captureLifecycle.requestStop() }
     private let neuralAec: MeetingNeuralAec
+    private let microphoneExclusions = MeetingMicrophoneExclusions()
+
+    func beginMicrophoneExclusion(at frame: Int64 = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())) -> UUID {
+        microphoneExclusions.begin(at: frame)
+    }
+
+    func endMicrophoneExclusion(_ token: UUID, at frame: Int64 = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())) {
+        microphoneExclusions.end(token, at: frame)
+    }
     private let inputObservationQueue = DispatchQueue(label: "com.muesli.meeting-input-controls")
     private let inputMuted = OSAllocatedUnfairLock<Bool?>(initialState: nil)
     private let inputObserver: CoreAudioMicrophoneActivityObserver
@@ -623,6 +632,10 @@ final class MeetingSession {
         chunkRotationQueue.async(execute: DispatchWorkItem(block: operation))
     }
 
+    func testingInstallMicPartial(_ session: MeetingStreamingPartialSession) {
+        partialSessionsStorage.withLock { $0.mic = session }
+    }
+
     /// The in-progress mic diarization track, while capture is running.
     var testingMicDiarizationFileURL: URL? { chunkRotationQueue.sync { micDiarizationRecorder?.currentFileURL } }
 
@@ -1029,7 +1042,7 @@ final class MeetingSession {
             startedAt: meetingStart,
             endedAt: endTime,
             rawTranscript: rawTranscript,
-            rawMicURL: rawStreamingMicURL,
+            rawMicURL: microphoneExclusions.hasExclusions ? nil : rawStreamingMicURL,
             systemAudioURL: systemAudioURL,
             systemCapture: (systemAudioRecorder as? SystemAudioDiagnosticsProviding)?.diagnosticsSnapshot,
             micRecorder: meetingMicRecorder.diagnosticsSnapshot(),
@@ -1342,19 +1355,12 @@ final class MeetingSession {
                 self.micRecoveryCoordinator.process(healthSnapshot)
             }
 
-            let floatSamples = rawSamples.map { Float($0) / 32767.0 }
+            let floatSamples = self.microphoneExclusions.redact(audio).samples.map { Float($0) / 32767.0 }
 
             // AEC: clean mic using position-aligned system reference
             self.screenMicSpans.append(start: audio.startFrame, count: rawSamples.count)
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
             self.appendCleanedMicSamplesOnQueue(cleanedFloat)
-
-            // Meeting mic chunks must be driven by the cleaned mic stream. Raw
-            // mic VAD sees speaker playback bleed and can create false `You`
-            // chunks even when AEC removed that speech from the final mic audio.
-            if let vadController = self.vadController, !cleanedFloat.isEmpty {
-                vadController.processAudio(cleanedFloat)
-            }
         }
     }
 
@@ -1379,10 +1385,6 @@ final class MeetingSession {
             let cleanedFloat = self.neuralAec.processStreamingMic([])
             self.appendCleanedMicSamplesOnQueue(cleanedFloat)
 
-            if let vadController = self.vadController, !cleanedFloat.isEmpty {
-                vadController.processAudio(cleanedFloat)
-            }
-
             if let systemVadController = self.systemVadController {
                 systemVadController.processAudio(floatSamples)
             }
@@ -1393,7 +1395,6 @@ final class MeetingSession {
         guard !cleanedFloat.isEmpty else { return }
         // Single funnel for all AEC'd mic audio — the streaming partial tail
         // must consume exactly the stream the mic chunks record.
-        feedMicPartialSession(cleanedFloat)
         let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
             Int16(max(-1.0, min(1.0, sample)) * 32767)
         }
@@ -1401,13 +1402,18 @@ final class MeetingSession {
         // output and pause/stop flushes. Mixing raw mic here would duplicate
         // speaker playback already present in the system track.
         for block in screenMicSpans.consume(cleanedInt16) {
-            screenAudioSink?(block.samples, true, block.start)
+            let samples = microphoneExclusions.redact(.init(samples: block.samples,
+                startFrame: block.start, admitted: true)).samples
+            let sanitizedFloat = samples.map { Float($0) / 32767.0 }
+            feedMicPartialSession(sanitizedFloat)
+            vadController?.processAudio(sanitizedFloat)
+            screenAudioSink?(samples, true, block.start)
+            retainedRecordingWriter?.appendMic(samples)
+            rawMicChunkRecorder?.append(samples)
+            micDiarizationRecorder?.append(samples)
+            chunkTimingTracker.append(sampleCount: samples.count)
+            diagnostics?.appendCleanedMicSamples(samples)
         }
-        retainedRecordingWriter?.appendMic(cleanedInt16)
-        rawMicChunkRecorder?.append(cleanedInt16)
-        micDiarizationRecorder?.append(cleanedInt16)
-        chunkTimingTracker.append(sampleCount: cleanedInt16.count)
-        diagnostics?.appendCleanedMicSamples(cleanedInt16)
     }
 
     private func transcribeMicChunk(

@@ -14,6 +14,55 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("overlap restores the surviving activity and directs controls to dictation", arguments: [false, true])
+    @MainActor
+    func dictationOverlap(notched: Bool) async throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory), notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = notched ? .notch : .bottomCenter
+        var cancelled = 0, finished = 0, stoppedMeeting = 0
+        indicator.onCancelDictation = { cancelled += 1 }
+        indicator.onStopToggleDictation = { finished += 1 }
+        indicator.onStopMeeting = { stoppedMeeting += 1 }
+        indicator.powerProvider = { -31 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.setMeetingRecordingPaused(true, config: config)
+        for state: DictationState in [.preparing, .recording, .transcribing] {
+            indicator.setDictationState(state, config: config)
+            #expect(indicator.overlapMeetingStatus == "Meeting paused")
+            if notched { #expect(notch.meetingStatus == "Meeting paused") }
+            else {
+                try await Task.sleep(for: .milliseconds(300))
+                #expect(indicator.currentFrame?.size == CGSize(width: 220, height: 40))
+                let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+                    .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+                let cancel = try #require(pill.subviews.compactMap { $0 as? NSButton }
+                    .first { $0.toolTip == "Cancel dictation" })
+                #expect(pill.hitTest(NSPoint(x: cancel.frame.midX, y: cancel.frame.midY)) === cancel)
+                cancel.performClick(nil)
+            }
+            if notched { notch.onCancel?() }
+            if state == .recording { notch.onStopRecording?() }
+            indicator.stopNotchMeeting()
+        }
+        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 0)
+        indicator.setDictationState(.idle, config: config)
+        #expect(indicator.overlapMeetingStatus == nil)
+        #expect(indicator.powerProvider?() == -31)
+        indicator.stopNotchMeeting()
+        #expect(stoppedMeeting == 1)
+        indicator.setDictationState(.recording, config: config)
+        #expect(indicator.overlapMeetingStatus == "Meeting paused")
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.overlapMeetingStatus == nil)
+        indicator.cancelNotchActivity()
+        #expect(cancelled == 4)
+    }
+
     @Test("Idle feedback uses the selected notch and retains its message",
           arguments: [NotchStatus.loading, .warning, .success, .cursor])
     @MainActor

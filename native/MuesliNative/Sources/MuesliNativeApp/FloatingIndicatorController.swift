@@ -199,6 +199,13 @@ final class FloatingIndicatorController: NSObject {
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
+    private var dictationPresentation: DictationState = .idle
+    private var meetingPowerProvider: (() -> Float)?
+    private var overlapDetailLabel: NSTextField?
+    private var hasDictationOverlap: Bool { isMeetingRecording && dictationPresentation != .idle }
+    var overlapMeetingStatus: String? {
+        hasDictationOverlap ? (isMeetingRecordingPaused ? "Meeting paused" : "Meeting recording") : nil
+    }
     private var isHovered = false
     private var lastLoadedConfig: AppConfig?
     private let loadFeedbackConfiguration: () -> AppConfig
@@ -279,7 +286,7 @@ final class FloatingIndicatorController: NSObject {
         notchIndicator.onToggleMeetingPause = { [weak self] in self?.toggleNotchMeetingPause() }
         notchIndicator.onStopMeeting = { [weak self] in self?.stopNotchMeeting() }
         notchIndicator.onStopRecording = { [weak self] in
-            guard let self, self.state == .recording, self.isToggleDictation else { return }
+            guard let self, self.state == .recording, self.isToggleDictation || self.hasDictationOverlap else { return }
             self.onStopToggleDictation?()
         }
         notchIndicator.powerProvider = { [weak self] in self?.powerProvider?() ?? -160 }
@@ -410,7 +417,8 @@ final class FloatingIndicatorController: NSObject {
     func handleClick(atX x: CGFloat? = nil) {
         // Meeting commands belong to the explicit buttons. The waveform/body
         // remains available for dragging without accidentally ending a meeting.
-        guard !isMeetingRecording else { return }
+        guard !isMeetingRecording || hasDictationOverlap else { return }
+        if hasDictationOverlap { return } // Native finish/cancel buttons own overlap clicks.
         if isComputerUseCancellationAvailable {
             if (x ?? 0) < 34 { onCancelComputerUse?() }
             return
@@ -433,7 +441,7 @@ final class FloatingIndicatorController: NSObject {
 
     func cancelNotchActivity() {
         guard state != .idle else { return }
-        if isMeetingRecording {
+        if isMeetingRecording && !hasDictationOverlap {
             onDiscardMeeting?()
         } else {
             onCancelDictation?()
@@ -441,17 +449,19 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func toggleNotchMeetingPause() {
-        guard isMeetingRecording, state == .recording else { return }
+        guard isMeetingRecording, !hasDictationOverlap, state == .recording else { return }
         onToggleMeetingPause?()
     }
 
     func stopNotchMeeting() {
-        guard isMeetingRecording, state == .recording else { return }
+        guard isMeetingRecording, !hasDictationOverlap, state == .recording else { return }
         onStopMeeting?()
     }
 
     func handleOptionClick() {
-        if isMeetingRecording, state == .recording {
+        if hasDictationOverlap {
+            onCancelDictation?()
+        } else if isMeetingRecording, state == .recording {
             onDiscardMeeting?()
         } else if state == .recording {
             onCancelDictation?()
@@ -479,6 +489,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {
+        if recording && !isMeetingRecording { meetingPowerProvider = powerProvider }
         isMeetingRecording = recording
         recordingWaveformMode = .level
         if recording {
@@ -492,11 +503,8 @@ final class FloatingIndicatorController: NSObject {
             hideMeetingTranscript(reset: true)
             notchIndicator.updateMeetingTranscript(transcript: "", partialYou: "", partialOthers: "")
         }
-        if recording {
-            setState(.recording, config: config)
-        } else {
-            setState(.idle, config: config)
-        }
+        setState(dictationPresentation, config: config)
+        if !recording { meetingPowerProvider = nil }
     }
 
     func setRecordingWaveformWaiting(config: AppConfig) {
@@ -518,6 +526,7 @@ final class FloatingIndicatorController: NSObject {
 
     func setPreparingWaveformWaiting(config: AppConfig) {
         recordingWaveformMode = .waiting
+        if isMeetingRecording { setDictationState(.preparing, config: config) }
         guard state == .preparing else {
             setState(.preparing, config: config)
             return
@@ -531,6 +540,7 @@ final class FloatingIndicatorController: NSObject {
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
         guard isMeetingRecording else { return }
+        if hasDictationOverlap { setState(dictationPresentation, config: config); return }
         // Updating the hover control must keep its panel open so Resume stays
         // under the pointer. Only rebuild a missing presentation or the notch.
         guard state != .recording || panel == nil || config.indicatorAnchor == .notch else { return }
@@ -559,7 +569,7 @@ final class FloatingIndicatorController: NSObject {
             hideMeetingTranscript()
             return
         }
-        if isMeetingRecording,
+        if isMeetingRecording, !hasDictationOverlap,
            state == .recording,
            pointerIsInsidePanel(),
            panel != nil {
@@ -711,14 +721,17 @@ final class FloatingIndicatorController: NSObject {
         setState(.transcribing, config: config)
     }
 
+    func setDictationState(_ state: DictationState, config: AppConfig) {
+        dictationPresentation = state
+        setState(state, config: config)
+    }
+
     func setState(_ requestedState: DictationState, config: AppConfig) {
         // The shared indicator also receives dictation completion/failure and
         // warmup updates. They must not retire a still-active meeting's controls.
-        if isMeetingRecording, self.state == .recording, requestedState != .recording {
-            return
-        }
-        let state: DictationState = isMeetingRecording ? .recording : requestedState
-        let restoresMeetingTranscript = isMeetingRecording && state == .recording
+        let state: DictationState = isMeetingRecording
+            ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
+        let restoresMeetingTranscript = isMeetingRecording && !hasDictationOverlap && state == .recording
             && meetingTranscriptPanel.isVisible && config.showMeetingTranscriptOnIndicatorHover
             && config.indicatorAnchor != .notch
         // Normalize the expanded panel before laying out its compact indicator;
@@ -783,14 +796,15 @@ final class FloatingIndicatorController: NSObject {
             let title: String
             switch state {
             case .idle: title = "Muesli"
-            case .preparing: title = "Preparing"
-            case .recording: title = isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")
+            case .preparing: title = hasDictationOverlap ? "Preparing dictation" : "Preparing"
+            case .recording: title = hasDictationOverlap ? "Listening" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
             if notchIndicator.show(on: screen, title: title,
-                detail: state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title,
-                recording: state == .recording, paused: isMeetingRecordingPaused, meeting: isMeetingRecording,
+                detail: overlapMeetingStatus ?? (state == .idle ? "Dictation · \(config.dictationHotkey.label)" : title),
+                recording: state == .recording, paused: isMeetingRecordingPaused && !hasDictationOverlap,
+                meeting: isMeetingRecording && !hasDictationOverlap,
                 handsFree: isToggleDictation || isMeetingRecording,
                 active: state != .idle,
                 icon: instructionMode == .quill ? QuillIcon.image() :
@@ -798,9 +812,10 @@ final class FloatingIndicatorController: NSObject {
                 accent: RecordingIndicatorPalette.accent(hex: config.recordingColorHex),
                 instruction: notchInstruction, instructionStatus: instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle,
                 appName: instructionAppName, appIcon: instructionAppIcon, question: question,
-                toolResults: notchToolResults) {
+                toolResults: notchToolResults, meetingStatus: overlapMeetingStatus) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
+                else if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
                 return
             }
         }
@@ -919,6 +934,7 @@ final class FloatingIndicatorController: NSObject {
 
             // Apply glass state last so it can override iconLabel visibility set above.
             applyGlassState(state, frameSize: targetFrame.size)
+            layoutDictationOverlap(in: targetFrame.size)
         } completionHandler: { [weak self] in
             guard let self, self.panel === panel else { return }
             // Geometry may change under a stationary pointer. Reconcile once
@@ -963,7 +979,9 @@ final class FloatingIndicatorController: NSObject {
         }
 
         layoutMeetingControls(in: targetFrame.size)
+        layoutDictationOverlap(in: targetFrame.size)
         layoutComputerUseStopButton(in: targetFrame.size)
+        if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
         panel.orderFrontRegardless()
         if state == .preparing {
             contentView.displayIfNeeded()
@@ -1333,7 +1351,7 @@ final class FloatingIndicatorController: NSObject {
 
     func setHovered(_ hovered: Bool) {
         guard !notchIndicator.isVisible else { return }
-        if state == .recording, isMeetingRecording, !isShowingLoading, !isDragging {
+        if state == .recording, isMeetingRecording, !hasDictationOverlap, !isShowingLoading, !isDragging {
             guard hovered else {
                 isMeetingTranscriptManuallyDismissed = false
                 hideMeetingTranscript()
@@ -1416,6 +1434,7 @@ final class FloatingIndicatorController: NSObject {
         panel = nil
         meetingDiscardButton = nil
         meetingStopButton = nil
+        overlapDetailLabel = nil
         containerView = nil
         contentView = nil
         iconLabel = nil
@@ -1470,11 +1489,15 @@ final class FloatingIndicatorController: NSObject {
 
     // MARK: - Stop Layer (toggle dictation)
 
-    @objc private func discardMeetingFromPill() { onDiscardMeeting?() }
-    @objc private func stopMeetingFromPill() { onStopMeeting?() }
+    @objc private func discardMeetingFromPill() {
+        if hasDictationOverlap { onCancelDictation?() } else { onDiscardMeeting?() }
+    }
+    @objc private func stopMeetingFromPill() {
+        if hasDictationOverlap { onStopToggleDictation?() } else { onStopMeeting?() }
+    }
 
     private func layoutMeetingControls(in size: NSSize) {
-        guard state == .recording, isMeetingRecording, let contentView else {
+        guard isMeetingRecording, state == .recording || hasDictationOverlap, let contentView else {
             meetingDiscardButton?.isHidden = true
             meetingStopButton?.isHidden = true
             return
@@ -1493,10 +1516,46 @@ final class FloatingIndicatorController: NSObject {
             if button.superview == nil { contentView.addSubview(button) }
             return button
         }
-        meetingDiscardButton = configure(meetingDiscardButton, symbol: "xmark", label: "Discard meeting recording…",
-                                         x: 1, action: #selector(discardMeetingFromPill))
-        meetingStopButton = configure(meetingStopButton, symbol: "stop.fill", label: "Stop meeting recording",
-                                      x: size.width - 23, action: #selector(stopMeetingFromPill))
+        meetingDiscardButton = configure(meetingDiscardButton, symbol: "xmark",
+            label: hasDictationOverlap ? "Cancel dictation" : "Discard meeting recording…",
+            x: hasDictationOverlap ? size.width - 30 : 1, action: #selector(discardMeetingFromPill))
+        meetingStopButton = configure(meetingStopButton, symbol: "stop.fill",
+            label: hasDictationOverlap ? "Finish dictation" : "Stop meeting recording",
+            x: hasDictationOverlap ? size.width - 54 : size.width - 23, action: #selector(stopMeetingFromPill))
+        if hasDictationOverlap {
+            meetingDiscardButton?.frame = NSRect(x: size.width - 30, y: 9, width: 22, height: 22)
+            meetingStopButton?.frame = NSRect(x: size.width - 54, y: 9, width: 20, height: 22)
+            meetingStopButton?.isHidden = state != .recording
+        }
+    }
+
+    private func layoutDictationOverlap(in size: NSSize) {
+        guard let status = overlapMeetingStatus, let contentView, let textLabel else {
+            overlapDetailLabel?.isHidden = true
+            return
+        }
+        let detail = overlapDetailLabel ?? NSTextField(labelWithString: "")
+        overlapDetailLabel = detail
+        if detail.superview == nil { contentView.addSubview(detail) }
+        textLabel.stringValue = state == .preparing ? "Preparing dictation" : (state == .recording ? "Listening" : "Transcribing")
+        textLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        textLabel.textColor = .white
+        textLabel.frame = NSRect(x: 8, y: 22, width: 123, height: 12)
+        textLabel.isHidden = false
+        textLabel.alphaValue = 1
+        detail.stringValue = status
+        detail.font = .systemFont(ofSize: 8)
+        detail.textColor = .white.withAlphaComponent(0.7)
+        detail.frame = NSRect(x: 8, y: 10, width: 123, height: 10)
+        detail.isHidden = false
+        iconLabel?.isHidden = true
+        wandIconView?.isHidden = true
+        if state == .transcribing {
+            ensureLoadingSpinner(in: contentView)
+            loadingSpinner?.frame = NSRect(x: 140, y: 12, width: 16, height: 16)
+            loadingSpinner?.isHidden = false
+            loadingSpinner?.startAnimation(nil)
+        }
     }
 
     private func addStopLayer(in size: NSSize) {
@@ -1549,7 +1608,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = (frameSize.width - totalWidth) / 2
+        let startX = hasDictationOverlap ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
         let minHeight: CGFloat = 4
 
         for i in 0..<barCount {
@@ -1568,7 +1627,7 @@ final class FloatingIndicatorController: NSObject {
         let barWidth: CGFloat = 3
         let barSpacing: CGFloat = 3
         let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
-        let startX = (frameSize.width - totalWidth) / 2
+        let startX = hasDictationOverlap ? frameSize.width - 85 : (frameSize.width - totalWidth) / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
@@ -2347,7 +2406,9 @@ final class FloatingIndicatorController: NSObject {
             screen = mainVisibleFrame
         }
         let size: NSSize
-        switch state {
+        if hasDictationOverlap {
+            size = NSSize(width: 220, height: 40)
+        } else { switch state {
         case .idle:
             if config.indicatorHoverStyle == .shortcutPill {
                 // Fixed canvas sized to the unified hover pill: the window never
@@ -2376,7 +2437,7 @@ final class FloatingIndicatorController: NSObject {
             } else {
                 size = Self.transcribingPillSize(title: transcribingTitle, screenWidth: screen.width)
             }
-        }
+        } }
 
         // Idle hover expansion uses the saved collapsed position as its anchor,
         // so the left edge stays fixed instead of resizing around the midpoint.

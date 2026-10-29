@@ -214,7 +214,8 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         recorder.currentPower()
     }
 
-    func arm(source: String) {
+    @discardableResult
+    func arm(source: String) -> UUID {
         let sessionID = ensureSession()
         emit(.armed(sessionID, source: source))
         emitLatency("ui_armed")
@@ -253,9 +254,11 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 self.failCurrentSession(error: error)
             }
         }
+        return sessionID
     }
 
-    func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) {
+    @discardableResult
+    func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) -> UUID {
         let sessionID = ensureSession()
         queue.async { [self] in
             self.cancelPendingRouteRefreshLocked()
@@ -311,6 +314,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 self.failCurrentSession(error: error)
             }
         }
+        return sessionID
     }
 
     func beginExternalSession(source: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) {

@@ -8,6 +8,141 @@ import Testing
 
 @Suite("Meeting microphone delivery invariants", .serialized)
 struct MeetingMicrophoneDeliveryTests {
+    @Test("real hold admission and release preserve an established meeting, with an outside control",
+          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop"])
+    @MainActor
+    func dictationDuringMeeting(activeMeeting: Bool, ending: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runtime = RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(runtime: runtime, dictationStore: store,
+            configStore: ConfigStore(supportDirectory: directory), downloadedBackendOptions: { [] })
+        controller.dictationTestCallback = { _ in }
+        let producer = ContractProducer(useQueue: true)
+        let session = MeetingSession(title: "synthetic admission", calendarEventID: nil,
+            backend: .parakeetEnglish, runtime: runtime, config: Self.micDiarizationConfig,
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(),
+            meetingMicRecorder: RouteAwareMeetingMicRecorder(systemDefaultRecorder:
+                StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming)),
+            systemAudioCapture: ContractSystemAudio(),
+            aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+        if activeMeeting { try await session.testingStartCapture() }
+        if activeMeeting && ending == "paused" { session.pause() }
+        let recorder = OverlapDictationRecorder()
+        recorder.failStart = ending == "failure"
+        let manager = DictationAudioSessionManager(recorder: recorder,
+            duckingController: AudioDuckingController(), routingController: DictationAudioRouteController())
+        controller.testingInstallDictationCapture(manager, meeting: activeMeeting ? session : nil)
+        controller.testingDictationAction("prepare")
+        controller.testingDictationAction(ending == "toggle" ? "toggle" : "start")
+        for _ in 0..<100 {
+            if manager.currentState != .idle && recorder.started { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(recorder.started)
+        if ending == "failure" {
+            for _ in 0..<100 {
+                if !manager.hasActiveSession && controller.appState.dictationState == .idle { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!manager.hasActiveSession)
+            #expect(controller.appState.dictationState == .idle)
+        }
+        if activeMeeting && ending == "meeting-stop" {
+            let urls = await session.testingFinishCapture()
+            for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }
+            controller.testingInstallDictationCapture(manager, meeting: nil)
+            #expect(manager.hasActiveSession)
+        }
+        controller.testingDictationAction(ending == "cancel" ? "cancel" : "stop")
+        for _ in 0..<100 {
+            if recorder.stopped || ending == "failure" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(recorder.stopped || ending == "failure")
+        #expect(!manager.hasActiveSession)
+        if activeMeeting && ending != "meeting-stop" {
+            #expect(ending == "paused" ? session.isPaused : session.capturePhase.isRecording)
+            let urls = await session.testingFinishCapture()
+            for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    @Test("closed exclusions sanitize delayed and handoff PCM at every retained sink", arguments: [false, true], [false, true])
+    func excludedMicrophoneSinks(delayedReference: Bool, handoffRoute: Bool) async throws {
+        let old = ContractProducer(useQueue: true), next = ContractProducer(useQueue: false)
+        let worker = DispatchQueue(label: "exclusion.handoff")
+        let route = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: StreamingMeetingMicRecorderAdapter(recorder: old, kind: .systemDefaultStreaming),
+            appScopedRecorder: StreamingMeetingMicRecorderAdapter(recorder: next, kind: .appScopedAudioQueue),
+            handoffWorkerQueue: worker)
+        let system = ContractSystemAudio(), processor = ExclusionAecProcessor()
+        let session = MeetingSession(title: "exclusion sinks", calendarEventID: nil, backend: .parakeetEnglish,
+            runtime: RuntimePaths(repoRoot: URL(fileURLWithPath: NSTemporaryDirectory()), menuIcon: nil, appIcon: nil, bundlePath: nil),
+            config: Self.micDiarizationConfig,
+            templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+            transcriptionCoordinator: TranscriptionCoordinator(), meetingMicRecorder: route,
+            systemAudioCapture: system, aec: MeetingNeuralAec(preloadedProcessor: processor))
+        let video = OSAllocatedUnfairLock(initialState: [Int16]())
+        session.setScreenAudioSink { samples, mic, _ in if mic { video.withLock { $0 += samples } } }
+        try await session.testingStartCapture()
+        let partialEngine = ExclusionPartialEngine()
+        let partial = MeetingStreamingPartialSession(engine: partialEngine, label: "exclusion")
+        await partial.connect()
+        session.testingInstallMicPartial(partial)
+        defer { partial.stop() }
+        let reference = [Int16](repeating: 100, count: 10)
+        if !delayedReference { system.onPCMSamples?(reference) }
+        let token = session.beginMicrophoneExclusion(at: 102)
+        try old.emit([1, 2, 3, 4], at: 100) // Spans the opening boundary.
+        try await MeetingCaptureLifecycle.onDriverQueue { route.drainAcceptedAudio() }
+        session.endMicrophoneExclusion(token, at: 107)
+        session.endMicrophoneExclusion(UUID(), at: 0) // A foreign take cannot change it.
+        if handoffRoute {
+            let promoted = DispatchSemaphore(value: 0)
+            let handoff = route.onHandoffOutcome
+            route.onHandoffOutcome = { outcome in
+                handoff?(outcome)
+                if outcome == .promoted { promoted.signal() }
+            }
+            #expect(route.requestHealthRecovery(.init(reason: "exclusion", requiresNonZeroSamples: false)) == .initiated)
+            try await MeetingCaptureLifecycle.onDriverQueue { worker.sync {} }
+            try next.emit([5, 6, 7], at: 104)
+            let promotion = try await MeetingCaptureLifecycle.onDriverQueue { promoted.wait(timeout: .now() + 5) }
+            try #require(promotion == .success)
+            try next.emit([8, 9, 10], at: 107)
+        } else {
+            try old.emit([5, 6, 7], at: 104) // Delayed until after the window closed.
+            try old.emit([8, 9, 10], at: 107)
+        }
+        if delayedReference { system.onPCMSamples?(reference) }
+        let urls = await session.testingFinishCapture() // Flushes the final partial AEC frame.
+        defer { for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        func pcm(_ url: URL?) throws -> [Int16] {
+            try Data(contentsOf: #require(url)).dropFirst(44).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        }
+        let expected: [Int16] = [16383, 16383, 0, 0, 0, 0, 0, 16383, 16383, 16383]
+        #expect(try pcm(urls.0) == expected)
+        #expect(try pcm(urls.1) == reference)
+        #expect(try pcm(urls.2) == expected.map { Int16((Int($0) + 100) / 2) })
+        #expect(try pcm(urls.3) == expected)
+        #expect(video.withLock { $0 } == expected)
+        // Route promotion intentionally discards the old display-only tail.
+        if !handoffRoute {
+            _ = await partial.finish()
+            let partialSamples = await partialEngine.samples
+            #expect(Array(partialSamples.prefix(10)) == expected.map { Float($0) / 32767 })
+        }
+        session.testingPipelineBarrier {
+            #expect(processor.input.prefix(10).map { Int16($0 * 32767) } ==
+                [2047, 4095, 0, 0, 0, 0, 0, 16383, 18431, 20479])
+        }
+    }
+
     @Test("delivery fence includes queued first replacement audio; cancel invalidates it", arguments: [false, true])
     func queuedSelectionFence(cancel: Bool) {
         let delivery = MeetingMicrophoneDelivery(), old = UUID(), next = UUID()
@@ -1035,4 +1170,49 @@ private final class ContractAecProcessor: MeetingAecProcessor {
         events.append("process")
         return mic
     }
+}
+
+private final class OverlapDictationRecorder: DictationAudioRecording {
+    var preferredInputDeviceID: AudioObjectID?
+    var keepsAudioGraphWarm = false
+    var onFirstCapturedAudioBuffer: ((Date) -> Void)?
+    var onFirstSpeechDetected: ((Date) -> Void)?
+    var onNoAudioTimeout: ((Date) -> Void)?
+    var onRecordingFailed: ((Error, UUID) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
+    private let state = OSAllocatedUnfairLock(initialState: (started: false, stopped: false))
+    var started: Bool { state.withLock { $0.started } }
+    var stopped: Bool { state.withLock { $0.stopped } }
+    func prepare() throws {}
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {}
+    func warmUp(preferredInputDeviceID: AudioObjectID?) throws {}
+    func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {}
+    func coolDown() {}
+    var failStart = false
+    func start() throws -> UUID {
+        state.withLock { $0.started = true }
+        if failStart { throw NSError(domain: "synthetic", code: 1) }
+        return UUID()
+    }
+    func stop() -> URL? { state.withLock { $0.stopped = true }; return nil }
+    func cancel() { state.withLock { $0.stopped = true } }
+    func currentPower() -> Float { -24 }
+}
+
+/// Nonzero AEC output even for silent input proves redaction also runs after AEC.
+private final class ExclusionAecProcessor: MeetingAecProcessor {
+    let name = "test", frameSize = 4, sampleRate = 16_000
+    var input: [Float] = []
+    func reset() {}
+    func processFrame(mic: [Float], reference: [Float]) throws -> [Float] {
+        input += mic
+        return Array(repeating: 0.5, count: mic.count)
+    }
+}
+
+private actor ExclusionPartialEngine: MeetingStreamingPartialEngine {
+    private(set) var samples: [Float] = []
+    func setPartialHandler(_ handler: @escaping @Sendable (String) -> Void) {}
+    func process(samples: [Float]) { self.samples += samples }
+    func shutdown() {}
 }

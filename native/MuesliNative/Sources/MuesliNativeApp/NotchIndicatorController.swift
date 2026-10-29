@@ -187,6 +187,7 @@ final class NotchIndicatorController {
     private var recording = false
     private var paused = false
     private var meeting = false
+    private(set) var meetingStatus: String?
     private var handsFree = false
     private var activationID = 0
     private var completionID = 0
@@ -302,7 +303,8 @@ final class NotchIndicatorController {
               recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
-              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil) -> Bool {
+              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
+              meetingStatus: String? = nil) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         let continuesStatus = status != nil && self.status == status && isVisible
         requiresReview = false
@@ -338,6 +340,7 @@ final class NotchIndicatorController {
         self.geometry = geometry
         self.title = title
         self.detail = detail
+        self.meetingStatus = meetingStatus
         self.recording = recording
         self.paused = paused
         if !meeting || !recording {
@@ -488,7 +491,8 @@ final class NotchIndicatorController {
         panel.setFrame(frame, display: true)
         let view = NotchIndicatorView(geometry: geometry, active: visibility.active, activationID: activationID,
             completionID: completionID, handsFree: handsFree, accent: accent,
-            title: title, detail: detail, recording: recording, paused: paused, meeting: meeting, icon: icon,
+            title: title, detail: detail, recording: recording, paused: paused, meeting: meeting,
+            meetingStatus: meetingStatus, icon: icon,
             onCancel: { [weak self] in self?.cancelOrDismiss() },
             onToggleMeetingPause: { [weak self] in self?.onToggleMeetingPause?() },
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
@@ -689,6 +693,7 @@ private struct NotchIndicatorView: View {
     let recording: Bool
     let paused: Bool
     let meeting: Bool
+    let meetingStatus: String?
     let icon: NSImage
     let onCancel: () -> Void
     let onToggleMeetingPause: () -> Void
@@ -733,13 +738,18 @@ private struct NotchIndicatorView: View {
                 Button(action: onOpenHome) {
                     HStack(spacing: 5) {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 16, height: 16)
-                        Text(title).font(.system(size: 10, weight: .semibold))
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(title).font(.system(size: 10, weight: .semibold))
+                            if let meetingStatus {
+                                Text(meetingStatus).font(.system(size: 8)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(title). Open Muesli home")
+                .accessibilityLabel("\(title). \(meetingStatus.map { $0 + ". " } ?? "")Open Muesli home")
                 .help("Open Muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {

@@ -84,6 +84,54 @@ struct InferenceGateTests {
 @Suite("TranscriptionCoordinator routing")
 struct TranscriptionCoordinatorTests {
 
+    @Test("meeting and dictation reserve their requested model through inference", arguments: [false, true])
+    func concurrentRequestedModels(sameModel: Bool) async throws {
+        let coordinator = TranscriptionCoordinator()
+        let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
+        let models = RequestedModelTrace()
+        let meeting = BackendOption.whisperSmall
+        let dictation = sameModel ? meeting : .whisperTiny
+        await coordinator.testingInstallASR(prepare: { await models.prepare($0.model) }, infer: { backend, url in
+            if url.lastPathComponent == "meeting.wav" { await entered.signal(); await release.wait() }
+            #expect(await models.loaded == backend.model)
+            return .init(text: backend.model, segments: [])
+        })
+        let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: meeting) }
+        await entered.wait()
+        let second = Task { try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation) }
+        let preload = Task { try await coordinator.preloadRequired(backend: dictation, includeMeetingHelpers: false) }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await models.prepared == [meeting.model])
+        await release.signal()
+        let meetingResult = try await first.value
+        let dictationResult = try await second.value
+        #expect(meetingResult.text == meeting.model.capitalized)
+        #expect(dictationResult.text == dictation.model.capitalized)
+        try await preload.value
+    }
+
+    @Test("cancelled file ASR waiter cannot prepare or replace the current model")
+    func cancelledModelWaiter() async throws {
+        let coordinator = TranscriptionCoordinator()
+        let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
+        let models = RequestedModelTrace()
+        await coordinator.testingInstallASR(prepare: { await models.prepare($0.model) }, infer: { backend, _ in
+            await entered.signal(); await release.wait()
+            return .init(text: backend.model, segments: [])
+        })
+        let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: .whisperSmall) }
+        await entered.wait()
+        let cancelled = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/dictation.wav"), backend: .whisperTiny) }
+        try await Task.sleep(for: .milliseconds(30))
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(await models.prepared == [BackendOption.whisperSmall.model])
+        await release.signal()
+        _ = try await first.value
+        try await coordinator.preloadRequired(backend: .whisperTiny, includeMeetingHelpers: false)
+        #expect(await models.loaded == BackendOption.whisperTiny.model)
+    }
+
     @Test("coordinator initializes without crash")
     func initDoesNotCrash() {
         let _ = TranscriptionCoordinator()
@@ -667,4 +715,10 @@ struct Qwen3PostProcessingOutputCleanerTests {
             input: #"Subject quote Muesli launch notes body ask Priyanka to review the quote AI Models quote settings copy"#
         ))
     }
+}
+
+private actor RequestedModelTrace {
+    private(set) var prepared: [String] = []
+    private(set) var loaded: String?
+    func prepare(_ model: String) { prepared.append(model); loaded = model }
 }
