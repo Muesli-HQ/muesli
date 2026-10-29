@@ -67,6 +67,7 @@ case "${shard}" in
       UpdateFailureGuidanceTests
       WordCountTests
       CustomWordDictionaryTests
+      HuggingFaceAuthenticationTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
       BodhanArtifactValidationTests
@@ -78,6 +79,9 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       BufferedTranscriptionContinuityTests

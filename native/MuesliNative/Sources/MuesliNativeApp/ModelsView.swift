@@ -262,6 +262,10 @@ struct ModelsView: View {
                 modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
             }
 
+            if BackendOption.medASR.isCompatible() {
+                modelCard(option: .medASR, logo: "google-logo")
+            }
+
             if BackendOption.cohereTranscribe.isCompatible() {
                 modelCard(option: .cohereTranscribe, logo: "cohere-logo")
             }
@@ -1174,6 +1178,7 @@ struct ModelsView: View {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
+        case "medasr": return "google-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
@@ -1358,6 +1363,13 @@ struct ModelsView: View {
                         .background(MuesliTheme.surfacePrimary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
+            }
+
+            if option == .medASR {
+                Text("[Google](https://huggingface.co/google/medasr) · English · [Access & license](https://huggingface.co/Muesli-HQ/medasr-coreml)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .help("Accept the model's terms on Hugging Face, then sign in locally with hf auth login.")
             }
 
             if option == .phonon25 {
@@ -2019,6 +2031,9 @@ struct ModelsView: View {
             WhisperKitTranscriber.deleteModel(option.model)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
+        case "medasr":
+            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
+            try MedASRModel.plan().delete(fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
@@ -2110,6 +2125,8 @@ struct ModelsView: View {
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":

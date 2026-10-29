@@ -23,6 +23,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
     case appleSpeech = "apple-speech"
+    case medASR = "medasr"
     case cohere = "cohere-transcribe"
     case bodhanCore = "bodhan-core"
     case bodhanFlex = "bodhan-flex"
@@ -44,7 +45,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .parakeetV3, .phonon25: return .v3
         case .parakeetV2: return .v2
         case .parakeetRedux: return .redux
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
              .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
@@ -62,7 +63,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
              .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
@@ -649,7 +650,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
             transcriber = native
         case .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25: transcriber = batch
         case .parakeetUnified: transcriber = parakeetUnified

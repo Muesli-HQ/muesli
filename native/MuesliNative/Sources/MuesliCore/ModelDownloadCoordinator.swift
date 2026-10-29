@@ -565,6 +565,7 @@ public actor ModelDownloadCoordinator {
         let fm = FileManager.default
         let offset = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         var request = URLRequest(url: file.remoteURL)
+        HuggingFaceAuthentication.authorize(&request)
         request.timeoutInterval = 60
         if offset > 0 {
             request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
@@ -976,6 +977,14 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDataDelega
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         sink(for: dataTask.taskIdentifier)?.yield(.data(data))
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(HuggingFaceAuthentication.redirected(request, from: response.url))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

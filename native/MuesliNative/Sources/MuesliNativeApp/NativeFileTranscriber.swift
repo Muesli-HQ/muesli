@@ -5,6 +5,7 @@ import Foundation
 /// Stable command-line names are separate from provider repository identifiers.
 public enum NativeFileTranscriptionModel: String, CaseIterable, Sendable {
     case appleSpeech = "apple-speech"
+    case medASR = "medasr"
     case cohere = "cohere-transcribe"
     case bodhanCore = "bodhan-core"
     case bodhanFlex = "bodhan-flex"
@@ -16,6 +17,7 @@ public enum NativeFileTranscriptionModel: String, CaseIterable, Sendable {
     var backend: BackendOption {
         switch self {
         case .appleSpeech: .appleSpeechAnalyzer
+        case .medASR: .medASR
         case .cohere: .cohereTranscribe
         case .bodhanCore: .bodhanCore
         case .bodhanFlex: .bodhanFlex
@@ -71,6 +73,17 @@ public enum NativeFileTranscriber {
             // SpeechAnalyzer streams the file directly; don't impose the small
             // replay windows required by fixed-context transcription engines.
             return try await transcriber.transcribe(wavURL: wavURL).text
+        case .medASR:
+            let transcriber = MedASRTranscriber()
+            do {
+                try await transcriber.prepare(progress: report)
+                let result = try await transcriber.transcribe(wavURL: wavURL)
+                await transcriber.shutdown()
+                return result.text
+            } catch {
+                await transcriber.shutdown()
+                throw error
+            }
         case .cohere:
             guard #available(macOS 15, *) else { throw unsupported(model) }
             return try await transcribeCohereRecording(wavURL: wavURL) { url in

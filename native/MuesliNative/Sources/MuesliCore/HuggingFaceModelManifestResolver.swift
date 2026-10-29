@@ -65,7 +65,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
         let configuration = configuration.copy() as? URLSessionConfiguration ?? configuration
         configuration.timeoutIntervalForRequest = max(configuration.timeoutIntervalForRequest, 60)
         configuration.timeoutIntervalForResource = max(configuration.timeoutIntervalForResource, 180)
-        session = URLSession(configuration: configuration)
+        session = URLSession(configuration: configuration, delegate: HuggingFaceRedirectDelegate(), delegateQueue: nil)
     }
 
     public func resolve(
@@ -104,7 +104,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
                     relativePath: relativePath,
                     remoteURL: remoteURL,
                     expectedByteCount: entry.size,
-                    sha256: nil
+                    sha256: entry.lfs?.sha256
                 )
                 let fingerprint = "\(entry.path):\(entry.oid ?? ""): \(entry.size ?? -1)"
                 if let existing = filesByDestination[relativePath], existing.file.remoteURL != remoteURL {
@@ -178,10 +178,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 60
-                if let token = Self.huggingFaceToken,
-                   Self.isTrustedHuggingFaceURL(url) {
-                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                }
+                HuggingFaceAuthentication.authorize(&request)
                 let result = try await session.data(for: request)
                 // URLSession can complete successfully in the narrow window
                 // after its parent task is cancelled. Do not turn that late
@@ -210,12 +207,16 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
         let path: String
         let size: Int64?
         let oid: String?
-    }
+        let lfs: LFS?
 
-    private static var huggingFaceToken: String? {
-        ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
-            ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"]
+        struct LFS: Decodable {
+            let oid: String
+            var sha256: String? {
+                let value = oid.hasPrefix("sha256:") ? String(oid.dropFirst(7)) : oid
+                guard value.count == 64, value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+                return value
+            }
+        }
     }
 
     private static func treeURL(
@@ -262,10 +263,6 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             && candidate.host?.caseInsensitiveCompare(current.host ?? "") == .orderedSame
     }
 
-    private static func isTrustedHuggingFaceURL(_ url: URL) -> Bool {
-        url.scheme?.lowercased() == "https"
-            && url.host?.caseInsensitiveCompare("huggingface.co") == .orderedSame
-    }
 }
 
 private extension HuggingFaceModelSelection {
