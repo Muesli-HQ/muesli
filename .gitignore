@@ -95,6 +95,7 @@ scripts/dev-test.sh
 
 # Legacy files (kept locally, not tracked)
 CLAUDE.md
+# Local-only handoffs; never force-add these to commits or PRs.
 Context/
 app.py
 main.py

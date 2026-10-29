@@ -6,7 +6,40 @@ enum TranscriptCleanupDebugLogger {
     private static let maxLogFileBytes: UInt64 = 5 * 1024 * 1024
     private static let writeQueue = DispatchQueue(label: "MuesliNative.TranscriptCleanupDebugLogger")
 
+    @TaskLocal static var requestID: String?
+
+    struct PromptEntry: Encodable {
+        let requestID: String?
+        let userPrompt: String
+    }
+
+    static func prompt(_ userPrompt: String) {
+        guard isEnabled else { return }
+        append(PromptEntry(requestID: requestID, userPrompt: userPrompt),
+               to: AppIdentity.supportDirectoryURL.appendingPathComponent("cleanup-prompts.jsonl"))
+    }
+
+    struct TimingEntry: Encodable {
+        let ts: String
+        let requestID: String?
+        let stage: String
+        let elapsedMs: Double
+        let detail: String?
+    }
+
+    /// Monotonic durations; no transcript or screen contents in timing records.
+    static func timing(_ stage: String, since start: TimeInterval, detail: String? = nil) {
+        guard isEnabled else { return }
+        append(TimingEntry(ts: ISO8601DateFormatter().string(from: Date()),
+                           requestID: requestID, stage: stage,
+                           elapsedMs: (ProcessInfo.processInfo.systemUptime - start) * 1000,
+                           detail: detail),
+               to: AppIdentity.supportDirectoryURL.appendingPathComponent("cleanup-timing.jsonl"))
+    }
+
     struct Entry: Encodable {
+        let requestID: String?
+
         let ts: String
         let status: String
         let cleanupBackend: String
@@ -36,6 +69,7 @@ enum TranscriptCleanupDebugLogger {
         let iso8601 = ISO8601DateFormatter()
         iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let entry = Entry(
+            requestID: requestID,
             ts: iso8601.string(from: Date()),
             status: status,
             cleanupBackend: cleanupBackend.backend,
@@ -56,7 +90,7 @@ enum TranscriptCleanupDebugLogger {
         return raw == "1" || raw == "true" || raw == "yes" || Qwen3PostProcessorLogging.isPairLoggingEnabled
     }
 
-    private static func append(_ entry: Entry, to logURL: URL) {
+    private static func append<T: Encodable>(_ entry: T, to logURL: URL) {
         writeQueue.sync {
             guard var data = try? JSONEncoder().encode(entry) else { return }
             data.append(0x0A)

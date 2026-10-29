@@ -4,7 +4,6 @@
 AppConfigAppearanceTests
 AppScopedDictationRecorderTests
 AudioDuckingControllerTests
-AudioFileImportControllerTests
 AudioRouteClassifierTests
 BrowserMeetingActivityCollectorTests
 CohereTranscribeLanguageTests
@@ -30,7 +29,6 @@ MeetingAutoStopPolicyTests
 MeetingCandidateResolverTests
 MeetingChunkTimingTrackerTests
 MeetingExporterTests
-MeetingHookIntegrationTests
 MeetingHookRunnerTests
 MeetingMarkdownAutoExporterTests
 MeetingMediaSessionTrackerTests
@@ -60,7 +58,6 @@ SystemTurnNormalizerTests
 TelemetryRuntimeConfigurationTests
 TranscriptChatMessageTests
 TranscriptCleanupBackendOptionTests
-TranscriptReconcilerTests
 UpcomingMeetingsWindowTests
 UpdateActionRoutingTests
 WhisperKitTranscriberTests
