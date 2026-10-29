@@ -694,7 +694,7 @@ struct DictationAudioRouteControllerTests {
         rig.controller.scheduleRouteChangeRefresh(.defaultInput)
 
         try await rig.waitUntil { rig.replacement.startCalls == 1 }
-        rig.replacement.onRawPCMSamples?([1])
+        rig.replacement.emit([1])
         try await rig.waitUntil { rig.initial.stopCalls == 1 }
         #expect(rig.recorder.preferredInputDeviceID == nil)
         #expect(rig.recorder.activeRecorderKindForDebug() == .systemDefault)

@@ -1157,18 +1157,19 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeout: 1,
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
-        var samples: [[Int16]] = []
-        recorder.onRawPCMSamples = { samples.append($0) }
+        let samples = OSAllocatedUnfairLock(initialState: [[Int16]]())
+        recorder.onRawPCMSamples = { audio in samples.withLock { $0.append(audio.samples) } }
         try recorder.start()
 
         route.defaultInputDeviceID = 91
         recorder.preferredInputDeviceID = nil
 
         try await waitUntil { replacement.startCalls == 1 }
-        initial.onRawPCMSamples?([1])
-        replacement.onRawPCMSamples?([2])
+        initial.emit([1])
+        replacement.emit([2])
         try await waitUntil { initial.stopCalls == 1 }
-        #expect(samples == [[1], [2]])
+        try await waitUntil { samples.withLock { $0.count == 2 } }
+        #expect(samples.withLock { $0 } == [[1], [2]])
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
         recorder.cancel()
         recorder.waitForQuiescence()
@@ -1225,7 +1226,7 @@ struct RouteAwareMeetingMicRecorderTests {
         for _ in 0..<5 { recorder.preferredInputDeviceID = nil }
 
         try await waitUntil { replacement.startCalls == 1 }
-        replacement.onRawPCMSamples?([3])
+        replacement.emit([3])
         try await waitUntil { initial.stopCalls == 1 }
         // Settled: more notifications for the default that is already captured stay quiet.
         for _ in 0..<5 { recorder.preferredInputDeviceID = nil }
@@ -1261,7 +1262,7 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.preferredInputDeviceID = nil
 
         try await waitUntil { second.startCalls == 1 }
-        second.onRawPCMSamples?([4])
+        second.emit([4])
         try await waitUntil { initial.stopCalls == 1 }
         #expect(first.cancelCalls == 1)
         #expect(first.stopCalls == 0)
@@ -1291,7 +1292,7 @@ struct RouteAwareMeetingMicRecorderTests {
 
         recorder.resume()
         try await waitUntil { replacement.startCalls == 1 }
-        replacement.onRawPCMSamples?([5])
+        replacement.emit([5])
         try await waitUntil { initial.stopCalls == 1 }
         recorder.cancel()
         recorder.waitForQuiescence()
@@ -1406,7 +1407,7 @@ struct RouteAwareMeetingMicRecorderTests {
 
         recorder.resume()
         try await waitUntil { replacement.startCalls == 1 }
-        replacement.onRawPCMSamples?([6])
+        replacement.emit([6])
         try await waitUntil { initial.stopCalls == 1 }
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
         recorder.cancel()
@@ -1438,7 +1439,7 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.preferredInputDeviceID = nil
 
         try await waitUntil { replacement.startCalls == 1 }
-        replacement.onRawPCMSamples?([7])
+        replacement.emit([7])
         try await waitUntil { initial.stopCalls == 1 }
         recorder.cancel()
         recorder.waitForQuiescence()
