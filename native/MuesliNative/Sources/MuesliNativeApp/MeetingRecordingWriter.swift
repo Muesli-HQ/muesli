@@ -47,6 +47,11 @@ enum MeetingRecordingFileFormat: String, CaseIterable, Sendable {
     }
 }
 
+struct MeetingRecordingStopResult {
+    let recordingURL: URL?
+    let error: Error?
+}
+
 final class MeetingRecordingWriter {
     private final class ExportSessionBox: @unchecked Sendable {
         let session: AVAssetExportSession
@@ -62,15 +67,19 @@ final class MeetingRecordingWriter {
         var bytesWritten: Int = 0
         var pendingMic: [Int16] = []
         var pendingSystem: [Int16] = []
+        var firstFrame: Int64?
+        var writeFailure: Error?
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
+    private let synchronize: (FileHandle) throws -> Void
 
-    init() throws {
+    init(destination: URL? = nil, synchronize: @escaping (FileHandle) throws -> Void = { try $0.synchronize() }) throws {
+        self.synchronize = synchronize
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let fileURL = tempDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        let fileURL = destination ?? tempDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         guard let fileHandle = FileHandle(forWritingAtPath: fileURL.path) else {
             throw NSError(
@@ -79,9 +88,43 @@ final class MeetingRecordingWriter {
                 userInfo: [NSLocalizedDescriptionKey: "Could not open retained meeting recording file for writing."]
             )
         }
-        fileHandle.write(Self.wavHeader(dataSize: 0))
+        try fileHandle.write(contentsOf: WavWriter.header(dataSize: 0))
         lock.withLock {
             $0 = State(fileHandle: fileHandle, fileURL: fileURL)
+        }
+    }
+
+    /// Incremental microphone-only path; meeting mixing retains its existing defaults.
+    func appendMicrophone(_ samples: [Int16], startFrame: Int64) throws {
+        try lock.withLock { state in
+            guard let handle = state.fileHandle else { throw ScreenVideoRecorder.error("Narration writer is closed") }
+            if let failure = state.writeFailure { throw failure }
+            guard !samples.isEmpty else { return }
+            if state.firstFrame == nil { state.firstFrame = startFrame }
+            let position = startFrame - state.firstFrame!
+            let written = Int64(state.bytesWritten / 2)
+            let overlap = Int(max(0, written - position))
+            guard overlap < samples.count else { return }
+            do {
+                var gap = max(0, position - written)
+                guard gap <= 16_000 * 600 else { throw ScreenVideoRecorder.error("Invalid narration clock gap") }
+                while gap > 0 {
+                    let count = Int(min(gap, 16_000))
+                    try handle.write(contentsOf: Data(count: count * 2))
+                    state.bytesWritten += count * 2; gap -= Int64(count)
+                }
+                let block = Array(samples.dropFirst(overlap))
+                try block.withUnsafeBufferPointer { try handle.write(contentsOf: Data(buffer: $0)) }
+                state.bytesWritten += block.count * 2
+            } catch { state.writeFailure = error; throw error }
+        }
+    }
+
+    func finishMicrophone() throws -> URL? {
+        try lock.withLock { state in
+            guard let result = closeFile(state: &state) else { return nil }
+            if let failure = result.failure { throw failure }
+            return result.bytes > 0 ? result.url : nil
         }
     }
 
@@ -93,24 +136,40 @@ final class MeetingRecordingWriter {
         append(samples, toMic: false)
     }
 
-    func stop() -> URL? {
+    func stopRecording() -> MeetingRecordingStopResult {
         lock.withLock { state in
             writeMixedSamples(state: &state, flushAll: true)
-            guard let fileHandle = state.fileHandle, let fileURL = state.fileURL else { return nil }
-
-            fileHandle.seek(toFileOffset: 0)
-            fileHandle.write(Self.wavHeader(dataSize: UInt32(state.bytesWritten)))
-            fileHandle.closeFile()
-
-            let outputURL = fileURL
-            let bytesWritten = state.bytesWritten
-            state = State()
-            if bytesWritten == 0 {
-                try? FileManager.default.removeItem(at: outputURL)
-                return nil
+            let result = closeFile(state: &state)
+            guard let result else { return MeetingRecordingStopResult(recordingURL: nil, error: nil) }
+            if result.bytes == 0 {
+                try? FileManager.default.removeItem(at: result.url)
+                return MeetingRecordingStopResult(recordingURL: nil, error: result.failure)
             }
-            return outputURL
+            return MeetingRecordingStopResult(recordingURL: result.url, error: result.failure)
         }
+    }
+
+    func stop() -> URL? {
+        stopRecording().recordingURL
+    }
+
+    private func closeFile(state: inout State) -> (url: URL, bytes: Int, failure: Error?)? {
+        guard let handle = state.fileHandle, let url = state.fileURL else { return nil }
+        defer { state = State() }
+        var failure: Error?
+        do {
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: WavWriter.header(dataSize: UInt32(state.bytesWritten)))
+            try synchronize(handle)
+        } catch {
+            failure = error
+        }
+        do {
+            try handle.close()
+        } catch {
+            failure = failure ?? error
+        }
+        return (url, state.bytesWritten, failure ?? state.writeFailure)
     }
 
     func markPauseBoundary() {
@@ -138,6 +197,17 @@ final class MeetingRecordingWriter {
         supportDirectory: URL,
         fileFormat: MeetingRecordingFileFormat = .m4a
     ) async throws -> URL {
+        _ = try WavWriter.repairIncrementalWAV(at: tempURL)
+        guard let source = try? AVAudioFile(forReading: tempURL),
+              source.length > 0,
+              source.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatLinearPCM else {
+            throw NSError(
+                domain: "MeetingRecordingWriter",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Could not validate the retained meeting WAV file."]
+            )
+        }
+
         let recordingsDirectory = supportDirectory
             .appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -264,28 +334,4 @@ final class MeetingRecordingWriter {
         }
     }
 
-    private static func wavHeader(dataSize: UInt32) -> Data {
-        let sampleRate: UInt32 = 16_000
-        let channels: UInt16 = 1
-        let bitsPerSample: UInt16 = 16
-        let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
-        let blockAlign = channels * (bitsPerSample / 8)
-        let chunkSize = 36 + dataSize
-
-        var header = Data()
-        header.append(contentsOf: "RIFF".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: chunkSize.littleEndian) { Array($0) })
-        header.append(contentsOf: "WAVE".utf8)
-        header.append(contentsOf: "fmt ".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: channels.littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: sampleRate.littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: byteRate.littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: blockAlign.littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: bitsPerSample.littleEndian) { Array($0) })
-        header.append(contentsOf: "data".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian) { Array($0) })
-        return header
-    }
 }

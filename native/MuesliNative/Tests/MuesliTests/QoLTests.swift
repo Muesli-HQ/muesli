@@ -674,6 +674,8 @@ struct FloatingIndicatorPointerInteractionTests {
         pointer = NSPoint(x: compact.midX, y: compact.midY)
         let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
             .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        // AppKit may defer its first tracking-area update in a headless test host.
+        pill.updateTrackingAreas()
         let tracking = try #require(pill.trackingAreas.first)
         indicator.setHovered(true)
         if leavesDuringExpansion {
@@ -741,6 +743,8 @@ struct FloatingIndicatorPointerInteractionTests {
         let store = ConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = .classic
+        config.dictationHotkey.label = "Fn"
         store.save(config)
         var pointer = NSPoint(x: -100_000, y: -100_000)
         let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
@@ -757,15 +761,47 @@ struct FloatingIndicatorPointerInteractionTests {
         // Interrupt expansion while its completion callback is still pending.
         switch presentation {
         case "loading": indicator.showLoading("Transcribing audio…")
-        case "notice": indicator.showWarning("Microphone unavailable", duration: 1.5)
+        case "notice":
+            // This test covers hover callback ownership, not notice expiry.
+            // Keep the notice alive through delayed UI scheduling in CI.
+            indicator.showWarning("Microphone unavailable", duration: 5.0)
         default: indicator.setState(.recording, config: config)
         }
         pointer = NSPoint(x: -100_000, y: -100_000)
-        try await Task.sleep(for: .milliseconds(300))
+        // Notice and loading presentations recenter from the 220-point
+        // expanded hover pill to their own widths. Wait for that visible
+        // geometry instead of sampling the old origin while AppKit is still
+        // animating the frame.
+        let expandedPresentationCenter = CGPoint(x: compact.minX + 110, y: compact.minY + 18)
+        if presentation == "notice" || presentation == "loading" {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .seconds(2))
+            var reachedExpandedCenter = false
+            while clock.now < deadline {
+                if let frame = indicator.currentFrame,
+                   frame.width > compact.width, frame.width < 220,
+                   abs(frame.midX - expandedPresentationCenter.x) <= 1,
+                   abs(frame.midY - expandedPresentationCenter.y) <= 1 {
+                    reachedExpandedCenter = true
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(reachedExpandedCenter)
+        } else {
+            try await Task.sleep(for: .milliseconds(300))
+        }
         let presented = try #require(indicator.currentFrame)
         #expect(presented.size != compact.size)
         try await Task.sleep(for: .milliseconds(400))
-        #expect(indicator.currentFrame == presented)
+        let current = try #require(indicator.currentFrame)
+        if presentation == "notice" || presentation == "loading" {
+            #expect(current.width > compact.width && current.width < 220)
+            #expect(abs(current.midX - expandedPresentationCenter.x) <= 1)
+            #expect(abs(current.midY - expandedPresentationCenter.y) <= 1)
+        } else {
+            #expect(current == presented)
+        }
     }
 
     @MainActor

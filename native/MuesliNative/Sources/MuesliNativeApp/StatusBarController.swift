@@ -145,6 +145,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        if controller.config.enableFeedbackCapture {
+            let active = controller.feedbackCaptureOwnsMicrophone
+            menu.addItem(actionItem(title: active ? "Finish Scrawl" : "Start Scrawl",
+                action: active ? #selector(MuesliController.finishFeedbackCapture) : #selector(MuesliController.toggleFeedbackCapture)))
+        }
+        menu.addItem(actionItem(title: "Open Scrawl Captures…", action: #selector(MuesliController.openFeedbackCaptures)))
+        menu.addItem(.separator())
+
         let recentItem = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
         let recentMenu = NSMenu()
         let recentRows = controller.recentDictations()
