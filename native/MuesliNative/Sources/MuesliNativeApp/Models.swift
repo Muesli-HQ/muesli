@@ -2170,6 +2170,61 @@ enum AppAppearanceMode: String, CaseIterable {
     }
 }
 
+/// How much Cotypist suggests at once.
+enum CotypistSuggestionLength: String, Codable, CaseIterable {
+    case word, phrase, sentence
+
+    var label: String {
+        switch self {
+        case .word: "One word"
+        case .phrase: "Short phrase"
+        case .sentence: "Up to a sentence"
+        }
+    }
+
+    var maxWords: Int {
+        switch self {
+        case .word: 1
+        case .phrase: 3
+        case .sentence: 6
+        }
+    }
+}
+
+/// How sure the model must be before Cotypist shows anything.
+enum CotypistFrequency: String, Codable, CaseIterable {
+    case fewer, balanced, more
+
+    var label: String {
+        switch self {
+        case .fewer: "Fewer, more accurate"
+        case .balanced: "Balanced"
+        case .more: "More often"
+        }
+    }
+}
+
+/// How long a pause inside a word before Cotypist completes it.
+enum CotypistWordPause: String, Codable, CaseIterable {
+    case fast, normal, relaxed
+
+    var label: String {
+        switch self {
+        case .fast: "Short (0.3 s)"
+        case .normal: "Normal (0.5 s)"
+        case .relaxed: "Long (0.8 s)"
+        }
+    }
+
+    var seconds: Double {
+        switch self {
+        case .fast: 0.3
+        case .normal: 0.5
+        case .relaxed: 0.8
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -2331,6 +2386,15 @@ struct AppConfig: Codable {
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
+    var cotypistSuggestionLength: CotypistSuggestionLength = .sentence
+    var cotypistFrequency: CotypistFrequency = .balanced
+    var cotypistCompleteWords: Bool = true
+    var cotypistWordPause: CotypistWordPause = .normal
+    /// Bundle IDs of apps where Cotypist stays quiet.
+    var cotypistDisabledApps: [String] = []
+    /// Read on-screen text (OCR) as extra context when the field itself says little.
+    var cotypistUseScreenContext: Bool = true
+    var cotypistModel: CotypistModel = .defaultModel
     var useCoreAudioTap: Bool = true
     /// Enables the explicitly selected live meeting transcription mode.
     var enableLiveStreamingPartials: Bool = false
@@ -2493,6 +2557,13 @@ struct AppConfig: Codable {
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
+        case cotypistSuggestionLength = "cotypist_suggestion_length"
+        case cotypistFrequency = "cotypist_frequency"
+        case cotypistCompleteWords = "cotypist_complete_words"
+        case cotypistWordPause = "cotypist_word_pause"
+        case cotypistDisabledApps = "cotypist_disabled_apps"
+        case cotypistUseScreenContext = "cotypist_use_screen_context"
+        case cotypistModel = "cotypist_model"
         case useCoreAudioTap = "use_core_audio_tap"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
@@ -2772,6 +2843,13 @@ struct AppConfig: Codable {
         }
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
+        cotypistSuggestionLength = (try? c.decode(CotypistSuggestionLength.self, forKey: .cotypistSuggestionLength)) ?? defaults.cotypistSuggestionLength
+        cotypistFrequency = (try? c.decode(CotypistFrequency.self, forKey: .cotypistFrequency)) ?? defaults.cotypistFrequency
+        cotypistCompleteWords = (try? c.decode(Bool.self, forKey: .cotypistCompleteWords)) ?? defaults.cotypistCompleteWords
+        cotypistWordPause = (try? c.decode(CotypistWordPause.self, forKey: .cotypistWordPause)) ?? defaults.cotypistWordPause
+        cotypistDisabledApps = (try? c.decode([String].self, forKey: .cotypistDisabledApps)) ?? defaults.cotypistDisabledApps
+        cotypistUseScreenContext = (try? c.decode(Bool.self, forKey: .cotypistUseScreenContext)) ?? defaults.cotypistUseScreenContext
+        cotypistModel = (try? c.decode(CotypistModel.self, forKey: .cotypistModel)) ?? defaults.cotypistModel
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
         enableLiveStreamingPartials = (try? c.decode(Bool.self, forKey: .enableLiveStreamingPartials)) ?? defaults.enableLiveStreamingPartials
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend

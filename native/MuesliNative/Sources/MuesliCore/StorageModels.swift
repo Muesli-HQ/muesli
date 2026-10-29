@@ -194,9 +194,98 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
     }
 }
 
+/// One Cotypist typeahead suggestion shown to the user and what happened to it.
+public struct CotypistSuggestionEvent: Sendable, Equatable {
+    public enum Outcome: String, Sendable {
+        /// Tab took all of it (possibly after some words were taken one at a time).
+        case accepted
+        /// Some words were taken one at a time, then the rest was typed over.
+        case partial
+        /// Typed over without taking any of it.
+        case ignored
+        /// Gone without typing over it: a click, a focus change, switching apps.
+        case dismissed
+    }
+
+    public let date: Date
+    public let appBundleID: String
+    public let appName: String
+    /// `boundary` (after a space or punctuation) or `mid-word` (completing a half-typed word).
+    public let trigger: String
+    public let suggestionText: String
+    public let acceptedText: String
+    /// The sentence the user was writing when the suggestion appeared, up to the caret.
+    public let contextBefore: String
+    public let outcome: Outcome
+    public let firstWordLogProb: Double?
+    public let firstMs: Int?
+    public let fullMs: Int?
+    /// Where the context came from (field, accessibility, agent-prompt, keystrokes, +ocr).
+    public let contextSource: String
+    public let model: String
+
+    public init(date: Date, appBundleID: String, appName: String, trigger: String, suggestionText: String,
+                acceptedText: String, contextBefore: String = "", outcome: Outcome, firstWordLogProb: Double?, firstMs: Int?, fullMs: Int?,
+                contextSource: String, model: String) {
+        self.date = date
+        self.appBundleID = appBundleID
+        self.appName = appName
+        self.trigger = trigger
+        self.suggestionText = suggestionText
+        self.acceptedText = acceptedText
+        self.contextBefore = contextBefore
+        self.outcome = outcome
+        self.firstWordLogProb = firstWordLogProb
+        self.firstMs = firstMs
+        self.fullMs = fullMs
+        self.contextSource = contextSource
+        self.model = model
+    }
+}
+
+/// Accepted suggestion text and the sentence it completed.
+public struct CotypistAcceptance: Sendable, Equatable {
+    public let contextBefore: String
+    public let text: String
+
+    public init(contextBefore: String, text: String) {
+        self.contextBefore = contextBefore
+        self.text = text
+    }
+}
+
+/// A run of Cotypist use in one app: what was accepted there, for the timeline. A session stays
+/// open while suggestions keep coming in that app; a quiet spell starts a new one.
+public struct CotypistSessionRecord: Identifiable, Sendable, Equatable {
+    public let id: Int64
+    public let timestamp: String
+    public let lastActivityAt: String
+    public let targetAppName: String
+    public let targetAppBundleID: String
+    /// Accepted suggestions in order, each with the sentence it completed.
+    public let acceptances: [CotypistAcceptance]
+    public let wordsAccepted: Int
+    public let suggestionsShown: Int
+    public let suggestionsAccepted: Int
+
+    public init(id: Int64, timestamp: String, lastActivityAt: String, targetAppName: String, targetAppBundleID: String,
+                acceptances: [CotypistAcceptance], wordsAccepted: Int, suggestionsShown: Int, suggestionsAccepted: Int) {
+        self.id = id
+        self.timestamp = timestamp
+        self.lastActivityAt = lastActivityAt
+        self.targetAppName = targetAppName
+        self.targetAppBundleID = targetAppBundleID
+        self.acceptances = acceptances
+        self.wordsAccepted = wordsAccepted
+        self.suggestionsShown = suggestionsShown
+        self.suggestionsAccepted = suggestionsAccepted
+    }
+}
+
 public enum TimelineEntry: Identifiable, Sendable {
     case dictation(DictationRecord)
     case meeting(MeetingRecord)
+    case cotypist(CotypistSessionRecord)
 
     public var id: String {
         switch self {
@@ -204,6 +293,8 @@ public enum TimelineEntry: Identifiable, Sendable {
             return "dictation:\(record.id)"
         case .meeting(let record):
             return "meeting:\(record.id)"
+        case .cotypist(let record):
+            return "cotypist:\(record.id)"
         }
     }
 
@@ -213,6 +304,8 @@ public enum TimelineEntry: Identifiable, Sendable {
             return record.timestamp
         case .meeting(let record):
             return record.startTime
+        case .cotypist(let record):
+            return record.timestamp
         }
     }
 }
@@ -684,6 +777,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let meetingWords: [InsightsWordFrequency]
     public let modelUsage: [InsightsUsage]
     public let appUsage: [InsightsUsage]
+    /// Nil when Cotypist accepted nothing in the range.
+    public let cotypist: InsightsCotypistTotals?
 
     public init(
         range: InsightsRange,
@@ -697,7 +792,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         dictationWords: [InsightsWordFrequency],
         meetingWords: [InsightsWordFrequency],
         modelUsage: [InsightsUsage] = [],
-        appUsage: [InsightsUsage] = []
+        appUsage: [InsightsUsage] = [],
+        cotypist: InsightsCotypistTotals? = nil
     ) {
         self.range = range
         self.generatedAt = generatedAt
@@ -711,5 +807,23 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         self.modelUsage = modelUsage
         self.appUsage = appUsage
         self.meetingWords = meetingWords
+        self.cotypist = cotypist
+    }
+}
+
+/// Cotypist across an Insights range: what it wrote for the user, and how often a suggestion was taken.
+public struct InsightsCotypistTotals: Codable, Sendable, Equatable {
+    public let wordsAccepted: Int
+    public let suggestionsAccepted: Int
+    /// Share of shown suggestions that were taken, at least partly. Untaken suggestions are kept
+    /// for `rateDays` at most, so the rate covers the range or that many days, whichever is shorter.
+    public let acceptanceRate: Double?
+    public let rateDays: Int
+
+    public init(wordsAccepted: Int, suggestionsAccepted: Int, acceptanceRate: Double?, rateDays: Int) {
+        self.wordsAccepted = wordsAccepted
+        self.suggestionsAccepted = suggestionsAccepted
+        self.acceptanceRate = acceptanceRate
+        self.rateDays = rateDays
     }
 }
