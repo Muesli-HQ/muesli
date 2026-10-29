@@ -97,29 +97,50 @@ struct TranscriptionCoordinatorTests {
         #expect(await trace.prepared.isEmpty)
     }
 
-    @Test("meeting and dictation reserve their requested model through inference", arguments: [false, true])
-    func concurrentRequestedModels(sameModel: Bool) async throws {
+    @Test("requested models retain ownership while independent Gemma and Parakeet progress",
+          arguments: ["same-whisper", "different-whisper", "gemma-meeting", "gemma-dictation"])
+    func concurrentRequestedModels(scenario: String) async throws {
         let coordinator = TranscriptionCoordinator()
         let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
         let models = RequestedModelTrace()
-        let meeting = BackendOption.whisperSmall
-        let dictation = sameModel ? meeting : .whisperTiny
+        let independent = scenario.hasPrefix("gemma-")
+        let meeting: BackendOption = scenario == "gemma-meeting" ? .gemma4E2BLiteRT
+            : (independent ? .parakeetEnglish : .whisperSmall)
+        let dictation: BackendOption = scenario == "gemma-dictation" ? .gemma4E2BLiteRT
+            : (independent ? .parakeetEnglish : (scenario == "same-whisper" ? meeting : .whisperTiny))
+        let inferred = TranscriptionLifecycleTestCounter(), preloaded = TranscriptionLifecycleTestCounter()
         await coordinator.testingInstallASR(prepare: { await models.prepare($0.model) }, infer: { backend, url in
             if url.lastPathComponent == "meeting.wav" { await entered.signal(); await release.wait() }
-            #expect(await models.loaded == backend.model)
-            return .init(text: backend.model, segments: [])
+            if !independent { #expect(await models.loaded == backend.model) }
+            return .init(text: independent ? "accepted" : backend.model, segments: [])
         })
         let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: meeting) }
         await entered.wait()
-        let second = Task { try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation) }
-        let preload = Task { try await coordinator.preloadRequired(backend: dictation, includeMeetingHelpers: false) }
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(await models.prepared == [meeting.model])
+        let second = Task {
+            let result = try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation)
+            await inferred.increment()
+            return result
+        }
+        let preload = Task {
+            try await coordinator.preloadRequired(backend: dictation, includeMeetingHelpers: false)
+            await preloaded.increment()
+        }
+        if independent {
+            for _ in 0..<100 {
+                if await inferred.value == 1, await preloaded.value == 1 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await inferred.value == 1, "Independent dictation must finish while meeting inference is held")
+            #expect(await preloaded.value == 1, "Independent preload must finish while meeting inference is held")
+        } else {
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(await models.prepared == [meeting.model])
+        }
         await release.signal()
         let meetingResult = try await first.value
         let dictationResult = try await second.value
-        #expect(meetingResult.text == meeting.model.capitalized)
-        #expect(dictationResult.text == dictation.model.capitalized)
+        #expect(meetingResult.text == (independent ? "Accepted" : meeting.model.capitalized))
+        #expect(dictationResult.text == (independent ? "Accepted" : dictation.model.capitalized))
         try await preload.value
     }
 

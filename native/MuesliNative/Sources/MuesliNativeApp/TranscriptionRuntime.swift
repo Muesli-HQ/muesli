@@ -247,10 +247,6 @@ actor TranscriptionCoordinator {
     }
 
     func unloadGemma4LiteRTTranscriber() async {
-        _ = try? await withModelReservation { await self.releaseGemma4LiteRTTranscriber() }
-    }
-
-    private func releaseGemma4LiteRTTranscriber() async {
         // Invalidate before suspension so a cached plan cannot admit recording.
         await nativeGemmaReadinessInvalidated()
         if #available(macOS 15, *) {
@@ -584,14 +580,12 @@ actor TranscriptionCoordinator {
 
     func prepareNativeGemmaModels(_ plan: GemmaPreparationPlan, progress: @escaping @Sendable (String) -> Void) async throws {
         guard #available(macOS 15, *) else { return }
-        try await withModelReservation {
-            try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
-                progress("Preparing \(entry.model.label)… Mic off")
-                try await self.nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
-            }, optionalFailure: { entry, error in
-                fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
-            })
-        }
+        try await plan.prepare(optionalModelAvailable: { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }, using: { entry in
+            progress("Preparing \(entry.model.label)… Mic off")
+            try await self.nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
+        }, optionalFailure: { entry, error in
+            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+        })
     }
 
     @available(macOS 15, *)
@@ -710,9 +704,14 @@ actor TranscriptionCoordinator {
         if includeMeetingHelpers {
             await preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
-        try await withModelReservation {
+        let prepare = {
             try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage,
                 progress: progress, progressSnapshot: progressSnapshot, warmup: true)
+        }
+        if backend.backend == "gemma4-litert" {
+            try await prepare()
+        } else {
+            try await withModelReservation(prepare)
         }
 
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
@@ -1346,8 +1345,10 @@ actor TranscriptionCoordinator {
                 await qwen3Transcriber.shutdown()
                 await cohereTranscriber.shutdown()
                 await bodhanTranscriber.shutdown()
-                await releaseGemma4LiteRTTranscriber()
             }
+        }
+        if #available(macOS 15, *) {
+            await unloadGemma4LiteRTTranscriber()
         }
         if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
             await postProcessor.shutdown()
@@ -1650,11 +1651,11 @@ actor TranscriptionCoordinator {
         parakeetLanguage: ParakeetLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
-        try await withModelReservation {
+        let infer = {
             self.activeBackend = backend.backend
             switch backend.backend {
             case "bodhan", "apple-speech", "nemotron35", "cohere", "gemma4-litert":
-                break // These file adapters prepare within the reserved inference.
+                break // These file adapters prepare within their inference owner.
             default:
                 try await self.prepareASR(backend: backend, appleSpeechLanguage: appleSpeechLanguage)
             }
@@ -1667,6 +1668,9 @@ actor TranscriptionCoordinator {
                 whisperLanguage: whisperLanguage, qwen3AsrLanguage: qwen3AsrLanguage,
                 parakeetLanguage: parakeetLanguage, appleSpeechLanguage: appleSpeechLanguage)
         }
+        // Gemma's stable per-model engine owns preparation, inference and shutdown.
+        if backend.backend == "gemma4-litert" { return try await infer() }
+        return try await withModelReservation(infer)
     }
 
     private func routePrepared(

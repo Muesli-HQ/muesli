@@ -55,6 +55,8 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
 - **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
 
+Hotkey dictation works while a meeting is recording or paused, with normal cursor paste and separate dictation or voice-note output. The meeting's local microphone track is silenced from an explicit dictation start attempt until stopping, cancellation, or startup failure completes, including attempts that capture no dictation audio. System audio capture continues.
+
 ---
 
 ## Install
