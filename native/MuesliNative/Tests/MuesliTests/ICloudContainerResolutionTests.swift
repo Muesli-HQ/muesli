@@ -90,6 +90,17 @@ struct ICloudSyncStateScopeTests {
         #expect(mineOwner.contains(mine))
     }
 
+    @Test("a container named like another's owner key cannot overwrite that owner")
+    func containerSuffixCannotForgeAnotherOwnerKey() {
+        let lookalike = "\(mine).account-owner"
+        for environment in ["production", "development", "unspecified"] {
+            #expect(MuesliCKSyncEngine.stateKey(environment: environment, container: lookalike)
+                != MuesliCKSyncEngine.accountScopeKey(environment: environment, container: mine))
+            #expect(UserDefaultsICloudChangeTokenStore.defaultKey(container: lookalike)
+                != UserDefaultsICloudChangeTokenStore.defaultKey(container: mine))
+        }
+    }
+
     @Test("a state key never collides with an owner key")
     func stateAndOwnerKeysStayDistinct() {
         for container in [upstream, mine] {

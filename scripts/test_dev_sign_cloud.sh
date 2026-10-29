@@ -56,11 +56,13 @@ fail() {
 
 # make_profile <path> <container...>: a profile for $BUNDLE_ID. Optional knobs via env:
 # PROFILE_ENVIRONMENT (default "Development Production" as an array, "none" omits the key,
-# "string:X" stores a plain string), PROFILE_APS (default development, "none" omits).
+# "string:X" stores a plain string), PROFILE_APS (default development, "none" omits),
+# PROFILE_SERVICES (default "CloudKit" as an array, "none" omits, "string:X" stores a plain string).
 make_profile() {
   local path="$1"
   shift
   local key="Entitlements" env_spec="${PROFILE_ENVIRONMENT-Development Production}" aps="${PROFILE_APS-development}"
+  local services="${PROFILE_SERVICES-CloudKit}"
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>' > "$path"
   "$PLISTBUDDY" -c "Add :$key dict" "$path"
   "$PLISTBUDDY" -c "Add :$key:com.apple.application-identifier string $TEAM.$BUNDLE_ID" "$path"
@@ -83,6 +85,20 @@ make_profile() {
       i=0
       for value in $env_spec; do
         "$PLISTBUDDY" -c "Add :$key:com.apple.developer.icloud-container-environment:$i string $value" "$path"
+        i=$((i + 1))
+      done
+      ;;
+  esac
+  case "$services" in
+    none) ;;
+    string:*)
+      "$PLISTBUDDY" -c "Add :$key:com.apple.developer.icloud-services string ${services#string:}" "$path"
+      ;;
+    *)
+      "$PLISTBUDDY" -c "Add :$key:com.apple.developer.icloud-services array" "$path"
+      i=0
+      for value in $services; do
+        "$PLISTBUDDY" -c "Add :$key:com.apple.developer.icloud-services:$i string $value" "$path"
         i=$((i + 1))
       done
       ;;
@@ -186,6 +202,21 @@ PROFILE_ENVIRONMENT="none" make_profile "$PROFILE" "$MINE"
 run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
 expect_refused "profile without an environment entitlement" "profile does not permit CloudKit environment Development."
 echo "ok: the environment is checked against the profile"
+
+# 4b. The CloudKit service must be authorized by the profile (array, plain string or "*").
+PROFILE_SERVICES="CloudDocuments" make_profile "$PROFILE" "$MINE"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_refused "profile without CloudKit" "profile does not authorize the CloudKit service."
+PROFILE_SERVICES="none" make_profile "$PROFILE" "$MINE"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_refused "profile without a services entitlement" "profile does not authorize the CloudKit service."
+PROFILE_SERVICES="string:*" make_profile "$PROFILE" "$MINE"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_signed "wildcard services"
+PROFILE_SERVICES="CloudDocuments CloudKit" make_profile "$PROFILE" "$MINE"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_signed "CloudKit among several services"
+echo "ok: the CloudKit service is checked against the profile"
 
 # 5. A profile without APNs must not leave a stale aps entitlement from the base file.
 PROFILE_APS="none" make_profile "$PROFILE" "$MINE"

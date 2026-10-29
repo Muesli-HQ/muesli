@@ -442,10 +442,12 @@ final class MuesliICloudSyncEngine {
         }
 
         /// The part of a saved-state key that names the container. Empty for upstream's container,
-        /// so state saved by earlier releases keeps its key; any other container gets `.<id>`, which
-        /// keeps its change tokens and account owner apart from every other container's.
+        /// so state saved by earlier releases keeps its key; any other container gets `.[<id>]`,
+        /// which keeps its change tokens and account owner apart from every other container's. The
+        /// brackets close the identifier, so a container ending in `.account-owner` cannot produce
+        /// another container's owner key.
         static func stateKeyScope(container: String) -> String {
-            container == defaultContainerIdentifier ? "" : ".\(container)"
+            container == defaultContainerIdentifier ? "" : ".[\(container)]"
         }
 
         /// The first `iCloud.` identifier in the container entitlement (an array or a single

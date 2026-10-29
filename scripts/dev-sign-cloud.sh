@@ -14,7 +14,7 @@ set -euo pipefail
 #   ./scripts/dev-sign-cloud.sh [/Applications/MuesliDev.app]
 #
 # The profile must be for the app's bundle id, list the container (the whole identifier, not a
-# prefix of one) and permit the CloudKit environment. Create one with Xcode's automatic signing (a
+# prefix of one), authorize the CloudKit service and permit the CloudKit environment. Create one with Xcode's automatic signing (a
 # stub app with the same bundle id and entitlements and -allowProvisioningUpdates).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,6 +77,12 @@ if ! profile_list_has com.apple.developer.icloud-container-identifiers "$CONTAIN
 fi
 if ! profile_list_has com.apple.developer.icloud-container-environment "$ENVIRONMENT"; then
   echo "ERROR: profile does not permit CloudKit environment $ENVIRONMENT." >&2
+  exit 1
+fi
+# Xcode-managed profiles often grant every iCloud service as "*".
+if ! profile_list_has com.apple.developer.icloud-services CloudKit \
+  && ! profile_list_has com.apple.developer.icloud-services '*'; then
+  echo "ERROR: profile does not authorize the CloudKit service." >&2
   exit 1
 fi
 
