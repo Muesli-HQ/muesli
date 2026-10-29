@@ -15,8 +15,9 @@ concurrency:
 permissions:
   contents: read
 
-# Paid runners are reserved for pHequals7 acting on their own work.
-# github.actor stays the original actor on reruns; community/bot work stays on GitHub.
+# Paid runners require pHequals7 acting on their own work, except migration PR #698.
+# The exception also requires the Blacksmith bot author and an upstream head repo.
+# github.actor stays the original actor on reruns; other community/bot work stays on GitHub.
 jobs:
   # Detect which files changed. This gates expensive native CI only; security
   # checks live in security.yml and are intentionally not path-filtered here.
@@ -24,7 +25,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
@@ -75,7 +79,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
@@ -125,7 +132,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
@@ -262,7 +272,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
@@ -312,7 +325,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
@@ -344,7 +360,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 10
@@ -368,7 +387,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
@@ -406,7 +428,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
@@ -430,7 +455,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:

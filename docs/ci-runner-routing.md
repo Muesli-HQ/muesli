@@ -7,7 +7,8 @@ GitHub-hosted runners of the corresponding OS.
 | Run | Runner provider |
 | --- | --- |
 | PR authored and updated by `pHequals7` | Blacksmith |
-| Community or bot-authored PR, including maintainer updates | GitHub |
+| Migration PR #698, Blacksmith bot author, upstream head, triggered by `pHequals7` | Blacksmith |
+| Other community or bot-authored PRs, including maintainer updates | GitHub |
 | Contributor updates to a maintainer PR | GitHub |
 | Push or manual dispatch initially triggered by `pHequals7` | Blacksmith |
 | Push or manual dispatch initially triggered by another account | GitHub |
@@ -18,8 +19,13 @@ Routing uses GitHub's original `github.actor`, not `github.triggering_actor`,
 so rerunning or approving a community run does not move it to paid hardware.
 A maintainer merge into `main` produces a separate push run: that push uses
 Blacksmith when `pHequals7` performs the merge, regardless of the PR's author.
-Bot-authored PRs are not implicitly treated as maintainer PRs. There is no
-label or PR-body override that enables Blacksmith.
+The one-time migration exception is limited to PR #698 authored by
+`blacksmith-sh[bot]`, with its head in this repository and `pHequals7` as the
+original actor. It lets the migration validate on Blacksmith without waiting
+for GitHub macOS capacity. It does not permit other bot PRs, fork heads, or
+community-triggered runs. No future PR can reuse the same repository PR number;
+the exception can be removed after #698 closes. Issue/comment-only events have
+no migration override. There is no label or PR-body override.
 
 Runner selection is evaluated before a job starts. It deliberately does not
 add a separate routing job, so maintainer runs do not need to queue for a

@@ -10,8 +10,9 @@ on:
   pull_request_review:
     types: [submitted]
 
-# Paid runners are reserved for pHequals7 acting on their own work.
-# github.actor stays the original actor on reruns; community/bot work stays on GitHub.
+# Paid runners require pHequals7 acting on their own work, except migration PR #698.
+# The exception also requires the Blacksmith bot author and an upstream head repo.
+# github.actor stays the original actor on reruns; other community/bot work stays on GitHub.
 jobs:
   claude:
     if: |
@@ -22,7 +23,10 @@ jobs:
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
-          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7') &&
+          (!github.event.pull_request || github.event.pull_request.user.login == 'pHequals7' ||
+           (github.event.pull_request.number == 698 &&
+            github.event.pull_request.user.login == 'blacksmith-sh[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) &&
           (!github.event.issue || github.event.issue.user.login == 'pHequals7') &&
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     permissions:

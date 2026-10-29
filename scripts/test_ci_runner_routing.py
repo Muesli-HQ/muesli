@@ -79,6 +79,23 @@ class RunnerRoutingTests(unittest.TestCase):
             ('maintainer reviews community PR', 'pull_request_review', 'pHequals7', {'pull_request': {'user': {'login': 'contributor'}}}, False),
             ('missing actor', 'push', None, {}, False),
         ]
+        migration = {'number': 698, 'user': {'login': 'blacksmith-sh[bot]'},
+                     'head': {'repo': {'full_name': 'Muesli-HQ/muesli'}}}
+        scenarios.extend([
+            ('migration exception', 'pull_request', 'pHequals7', {'pull_request': migration}, True),
+            ('migration bot-triggered run', 'pull_request', 'blacksmith-sh[bot]', {'pull_request': migration}, False),
+            ('migration community-triggered run', 'pull_request', 'contributor', {'pull_request': migration}, False),
+            ('other Blacksmith PR', 'pull_request', 'pHequals7',
+             {'pull_request': {**migration, 'number': 699}}, False),
+            ('wrong author for migration number', 'pull_request', 'pHequals7',
+             {'pull_request': {**migration, 'user': {'login': 'contributor'}}}, False),
+            ('fork head for migration number', 'pull_request', 'pHequals7',
+             {'pull_request': {**migration, 'head': {'repo': {'full_name': 'contributor/muesli'}}}}, False),
+            ('missing head for migration number', 'pull_request', 'pHequals7',
+             {'pull_request': {**migration, 'head': None}}, False),
+            ('migration issue-comment has no paid override', 'issue_comment', 'pHequals7',
+             {'issue': {'number': 698, 'user': {'login': 'blacksmith-sh[bot]'}}}, False),
+        ])
         for filename, job_count in WORKFLOWS.items():
             text = (ROOT / '.github/workflows' / filename).read_text()
             expressions = re.findall(r'^    runs-on: >-\n((?:      .+\n)+)', text, re.M)
