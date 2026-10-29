@@ -85,6 +85,7 @@ Shipped builds compile the app via xcodebuild against `native/MuesliXcode/projec
 
 ## Documentation Conventions
 
+- Follow the [DCO contribution requirements](CONTRIBUTING.md#developer-certificate-of-origin): create commits with `git commit --signoff` and verify the author-matching `Signed-off-by` trailer before pushing. Preserve existing authorship; never add a sign-off on behalf of another contributor.
 - Never include `Context/` or any of its contents in commits or pull requests. It is local-only agent working material; do not use `git add -f` to bypass its ignore rule. Preserve local handoffs when removing accidentally tracked files with `git rm --cached`.
 - Do not commit agent working-note files (changelogs, file-move logs, tradeoff notes such as `CHANGES.md`/`FILEMOVES.md`/`TRADEOFFS.md`) to the repo root. Durable shared rationale belongs in commit messages, `AGENTS.md`, or maintained documentation under `docs/`; local session handoffs may remain in ignored `Context/`.
 - Before committing or opening a PR, verify that no `Context/` additions or modifications are staged or included in the branch diff. Deletions that remove previously tracked Context files are permitted. Do not link shared documentation to local-only handoffs.
