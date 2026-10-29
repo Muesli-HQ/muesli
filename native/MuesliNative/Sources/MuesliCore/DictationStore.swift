@@ -2413,7 +2413,8 @@ public final class DictationStore {
                 dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
                 meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true),
                 modelUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: true),
-                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false)
+                appUsage: try insightsUsage(db: db, sinceDay: startDay, byModel: false),
+                cotypist: try insightsCotypist(db: db, since: startDate, now: now)
             )
             try exec("COMMIT", db: db)
             return snapshot
@@ -2871,6 +2872,32 @@ public final class DictationStore {
         }
         guard step == SQLITE_DONE else { throw lastError(db) }
         return result
+    }
+
+    private func insightsCotypist(db: OpaquePointer?, since start: Date?, now: Date) throws -> InsightsCotypistTotals? {
+        let retentionStart = now.addingTimeInterval(-Self.cotypistUnacceptedRetention)
+        let rateStart = max(start ?? retentionStart, retentionStart)
+        var totals: InsightsCotypistTotals?
+        try withStatement("""
+        SELECT COALESCE(SUM(CASE WHEN accepted_text <> '' AND timestamp >= ?1 THEN words_accepted END), 0),
+               COUNT(CASE WHEN accepted_text <> '' AND timestamp >= ?1 THEN 1 END),
+               COUNT(CASE WHEN accepted_text <> '' AND timestamp >= ?2 THEN 1 END),
+               COUNT(CASE WHEN timestamp >= ?2 THEN 1 END)
+        FROM cotypist_suggestions
+        """, db: db, bind: {
+            bindCotypistText(start.map(formatISODate) ?? "", at: 1, statement: $0)
+            bindCotypistText(formatISODate(rateStart), at: 2, statement: $0)
+        }, row: {
+            let accepted = Int(sqlite3_column_int64($0, 1))
+            guard accepted > 0 else { return }
+            let shownForRate = Int(sqlite3_column_int64($0, 3))
+            totals = InsightsCotypistTotals(
+                wordsAccepted: Int(sqlite3_column_int64($0, 0)),
+                suggestionsAccepted: accepted,
+                acceptanceRate: shownForRate > 0 ? Double(sqlite3_column_int64($0, 2)) / Double(shownForRate) : nil,
+                rateDays: Int((now.timeIntervalSince(rateStart) / 86_400).rounded()))
+        })
+        return totals
     }
 
     private func cachedTopWords(db: OpaquePointer?, sinceDay: String?, meeting: Bool) throws -> [InsightsWordFrequency] {

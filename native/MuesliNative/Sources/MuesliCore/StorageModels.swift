@@ -777,6 +777,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let meetingWords: [InsightsWordFrequency]
     public let modelUsage: [InsightsUsage]
     public let appUsage: [InsightsUsage]
+    /// Nil when Cotypist accepted nothing in the range.
+    public let cotypist: InsightsCotypistTotals?
 
     public init(
         range: InsightsRange,
@@ -790,7 +792,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         dictationWords: [InsightsWordFrequency],
         meetingWords: [InsightsWordFrequency],
         modelUsage: [InsightsUsage] = [],
-        appUsage: [InsightsUsage] = []
+        appUsage: [InsightsUsage] = [],
+        cotypist: InsightsCotypistTotals? = nil
     ) {
         self.range = range
         self.generatedAt = generatedAt
@@ -804,5 +807,23 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         self.modelUsage = modelUsage
         self.appUsage = appUsage
         self.meetingWords = meetingWords
+        self.cotypist = cotypist
+    }
+}
+
+/// Cotypist across an Insights range: what it wrote for the user, and how often a suggestion was taken.
+public struct InsightsCotypistTotals: Codable, Sendable, Equatable {
+    public let wordsAccepted: Int
+    public let suggestionsAccepted: Int
+    /// Share of shown suggestions that were taken, at least partly. Untaken suggestions are kept
+    /// for `rateDays` at most, so the rate covers the range or that many days, whichever is shorter.
+    public let acceptanceRate: Double?
+    public let rateDays: Int
+
+    public init(wordsAccepted: Int, suggestionsAccepted: Int, acceptanceRate: Double?, rateDays: Int) {
+        self.wordsAccepted = wordsAccepted
+        self.suggestionsAccepted = suggestionsAccepted
+        self.acceptanceRate = acceptanceRate
+        self.rateDays = rateDays
     }
 }

@@ -136,6 +136,21 @@ struct CotypistHistoryTests {
         #expect(!sources[1].contains("signal"))
     }
 
+    @Test("Insights sums what Cotypist wrote and how often a suggestion was taken")
+    func insightsTotals() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_790_000_000 + 100)
+        #expect(try store.insightsSnapshot(range: .thirtyDays, now: now).cotypist == nil)
+        _ = try store.recordCotypistSuggestion(event("maybe", outcome: .ignored, at: 0))
+        _ = try store.recordCotypistSuggestion(event("the next word", accepted: "the next word", outcome: .accepted, at: 10))
+        _ = try store.recordCotypistSuggestion(event("so it goes", accepted: "so", outcome: .partial, at: 20))
+        _ = try store.recordCotypistSuggestion(event("later", outcome: .dismissed, at: 30))
+        let totals = try #require(try store.insightsSnapshot(range: .thirtyDays, now: now).cotypist)
+        #expect(totals.wordsAccepted == 4)
+        #expect(totals.suggestionsAccepted == 2)
+        #expect(totals.acceptanceRate == 0.5)
+    }
+
     @Test("prunes old untaken suggestions without waiting for a new one")
     func pruneWithoutWrites() throws {
         let store = try makeStore()

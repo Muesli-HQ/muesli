@@ -369,9 +369,6 @@ private struct TimelineCotypistRow: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text(summary)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -439,10 +436,5 @@ private struct TimelineCotypistRow: View {
             .lineLimit(2)
             .lineSpacing(3)
             .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var summary: String {
-        let words = record.wordsAccepted == 1 ? "1 word" : "\(record.wordsAccepted) words"
-        return "\(words) accepted from \(record.suggestionsAccepted) of \(record.suggestionsShown) suggestions"
     }
 }
