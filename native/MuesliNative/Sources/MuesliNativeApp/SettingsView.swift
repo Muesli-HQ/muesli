@@ -1958,6 +1958,10 @@ struct SettingsView: View {
 
             dictationCleanupSettingsSection
 
+            settingsSection("App Formatting") {
+                DictationFormattingSettingsView(appState: appState, controller: controller)
+            }
+
             quilSettingsSection
 
             settingsSection("Advanced") {

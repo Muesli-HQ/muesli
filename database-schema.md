@@ -22,6 +22,36 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### App formatting preferences outside SQLite
+
+`ConfigStore` saves dictation formatting preferences in the local `AppConfig`
+JSON, not in the history database. `dictation_app_formatting_rules` contains
+bundle IDs, display names and complete formatting snapshots. An optional
+`templateID` identifies the template from which a rule was copied; older rules
+without it still decode without changing their formatting. Combinations that
+do not match a built-in or saved template appear as Custom, including rules
+that previously used the retired Lowercase template.
+`dictation_formatting_templates` stores named user templates with stable IDs and
+formatting snapshots, defaulting to an empty list for older configurations.
+Entries decode independently: malformed entries or unsupported enum values are
+skipped without dropping valid neighboring rules/templates. Missing formatting
+objects or fields default to keeping capitalization and the final period.
+Applying a template copies its formatting into an app rule. Customizing that
+rule detaches its template identity; deleting a template preserves already
+applied app formatting. These preferences are local-only and add no SQLite,
+CloudKit or CLI fields.
+
+Streaming dictation buffers only when the app active at recording start has an
+active formatting rule. That delivery mode and the rule snapshots remain fixed
+for the session: buffered text uses the final recipient's rule, while live text
+is never rewritten after an app switch. On a buffered runtime failure, the
+available partial transcript goes through the same paste completion path.
+Successful dispatches store formatted text; failed dispatches save the original
+transcript without target-app attribution. The recovery message directs users to
+History only after the insert succeeds. If persistence fails, it reports that
+History could not be saved and distinguishes whether the paste succeeded.
+Dictionary correction monitoring starts only after a successful paste.
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
