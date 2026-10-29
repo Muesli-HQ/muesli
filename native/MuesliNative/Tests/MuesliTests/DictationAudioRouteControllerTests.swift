@@ -250,7 +250,7 @@ struct DictationAudioRouteControllerTests {
         )
         routeQueue.sync {}
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 97)
-        #expect(controller.preferredInputDeviceIDForMeeting() == 97)
+        #expect(controller.preferredInputDeviceIDForMeeting() == nil)
 
         // The audio device graph and default input stay unchanged across lid transitions.
         for builtInID: AudioObjectID? in [nil, 97] {
@@ -261,7 +261,7 @@ struct DictationAudioRouteControllerTests {
             try await Task.sleep(for: .milliseconds(100))
             routeQueue.sync {}
             #expect(controller.cachedPreferredInputDeviceIDForDictation() == builtInID)
-            #expect(controller.preferredInputDeviceIDForMeeting() == builtInID)
+            #expect(controller.preferredInputDeviceIDForMeeting() == nil)
         }
     }
 
