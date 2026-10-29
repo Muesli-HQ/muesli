@@ -400,6 +400,43 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.summarizingMeetingIDs.contains(meetingID))
     }
 
+    @Test("a second re-summarize of a meeting already summarizing is rejected and leaves the first run's mark")
+    func overlappingResummaryIsRejected() async throws {
+        let directory = makeSupportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try #"""
+        #!/bin/sh
+        sleep 0.4
+        printf '%s' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Authentication expired"]}'
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        let meeting = try #require(try store.meeting(id: meetingID))
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.claudeCode.backend
+            $0.claudeCodeExecutablePath = executable.path
+        }
+
+        var secondResult: Result<Void, Error>?
+        var markedAfterRejection = false
+        _ = await withCheckedContinuation { continuation in
+            controller.resummarize(meeting: meeting) { continuation.resume(returning: $0) }
+            controller.resummarize(meeting: meeting) { secondResult = $0 }
+            markedAfterRejection = controller.appState.summarizingMeetingIDs.contains(meetingID)
+        }
+        guard case .failure(let error) = secondResult else {
+            Issue.record("expected the overlapping run to be rejected")
+            return
+        }
+        #expect(error is MeetingResummaryError)
+        #expect(markedAfterRejection)
+        #expect(!controller.appState.summarizingMeetingIDs.contains(meetingID))
+    }
+
     @Test("app state defaults meetings to browser mode")
     func meetingsDefaultToBrowser() {
         let appState = AppState()

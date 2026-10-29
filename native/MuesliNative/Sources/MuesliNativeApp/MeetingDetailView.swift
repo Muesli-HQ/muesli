@@ -1030,6 +1030,7 @@ struct MeetingDetailView: View {
                            action: nil) {
                 retranscribeModelItems()
             }
+            .disabled(!controller.canRetranscribeMeeting(meeting) || isSummarizing || isEditingNotes || isEditingTranscript)
             .accessibilityIdentifier("meeting.status.transcription.failed")
         case .failed(let reason):
             chip.help("Transcription failed: \(reason)")
