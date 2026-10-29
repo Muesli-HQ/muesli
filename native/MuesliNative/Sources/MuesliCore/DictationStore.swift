@@ -2875,8 +2875,16 @@ public final class DictationStore {
     }
 
     private func insightsCotypist(db: OpaquePointer?, since start: Date?, now: Date) throws -> InsightsCotypistTotals? {
-        let retentionStart = now.addingTimeInterval(-Self.cotypistUnacceptedRetention)
-        let rateStart = max(start ?? retentionStart, retentionStart)
+        // Untaken suggestions are pruned by age and by count, so the rate only counts the span
+        // whose untaken history is complete.
+        var rateStart = now.addingTimeInterval(-Self.cotypistUnacceptedRetention)
+        if let start { rateStart = max(rateStart, start) }
+        try withStatement("""
+        SELECT MIN(timestamp) FROM cotypist_suggestions WHERE accepted_text = ''
+        HAVING COUNT(*) >= ?
+        """, db: db, bind: { sqlite3_bind_int($0, 1, Int32(Self.cotypistUnacceptedLimit)) }, row: {
+            if let oldest = self.optionalStringColumn($0, index: 0).flatMap(self.parseISODate) { rateStart = max(rateStart, oldest) }
+        })
         var totals: InsightsCotypistTotals?
         try withStatement("""
         SELECT COALESCE(SUM(CASE WHEN accepted_text <> '' AND timestamp >= ?1 THEN words_accepted END), 0),

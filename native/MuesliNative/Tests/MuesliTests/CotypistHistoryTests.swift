@@ -151,6 +151,28 @@ struct CotypistHistoryTests {
         #expect(totals.acceptanceRate == 0.5)
     }
 
+    @Test("the acceptance rate skips the span where untaken suggestions were pruned by count")
+    func insightsRateAfterCountPruning() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-cotypist-test-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        _ = try store.recordCotypistSuggestion(event("before", accepted: "before", outcome: .accepted, at: 5))
+        _ = try store.recordCotypistSuggestion(event("after", accepted: "after", outcome: .accepted, at: 30))
+        // The most untaken suggestions kept: anything older than these was pruned.
+        var db: OpaquePointer?
+        sqlite3_open(url.path, &db)
+        let inserted = sqlite3_exec(db, """
+            WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < \(DictationStore.cotypistUnacceptedLimit))
+            INSERT INTO cotypist_suggestions (timestamp, trigger, suggestion_text, outcome)
+            SELECT '2026-09-21T14:13:40Z', 'boundary', 'later', 'ignored' FROM n
+            """, nil, nil, nil)
+        sqlite3_close(db)
+        #expect(inserted == SQLITE_OK)
+        let totals = try #require(try store.insightsSnapshot(range: .thirtyDays, now: Date(timeIntervalSince1970: 1_790_000_100)).cotypist)
+        #expect(totals.suggestionsAccepted == 2)
+        #expect(totals.acceptanceRate == 1.0 / Double(DictationStore.cotypistUnacceptedLimit + 1))
+    }
+
     @Test("prunes old untaken suggestions without waiting for a new one")
     func pruneWithoutWrites() throws {
         let store = try makeStore()
