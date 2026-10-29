@@ -77,7 +77,8 @@ final class CotypistService {
     /// embedded helper's designated requirement (same signer as this build).
     /// Enabling and selecting stay with the user: macOS doesn't persist an input source enabled
     /// from code, and refuses programmatic selection of a third-party one.
-    /// Runs off the main actor: it copies a bundle and validates a code signature.
+    /// Runs off the main actor: it copies a bundle and validates a code signature. Registering hops
+    /// back to the main thread.
     nonisolated static func installInputSource() {
         func log(_ message: String) { fputs("[cotypist] \(message)\n", stderr) }
         let fileManager = FileManager.default
@@ -108,8 +109,11 @@ final class CotypistService {
             log("input method copy failed signature validation; not registered")
             return
         }
-        let status = TISRegisterInputSource(installed as CFURL)
-        log("registered input method (status \(status), \(upToDate ? "up to date" : "installed"))")
+        // Text Input Sources is main-thread API; only the copy and the signature check run here.
+        DispatchQueue.main.async {
+            let status = TISRegisterInputSource(installed as CFURL)
+            log("registered input method (status \(status), \(upToDate ? "up to date" : "installed"))")
+        }
     }
 
     /// The installed copy's signature is intact and satisfies the embedded helper's designated

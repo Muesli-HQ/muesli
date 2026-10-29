@@ -434,7 +434,7 @@ if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"
   mkdir -p "$COTYPIST_DIR/Contents/MacOS" "$COTYPIST_DIR/Contents/Resources"
   xcrun clang -fobjc-arc -O2 -arch arm64 -mmacosx-version-min=14.2 \
-    -framework Cocoa -framework InputMethodKit \
+    -framework Cocoa -framework InputMethodKit -framework Security \
     "$ROOT/native/CotypistInputMethod/main.m" "$ROOT/native/CotypistInputMethod/CotypistController.m" \
     -o "$COTYPIST_DIR/Contents/MacOS/MuesliCotypist"
   sips -s format tiff -z 32 32 "$ROOT/assets/muesli.icns" --out "$COTYPIST_DIR/Contents/Resources/icon.tiff" >/dev/null

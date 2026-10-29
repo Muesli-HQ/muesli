@@ -10,6 +10,8 @@
 
 #import <Cocoa/Cocoa.h>
 #import <InputMethodKit/InputMethodKit.h>
+#import <Security/Security.h>
+#import <os/lock.h>
 #import <sys/socket.h>
 #import <sys/un.h>
 
@@ -41,6 +43,68 @@ static NSString *SocketPath(void) {
         stringByAppendingPathComponent:[support stringByAppendingPathComponent:@"cotypist.sock"]];
 }
 
+// What the process behind the socket must be: the Muesli app this helper was built into, signed by
+// the same team. Another process of the same user could otherwise bind the socket while Muesli is
+// closed and read what the user types. Nil (nothing is sent) when this helper has no team, as in an
+// ad-hoc signed build.
+static SecRequirementRef MuesliRequirement(void) {
+    static SecRequirementRef requirement;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *helperID = [NSBundle mainBundle].bundleIdentifier;
+        NSString *suffix = @".inputmethod.Cotypist";
+        if (![helperID hasSuffix:suffix]) return;
+        NSString *appID = [helperID substringToIndex:helperID.length - suffix.length];
+        SecCodeRef me = NULL;
+        CFDictionaryRef info = NULL;
+        if (SecCodeCopySelf(kSecCSDefaultFlags, &me) != errSecSuccess) return;
+        SecStaticCodeRef meStatic = NULL;
+        if (SecCodeCopyStaticCode(me, kSecCSDefaultFlags, &meStatic) == errSecSuccess) {
+            SecCodeCopySigningInformation(meStatic, kSecCSSigningInformation, &info);
+            CFRelease(meStatic);
+        }
+        CFRelease(me);
+        NSString *team = info ? (__bridge NSString *)CFDictionaryGetValue(info, kSecCodeInfoTeamIdentifier) : nil;
+        if (team.length) {
+            NSString *text = [NSString stringWithFormat:
+                @"anchor apple generic and identifier \"%@\" and certificate leaf[subject.OU] = \"%@\"", appID, team];
+            SecRequirementCreateWithString((__bridge CFStringRef)text, kSecCSDefaultFlags, &requirement);
+        }
+        if (info) CFRelease(info);
+    });
+    return requirement;
+}
+
+// Checks the process holding the socket's other end, by its audit token. The last process that
+// passed is remembered by PID and PID version, so a request costs one check per Muesli launch.
+static BOOL IsMuesli(int fd) {
+    SecRequirementRef requirement = MuesliRequirement();
+    if (!requirement) return NO;
+    audit_token_t token;
+    socklen_t length = sizeof(token);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) != 0) return NO;
+    // PID and PID version, as libbsm's audit_token_to_pid/_pidversion read them.
+    uint64_t process = ((uint64_t)token.val[5] << 32) | token.val[7];
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+    static uint64_t verified;
+    os_unfair_lock_lock(&lock);
+    BOOL known = verified == process;
+    os_unfair_lock_unlock(&lock);
+    if (known) return YES;
+    NSData *tokenData = [NSData dataWithBytes:&token length:sizeof(token)];
+    SecCodeRef code = NULL;
+    BOOL valid = SecCodeCopyGuestWithAttributes(NULL, (__bridge CFDictionaryRef)@{(__bridge NSString *)kSecGuestAttributeAudit: tokenData},
+                                                kSecCSDefaultFlags, &code) == errSecSuccess
+        && SecCodeCheckValidity(code, kSecCSDefaultFlags, requirement) == errSecSuccess;
+    if (code) CFRelease(code);
+    if (valid) {
+        os_unfair_lock_lock(&lock);
+        verified = process;
+        os_unfair_lock_unlock(&lock);
+    }
+    return valid;
+}
+
 // One request per connection: a JSON line out, a JSON line back. Runs off the main thread.
 static NSDictionary *SendToMuesli(NSDictionary *request, NSTimeInterval timeout) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -53,7 +117,8 @@ static NSDictionary *SendToMuesli(NSDictionary *request, NSTimeInterval timeout)
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     int noSigPipe = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
-    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+    // Nothing is written until the other end is known to be Muesli.
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || !IsMuesli(fd)) {
         close(fd);
         return nil;
     }
