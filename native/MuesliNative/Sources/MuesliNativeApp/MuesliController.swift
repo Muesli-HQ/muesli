@@ -11738,6 +11738,7 @@ public final class MuesliController: NSObject {
         guard config.enableBufferedLiveDictation,
               selectedDictationProvider == .local,
               selectedBackend.supportsBufferedLiveTranscription,
+              // Only an explicit formatting rule for the starting app buffers output.
               !buffersStreamingDictation,
               currentDictationOutputMode == .paste,
               !isDictationTestMode else { return }
@@ -12788,7 +12789,8 @@ public final class MuesliController: NSObject {
                         },
                         reuse: { transcript in
                             await self.transcriptionCoordinator.finalizeDictationTranscript(
-                                SpeechTranscriptionResult(text: transcript, segments: []),
+                                SpeechTranscriptionResult(text: transcript, segments: [],
+                                    bodhanMeasurement: liveContext?.session.bodhanMeasurement(for: transcript)),
                                 backend: transcriptionBackend,
                                 enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                                 customWords: self.serializedCustomWords(),

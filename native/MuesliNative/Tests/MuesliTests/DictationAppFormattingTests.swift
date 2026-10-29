@@ -24,6 +24,16 @@ struct DictationAppFormattingTests {
         #expect(DictationAppFormatting.unchanged.apply(to: pair.0) == pair.0)
     }
 
+    @Test("Default formatting leaves live dictation unbuffered")
+    func defaultFormattingDoesNotBufferStreaming() {
+        let rules = DictationAppFormattingRule.activeRules(AppConfig().dictationAppFormattingRules)
+        #expect(rules.isEmpty)
+        for bundleID: String? in [nil, "com.openai.codex", "com.apple.TextEdit"] {
+            #expect(!DictationAppFormattingRule.shouldBufferStreaming(bundleID: bundleID, rules: rules))
+            #expect(DictationAppFormattingRule.apply("Cleaned words.", bundleID: bundleID, rules: rules) == "Cleaned words.")
+        }
+    }
+
     @Test("Only an exact destination bundle matches")
     func matching() {
         let rules = [DictationAppFormattingRule(bundleID: "net.whatsapp.WhatsApp", appName: "WhatsApp", formatting: .lowercaseChat)]
