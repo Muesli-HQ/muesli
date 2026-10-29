@@ -11256,6 +11256,8 @@ public final class MuesliController: NSObject {
     }
 
     private func beginDictationOutput(mode: DictationOutputMode? = nil) {
+        // A previous dictation observer must never interpret live revisions as corrections.
+        dictationCorrectionMonitor.cancel()
         currentDictationOutputMode = mode ?? defaultDictationOutputMode
         appState.isVoiceNoteRecording = currentDictationOutputMode == .voiceNote
     }
@@ -12863,8 +12865,20 @@ public final class MuesliController: NSObject {
                 }
                 let liveDelivered: Bool?
                 if let liveContext {
-                    liveDelivered = await liveContext.target.finish(
-                        text: text + DictationPasteSpacing.trailingSeparator(after: text)
+                    liveDelivered = try await BufferedDictationFinalizer.deliver(
+                        text: text,
+                        target: liveContext.target,
+                        isCurrent: { self.isCurrentDictationTranscription(id: transcriptionTaskID) },
+                        correctionMonitoringEnabled: { self.config.enableDictionaryCorrectionPrompts },
+                        onDelivered: { finalText in
+                            self.dictationCorrectionMonitor.start(
+                                originalText: finalText,
+                                appContext: storageContext,
+                                targetApp: startingTargetApp
+                            ) { [weak self] suggestion in
+                                self?.addDictionarySuggestion(suggestion)
+                            }
+                        }
                     )
                     try Task.checkCancellation()
                     guard self.isCurrentDictationTranscription(id: transcriptionTaskID) else { return }

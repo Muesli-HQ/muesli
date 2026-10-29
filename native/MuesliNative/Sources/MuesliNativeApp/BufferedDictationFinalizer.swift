@@ -13,6 +13,28 @@ enum BufferedDictationFinalizer {
         var errorDescription: String? { "Live transcription could not finish (\(reason))." }
     }
 
+    /// Arm correction observation only once cleanup has reached the original editor.
+    /// Recheck session/settings after the asynchronous paste acknowledgment.
+    static func deliver(
+        text: String,
+        target: LiveDictationTextTarget,
+        isCurrent: () -> Bool,
+        correctionMonitoringEnabled: () -> Bool,
+        onDelivered: (String) -> Void
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+        let delivered = await target.finish(
+            text: text + DictationPasteSpacing.trailingSeparator(after: text)
+        )
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+        if delivered && correctionMonitoringEnabled() {
+            onDelivered(text)
+        }
+        return delivered
+    }
+
     static func recordedSampleCount(at url: URL) -> Int? {
         guard let file = try? AVAudioFile(forReading: url),
               file.fileFormat.sampleRate == 16_000,

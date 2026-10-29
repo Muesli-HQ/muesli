@@ -441,6 +441,83 @@ struct LiveDictationTextTargetTests {
         #expect(editor.replacements == 0)
     }
 
+    @Test func correctionMonitoringWaitsForFinalCleanedTextAcknowledgment() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        var baselines: [String] = []
+        for preview in ["draft", "draft words"] {
+            #expect(await target.update(text: preview))
+            #expect(baselines.isEmpty)
+        }
+        editor.delayPaste = true
+        clock.onWait = {
+            #expect(baselines.isEmpty)
+            editor.flushReplacement()
+        }
+        let delivered = try await BufferedDictationFinalizer.deliver(
+            text: "Cleaned words.", target: target, isCurrent: { true },
+            correctionMonitoringEnabled: { true }, onDelivered: { text in
+                #expect(editor.text == "Before Cleaned words.  after")
+                baselines.append(text)
+            }
+        )
+        #expect(delivered)
+        #expect(clock.ticks > 0)
+        #expect(baselines == ["Cleaned words."])
+    }
+
+    @Test(arguments: [false, true])
+    func failedFinalDeliveryNeverStartsCorrectionMonitoring(stopped: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        if stopped { target.cancel() } else { editor.finalPasteSucceeds = false }
+        var starts = 0
+        let delivered = try await BufferedDictationFinalizer.deliver(
+            text: "Cleaned words.", target: target, isCurrent: { true },
+            correctionMonitoringEnabled: { true }, onDelivered: { _ in starts += 1 }
+        )
+        #expect(!delivered)
+        #expect(starts == 0)
+    }
+
+    @Test(arguments: ["disabled", "superseded", "cancelled"])
+    func correctionMonitoringRechecksLifecycleAfterAcknowledgment(change: String) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        var current = true
+        var enabled = true
+        var starts = 0
+        editor.afterFinalAcknowledgement = {
+            if change == "disabled" { enabled = false }
+            if change == "superseded" { current = false }
+            if change == "cancelled" { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        // A separate task keeps intentional cancellation out of the test runner.
+        let delivery = Task { @MainActor in
+            try await BufferedDictationFinalizer.deliver(
+                text: "Cleaned words.", target: target, isCurrent: { current },
+                correctionMonitoringEnabled: { enabled }, onDelivered: { _ in starts += 1 }
+            )
+        }
+        do {
+            let delivered = try await delivery.value
+            #expect(change == "disabled")
+            #expect(delivered)
+        } catch is CancellationError {
+            #expect(change != "disabled")
+        }
+        #expect(starts == 0)
+    }
+
     @Test func finalCleanupWaitsForAccessibilityAndStillChecksExactSnapshot() async throws {
         let editor = Editor()
         editor.transport = .targetedPaste
