@@ -11085,7 +11085,6 @@ public final class MuesliController: NSObject {
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
                 Task { @MainActor in
                     guard let self, self.nativeRecordingGate.pendingKey == plan.key,
-                          self.nativePreparationPlan(forQuill: forQuill).key == plan.key,
                           ownsFeedback() else { return }
                     self.indicator.showLoading(message)
                     self.statusBarController?.setStatus(message)
@@ -11111,22 +11110,18 @@ public final class MuesliController: NSObject {
                 return
             }
             self.indicator.hideLoading()
-            if ownsFeedback() {
-                if cleanupPreparationFailed {
-                    self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
-                    self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4)
-                } else {
-                    self.statusBarController?.setStatus("Models ready")
-                    self.indicator.showSuccess("Ready — start recording", duration: 3)
-                }
+            if cleanupPreparationFailed {
+                self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
+                self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4)
+            } else {
+                self.statusBarController?.setStatus("Models ready")
+                self.indicator.showSuccess("Ready — start recording", duration: 3)
             }
         }, failed: { [weak self] error in
             guard let self, ownsFeedback() else { return }
             self.indicator.hideLoading()
-            if ownsFeedback() {
-                self.statusBarController?.setStatus("Model preparation failed")
-                self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4)
-            }
+            self.statusBarController?.setStatus("Model preparation failed")
+            self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4)
             fputs("[gemma-preparation] failed: \(error)\n", stderr)
         })
         if !allowed, !isInteractiveAudioActivityInProgress,
@@ -12165,6 +12160,7 @@ public final class MuesliController: NSObject {
         if isNemotron35Streaming {
             let sessionID = nemotron35StreamingSessionID
             if #available(macOS 15, *), let controller = _streamingDictationController as? StreamingDictationController {
+                setState(.transcribing)
                 controller.stop { [weak self] finalText in
                     DispatchQueue.main.async {
                         self?.finishNemotronStreamingStop(
@@ -12184,7 +12180,6 @@ public final class MuesliController: NSObject {
             }
             endMeetingDictationExclusion(sessionID: sessionID)
             dictationAudioSessionManager.endExternalSession(reason: "nemotron-stop")
-            setState(.transcribing)
             return
         }
 

@@ -201,7 +201,7 @@ final class FloatingIndicatorController: NSObject {
     private(set) var meetingFeedbackMessage: String?
     private(set) var activityRevision = 0
     var presentsWindows = true
-    private var state: DictationState = .idle
+    private(set) var state: DictationState = .idle
     private var dictationPresentation: DictationState = .idle
     private var meetingPowerProvider: (() -> Float)?
     private var hasDictationOverlap: Bool { isMeetingRecording && dictationPresentation != .idle }
@@ -490,7 +490,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {
-        if recording != isMeetingRecording { activityRevision += 1; meetingFeedbackMessage = nil }
+        if recording != isMeetingRecording {
+            activityRevision += 1
+            retireMeetingFeedback()
+        }
         if recording && !isMeetingRecording { meetingPowerProvider = powerProvider }
         isMeetingRecording = recording
         recordingWaveformMode = .level
@@ -547,13 +550,7 @@ final class FloatingIndicatorController: NSObject {
             paused: paused, hasPanel: panel != nil, config: config)
         if paused != isMeetingRecordingPaused {
             activityRevision += 1
-            if meetingFeedbackMessage != nil {
-                meetingFeedbackMessage = nil
-                deferredLoadingMessage = nil
-                isShowingLoading = false
-                loadingSpinner?.stopAnimation(nil)
-                loadingSpinner?.isHidden = true
-            }
+            retireMeetingFeedback()
         }
         isMeetingRecordingPaused = paused
         meetingTranscriptPanel.setPaused(paused)
@@ -739,7 +736,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setDictationState(_ state: DictationState, config: AppConfig) {
-        if state != dictationPresentation { activityRevision += 1; meetingFeedbackMessage = nil }
+        if state != dictationPresentation {
+            activityRevision += 1
+            retireMeetingFeedback()
+        }
         dictationPresentation = state
         setState(state, config: config)
     }
@@ -1376,9 +1376,17 @@ final class FloatingIndicatorController: NSObject {
         return true
     }
 
+    private func retireMeetingFeedback() {
+        guard meetingFeedbackMessage != nil else { return }
+        meetingFeedbackMessage = nil
+        deferredLoadingMessage = nil
+        isShowingLoading = false
+        hideInstructionProgress()
+    }
+
     func hideLoading() {
         if meetingFeedbackMessage != nil {
-            meetingFeedbackMessage = nil
+            retireMeetingFeedback()
             setState(dictationPresentation, config: feedbackConfiguration())
         }
         deferredLoadingMessage = nil

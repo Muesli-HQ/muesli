@@ -45,6 +45,23 @@ struct NotchIndicatorTests {
                 #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
             }
         }
+        for takeover in [false, true] {
+            indicator.showLoading("Preparing dictation")
+            #expect(indicator.meetingFeedbackMessage != nil && indicator.isShowingLoading)
+            if takeover { indicator.setDictationState(.preparing, config: config) }
+            else { indicator.setMeetingRecording(false, config: config) }
+            #expect(indicator.state == (takeover ? .preparing : .idle))
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+            indicator.setDictationState(.idle, config: config)
+            indicator.setMeetingRecording(true, config: config)
+        }
+        indicator.setMeetingRecording(false, config: config)
+        indicator.showLoading("Unrelated background loading")
+        indicator.setDictationState(.idle, config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.meetingFeedbackMessage == nil && indicator.isShowingLoading)
+        indicator.hideLoading()
+        indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(true, config: config)
         for state: DictationState in [.preparing, .recording, .transcribing] {
             indicator.setDictationState(state, config: config)

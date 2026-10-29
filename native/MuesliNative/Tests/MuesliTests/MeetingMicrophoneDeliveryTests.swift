@@ -16,7 +16,7 @@ struct MeetingMicrophoneDeliveryTests {
     }()
 
     @Test("ordinary dictation output and capture boundaries preserve meeting PCM",
-          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "nemotron-preparing-restart", "warmup-failure", "meeting-discard", "pending-release", "pending-shortcut", "ready", "optional-failure", "preparation-failure", "stale-ready", "activity-ready"])
+          arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "nemotron-preparing-finish", "nemotron-preparing-restart", "warmup-failure", "meeting-discard", "pending-release", "pending-shortcut", "ready", "optional-failure", "preparation-failure", "stale-ready", "activity-ready"])
     @MainActor
     func dictationDuringMeeting(activeMeeting: Bool, ending: String) async throws {
         _ = Self.disabledTelemetry
@@ -27,6 +27,7 @@ struct MeetingMicrophoneDeliveryTests {
         let configStore = ConfigStore(supportDirectory: directory)
         let blockedWarmup = ending == "warmup-failure", activation = ContractGate()
         let streamingPreparation = ending.hasPrefix("nemotron-preparing")
+        let startupFinish = ending == "nemotron-preparing-finish"
         let nemotron = streamingPreparation || ending == "nemotron-hold"
         var config = AppConfig()
         if nemotron { config.sttBackend = BackendOption.nemotron35Multilingual.backend; config.sttModel = BackendOption.nemotron35Multilingual.model }
@@ -41,9 +42,10 @@ struct MeetingMicrophoneDeliveryTests {
             audioDuckingController: FakeDuckingManager(), dictationAudioRoutingController: route,
             downloadedBackendOptions: { nemotron ? [.nemotron35Multilingual] : [] })
         controller.testingIndicator.presentsWindows = false
-        let loading = AsyncStream<Void>.makeStream()
-        defer { loading.continuation.finish() }
+        let loading = AsyncStream<Void>.makeStream(), startup = AsyncStream<Void>.makeStream()
+        defer { loading.continuation.finish(); startup.continuation.finish() }
         controller.testingBeforeNemotronStart = {
+            startup.continuation.yield(())
             for await _ in loading.stream {}
             throw CancellationError()
         }
@@ -144,6 +146,12 @@ struct MeetingMicrophoneDeliveryTests {
                 }
             }
         }
+        if startupFinish {
+            var arrivals = startup.stream.makeAsyncIterator()
+            _ = await arrivals.next() // Finish only after the throwing startup hook is suspended.
+            #expect(manager.hasActiveSession && controller.appState.dictationState == .preparing)
+            #expect(controller.testingMeetingExclusionCount == (activeMeeting ? 1 : 0))
+        }
         try emit(at: 2500) // Accepted startup is private even while preparation is blocked.
         if activeMeeting && ending == "paused" { session.pause() }
         controller.dictationTestCallback = nil
@@ -182,6 +190,10 @@ struct MeetingMicrophoneDeliveryTests {
             if ending == "finish-release" { controller.testingDictationAction("stop") }
             recorder.onStop = nil
             gate.release.signal()
+        } else if startupFinish {
+            controller.testingDictationAction("stop")
+            #expect(controller.appState.dictationState == .idle, "Finish before controller creation must remain terminal idle")
+            #expect(!manager.hasActiveSession && controller.testingMeetingExclusionCount == 0)
         } else if ending == "toggle" || delayed || ending == "cancel" || streamingPreparation {
             controller.testingDictationAction(cancelled ? "cancel" : "stop")
         } else {
@@ -204,15 +216,17 @@ struct MeetingMicrophoneDeliveryTests {
         #expect(!manager.hasActiveSession)
         #expect(try store.recentDictations().map(\.rawText) == (cancelled ? [] : ["Private note."]))
         #expect(recorder.stopCalls == (cancelled && ending != "finish-cancel" ? 0 : 1))
-        if ending.hasPrefix("pending-") {
+        if ending.hasPrefix("pending-") || startupFinish {
+            #expect(controller.appState.dictationState == .idle)
             recorder.stopURL = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: 16_000))
             controller.dictationTestCallback = { _ in }
             controller.testingDictationAction("start")
             for _ in 0..<100 where controller.appState.dictationState != .recording { try await Task.sleep(for: .milliseconds(5)) }
             controller.dictationTestCallback = nil
             controller.testingDictationAction("stop")
-            for _ in 0..<200 where try store.recentDictations().count < 2 { try await Task.sleep(for: .milliseconds(5)) }
-            #expect(try store.recentDictations().count == 2, "The next capture must complete normally")
+            let expectedOutput = startupFinish ? ["Private note."] : ["Private note.", "Private note."]
+            for _ in 0..<200 where try store.recentDictations().count < expectedOutput.count { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(try store.recentDictations().map(\.rawText) == expectedOutput, "The next capture must complete normally")
         }
         if activeMeeting && ending == "hold" { controller.stopMeetingRecording() }
         if activeMeeting && (ending == "hold" || ending == "meeting-stop" || ending == "meeting-discard" || restarted) {
