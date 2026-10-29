@@ -6,8 +6,10 @@ struct MeetingChatView: View {
     let appState: AppState
     let controller: MuesliController
     @Bindable var coordinator: MeetingChatCoordinator
-    @State private var showHistory: Bool?
-    private var historyIsVisible: Bool { showHistory ?? coordinator.hasChatHistory }
+    var embeddedMeetingID: Int64? = nil
+    @State private var expanded = false
+    @State private var showHistory = false
+    private var isEmbedded: Bool { embeddedMeetingID != nil }
     @State private var showScope = false
     @State private var showModelPicker = false
     @State private var citation: MeetingChatCitation?
@@ -67,44 +69,62 @@ struct MeetingChatView: View {
 
     private var chatContent: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            HStack(spacing: 0) {
-                if historyIsVisible {
-                    history
-                    Divider()
+            if !isEmbedded || expanded {
+                header
+                    .background(isEmbedded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
+                    .zIndex(1)
+            }
+            if isEmbedded && expanded { Divider().overlay(MuesliTheme.surfaceBorder).allowsHitTesting(false) }
+            if !isEmbedded && coordinator.turns.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        welcome
+                        composer
+                        recentChats
+                    }.frame(maxWidth: 752).frame(maxWidth: .infinity)
+                        .padding(.top, 40)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    contextBar
+            } else {
+                if !isEmbedded || (expanded && !coordinator.turns.isEmpty) {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 28) {
-                            if coordinator.turns.isEmpty { welcome }
                             ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
                                 if (index == 0 && turn.scope != coordinator.scope) ||
                                     (index > 0 && coordinator.turns[index - 1].scope != turn.scope) {
-                                    Label { Text(turn.scopeLabel ?? "Meeting context changed") } icon: { AIIcon(.slidersHorizontal) }
+                                    Text(turn.scopeLabel ?? "Meeting context changed")
                                         .font(.caption).foregroundStyle(.secondary)
-                                        .frame(maxWidth: .infinity).padding(.vertical, 8)
                                 }
                                 turnView(turn).id(turn.id)
                             }
-                        }
-                        .scrollTargetLayout().padding(24)
-                        .frame(maxWidth: 752, alignment: .leading).frame(maxWidth: .infinity)
+                        }.scrollTargetLayout().padding(24)
+                            .frame(maxWidth: 752, alignment: .leading).frame(maxWidth: .infinity)
                     }.scrollPosition(id: scrollAnchor)
-                        .safeAreaInset(edge: .bottom, spacing: 0) {
-                            VStack(spacing: 0) {
-                                if let error = coordinator.errorMessage {
-                                    Label { Text(error) } icon: { AIIcon(.circleAlert) }
-                                        .foregroundStyle(.orange).font(.callout).textSelection(.enabled)
-                                        .padding(.horizontal, 24).padding(.vertical, 8)
-                                }
-                                composer
-                            }.background(MuesliTheme.backgroundBase)
-                        }
-                }.frame(minWidth: 320)
+                        .frame(height: isEmbedded ? 260 : nil)
+                        .contentShape(Rectangle())
+                        .clipped()
+                }
+                ZStack {
+                    composer
+                        .frame(height: isEmbedded && !expanded ? 0 : nil)
+                        .opacity(isEmbedded && !expanded ? 0 : 1)
+                        .clipped()
+                        .allowsHitTesting(!isEmbedded || expanded)
+                        .accessibilityHidden(isEmbedded && !expanded)
+                    if isEmbedded && !expanded { restingComposer }
+                }
             }
         }
+        .background(isEmbedded && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
+        .clipShape(RoundedRectangle(cornerRadius: isEmbedded && expanded ? 20 : 0))
+        .overlay {
+            if isEmbedded && expanded {
+                RoundedRectangle(cornerRadius: 20)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(.horizontal, isEmbedded && expanded ? 16 : 0)
+        .padding(.vertical, isEmbedded && expanded ? 12 : 0)
         .background(MuesliTheme.backgroundBase)
         .sheet(isPresented: $showScope) { MeetingChatScopePicker(scope: coordinator.scope, folders: appState.folders, meetings: coordinator.sourceChoices) { scope in Task { await coordinator.setScope(scope) } } }
         .popover(item: $citation) { source in
@@ -135,23 +155,61 @@ struct MeetingChatView: View {
                 scrollAnchor.wrappedValue = activeID
             }
         }
-        .onChange(of: coordinator.hasChatHistory) { _, hasHistory in
-            if !hasHistory { showHistory = nil }
-        }
         .onChange(of: coordinator.sourceMutationVersion) { _, _ in
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
         }
-        .task { coordinator.reload(); await coordinator.refreshChoices() }
+        .task(id: embeddedMeetingID) {
+            // The shared coordinator refreshes history on mutations and source
+            // changes; browsing notes must not synchronously reload it again.
+            if let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
+            await coordinator.refreshChoices()
+        }
+        .onChange(of: coordinator.isBusy || coordinator.isUpdatingChat) { _, busy in
+            if !busy, let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
+        }
     }
     private var header: some View {
         HStack(spacing: 12) {
-            Button { showHistory = !historyIsVisible } label: { AIIcon(.panelLeft) }
-                .buttonStyle(.borderless).help("Toggle chat history").accessibilityLabel("Toggle chat history")
-            Text("Ask Meetings").font(.system(size: 17, weight: .semibold))
+            if !isEmbedded && coordinator.selectedSessionID != nil {
+                Button { controller.showMeetingChatIndex() } label: {
+                    Label { Text("Ask Meetings") } icon: { AIIcon(.arrowLeft) }
+                }
+                .buttonStyle(.plain).help("Back to all chats")
+                .accessibilityLabel("Back to Ask Meetings")
+                Divider().frame(height: 16)
+            }
+            Button { showHistory.toggle() } label: {
+                AIIcon(.clock).frame(width: 32, height: 32).contentShape(Rectangle())
+            }
+                .buttonStyle(.plain).help("Recent chats").accessibilityLabel("Recent chats")
+                .popover(isPresented: $showHistory) { history.frame(width: 280, height: 340) }
+            if isEmbedded {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Ask Meetings").font(.system(size: 13, weight: .semibold))
+                    if let title = coordinator.sessions.first(where: { $0.id == coordinator.selectedSessionID })?.title {
+                        Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            } else {
+                Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Ask Meetings").lineLimit(1).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+            }
             Spacer()
+            if isEmbedded {
+                Button { controller.showMeetingChat() } label: {
+                    AIIcon(.arrowUpRight).frame(width: 32, height: 32).contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain).help("Open Ask Meetings").accessibilityLabel("Open Ask Meetings")
+                Button { expanded = false } label: {
+                    AIIcon(.chevronDown).frame(width: 32, height: 32).contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain).help("Collapse chat").accessibilityLabel("Collapse chat")
+            }
             Button {
-                Task { await coordinator.createChat(scope: .init()); focusComposer() }
-            } label: { Label { Text("New chat") } icon: { AIIcon(.squarePen) } }.disabled(coordinator.isUpdatingChat).help("Start a new conversation")
+                coordinator.startDraft(scope: embeddedMeetingID.map { .init(selection: .meetings([$0])) } ?? .init()); focusComposer()
+            } label: {
+                Label { Text("New chat") } icon: { AIIcon(.squarePen) }
+                    .padding(.horizontal, 8).frame(height: 32).contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(coordinator.isBusy || coordinator.isUpdatingChat).help("Start a new conversation")
         }.padding(.horizontal, 24).padding(.vertical, 14)
     }
 
@@ -162,7 +220,7 @@ struct MeetingChatView: View {
             ScrollView {
                 LazyVStack(spacing: 3) {
                     ForEach(coordinator.sessions) { session in
-                        Button { coordinator.selectChat(id: session.id) } label: {
+                        Button { coordinator.selectChat(id: session.id); showHistory = false; expanded = true } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(session.title).font(.system(size: 12, weight: .regular)).lineLimit(2)
                                     .foregroundStyle(coordinator.selectedSessionID == session.id ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
@@ -181,69 +239,79 @@ struct MeetingChatView: View {
                     }
                 }.padding(.horizontal, 6).padding(.bottom, 12)
             }
-        }.frame(minWidth: 145, idealWidth: 180, maxWidth: 200).background(MuesliTheme.backgroundDeep.opacity(0.55))
-    }
-
-    private var contextBar: some View {
-        HStack(spacing: 8) {
-            Button { showScope = true } label: {
-                HStack(spacing: 7) {
-                    AIIcon(.bookOpen)
-                    Text(scopeLabel).lineLimit(1)
-                    AIIcon(.chevronDown, size: 10)
-                }.font(.system(size: 12, weight: .medium))
-            }.buttonStyle(.borderless).disabled(coordinator.isUpdatingChat)
-                .accessibilityIdentifier("meeting-chat-scope").help("Choose which meetings this chat can search")
-            Spacer(minLength: 0)
-            if let start = coordinator.scope.startDate {
-                Text(start, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.secondary)
-            }
-            if let end = coordinator.scope.endDateExclusive {
-                Text("– " + end.addingTimeInterval(-0.001).formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }.padding(.horizontal, 24).padding(.vertical, 12)
-            .background(MuesliTheme.backgroundDeep.opacity(0.65))
-    }
-
-    private var welcomeTitle: String {
-        if let ids = attachedMeetingIDs {
-            if ids.count == 1, let meeting = coordinator.sourceChoices.first(where: { $0.id == ids[0] }) {
-                return "Ask about " + meeting.title
-            }
-            return ids.isEmpty ? "Choose a meeting to get started" : "Ask about these meetings"
-        }
-        return "What would you like to revisit?"
+        }.frame(maxWidth: .infinity).background(MuesliTheme.backgroundDeep.opacity(0.55))
     }
 
     private var welcome: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text(welcomeTitle).font(.system(size: 21, weight: .medium)).tracking(-0.3).fixedSize(horizontal: false, vertical: true)
-                Text("Find decisions and next steps, with links back to your meetings.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("What’s on your mind?")
+                .font(.system(size: 24, weight: .medium)).tracking(-0.5)
+            Text("Ask your meetings.").font(.callout).foregroundStyle(.secondary)
+        }.padding(.horizontal, 24)
+    }
+
+    private var recentChats: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { suggestions }
+                VStack(alignment: .leading, spacing: 8) { suggestions }
             }
-            if coordinator.sourceChoices.isEmpty {
-                Button { controller.showMeetingsHome() } label: { Label { Text("Open Meetings") } icon: { AIIcon(.bookOpen) } }
-            } else if coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], alignment: .leading, spacing: 6) {
-                    ForEach(MeetingChatQuickAction.allCases) { action in
-                        Button { Task { await prepare(action, name: appState.config.userName) } } label: {
-                            HStack(spacing: 6) {
-                                Text(action.label).font(.system(size: 12))
-                                Spacer(minLength: 4)
-                                AIIcon(.arrowUpRight, size: 12).foregroundStyle(.tertiary)
-                            }.padding(.horizontal, 10).padding(.vertical, 9)
-                                .background(MuesliTheme.backgroundRaised.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
-                        }.buttonStyle(.plain).disabled(coordinator.isUpdatingChat)
-                    }
-                }.frame(maxWidth: 430)
+            if !coordinator.sessions.isEmpty {
+                Text("Recent chats").font(.caption).foregroundStyle(.secondary).padding(.top, 16)
+                ForEach(coordinator.sessions) { session in
+                    Button { coordinator.selectChat(id: session.id) } label: {
+                        HStack(spacing: 12) {
+                            AIIcon(.clock).foregroundStyle(.secondary)
+                            Text(session.title).lineLimit(1)
+                            Spacer()
+                            Text(session.updatedAt, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.tertiary)
+                        }.padding(.vertical, 8).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
             }
-        }.padding(.top, 20).padding(.bottom, 12)
+        }.padding(.horizontal, 24).padding(.bottom, 24)
+    }
+
+    private var suggestions: some View {
+        ForEach(MeetingChatQuickAction.allCases) { action in
+            Button { Task { await prepare(action, name: appState.config.userName) } } label: {
+                Text(action.label).font(.caption).padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(MuesliTheme.backgroundRaised.opacity(0.6), in: Capsule())
+            }.buttonStyle(.plain).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
+        }
+    }
+
+    private var restingComposer: some View {
+        HStack(spacing: 12) {
+            Button {
+                expanded = true
+                focusComposer()
+            } label: {
+                HStack {
+                    Text(coordinator.composerDraft.isEmpty
+                         ? (coordinator.turns.isEmpty
+                            ? (coordinator.scope.selection == .meetings(embeddedMeetingID.map { [$0] } ?? [])
+                               ? "Ask about this meeting…" : "Ask your meetings…")
+                            : "Continue conversation…")
+                         : coordinator.composerDraft)
+                        .lineLimit(1).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    AIIcon(.chevronUp).foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).help("Chat context: " + scopeLabel)
+                .accessibilityIdentifier("meeting-chat-expand")
+        }.padding(.horizontal, 20).padding(.vertical, 16)
+            .background(MuesliTheme.backgroundRaised, in: Capsule())
+            .overlay(Capsule().stroke(MuesliTheme.surfaceBorder, lineWidth: 1).allowsHitTesting(false))
+            .frame(maxWidth: 704).padding(.horizontal, 24).padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
     }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let error = coordinator.errorMessage {
+                Text(error).foregroundStyle(.orange).font(.callout).textSelection(.enabled)
+            }
             if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
                 AIShimmer(coordinator.phase.isEmpty ? "Saving question" : coordinator.phase)
@@ -258,7 +326,7 @@ struct MeetingChatView: View {
                             .foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
                     }
                     MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                              focusRequest: composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
+                                              focusRequest: isEmbedded && !expanded ? nil : composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0; if $0 && isEmbedded { expanded = true } }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
@@ -268,19 +336,31 @@ struct MeetingChatView: View {
                     Button { insertMentionTrigger() } label: { AIIcon(.atSign) }
                         .buttonStyle(.borderless).help("Attach a meeting with @")
                         .accessibilityLabel("Attach a meeting").disabled(coordinator.isBusy || coordinator.isUpdatingChat)
+                    Button { showScope = true } label: {
+                        HStack(spacing: 5) {
+                            AIIcon(.slidersHorizontal)
+                            if attachedMeetingIDs == nil { Text(scopeLabel).font(.caption).lineLimit(1) }
+                            if let dates = MeetingChatScopePresentation.dateLabel(coordinator.scope) {
+                                Text(dates).font(.caption).lineLimit(1)
+                            }
+                        }
+                    }
+                        .buttonStyle(.plain).help("Meeting context: " + scopeLabel)
+                        .accessibilityLabel("Choose meeting context").accessibilityIdentifier("meeting-chat-scope")
+                        .disabled(coordinator.isBusy || coordinator.isUpdatingChat)
+                    Spacer(minLength: 4)
                     Button { showModelPicker = true } label: {
                         HStack(spacing: 5) {
                             Text(MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
                             if let thinkingLabel { Text("· " + thinkingLabel).foregroundStyle(.secondary).lineLimit(1) }
                             AIIcon(.chevronDown, size: 10)
                         }.font(.caption)
-                    }.buttonStyle(.borderless).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
+                    }.buttonStyle(.plain).foregroundStyle(.secondary).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         .help("Choose the model and thinking level shared by meeting chats and summaries")
                         .accessibilityLabel("Meeting AI model and thinking level")
                         .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
                             MeetingChatModelPicker(appState: appState, controller: controller)
                         }
-                    Spacer(minLength: 4)
                     if !coordinator.turns.isEmpty {
                         Menu {
                             ForEach(MeetingChatQuickAction.allCases) { action in
@@ -294,8 +374,16 @@ struct MeetingChatView: View {
                         Button { coordinator.stop() } label: { AIIcon(.square).frame(width: 20, height: 24) }
                             .help("Stop answer").accessibilityLabel("Stop answer")
                     } else {
-                        Button { send() } label: { AIIcon(.arrowUp, size: 16).frame(width: 20, height: 24) }
-                            .buttonStyle(.borderedProminent).tint(MuesliTheme.accent)
+                        Button { send() } label: {
+                            AIIcon(.arrowUp, size: 16)
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(MuesliTheme.accent, in: Circle())
+                                .contentShape(Circle())
+                        }
+                            .buttonStyle(.plain)
+                            .opacity(coordinator.isUpdatingChat || coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
+                            .accessibilityIdentifier("meeting-chat-send")
                             .help("Send question").accessibilityLabel("Send question")
                             .disabled(coordinator.isUpdatingChat || coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
@@ -325,7 +413,7 @@ struct MeetingChatView: View {
                             .disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         }
                     }
-                }
+                }.frame(height: 30)
             }
 
         }
@@ -445,6 +533,7 @@ struct MeetingChatView: View {
             else if let turnID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == turnID }) { scrollAnchor.wrappedValue = turnID }
         }
         preparedIsDraft = false
+        if isEmbedded { expanded = true }
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -455,10 +544,13 @@ struct MeetingChatView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if turn.state.isPending {
                         VStack(alignment: .leading, spacing: 10) {
-                            MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
+                            // Streaming reasoning already provides its own thinking indicator.
+                            if !(turn.id == coordinator.activityTurnID && coordinator.reasoningIsStreaming && !visibleReasoningSummaries.isEmpty) {
+                                MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
                                      ? coordinator.phase
                                      : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
                                     .font(.callout).foregroundStyle(.secondary)
+                            }
                             if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
                                 AIDisclosure(title: "\(coordinator.activities.count) research steps", icon: .search) {
                                     activityRows
@@ -529,16 +621,13 @@ struct MeetingChatView: View {
     @ViewBuilder private func answerActions(_ turn: MeetingChatTurn) -> some View {
         if let session = coordinator.sessions.first(where: { $0.id == turn.sessionID }) {
             HStack(spacing: 14) {
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(MeetingChatExporter.plainText(turn: turn, session: session, useEditedDraft: false), forType: .string)
-                } label: { Label { Text("Copy") } icon: { AIIcon(.copy) } }
+                MeetingChatCopyButton(text: MeetingChatExporter.clipboardText(turn: turn))
                 Menu {
                     Button("Export answer…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: false) }
                     if turn.editableDraft != nil {
                         Button("Copy edited draft") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(MeetingChatExporter.plainText(turn: turn, session: session, useEditedDraft: true), forType: .string)
+                            NSPasteboard.general.setString(MeetingChatExporter.clipboardText(turn: turn, useEditedDraft: true), forType: .string)
                         }
                         Button("Export edited draft…") { MeetingChatExporter.export(turn: turn, session: session, useEditedDraft: true) }
                     }
@@ -585,7 +674,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     enum Key { case up, down, escape, submit, tab }
     @Binding var text: String
     @Binding var selection: NSRange
-    var focusRequest: UUID
+    var focusRequest: UUID?
     var undoIdentity: UUID
     let onFocus: (Bool) -> Void
     let onKey: (Key) -> Bool
@@ -638,19 +727,22 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         let length = (text as NSString).length
         let safe = NSRange(location: min(selection.location, length), length: min(selection.length, max(0, length - selection.location)))
         if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
-        if context.coordinator.lastFocusRequest != focusRequest {
+        if focusRequest == nil, editor.window?.firstResponder === editor {
+            editor.window?.makeFirstResponder(nil)
+        }
+        if let focusRequest, context.coordinator.lastFocusRequest != focusRequest {
             context.coordinator.lastFocusRequest = focusRequest
-            editor.window?.makeFirstResponder(editor)
+            editor.requestComposerFocus()
         }
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MeetingChatComposerEditor
         var isUpdating = false
-        var lastFocusRequest: UUID
+        var lastFocusRequest: UUID?
         var undoIdentity: UUID
         init(_ parent: MeetingChatComposerEditor) {
             self.parent = parent
-            lastFocusRequest = parent.focusRequest
+            lastFocusRequest = nil
             undoIdentity = parent.undoIdentity
         }
         func textDidChange(_ notification: Notification) {
@@ -664,6 +756,19 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         }
     }
     final class Editor: NSTextView {
+        private var pendingFocus = false
+        func requestComposerFocus() {
+            pendingFocus = true
+            applyPendingFocus()
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyPendingFocus()
+        }
+        private func applyPendingFocus() {
+            guard pendingFocus, let window else { return }
+            if window.makeFirstResponder(self) { pendingFocus = false }
+        }
         var onKey: ((Key) -> Bool)?
         var onFocus: ((Bool) -> Void)?
         override func becomeFirstResponder() -> Bool {
@@ -693,6 +798,37 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     }
 }
 
+
+private struct MeetingChatCopyButton: View {
+    let text: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var copyID: UUID?
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            if NSPasteboard.general.setString(text, forType: .string) {
+                copyID = UUID()
+            }
+        } label: {
+            Label {
+                Text(copyID == nil ? "Copy" : "Copied")
+            } icon: {
+                AIIcon(copyID == nil ? .copy : .check)
+                    .id(copyID == nil)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+            .frame(minWidth: 64, alignment: .leading)
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: copyID == nil)
+        .help(copyID == nil ? "Copy answer" : "Answer copied")
+        .task(id: copyID) {
+            guard copyID != nil else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copyID = nil
+        }
+    }
+}
 
 /// Vary only a genuine provider-wait phase; retrieval/tool events retain their real labels.
 private struct MeetingChatWaitingLabel: View {
@@ -745,5 +881,19 @@ enum MeetingChatComposerTextSync {
         editor.textStorage?.replaceCharacters(in: range, with: text)
         editor.didChangeText()
         editor.breakUndoCoalescing()
+    }
+}
+
+/// Keep active date restrictions visible independently of attachment chips.
+enum MeetingChatScopePresentation {
+    static func dateLabel(_ scope: MeetingChatScope) -> String? {
+        let start = scope.startDate?.formatted(date: .abbreviated, time: .omitted)
+        let end = scope.endDateExclusive?.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted)
+        switch (start, end) {
+        case let (.some(start), .some(end)): return "\(start) – \(end)"
+        case let (.some(start), nil): return "From \(start)"
+        case let (nil, .some(end)): return "Through \(end)"
+        default: return nil
+        }
     }
 }

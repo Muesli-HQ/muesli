@@ -494,7 +494,8 @@ final class AccessibilityPermissionGuideController {
     }
 }
 
-private enum SystemSettingsWindowLocator {
+/// The frontmost System Settings window, in AppKit coordinates (shared by the setup guides).
+enum SystemSettingsWindowLocator {
     static func mainWindowFrame() -> CGRect? {
         guard let settingsApp = NSRunningApplication.runningApplications(
             withBundleIdentifier: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID
@@ -631,7 +632,7 @@ private struct AccessibilityPermissionDragRowView: View {
     }
 }
 
-private struct PermissionGuideAppRow: View {
+struct PermissionGuideAppRow: View {
     let appName: String
     let appIcon: NSImage
 

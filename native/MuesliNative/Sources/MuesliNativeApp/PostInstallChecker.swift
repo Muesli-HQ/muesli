@@ -267,7 +267,7 @@ enum PostInstallChecker {
                 try? FileManager.default.trashItem(
                     at: URL(fileURLWithPath: dmgPath), resultingItemURL: nil)
             }
-            NSApp.terminate(nil)
+            ApplicationTermination.request()
         }
 
         let safetyTimer = PostInstallSafetyTimer()

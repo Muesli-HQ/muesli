@@ -2,7 +2,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 
-/// Shared disk-backed reader for ASR and diarization. Only one window exists
+/// Disk-backed reader for URL-based ASR. Only one window exists
 /// at a time; the caller must finish inference before requesting the next one.
 final class RecordingAudioWindowReader {
     struct Window {
@@ -72,6 +72,66 @@ final class RecordingAudioWindowReader {
     }
 }
 
+/// Direct PCM reader for diarization. Holds at most one source-format window
+/// plus a small decode buffer; never writes intermediate audio files.
+final class DiarizationPCMWindowReader {
+    struct Window {
+        let samples: [Float]
+        let start: Double
+        let end: Double
+        let fraction: Double
+    }
+
+    private let file: AVAudioFile
+    private let buffer: AVAudioPCMBuffer
+    private let scratch: AVAudioPCMBuffer
+    private let converter = AudioConverter()
+
+    init(url: URL, seconds: Double = RecordedAudioDiarizationSession.windowSeconds) throws {
+        file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let format = file.processingFormat
+        let frames = format.sampleRate * seconds
+        guard file.length > 0, frames.isFinite, frames >= 1,
+              seconds > 0, seconds <= RecordedAudioDiarizationSession.windowSeconds,
+              frames < Double(UInt32.max),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let scratch = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.buffer = buffer
+        self.scratch = scratch
+    }
+
+    func next() throws -> Window? {
+        try Task.checkCancellation()
+        guard file.framePosition < file.length else { return nil }
+        let start = file.framePosition
+        let count = AVAudioFrameCount(min(AVAudioFramePosition(buffer.frameCapacity), file.length - start))
+        buffer.frameLength = 0
+        while buffer.frameLength < count {
+            try Task.checkCancellation()
+            try file.read(into: scratch, frameCount: min(scratch.frameCapacity, count - buffer.frameLength))
+            guard scratch.frameLength > 0,
+                  let source = scratch.floatChannelData,
+                  let destination = buffer.floatChannelData else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            for channel in 0..<Int(buffer.format.channelCount) {
+                destination[channel].advanced(by: Int(buffer.frameLength))
+                    .update(from: source[channel], count: Int(scratch.frameLength))
+            }
+            buffer.frameLength += scratch.frameLength
+        }
+        // FluidAudio directly extracts 16 kHz mono Float32; other input formats
+        // convert only this bounded window, not the entire recording.
+        let samples = try converter.resampleBuffer(buffer)
+        let end = file.framePosition
+        let rate = file.processingFormat.sampleRate
+        return Window(samples: samples, start: Double(start) / rate,
+                      end: Double(end) / rate, fraction: Double(end) / Double(file.length))
+    }
+}
+
 /// Reuses the loaded models, but never shares speaker identities across jobs.
 /// PCM is bounded to the model's native ten-second window; only lightweight
 /// speaker/timing output grows with the transcript, not audio or embeddings.
@@ -87,12 +147,11 @@ final class RecordedAudioDiarizationSession {
         speakers.reset()
     }
 
-    func process(_ window: RecordingAudioWindowReader.Window) throws -> [TimedSpeakerSegment] {
+    func process(_ window: DiarizationPCMWindowReader.Window) throws -> [TimedSpeakerSegment] {
         try Task.checkCancellation()
         return try autoreleasepool {
-            let samples = try AudioConverter().resampleAudioFile(window.url)
             let result = try withSpeakerState { model in
-                try model.performCompleteDiarization(samples, sampleRate: 16_000, atTime: window.start)
+                try model.performCompleteDiarization(window.samples, sampleRate: 16_000, atTime: window.start)
             }
             return Self.clippedSegments(result.segments, start: window.start, end: window.end)
         }
