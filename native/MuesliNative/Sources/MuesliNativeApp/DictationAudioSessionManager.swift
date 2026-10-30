@@ -101,11 +101,14 @@ extension MicrophoneRecorder: DictationAudioRecording {}
 final class DictationAudioSessionManager: @unchecked Sendable {
     private enum StartupError: LocalizedError {
         case noAudioBuffer
+        case microphoneStartStalled
 
         var errorDescription: String? {
             switch self {
             case .noAudioBuffer:
                 return "Microphone capture did not deliver audio."
+            case .microphoneStartStalled:
+                return "The microphone did not start, so nothing was recorded. Please try again."
             }
         }
     }
@@ -152,6 +155,15 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private let sessionHintLock = NSLock()
     private var sessionHint: UUID?
     private var externalSessionHint = false
+    // Guarded by sessionHintLock. AudioQueueStart can block inside CoreAudio for
+    // minutes, wedging `queue` and every stop/timeout queued behind it. The
+    // startup watchdog runs on its own queue and touches only lock-guarded
+    // state, so the user learns about the stall instead of speaking into a
+    // recording that never started.
+    private var awaitingFirstAudioSessionID: UUID?
+    private var stalledSessionID: UUID?
+    private let startupTimeout: TimeInterval
+    private let startupWatchdogQueue = DispatchQueue(label: "com.muesli.dictation-audio-startup-watchdog")
 
     var onEvent: ((DictationAudioSessionEvent) -> Void)?
 
@@ -166,8 +178,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         mediaPlaybackController: MediaPlaybackManaging = MediaPlaybackController(),
         routingController: DictationAudioRouting,
         queue: DispatchQueue = DispatchQueue(label: "com.muesli.dictation-audio-session-manager"),
-        eventQueue: DispatchQueue = .main
+        eventQueue: DispatchQueue = .main,
+        startupTimeout: TimeInterval = 3
     ) {
+        self.startupTimeout = startupTimeout
         self.recorder = recorder
         self.duckingController = duckingController
         self.mediaPlaybackController = mediaPlaybackController
@@ -257,6 +271,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
 
     func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) {
         let sessionID = ensureSession()
+        scheduleStartupWatchdog(sessionID)
         queue.async { [self] in
             self.cancelPendingRouteRefreshLocked()
             guard self.sessionHintMatches(sessionID) else {
@@ -349,6 +364,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
+            self.finishStartupWatchdog(sessionID)
             self.emit(.stopped(sessionID, wavURL: wavURL))
             self.restoreSessionAudioState {
                 self.emit(.audioRestored(sessionID))
@@ -368,6 +384,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.externalSessionActive = false
             self.restoreSessionAudioState()
             self.emitLatency("cancelled:\(reason)")
+            self.finishStartupWatchdog(sessionID)
             self.emit(.cancelled(sessionID, reason: reason))
         }
     }
@@ -578,10 +595,60 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         recorder.preferredInputDeviceID = nil
         clearSessionHint(sessionID)
         restoreSessionAudioState()
+        guard !finishStartupWatchdog(sessionID) else { return }
         emit(.failed(sessionID, error: error))
     }
 
+    private func scheduleStartupWatchdog(_ sessionID: UUID) {
+        let isNew = sessionHintLock.withLock {
+            guard awaitingFirstAudioSessionID != sessionID, stalledSessionID != sessionID else { return false }
+            awaitingFirstAudioSessionID = sessionID
+            return true
+        }
+        guard isNew else { return }
+        startupWatchdogQueue.asyncAfter(deadline: .now() + startupTimeout) { [weak self] in
+            self?.handleStartupWatchdogFired(sessionID)
+        }
+    }
+
+    private func handleStartupWatchdogFired(_ sessionID: UUID) {
+        let stalled = sessionHintLock.withLock {
+            guard awaitingFirstAudioSessionID == sessionID else { return false }
+            awaitingFirstAudioSessionID = nil
+            stalledSessionID = sessionID
+            if sessionHint == sessionID { sessionHint = nil }
+            return true
+        }
+        guard stalled else { return }
+        // Report now, without `queue`: it may be blocked in AudioQueueStart.
+        emitLatency("startup_watchdog_fired")
+        emit(.failed(sessionID, error: StartupError.microphoneStartStalled))
+        // Recorder teardown stays serialized with start, so it runs once the
+        // stalled start returns; the session is already reported failed.
+        queue.async { [self] in
+            guard self.stateStorage.sessionID == sessionID else { return }
+            self.recorder.keepsAudioGraphWarm = false
+            self.recorder.cancel()
+            self.failedSessionID = sessionID
+            self.stateStorage = .idle
+            self.activeRecorderRunID = nil
+            self.recorder.preferredInputDeviceID = nil
+            self.restoreSessionAudioState()
+        }
+    }
+
+    /// Disarms the watchdog for a session that is ending. Returns true when the
+    /// watchdog already reported it failed, so the caller must not report again.
+    @discardableResult
+    private func finishStartupWatchdog(_ sessionID: UUID?) -> Bool {
+        sessionHintLock.withLock {
+            if awaitingFirstAudioSessionID == sessionID { awaitingFirstAudioSessionID = nil }
+            return sessionID != nil && stalledSessionID == sessionID
+        }
+    }
+
     private func handleFirstAudioBuffer(capturedAt: Date) {
+        sessionHintLock.withLock { awaitingFirstAudioSessionID = nil }
         queue.async { [self] in
             guard let sessionID = self.stateStorage.sessionID else { return }
             switch self.stateStorage {
