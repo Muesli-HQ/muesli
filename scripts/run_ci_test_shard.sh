@@ -38,6 +38,8 @@ case "${shard}" in
       ComputerUseToolRegistryTests
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
+      ICloudContainerResolutionTests
+      ICloudSyncStateScopeTests
       MuesliCLITests
       ChatGPTAuthTests
       ChatGPTResponsesTransportTests
