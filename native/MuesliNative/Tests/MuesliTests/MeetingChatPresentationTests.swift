@@ -77,7 +77,11 @@ struct MeetingChatPresentationTests {
         let short = MeetingChatComposerLayout.height(for: "Hello", width: 500)
         let multiline = MeetingChatComposerLayout.height(for: "First line\nSecond line\nThird line", width: 500)
         let long = MeetingChatComposerLayout.height(for: String(repeating: "Long question about meetings. ", count: 100), width: 300)
-        #expect(short == 34)
+        // Keep a compact single line while accommodating the bundled font's metrics.
+        #expect(short >= 34 && short <= 40)
+        let label = NSTextField(labelWithString: "Hello")
+        label.font = AppFonts.regular(14)
+        #expect(short >= label.intrinsicContentSize.height + 16)
         #expect(multiline > short)
         #expect(long == 144)
     }

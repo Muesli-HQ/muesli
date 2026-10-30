@@ -337,7 +337,7 @@ struct ShortcutsView: View {
 
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
+            .font(MuesliTheme.font(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, MuesliTheme.spacing4)

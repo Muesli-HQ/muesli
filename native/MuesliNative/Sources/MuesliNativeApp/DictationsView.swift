@@ -111,7 +111,7 @@ struct DictationsView: View {
                             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                                 HStack {
                                     Text(group.header)
-                                        .font(.system(size: 12, weight: .semibold))
+                                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                                         .foregroundStyle(MuesliTheme.textTertiary)
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
@@ -222,7 +222,7 @@ struct DictationsView: View {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 12, weight: .semibold))
                 Text(isRecording ? "Stop Voice Note" : "Record Voice Note")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
@@ -257,7 +257,7 @@ struct DictationsView: View {
                     .font(.system(size: 11))
                 if selectedFilter != .all {
                     Text(selectedFilter.label)
-                        .font(.system(size: 11))
+                        .font(MuesliTheme.font(size: 11))
                 }
             }
             .foregroundStyle(selectedFilter != .all ? MuesliTheme.accent : MuesliTheme.textTertiary)

@@ -195,6 +195,7 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+        .font(MuesliTheme.body())
     }
 
     private var hasOpenMeeting: Bool {

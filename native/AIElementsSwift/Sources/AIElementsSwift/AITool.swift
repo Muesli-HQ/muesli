@@ -55,11 +55,11 @@ public struct AITool: View {
         } label: {
             HStack(spacing: 8) {
                 AIIcon(.wrench, size: 14).foregroundStyle(theme.muted)
-                Text(title).font(.system(size: 12, weight: .medium))
+                Text(title).font(theme.font(size: 12, weight: .medium))
                 Spacer(minLength: 8)
                 HStack(spacing: 4) {
                     AIExecutionIndicator(state: state).accessibilityHidden(true)
-                    Text(state.label).font(.system(size: 11)).foregroundStyle(theme.muted)
+                    Text(state.label).font(theme.font(size: 11)).foregroundStyle(theme.muted)
                 }
             }
             .accessibilityElement(children: .combine)
@@ -73,7 +73,7 @@ public struct AITool: View {
     @ViewBuilder private func section(_ title: String, text: String?) -> some View {
         if let text, !text.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.muted)
+                Text(title).font(theme.font(size: 11, weight: .semibold)).foregroundStyle(theme.muted)
                 Text(verbatim: text).font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)

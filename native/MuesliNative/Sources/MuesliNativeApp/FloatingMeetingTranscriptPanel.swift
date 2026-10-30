@@ -288,6 +288,7 @@ private struct FloatingMeetingTranscriptPanelView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             }
+            .font(MuesliTheme.body())
             .onHover(perform: onHoverChanged)
         }
     }

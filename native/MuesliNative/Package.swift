@@ -78,7 +78,7 @@ let package = Package(
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
-            resources: [.copy("Resources/Licenses"), .copy("Resources/muesli-export-logo.png"), .copy("Resources/granola-export-guide.png"), .copy("Resources/recording-announcement.aiff")],
+            resources: [.copy("Resources/Fonts"), .copy("Resources/Licenses"), .copy("Resources/muesli-export-logo.png"), .copy("Resources/granola-export-guide.png"), .copy("Resources/recording-announcement.aiff")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("Contacts"),

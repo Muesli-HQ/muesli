@@ -59,10 +59,10 @@ struct SearchResultsView: View {
         } label: {
             HStack(spacing: 6) {
                 Text(tab.rawValue)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .font(MuesliTheme.font(size: 13, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                 Text("\(count)")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)

@@ -27,7 +27,7 @@ public struct AIDisclosure<Content: View>: View {
         } label: {
             HStack(spacing: 6) {
                 if let icon { AIIcon(icon, size: 13).accessibilityHidden(true) }
-                Text(title).font(.system(size: 12, weight: .medium))
+                Text(title).font(theme.font(size: 12, weight: .medium))
             }.foregroundStyle(theme.muted)
         }
         .disclosureGroupStyle(AIElementsDisclosureStyle())

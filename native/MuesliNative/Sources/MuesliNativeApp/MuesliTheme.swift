@@ -62,21 +62,56 @@ enum MuesliTheme {
     static let transcribing     = Color(hex: 0xF59E0B)
     static let success          = Color(hex: 0x34D399)
 
-    // MARK: - Typography (SF Pro via .system())
+    // MARK: - Typography — Nunito Sans, matching muesli.works
 
-    static func title1() -> Font { .system(size: 26, weight: .bold) }
-    static func title2() -> Font { .system(size: 20, weight: .semibold) }
-    static func title3() -> Font { .system(size: 18, weight: .semibold) }
-    static func headline() -> Font { .system(size: 15, weight: .semibold) }
+    /// Text only. SF Symbols retain system fonts; code retains its monospaced design.
+    static func font(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        if design == .monospaced { return .system(size: size, weight: weight, design: .monospaced) }
+        AppFonts.registerForRenderingIfNeeded()
+        return .custom(AppFonts.postScriptName(weight: nsWeight(weight)), size: size)
+    }
+
+    static func font(_ style: Font.TextStyle) -> Font {
+        switch style {
+        case .largeTitle: return font(size: 32, weight: .bold)
+        case .title: return title1()
+        case .title2: return title2()
+        case .title3: return title3()
+        case .headline: return headline()
+        case .subheadline, .callout: return callout()
+        case .footnote, .caption: return caption()
+        case .caption2: return font(size: 11, weight: .medium)
+        default: return body()
+        }
+    }
+
+    private static func nsWeight(_ weight: Font.Weight) -> NSFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+
+    static func title1() -> Font { font(size: 26, weight: .bold) }
+    static func title2() -> Font { font(size: 20, weight: .semibold) }
+    static func title3() -> Font { font(size: 18, weight: .semibold) }
+    static func headline() -> Font { font(size: 15, weight: .semibold) }
     /// Comfortable long-form text, separate from compact control labels.
-    static func reading() -> Font { .system(size: 15, weight: .regular) }
+    static func reading() -> Font { font(size: 15) }
     static let readingWidth: CGFloat = 720
     static let pageInset: CGFloat = 32
 
-    static func body() -> Font { .system(size: 14, weight: .regular) }
-    static func callout() -> Font { .system(size: 13, weight: .regular) }
-    static func caption() -> Font { .system(size: 12, weight: .regular) }
-    static func captionMedium() -> Font { .system(size: 12, weight: .medium) }
+    static func body() -> Font { font(size: 14) }
+    static func callout() -> Font { font(size: 13) }
+    static func caption() -> Font { font(size: 12) }
+    static func captionMedium() -> Font { font(size: 12, weight: .medium) }
 
     // MARK: - Spacing (4pt grid)
 

@@ -14,7 +14,7 @@ struct MeetingChatDraftView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label { Text("Edit draft") } icon: { AIIcon(.squarePen) }.font(MuesliTheme.title2())
-            Text("The original answer and its source references are preserved.").font(.caption).foregroundStyle(.secondary)
+            Text("The original answer and its source references are preserved.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
             TextEditor(text: $text).font(MuesliTheme.reading()).scrollContentBackground(.hidden)
                 .padding(12).frame(minHeight: 320).background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))
                 .accessibilityLabel("Editable answer draft")

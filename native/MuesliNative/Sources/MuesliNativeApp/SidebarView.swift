@@ -384,7 +384,7 @@ struct SidebarView: View {
                             .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                             .frame(width: sidebarIconColumnWidth)
                         Text("Meetings")
-                            .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                            .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
                             .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                         Spacer(minLength: 0)
                     }
@@ -523,12 +523,12 @@ struct SidebarView: View {
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .font(MuesliTheme.font(size: 11, weight: .semibold, design: .rounded))
                         .foregroundStyle(MuesliTheme.textSecondary)
                         .lineLimit(1)
                     if let detail = appState.modelPreparationDetail, !detail.isEmpty {
                         Text(detail)
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .font(MuesliTheme.font(size: 10, weight: .medium, design: .rounded))
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .lineLimit(1)
                     }
@@ -571,7 +571,7 @@ struct SidebarView: View {
                     .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
                 Text(label)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                    .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                 Spacer()
                 if let updateCTA {
@@ -579,7 +579,7 @@ struct SidebarView: View {
                         Image(systemName: updateCTA.icon)
                             .font(.system(size: 9, weight: .bold))
                         Text(updateCTA.label)
-                            .font(.system(size: 11, weight: .bold))
+                            .font(MuesliTheme.font(size: 11, weight: .bold))
                             .lineLimit(1)
                     }
                     .foregroundStyle(updateCTA.foreground)

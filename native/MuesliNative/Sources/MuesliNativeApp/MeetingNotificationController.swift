@@ -29,7 +29,7 @@ final class MeetingNotificationController {
     /// Fixed geometry for the split button, so swapping which action is armed never
     /// reflows the card. `splitButtonLabelFits` guards the assumption in tests.
     static let splitButtonWidth: CGFloat = 126
-    static let splitButtonFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    static let splitButtonFont = AppFonts.font(size: 11, weight: .medium)
 
     static func splitButtonLabelFits(_ label: String, horizontalPadding: CGFloat = 12) -> Bool {
         let labelWidth = (label as NSString).size(withAttributes: [.font: splitButtonFont]).width
@@ -103,8 +103,8 @@ final class MeetingNotificationController {
         let platformIcon = platform?.loadIcon()
         let iconSize: CGFloat = 26
         let textX: CGFloat = platformIcon == nil ? 14 : 14 + iconSize + 9
-        let titleFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        let subtitleFont = NSFont.systemFont(ofSize: 11)
+        let titleFont = AppFonts.font(size: 13, weight: .semibold)
+        let subtitleFont = AppFonts.font(size: 11)
 
         let minimumCardWidth: CGFloat = 344
         let cardWidth: CGFloat
@@ -259,7 +259,7 @@ final class MeetingNotificationController {
             subtitleLabel.frame.size.width = textWidth
 
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
-            startButton.font = .systemFont(ofSize: 12, weight: .medium)
+            startButton.font = AppFonts.font(size: 12, weight: .medium)
             startButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
             startButton.wantsLayer = true
             startButton.layer?.backgroundColor = NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor

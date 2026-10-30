@@ -149,7 +149,7 @@ struct PasteShortcutControl: View {
             }
             if let message = recorder.message {
                 Text(message)
-                    .font(.caption)
+                    .font(MuesliTheme.font(.caption))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(message)

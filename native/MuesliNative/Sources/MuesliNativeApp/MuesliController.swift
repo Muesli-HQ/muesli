@@ -8235,7 +8235,7 @@ public final class MuesliController: NSObject {
 
     private static func makeDiscardMeetingAccessoryView() -> MeetingDiscardAccessory {
         let label = NSTextField(labelWithString: "Will delete:")
-        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.font = AppFonts.font(size: NSFont.systemFontSize)
         label.textColor = .secondaryLabelColor
 
         let recordingCheckbox = NSButton(checkboxWithTitle: "Recording audio", target: nil, action: nil)

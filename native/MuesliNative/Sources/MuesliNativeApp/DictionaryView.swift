@@ -87,7 +87,7 @@ struct DictionaryView: View {
                     importDictionary()
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, MuesliTheme.spacing8)
@@ -104,7 +104,7 @@ struct DictionaryView: View {
                     exportDictionary()
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, MuesliTheme.spacing8)
@@ -127,7 +127,7 @@ struct DictionaryView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 11, weight: .bold))
                         Text("Add new")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(MuesliTheme.font(size: 13, weight: .medium))
                     }
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .padding(.horizontal, MuesliTheme.spacing12)
@@ -620,7 +620,7 @@ private struct ThresholdEditor: View {
                         .frame(width: 48)
                         .onSubmit(commitDraftPercent)
                     Text("%")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }

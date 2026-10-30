@@ -256,10 +256,10 @@ struct FeatureTourOverlay: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(step.eyebrow)
-                        .font(.system(size: 10, weight: .bold))
+                        .font(MuesliTheme.font(size: 10, weight: .bold))
                         .foregroundStyle(MuesliTheme.accent)
                     Text(step.title)
-                        .font(.system(size: 18, weight: .bold))
+                        .font(MuesliTheme.font(size: 18, weight: .bold))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -350,10 +350,10 @@ struct FeatureTourInvitationView: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text("MUESLI \(tour.displayVersion)")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(MuesliTheme.font(size: 10, weight: .bold))
                             .foregroundStyle(MuesliTheme.accent)
                         Text("Want a quick tour of what’s new?")
-                            .font(.system(size: 21, weight: .bold))
+                            .font(MuesliTheme.font(size: 21, weight: .bold))
                             .foregroundStyle(MuesliTheme.textPrimary)
                     }
 

@@ -24,7 +24,7 @@ struct MuesliSettingControl: View {
                                     Image(systemName: AppAppearanceMode(rawValue: choice.id)?.symbol ?? "desktopcomputer")
                                     if !compactAppearance { Text(choice.id == "system" ? "System" : choice.label) }
                                 }
-                                .font(.system(size: compactAppearance ? 10 : 12, weight: .medium))
+                                .font(MuesliTheme.font(size: compactAppearance ? 10 : 12, weight: .medium))
                                 .padding(.horizontal, compactAppearance ? 0 : 10)
                                 .frame(minWidth: 28, minHeight: compactAppearance ? 22 : 28)
                                 .foregroundStyle(state.current == choice.id ? MuesliTheme.accent : MuesliTheme.textSecondary)

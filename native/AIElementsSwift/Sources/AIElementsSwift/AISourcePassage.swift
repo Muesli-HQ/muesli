@@ -24,8 +24,8 @@ public struct AISourcePassage: View {
                     .background(theme.surface, in: RoundedRectangle(cornerRadius: 5))
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(theme.border, lineWidth: 1))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(metadata).font(.system(size: 11, weight: .medium)).foregroundStyle(theme.muted)
-                    Text(preview).font(.system(size: 12)).lineLimit(3)
+                    Text(metadata).font(theme.font(size: 11, weight: .medium)).foregroundStyle(theme.muted)
+                    Text(preview).font(theme.font(size: 12)).lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 AIIcon(.arrowUpRight, size: 12).foregroundStyle(theme.muted).accessibilityHidden(true)
