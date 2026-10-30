@@ -199,11 +199,11 @@ enum TranscriptFormatter {
         let trimmedRHS = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedLHS.isEmpty, !trimmedRHS.isEmpty else { return false }
 
+        guard gap <= lexicalFragmentGapThreshold else { return false }
+
         if isPunctuationOnly(trimmedLHS) || isPunctuationOnly(trimmedRHS) {
             return true
         }
-
-        guard gap <= lexicalFragmentGapThreshold else { return false }
 
         guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
         guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace, !lhsLast.isPunctuation else {

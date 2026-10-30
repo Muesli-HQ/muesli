@@ -454,6 +454,29 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("Speaker 2: ."))
     }
 
+    @Test("diarization does not merge distant punctuation across speakers")
+    func diarizationKeepsDistantPunctuationSeparate() {
+        let system = [
+            SpeechSegment(start: 0.2, end: 0.5, text: "Hello"),
+            SpeechSegment(start: 1.5, end: 1.6, text: "?"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: Hello"))
+        #expect(result.contains("Speaker 2: ?"))
+        #expect(!result.contains("Hello?"))
+    }
+
     @Test("diarization preserves explicit whitespace word boundaries")
     func diarizationPreservesExplicitWhitespaceBoundaries() {
         let system = [
