@@ -103,7 +103,7 @@ struct TimeTurnerControls: View {
                     Spacer()
                     Button("Open in Settings") {
                         showsSettings = false
-                        appState.selectedSettingsPane = .timeTurner
+                        appState.selectedSettingsPane = .experimental
                         controller.openSettingsTab()
                     }
                     Button("Done") { showsSettings = false }.keyboardShortcut(.cancelAction)
