@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CloudKit
 import Foundation
 import Sparkle
@@ -9,6 +10,8 @@ import MuesliCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var controller: MuesliController?
     private var terminationTask: Task<Void, Never>?
+    private var referenceDriver: ComputerUseReferenceDriver?
+    private var referenceStartup: Task<Void, Never>?
     private(set) var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdateDelegate = SparkleUpdateDelegate()
 
@@ -47,6 +50,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if let executable = ComputerUseReferenceDriver.selectedExecutable,
+               CommandLine.arguments.contains("--trycua-probe-only") ||
+               CommandLine.arguments.contains("--trycua-connect-approved") {
+                let reference = ComputerUseReferenceDriver.shared
+                referenceDriver = reference
+                referenceStartup = Task { @MainActor in
+                    do {
+                        try await reference.start(executable: executable)
+                        if CommandLine.arguments.contains("--trycua-connect-approved") {
+                            await reference.connectApprovedChromeInBackground()
+                        }
+                    }
+                    catch { fputs("[muesli-reference] \(error.localizedDescription)\n", stderr) }
+                }
+            }
+            if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+               let index = CommandLine.arguments.firstIndex(of: "--computer-use-command-file"),
+               CommandLine.arguments.indices.contains(index + 1),
+               let data = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1])),
+               data.count <= 16_384, let command = String(data: data, encoding: .utf8) {
+                Task { @MainActor [weak controller] in
+                    try? await Task.sleep(for: .seconds(2))
+                    // Dev replay can wait for manual browser connection without
+                    // restarting the host and discarding that connection.
+                    if CommandLine.arguments.contains("--computer-use-wait-for-chrome") {
+                        let driver = ComputerUseReferenceDriver.shared
+                        for await (state, active) in driver.$chromeAccess.combineLatest(driver.$commandActive).values {
+                            if Task.isCancelled { return }
+                            if state == .connected && !active { break }
+                        }
+                    }
+                    // Dev benchmark barrier: allow isolated driver probes to finish
+                    // on the same approved connection before starting the planner.
+                    if let index = CommandLine.arguments.firstIndex(of: "--computer-use-start-signal"),
+                       CommandLine.arguments.indices.contains(index + 1) {
+                        let signal = CommandLine.arguments[index + 1]
+                        while !FileManager.default.fileExists(atPath: signal) {
+                            do { try await Task.sleep(for: .milliseconds(200)) }
+                            catch { return }
+                        }
+                    }
+                    let repeatIndex = CommandLine.arguments.firstIndex(of: "--computer-use-command-repeat")
+                    let repetitions = repeatIndex.flatMap { index in
+                        CommandLine.arguments.indices.contains(index + 1) ? Int(CommandLine.arguments[index + 1]) : nil
+                    } ?? 1
+                    for _ in 0..<min(5, max(1, repetitions)) {
+                        guard !Task.isCancelled,
+                              let replay = controller?.replayComputerUseCommandForDevelopment(command.trimmingCharacters(in: .whitespacesAndNewlines)) else { break }
+                        await replay.value
+                        if replay.isCancelled { break }
+                    }
+                }
+            }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
@@ -89,7 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let controller else { return .terminateNow }
 
         terminationTask = Task { @MainActor [weak self] in
+            let referenceStartup = self?.referenceStartup
             let finished = await ShutdownDeadline.run(seconds: Self.shutdownDeadline) {
+                referenceStartup?.cancel()
+                await referenceStartup?.value
+                await ComputerUseReferenceDriver.shared.shutdown()
                 await controller.shutdown()
             }
             if !finished {
