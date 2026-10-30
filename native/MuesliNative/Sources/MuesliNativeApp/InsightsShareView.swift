@@ -53,7 +53,7 @@ struct InsightsShareSheet: View {
                         Text("The image couldn’t be saved")
                             .font(MuesliTheme.font(size: 12, weight: .semibold))
                         Text(saveErrorMessage)
-                            .font(MuesliTheme.font(size: 11))
+                            .font(MuesliTheme.caption())
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }

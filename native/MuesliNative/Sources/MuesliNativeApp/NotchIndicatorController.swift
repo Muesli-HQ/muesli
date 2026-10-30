@@ -667,7 +667,7 @@ struct NotchLiveInstructionView: View {
             }
             if requiresReview {
                 Text("Your attention is needed. Review the details in muesli.")
-                    .font(MuesliTheme.font(.caption2)).foregroundStyle(.white.opacity(0.65))
+                    .font(MuesliTheme.caption()).foregroundStyle(.white.opacity(0.65))
                 Button("Review in app", action: onReview).buttonStyle(.borderedProminent)
             }
         }

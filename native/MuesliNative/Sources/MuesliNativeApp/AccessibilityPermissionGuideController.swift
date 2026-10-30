@@ -558,7 +558,7 @@ private struct CompactAccessibilityPermissionGuideView: View {
                             .font(MuesliTheme.font(size: 14, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.94))
                         Text(AccessibilityPermissionGuideCopy.attemptedDropDetail)
-                            .font(MuesliTheme.font(size: 11, weight: .medium))
+                            .font(MuesliTheme.captionMedium())
                             .foregroundStyle(Color.white.opacity(0.62))
                     }
 
