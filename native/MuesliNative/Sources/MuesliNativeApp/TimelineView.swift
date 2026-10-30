@@ -27,6 +27,9 @@ struct TimelineView: View {
             switch entry {
             case .meeting(let record): include = contentFilter == "All activity" || contentFilter == "Meetings"; text = record.title + " " + record.rawTranscript
             case .dictation(let record): include = contentFilter == "All activity" || contentFilter == "Dictations"; text = record.rawText
+            case .cotypist(let record):
+                include = contentFilter == "All activity" || contentFilter == "Cotypist"
+                text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
             }
             guard include, search.isEmpty || text.localizedCaseInsensitiveContains(search) else { continue }
             let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
@@ -83,7 +86,7 @@ struct TimelineView: View {
             HStack {
                 TextField("Search meetings and dictations…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
-                    ForEach(["All activity", "Meetings", "Dictations"], id: \.self) { Text($0) }
+                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist"], id: \.self) { Text($0) }
                 }.frame(width: 180)
             }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
 
