@@ -74,10 +74,17 @@ case "${shard}" in
       DictationBackendPreparationTests
       BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
+      CotypistShaperTests
+      CotypistHistoryTests
+      CotypistSetupGuideLayoutTests
+      CotypistModelComparisonTests
     )
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       BufferedTranscriptionContinuityTests

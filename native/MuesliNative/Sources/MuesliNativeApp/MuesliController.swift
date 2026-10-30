@@ -407,6 +407,7 @@ public final class MuesliController: NSObject {
     private let downloadedBackendOptions: () -> [BackendOption]
     private let modelOSVersion: OperatingSystemVersion
     private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    private var cotypistTimelineRefresh: Task<Void, Never>?
     var meetingChatCoordinator: MeetingChatCoordinator {
         get {
             if let existing = storedMeetingChatCoordinator { return existing }
@@ -695,6 +696,7 @@ public final class MuesliController: NSObject {
     private var bridgeDiscoveryFollowUpPending = false
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
+    let medASRTerms = MedASRTermsState()
     private var hasStarted = false
 
     init(
@@ -815,7 +817,17 @@ public final class MuesliController: NSObject {
 
     func start() {
         hasStarted = true
+        Task { await medASRTerms.refresh() }
         MuesliController.current = self
+        // Cotypist (experimental): serve the embedded typeahead input method when the build has one.
+        if CotypistSetup.isAvailable {
+            CotypistService.shared.isScreenCaptureAllowed = { [weak self] in self?.meetingCapture == nil }
+            CotypistService.shared.config = { [weak self] in self?.config ?? AppConfig() }
+            CotypistSetup.shared.selectedModel = { [weak self] in self?.config.cotypistModel ?? .defaultModel }
+            CotypistService.shared.store = dictationStore
+            CotypistService.shared.onAccepted = { [weak self] in self?.scheduleCotypistTimelineRefresh() }
+            CotypistService.shared.start()
+        }
         do {
             try dictationStore.migrateIfNeeded()
             try dictationStore.markRunningComputerUseTracesInterrupted()
@@ -1462,7 +1474,7 @@ public final class MuesliController: NSObject {
         case let .models(category):
             showModels(category: category)
         case .timelineApplications:
-            guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
+            guard (try? dictationStore.timelineTargetApplications().isEmpty) == false else {
                 completeFeatureTour()
                 return
             }
@@ -1571,6 +1583,7 @@ public final class MuesliController: NSObject {
         appState.dictationRows = rows
         appState.hasMoreDictations = rows.count >= appState.dictationPageSize
         appState.dictationTargetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
+        appState.timelineTargetApplications = (try? dictationStore.timelineTargetApplications()) ?? []
         appState.meetingRows = (try? dictationStore.recentMeetings(
             limit: 200,
             folderID: appState.selectedFolderID,
@@ -2453,6 +2466,7 @@ public final class MuesliController: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -3081,6 +3095,29 @@ public final class MuesliController: NSObject {
         updateConfig { $0.launchAtLogin = reconciled.launchAtLogin }
     }
 
+    /// Manual UI only; canonical voice choices reject unaccepted terms first.
+    func requestMedASRLicense(onAccepted: @escaping () -> Void) {
+        Task { [weak self] in
+            guard let self else { return }
+            await MedASRTermsPresentation.request(present: { [weak self] alert, completion in
+                guard let self else { return }
+                if let host = self.alertPresentationWindow(showHistoryIfNeeded: true),
+                   let sheet = host.attachedSheet {
+                    host.makeKeyAndOrderFront(nil)
+                    sheet.makeKeyAndOrderFront(nil)
+                    return
+                }
+                self.presentAlert(alert, fallbackLogContext: "MedASR terms",
+                    includeInformativeTextInFallbackLog: false) { response in
+                    Task { await completion(response) }
+                }
+            }, onAccepted: {
+                self.medASRTerms.didAccept()
+                onAccepted()
+            })
+        }
+    }
+
     func selectBackend(_ option: BackendOption) {
         selectBackend(option, makePrimaryDictationModel: false)
     }
@@ -3170,6 +3207,16 @@ public final class MuesliController: NSObject {
     ) {
         guard option.isCompatible(currentOSVersion: modelOSVersion),
               ensureNoMeetingRetranscription() else { return }
+        if option == .medASR, !medASRTerms.isAccepted {
+            let previous = appState.selectedBackend
+            let provider = config.dictationProvider
+            requestMedASRLicense { [weak self] in
+                guard let self, self.appState.selectedBackend == previous,
+                      self.config.dictationProvider == provider else { return }
+                self.selectBackend(option, makePrimaryDictationModel: makePrimaryDictationModel)
+            }
+            return
+        }
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
@@ -6905,6 +6952,21 @@ public final class MuesliController: NSObject {
 
     func filterMeetings(origin: RecordOriginFilter) {
         appState.meetingOriginFilter = origin
+        syncAppState()
+    }
+
+    /// Accepted suggestions arrive a few per sentence: refresh the timeline once they settle.
+    private func scheduleCotypistTimelineRefresh() {
+        cotypistTimelineRefresh?.cancel()
+        cotypistTimelineRefresh = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.syncAppState()
+        }
+    }
+
+    func deleteCotypistSession(id: Int64) {
+        try? dictationStore.deleteCotypistSession(id: id)
         syncAppState()
     }
 

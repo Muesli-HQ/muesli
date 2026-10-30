@@ -47,7 +47,7 @@ let package = Package(
             name: "MuesliCore",
             dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Sources/MuesliCore",
-            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt")],
+            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt"), .copy("Resources/MedASR")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]
@@ -145,7 +145,7 @@ let package = Package(
             name: "MuesliTests",
             dependencies: ["GemmaAudioEvaluation", .product(name: "MLXNN", package: "mlx-swift"), "MuesliNativeApp", "MuesliLLM", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "AudioGraphTestSupport", "LocalVQEBridge", .product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Tests/MuesliTests",
-            sources: cleanupEvaluationOnly ? ["BackendTests.swift", "MuesliCleanupV2Tests.swift", "QuilTransformationTests.swift", "ComputerUseLocalPlannerBenchmarkTests.swift", "CleanupMLXEvaluationTests.swift", "GemmaAudioEndToEndTests.swift", "GemmaNativeAudioTests.swift", "BodhanBackendTests.swift", "BodhanArtifactValidationTests.swift", "BodhanLifecycleTests.swift"] : nil,
+            sources: cleanupEvaluationOnly ? ["BackendTests.swift", "MuesliCleanupV2Tests.swift", "QuilTransformationTests.swift", "ComputerUseLocalPlannerBenchmarkTests.swift", "CleanupMLXEvaluationTests.swift", "GemmaAudioEndToEndTests.swift", "GemmaNativeAudioTests.swift", "BodhanBackendTests.swift", "BodhanArtifactValidationTests.swift", "BodhanLifecycleTests.swift", "CotypistModelComparisonTests.swift"] : nil,
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

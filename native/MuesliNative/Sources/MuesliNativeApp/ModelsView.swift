@@ -58,6 +58,10 @@ struct ModelsView: View {
     @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
     @State private var postProcModelToDelete: PostProcessorOption?
 
+    // Cotypist
+    @ObservedObject private var cotypist = CotypistSetup.shared
+    @State private var cotypistModelToDelete: CotypistModel?
+
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
         self.controller = controller
@@ -85,12 +89,14 @@ struct ModelsView: View {
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Choose the dictation, live meeting, cleanup, and Quill models that fit how you speak and work.")
+                    Text(CotypistSetup.isAvailable
+                         ? "Choose the dictation, live meeting, cleanup, Quill, and Cotypist models that fit how you speak and work."
+                         : "Choose the dictation, live meeting, cleanup, and Quill models that fit how you speak and work.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
                     Picker("Model category", selection: modelsCategorySelection) {
-                        ForEach(ModelsCategory.allCases) { category in
+                        ForEach(ModelsCategory.visible) { category in
                             Text(category.title).tag(category)
                         }
                     }
@@ -119,6 +125,7 @@ struct ModelsView: View {
             }
         }
         .background(MuesliTheme.backgroundBase)
+        .task { await controller.medASRTerms.refresh() }
         .onAppear {
             checkDownloadedModels()
             checkDownloadedPostProcModels()
@@ -262,6 +269,10 @@ struct ModelsView: View {
                 modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
             }
 
+            if BackendOption.medASR.isCompatible() {
+                modelCard(option: .medASR, logo: "google-logo")
+            }
+
             if BackendOption.cohereTranscribe.isCompatible() {
                 modelCard(option: .cohereTranscribe, logo: "cohere-logo")
             }
@@ -276,6 +287,8 @@ struct ModelsView: View {
             postProcessorSection
         case .quill:
             quillSection
+        case .cotypist:
+            cotypistSection
         }
     }
 
@@ -703,6 +716,151 @@ struct ModelsView: View {
         }
     }
 
+    // MARK: - Cotypist
+
+    private var cotypistSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                Text("COTYPIST")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .textCase(.uppercase)
+                    .padding(.leading, 2)
+                Text("The model that suggests your next words as you type. All run on this Mac; smaller ones answer faster.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.leading, 2)
+            }
+            .padding(.top, MuesliTheme.spacing8)
+
+            VStack(spacing: MuesliTheme.spacing12) {
+                ForEach(CotypistModel.allCases) { model in
+                    cotypistModelCard(model)
+                }
+            }
+        }
+        .alert("Delete \(cotypistModelToDelete?.label ?? "model")?", isPresented: Binding(
+            get: { cotypistModelToDelete != nil },
+            set: { if !$0 { cotypistModelToDelete = nil } }
+        )) {
+            Button("Delete", role: .destructive) {
+                if let model = cotypistModelToDelete { cotypist.delete(model) }
+                cotypistModelToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { cotypistModelToDelete = nil }
+        } message: {
+            Text("Its files are removed from this Mac. You can download it again later.")
+        }
+    }
+
+    private func cotypistModelCard(_ model: CotypistModel) -> some View {
+        let state = cotypist.state(of: model)
+        let isSelected = appState.config.cotypistModel == model
+        let isInUse = isSelected && state == .ready
+
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                brandLogo(model.logo)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text(model.label)
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        if model.isRecommended {
+                            Text("Recommended")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(MuesliTheme.accent)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        Text(model.sizeLabel)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    Text(model.summary)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
+                Spacer()
+
+                if isInUse {
+                    Text("Cotypist Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.success.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if state == .ready {
+                    Text("Downloaded")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if case .downloading(let fraction) = state {
+                downloadProgressView(for: "cotypist-" + model.rawValue, fallbackProgress: fraction,
+                                     snapshot: cotypist.downloadSnapshots[model])
+            }
+            if case .failed(let message) = state {
+                Text("Download failed: \(message)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                switch state {
+                case .downloading:
+                    cotypistCardButton("Pause", prominent: false) { cotypist.cancelDownload(model) }
+                case .ready:
+                    if !isSelected {
+                        cotypistCardButton("Use for Cotypist") { controller.setSettingFromUI("cotypist_model", value: model.rawValue) }
+                        Button { cotypistModelToDelete = model } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.red.opacity(0.6))
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete \(model.label)")
+                    }
+                case .missing, .failed:
+                    cotypistCardButton("Download") { cotypist.download(model) }
+                case .unavailable:
+                    Text("Coming soon")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(isInUse ? MuesliTheme.accent.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: isInUse ? 1.5 : 1)
+        )
+    }
+
+    private func cotypistCardButton(_ title: String, prominent: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(prominent ? MuesliTheme.accent : MuesliTheme.textSecondary)
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, 4)
+            .background(prominent ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
     private var quillSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             Text("QUILL")
@@ -1038,9 +1196,11 @@ struct ModelsView: View {
         for modelID: String,
         fallbackProgress: Double,
         fallbackMessage: String? = nil,
-        isDownloading: Bool = true
+        isDownloading: Bool = true,
+        snapshot externalSnapshot: ModelDownloadProgress? = nil
     ) -> some View {
-        if let snapshot = downloadSnapshots[modelID] {
+        // Downloads this view doesn't own (Cotypist's) pass their snapshot in.
+        if let snapshot = externalSnapshot ?? downloadSnapshots[modelID] {
             VStack(alignment: .leading, spacing: 4) {
                 if snapshot.phase != .preparing {
                     ProgressView(value: snapshot.fractionCompleted ?? fallbackProgress)
@@ -1174,6 +1334,7 @@ struct ModelsView: View {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
+        case "medasr": return "google-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
@@ -1357,6 +1518,19 @@ struct ModelsView: View {
                         .padding(.vertical, 3)
                         .background(MuesliTheme.surfacePrimary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if option == .medASR {
+                Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                if isActive && !controller.medASRTerms.isAccepted {
+                    Button("Review terms") {
+                        controller.requestMedASRLicense {
+                            if appState.selectedBackend == .medASR { controller.selectBackend(.medASR) }
+                        }
+                    }
                 }
             }
 
@@ -1752,6 +1926,12 @@ struct ModelsView: View {
 
     private func startDownload(_ option: BackendOption) {
         guard option.isCompatible() else { return }
+        if option == .medASR, !controller.medASRTerms.isAccepted {
+            controller.requestMedASRLicense {
+                startDownload(option)
+            }
+            return
+        }
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
         downloadMessages.removeValue(forKey: option.model)
@@ -2019,6 +2199,9 @@ struct ModelsView: View {
             WhisperKitTranscriber.deleteModel(option.model)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
+        case "medasr":
+            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
+            try MedASRModel.plan().delete(fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
@@ -2110,6 +2293,8 @@ struct ModelsView: View {
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":
