@@ -907,6 +907,14 @@ final class FloatingIndicatorController: NSObject {
             customPositionCenter: customPositionCenter
         )
 
+        // Establish geometry before showing a new/hidden panel. AppKit may defer
+        // its window animation while the layer-backed content has already resized.
+        // A hover expansion would then capture two different coordinate frames.
+        if !panel.isVisible {
+            panel.setFrame(targetFrame, display: false)
+            contentView.frame = NSRect(origin: .zero, size: targetFrame.size)
+        }
+
         let duration = transitionDuration(
             from: previousState,
             to: state,

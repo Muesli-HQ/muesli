@@ -961,6 +961,25 @@ struct FloatingIndicatorPointerInteractionTests {
     }
 
     @MainActor
+    @Test("a new meeting pill has matching window and content geometry before animation")
+    func newMeetingPillGeometryIsSynchronous() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.setMeetingRecording(true, config: config)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let window = try #require(pill.window)
+        #expect(window.frame.size == NSSize(width: 76, height: 22))
+        #expect(indicator.currentFrame == window.frame)
+    }
+
+    @MainActor
     @Test("pause and resume retain meeting controls despite late dictation updates", arguments: [false, true])
     func pauseResumeRetainsPill(showIdleIndicator: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
