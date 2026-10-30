@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "dictations": [
+    {
+      "text": "Draft a concise update for the team.",
+      "appContext": "Visual fixture",
+      "startedAt": "2026-01-15T11:55:00Z",
+      "endedAt": "2026-01-15T11:55:08Z"
+    },
+    {
+      "text": "Schedule the review with José and 李雷.",
+      "appContext": "Visual fixture",
+      "startedAt": "2026-01-14T16:30:00Z",
+      "endedAt": "2026-01-14T16:30:06Z"
+    }
+  ]
+}

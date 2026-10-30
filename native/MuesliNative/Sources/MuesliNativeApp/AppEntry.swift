@@ -9,6 +9,19 @@ import MuesliCore
 public enum MuesliAppEntry {
     public static func run() {
         #if DEBUG
+        do {
+            if let fixture = try VisualTestLaunchConfiguration.resolve() {
+                // Seed before AppDelegate or controller construction. A fixture
+                // launch must never fall through to a user's live startup or
+                // initialize production telemetry, sync, audio, or TCC work.
+                try VisualFixtureSeeder(paths: fixture.paths).seedIfNeeded()
+                VisualFixtureApplicationDelegate.run(fixture)
+                return
+            }
+        } catch {
+            fatalError("Invalid visual-test launch: \(error.localizedDescription)")
+        }
+
         // Exercise the actual actor preparation path, including scheduled warmup.
         if #available(macOS 15, *), ProcessInfo.processInfo.environment["MUESLI_BODHAN_PREPARE_BENCH"] == "1",
            let audio = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_AUDIO"],

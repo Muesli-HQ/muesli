@@ -74,6 +74,7 @@ native/MuesliXcode/*.xcodeproj/
 build/
 dist/
 output/
+visual-results/
 tmp/
 tmp-no-torch-test/
 tmp-install/
