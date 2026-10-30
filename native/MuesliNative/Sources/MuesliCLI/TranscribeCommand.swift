@@ -23,6 +23,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
     case appleSpeech = "apple-speech"
+    case medASR = "medasr"
     case cohere = "cohere-transcribe"
     case bodhanCore = "bodhan-core"
     case bodhanFlex = "bodhan-flex"
@@ -44,7 +45,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .parakeetV3, .phonon25: return .v3
         case .parakeetV2: return .v2
         case .parakeetRedux: return .redux
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
              .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
@@ -62,7 +63,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
              .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
@@ -122,7 +123,7 @@ struct TranscribeJSONPayload: Encodable {
 struct TranscribeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "transcribe",
-        abstract: "Transcribe a local audio file with Muesli's bundled local ASR models."
+        abstract: "Transcribe a local audio file with muesli's bundled local ASR models."
     )
 
     @OptionGroup var global: GlobalOptions
@@ -132,9 +133,9 @@ struct TranscribeCommand: AsyncParsableCommand {
     var format: TranscribeOutputFormat = .text
     @Option(name: .long, help: ArgumentHelp(TranscribeModel.modelHelp))
     var model: TranscribeModel = .parakeetUnified
-    @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
+    @Flag(name: .long, help: "Generate meeting notes using the configured muesli summary backend when available.")
     var summarize = false
-    @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")
+    @Flag(name: .long, help: "Save the transcript as an imported muesli meeting.")
     var saveMeeting = false
     @Option(name: .long, help: "Optional title override for saved meetings and markdown output.")
     var title: String?
@@ -417,7 +418,7 @@ struct MuesliAudioTranscriptionPipeline {
         if summaryRequested {
             sections.append("## Summary unavailable")
             if warnings.isEmpty {
-                sections.append("Muesli could not generate structured notes from the configured summary backend.")
+                sections.append("muesli could not generate structured notes from the configured summary backend.")
             } else {
                 sections.append(warnings.joined(separator: "\n"))
             }
@@ -649,7 +650,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
-        case .appleSpeech, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
             transcriber = native
         case .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25: transcriber = batch
         case .parakeetUnified: transcriber = parakeetUnified
@@ -680,6 +681,9 @@ struct NativeModelsCLITranscriber: AudioTranscribing {
         let text: String
         do {
             text = try await transcribeFile(wavURL, nativeModel, progress)
+        } catch let error as MedASRLicenseError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Run muesli-cli model-terms medasr, then repeat with --accept.")
         } catch let error as NativeFileTranscriptionError {
             throw CLIError.invalidInput(error.localizedDescription,
                 fix: "Choose a different --model, or use a compatible Mac and macOS version.")
@@ -1407,7 +1411,7 @@ enum CLISummaryClient {
                 extraHeaders: extraHeaders
             )
         default:
-            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
+            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in muesli settings for `muesli-cli transcribe --summarize`.")
         }
     }
 

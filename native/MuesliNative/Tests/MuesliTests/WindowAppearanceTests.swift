@@ -9,6 +9,58 @@ import Testing
 @Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
 
+    @Test("Ultra Dark resolves black backgrounds and white accents")
+    func ultraDarkPalette() throws {
+        let original = MuesliTheme.appearance.ultraDark
+        MuesliTheme.appearance.ultraDark = true
+        defer { MuesliTheme.appearance.ultraDark = original }
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            let background = MuesliTheme.backgroundDeepNSColor.usingColorSpace(.deviceRGB)!
+            let accent = NSColor(MuesliTheme.defaultAccent).usingColorSpace(.deviceRGB)!
+            let foreground = NSColor(MuesliTheme.onAccent).usingColorSpace(.deviceRGB)!
+            #expect(background.redComponent == 0 && background.greenComponent == 0 && background.blueComponent == 0)
+            #expect(accent.redComponent == 1 && accent.greenComponent == 1 && accent.blueComponent == 1)
+            #expect(foreground.redComponent == 0)
+        }
+    }
+
+    @Test("Ultra Dark switches retain the saved accent while primary actions stay white")
+    func ultraDarkToggleAccent() throws {
+        let originalMode = MuesliTheme.appearance.ultraDark
+        let originalAccent = MuesliTheme.accentOverrideHex
+        defer {
+            MuesliTheme.appearance.ultraDark = originalMode
+            MuesliTheme.accentOverrideHex = originalAccent
+        }
+        MuesliTheme.appearance.ultraDark = true
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            MuesliTheme.accentOverrideHex = nil
+            let defaultToggle = NSColor(MuesliTheme.toggleAccent).usingColorSpace(.deviceRGB)!
+            #expect(defaultToggle.blueComponent > defaultToggle.redComponent)
+            MuesliTheme.accentOverrideHex = "FF0000"
+            let customToggle = NSColor(MuesliTheme.toggleAccent).usingColorSpace(.deviceRGB)!
+            #expect(customToggle.redComponent == 1 && customToggle.greenComponent == 0)
+            let action = NSColor(MuesliTheme.accent).usingColorSpace(.deviceRGB)!
+            #expect(action.redComponent == 1 && action.greenComponent == 1 && action.blueComponent == 1)
+        }
+    }
+
+    @Test("ordinary Dark keeps its colored accent and layered background")
+    func ordinaryDarkPalette() throws {
+        let original = MuesliTheme.appearance.ultraDark
+        MuesliTheme.appearance.ultraDark = false
+        defer { MuesliTheme.appearance.ultraDark = original }
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            let background = MuesliTheme.backgroundDeepNSColor.usingColorSpace(.deviceRGB)!
+            let accent = NSColor(MuesliTheme.defaultAccent).usingColorSpace(.deviceRGB)!
+            #expect(background.redComponent > 0)
+            #expect(accent.blueComponent > accent.redComponent)
+        }
+    }
+
     @Test("dark mode maps to the dark AppKit appearance")
     func darkModeMapsToDarkAqua() {
         #expect(AppAppearanceMode.dark.appearanceName == .darkAqua)
@@ -34,16 +86,19 @@ struct WindowAppearanceTests {
     @Test("system choice persists and explicit themes clear it")
     func appearanceRoundTrip() throws {
         var config = AppConfig()
-        for mode in [AppAppearanceMode.system, .light, .system, .dark] {
+        for mode in [AppAppearanceMode.system, .ultraDark, .light, .ultraDark, .system, .dark] {
             config.appearanceMode = mode
             let saved = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
             #expect(saved.appearanceMode == mode)
             #expect(saved.followSystemAppearance == (mode == .system))
+            #expect(saved.ultraDarkAppearance == (mode == .ultraDark))
         }
     }
 
     @Test("appearance uses the shared settings executor and persists each choice")
     func appearanceSetting() async throws {
+        // Create AppKit before applying a setting, including when this suite runs alone.
+        _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -54,14 +109,17 @@ struct WindowAppearanceTests {
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store, configStore: configStore)
         let setting = try #require(controller.settingsDefinitions().first { $0.id == "appearance" })
-        #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark"])
+        #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark", "ultra_dark"])
         let sidebarSetting = controller.appearanceDefinition()
         #expect(sidebarSetting.id == setting.id)
         #expect(sidebarSetting.snapshot(config: controller.config).choices.map(\.id)
             == setting.snapshot(config: controller.config).choices.map(\.id))
+        #expect(setting.snapshot(config: controller.config, source: .voice).unavailable["ultra_dark"] != nil)
+        #expect(setting.snapshot(config: controller.config, source: .manualUI).unavailable["ultra_dark"] == nil)
+        #expect(!AppAppearanceMode.quickChoices.contains(.ultraDark))
         let originalAppearance = NSApp?.appearance
         defer { NSApp?.appearance = originalAppearance }
-        for mode in [AppAppearanceMode.light, .dark, .system] {
+        for mode in [AppAppearanceMode.light, .ultraDark, .dark, .system] {
             try await controller.applySetting("appearance", value: mode.rawValue)
             #expect(controller.appState.config.appearanceMode == mode)
             #expect(configStore.load().appearanceMode == mode)
@@ -89,16 +147,53 @@ struct WindowAppearanceTests {
         dashboard.show()
         defer { dashboard.close() }
         let window = try #require(dashboard.presentationWindow)
-        for mode in [AppAppearanceMode.light, .system, .dark, .system] {
+        for mode in [AppAppearanceMode.light, .ultraDark, .system, .dark, .system] {
             try await controller.applySetting("appearance", value: mode.rawValue)
             dashboard.applyThemeAppearance()
             // Let SwiftUI commit its appearance preferences to the actual hosting window.
             try await Task.sleep(for: .milliseconds(200))
             window.contentView?.layoutSubtreeIfNeeded()
             #expect(window.appearance?.name == mode.appearanceName)
-            let expected = mode.appearanceName ?? app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            let expected = mode == .ultraDark ? NSAppearance.Name.darkAqua : (mode.appearanceName ?? app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]))
             #expect(window.contentView?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == expected)
         }
+    }
+
+    @Test("settings breakpoint preserves native editor focus selection and undo")
+    func settingsBreakpointPreservesEditor() async throws {
+        _ = NSApplication.shared
+        let state = SettingsEditorLayoutState()
+        let host = NSHostingView(rootView: SettingsEditorLayoutHarness(state: state))
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 200)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let editor = try #require(state.editor)
+        editor.allowsUndo = true
+        editor.undoManager?.groupsByEvent = false
+        editor.undoManager?.beginUndoGrouping()
+        editor.insertText("Endpoint draft", replacementRange: NSRange(location: 0, length: 0))
+        editor.undoManager?.endUndoGrouping()
+        let selection = NSRange(location: 2, length: 5)
+        editor.setSelectedRange(selection)
+        #expect(window.makeFirstResponder(editor))
+        #expect(editor.undoManager?.canUndo == true)
+        for stacked in [true, false, true] {
+            state.stacked = stacked
+            host.frame.size.width = stacked ? 420 : 700
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(state.creationCount == 1)
+            #expect(state.editor === editor)
+            #expect(window.firstResponder === editor)
+            #expect(editor.selectedRange() == selection)
+            #expect(editor.string == "Endpoint draft")
+            #expect(editor.undoManager?.canUndo == true)
+        }
+        editor.undoManager?.undo()
+        #expect(editor.string.isEmpty)
     }
 
     @Test("dashboard can shrink beside a call window")
@@ -405,4 +500,40 @@ private struct DashboardDetailIdentityProbe: View {
             .onAppear { lifecycle.appearanceCount += 1 }
             .onDisappear { lifecycle.disappearanceCount += 1 }
     }
+}
+
+
+@MainActor
+@Observable
+private final class SettingsEditorLayoutState {
+    var stacked = false
+    @ObservationIgnored var editor: SettingsIdentityTextView?
+    @ObservationIgnored var creationCount = 0
+}
+
+private struct SettingsEditorLayoutHarness: View {
+    let state: SettingsEditorLayoutState
+    var body: some View {
+        SettingsRow(label: "Endpoint", description: "Provider URL") {
+            SettingsIdentityEditor(state: state).frame(height: 28)
+        }
+        .environment(\.settingsStacksControls, state.stacked)
+    }
+}
+
+private struct SettingsIdentityEditor: NSViewRepresentable {
+    let state: SettingsEditorLayoutState
+    func makeNSView(context: Context) -> SettingsIdentityTextView {
+        let editor = SettingsIdentityTextView()
+        state.editor = editor
+        state.creationCount += 1
+        return editor
+    }
+    func updateNSView(_ nsView: SettingsIdentityTextView, context: Context) {}
+}
+
+@MainActor
+private final class SettingsIdentityTextView: NSTextView {
+    private let testUndo = UndoManager()
+    override var undoManager: UndoManager? { testUndo }
 }

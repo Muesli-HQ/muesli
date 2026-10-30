@@ -35,7 +35,7 @@ public struct AIResponse: View {
                                 GridRow {
                                     ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
                                         Text(attributed(cell))
-                                            .font(.system(size: 13, weight: index == 0 ? .semibold : .regular))
+                                            .font(theme.font(size: 13, weight: index == 0 ? .semibold : .regular))
                                             .frame(minWidth: 120, maxWidth: 240, alignment: .leading)
                                             .padding(10)
                                             .background(index == 0 ? theme.surface.opacity(0.7) : theme.surface)
@@ -60,7 +60,7 @@ public struct AIResponse: View {
             Color.clear.frame(height: 5)
         } else if let heading = line.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
             Text(attributed(String(line[heading.upperBound...])))
-                .font(line.hasPrefix("# ") ? .title3.weight(.semibold) : .headline).padding(.top, 8)
+                .font(line.hasPrefix("# ") ? theme.heading : theme.subheading).padding(.top, 8)
         } else if let list = line.range(of: #"^(?:[-*+] \[[ xX]\] |[-*+] |\d+[.)]\s+)"#, options: .regularExpression) {
             let marker = String(line[..<list.upperBound]).trimmingCharacters(in: .whitespaces)
             HStack(alignment: .firstTextBaseline, spacing: 8) {

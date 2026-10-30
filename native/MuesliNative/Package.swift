@@ -47,7 +47,7 @@ let package = Package(
             name: "MuesliCore",
             dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Sources/MuesliCore",
-            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt")],
+            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt"), .copy("Resources/MedASR")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]
@@ -78,7 +78,7 @@ let package = Package(
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
-            resources: [.copy("Resources/Licenses"), .copy("Resources/muesli-export-logo.png"), .copy("Resources/granola-export-guide.png"), .copy("Resources/recording-announcement.aiff")],
+            resources: [.copy("Resources/Fonts"), .copy("Resources/Licenses"), .copy("Resources/muesli-export-logo.png"), .copy("Resources/granola-export-guide.png"), .copy("Resources/recording-announcement.aiff")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("Contacts"),

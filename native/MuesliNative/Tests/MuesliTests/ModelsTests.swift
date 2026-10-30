@@ -26,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech"]
+        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "medasr", "bodhan", "sensevoice", "gemma4-litert", "apple-speech"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -709,7 +709,7 @@ struct PostProcessorOptionTests {
             let config = try JSONDecoder().decode(AppConfig.self, from: data)
             #expect(config.activePostProcessorId == PostProcessorOption.finetunedV4.id)
         }
-        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
+        #expect(PostProcessorOption.finetunedV4.label == "muesli Cleanup Lite")
     }
 
     @Test("resolveDownloaded prefers selected downloaded option")

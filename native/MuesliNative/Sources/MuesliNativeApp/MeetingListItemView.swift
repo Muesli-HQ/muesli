@@ -285,7 +285,7 @@ struct MeetingListItemView: View {
 
     private var statusBadge: some View {
         Text(record.status.displayLabel)
-            .font(.system(size: 10, weight: .semibold))
+            .font(MuesliTheme.font(size: 10, weight: .semibold))
             .foregroundStyle(record.status.displayColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -329,7 +329,7 @@ struct MeetingListItemView: View {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .semibold))
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(MuesliTheme.font(size: 10, weight: .semibold))
         }
         .foregroundStyle(isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary)
         .padding(.horizontal, 6)

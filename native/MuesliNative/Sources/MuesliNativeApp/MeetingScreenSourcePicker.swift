@@ -24,7 +24,7 @@ struct MeetingScreenSourcePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose what to record").font(.title2.bold())
+            Text("Choose what to record").font(MuesliTheme.font(.title2).bold())
             Text("Screen and meeting audio are saved on this Mac.").foregroundStyle(.secondary)
             Picker("Source", selection: $displays) {
                 Text("Windows").tag(false)
@@ -41,9 +41,9 @@ struct MeetingScreenSourcePicker: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                                 HStack(spacing: 6) {
                                     if let icon = source.icon { Image(nsImage: icon).resizable().frame(width: 18, height: 18) }
-                                    Text(source.title).font(.headline).lineLimit(1)
+                                    Text(source.title).font(MuesliTheme.font(.headline)).lineLimit(1)
                                 }
-                                Text(source.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(source.subtitle).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                             }
                             .padding(10)
                             .background(selectedID == source.id ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.04))
@@ -59,7 +59,7 @@ struct MeetingScreenSourcePicker: View {
             Divider()
             Toggle("Play ‘This meeting is being recorded’", isOn: $announce)
             Text("Let participants know before recording. Playback on this Mac may not reach remote participants.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel") { complete(nil, false) }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -70,6 +70,7 @@ struct MeetingScreenSourcePicker: View {
             }
         }
         .padding(24).frame(width: 700, height: 540)
+        .font(MuesliTheme.body())
         .onChange(of: displays) { _, _ in selectedID = nil }
     }
 }
@@ -83,7 +84,7 @@ private struct MeetingScreenThumbnail: View {
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable().scaledToFit() }
-            else if failed { Label("Preview unavailable", systemImage: "rectangle.on.rectangle").font(.caption).foregroundStyle(.secondary) }
+            else if failed { Label("Preview unavailable", systemImage: "rectangle.on.rectangle").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary) }
             else { ProgressView().controlSize(.small) }
         }
         .task(id: source.id) {

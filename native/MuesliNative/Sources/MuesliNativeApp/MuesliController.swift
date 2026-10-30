@@ -280,7 +280,7 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .controllerUnavailable:
-            return "Meeting re-transcription could not continue because Muesli is no longer available."
+            return "Meeting re-transcription could not continue because muesli is no longer available."
         case .busy:
             return "Wait for the current recording or transcription to finish before re-transcribing a meeting."
         case .recordingUnavailable:
@@ -704,6 +704,7 @@ public final class MuesliController: NSObject {
     private var bridgeDiscoveryFollowUpPending = false
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
+    let medASRTerms = MedASRTermsState()
     private var hasStarted = false
 
     init(
@@ -824,6 +825,7 @@ public final class MuesliController: NSObject {
 
     func start() {
         hasStarted = true
+        Task { await medASRTerms.refresh() }
         MuesliController.current = self
         // Cotypist (experimental): serve the embedded typeahead input method when the build has one.
         if CotypistSetup.isAvailable {
@@ -1926,6 +1928,7 @@ public final class MuesliController: NSObject {
         // NSApp is an implicitly unwrapped optional and is nil under `swift test`, where no
         // NSApplication is ever created. Touching it there traps and takes the whole test
         // bundle down, so bind it rather than forcing it.
+        MuesliTheme.appearance.ultraDark = config.appearanceMode == .ultraDark
         if let app = NSApp {
             app.appearance = config.appearanceMode.appearanceName.flatMap { NSAppearance(named: $0) }
         }
@@ -2192,7 +2195,7 @@ public final class MuesliController: NSObject {
         endIPhoneBridgeDeviceDiscoveryActivity()
         bridgeCompanionDiscoveryActivity = ProcessInfo.processInfo.beginActivity(
             options: .userInitiatedAllowingIdleSystemSleep,
-            reason: "Waiting for an iPhone or iPad to finish Muesli sync setup"
+            reason: "Waiting for an iPhone or iPad to finish muesli sync setup"
         )
         appState.iCloudBridgeCompanionDiscoveryState = .waiting
         TelemetryDeck.signal("bridge_device_discovery_started", parameters: ["platform": "macos"])
@@ -2472,6 +2475,7 @@ public final class MuesliController: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -3100,6 +3104,29 @@ public final class MuesliController: NSObject {
         updateConfig { $0.launchAtLogin = reconciled.launchAtLogin }
     }
 
+    /// Manual UI only; canonical voice choices reject unaccepted terms first.
+    func requestMedASRLicense(onAccepted: @escaping () -> Void) {
+        Task { [weak self] in
+            guard let self else { return }
+            await MedASRTermsPresentation.request(present: { [weak self] alert, completion in
+                guard let self else { return }
+                if let host = self.alertPresentationWindow(showHistoryIfNeeded: true),
+                   let sheet = host.attachedSheet {
+                    host.makeKeyAndOrderFront(nil)
+                    sheet.makeKeyAndOrderFront(nil)
+                    return
+                }
+                self.presentAlert(alert, fallbackLogContext: "MedASR terms",
+                    includeInformativeTextInFallbackLog: false) { response in
+                    Task { await completion(response) }
+                }
+            }, onAccepted: {
+                self.medASRTerms.didAccept()
+                onAccepted()
+            })
+        }
+    }
+
     func selectBackend(_ option: BackendOption) {
         selectBackend(option, makePrimaryDictationModel: false)
     }
@@ -3189,6 +3216,16 @@ public final class MuesliController: NSObject {
     ) {
         guard option.isCompatible(currentOSVersion: modelOSVersion),
               ensureNoMeetingRetranscription() else { return }
+        if option == .medASR, !medASRTerms.isAccepted {
+            let previous = appState.selectedBackend
+            let provider = config.dictationProvider
+            requestMedASRLicense { [weak self] in
+                guard let self, self.appState.selectedBackend == previous,
+                      self.config.dictationProvider == provider else { return }
+                self.selectBackend(option, makePrimaryDictationModel: makePrimaryDictationModel)
+            }
+            return
+        }
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
@@ -3635,7 +3672,7 @@ public final class MuesliController: NSObject {
         alert.addButton(withTitle: "Cancel")
         presentAlert(alert, fallbackLogContext: "Quill account setup") { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            self.appState.selectedSettingsPane = .dictation
+            self.appState.selectedSettingsPane = .experimental
             self.openSettingsTab()
             guard needsChatGPTSignIn || needsOpenRouterSignIn else { return }
             Task { @MainActor in
@@ -5258,7 +5295,7 @@ public final class MuesliController: NSObject {
             return .unavailable(message: "Could not resolve paste for this keyboard layout. Record a custom paste shortcut instead.")
         }
         guard !pasteShortcutConflict(chord) else {
-            return .conflict(message: "That paste shortcut overlaps with another Muesli shortcut. Change it in Shortcuts first.")
+            return .conflict(message: "That paste shortcut overlaps with another muesli shortcut. Change it in Shortcuts first.")
         }
         updateConfig { $0.pasteShortcut = shortcut }
         return .updated
@@ -5372,7 +5409,7 @@ public final class MuesliController: NSObject {
 
     private func modelPreparationFailureMessage(for backend: BackendOption) -> String {
         backend.isDownloaded
-            ? "Model setup failed. Restart Muesli or retry from Models."
+            ? "Model setup failed. Restart muesli or retry from Models."
             : "Download failed. Check your connection and retry."
     }
 
@@ -7094,7 +7131,7 @@ public final class MuesliController: NSObject {
             informativeText = "Quitting now will cancel the meeting recording before it has been saved."
         case .recording:
             messageText = "Meeting recording in progress"
-            informativeText = "Quitting now will stop the meeting recording and the current transcript may be lost. Stop the recording first if you want Muesli to save notes."
+            informativeText = "Quitting now will stop the meeting recording and the current transcript may be lost. Stop the recording first if you want muesli to save notes."
         case .processing:
             messageText = "Meeting transcription in progress"
             informativeText = "Quitting now will interrupt transcription and the meeting notes may not be saved."
@@ -7108,7 +7145,7 @@ public final class MuesliController: NSObject {
         alert.alertStyle = .warning
         alert.messageText = messageText
         alert.informativeText = informativeText
-        alert.addButton(withTitle: "Keep Muesli Running")
+        alert.addButton(withTitle: "Keep muesli Running")
         alert.addButton(withTitle: "Quit Anyway")
 
         isPresentingMeetingTerminationConfirmation = true
@@ -7835,7 +7872,7 @@ public final class MuesliController: NSObject {
                 guard let self, let capture = self.meetingCapture,
                       ObjectIdentifier(capture.session) == owner, self.isStoppingMeetingRecording else { return }
                 self.presentErrorAlert(title: "Audio Capture Is Still Stopping",
-                    message: "The audio device is not responding. Muesli is saving the audio already captured. New recording is paused until the device finishes stopping.")
+                    message: "The audio device is not responding. muesli is saving the audio already captured. New recording is paused until the device finishes stopping.")
             }
         }
         meetingCapture = (id, session)
@@ -8214,7 +8251,7 @@ public final class MuesliController: NSObject {
 
     private static func makeDiscardMeetingAccessoryView() -> MeetingDiscardAccessory {
         let label = NSTextField(labelWithString: "Will delete:")
-        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.font = AppFonts.font(size: NSFont.systemFontSize)
         label.textColor = .secondaryLabelColor
 
         let recordingCheckbox = NSButton(checkboxWithTitle: "Recording audio", target: nil, action: nil)
@@ -10498,7 +10535,7 @@ public final class MuesliController: NSObject {
             // Settings shortcut on a subsequent attempt, without requesting again.
             let alert = NSAlert()
             alert.messageText = "Allow Screen Recording for computer use"
-            alert.informativeText = "Muesli needs Screen Recording permission to see the apps you ask it to use. Enable it in System Settings, then try your command again."
+            alert.informativeText = "muesli needs Screen Recording permission to see the apps you ask it to use. Enable it in System Settings, then try your command again."
             alert.addButton(withTitle: "Open System Settings")
             alert.addButton(withTitle: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -10819,7 +10856,7 @@ public final class MuesliController: NSObject {
         }
         activeComputerUseTrace = runTrace
         runTrace.record(ComputerUseTraceEvent(kind: "routing", title: "Understanding command",
-                                            body: "Choosing Muesli settings or desktop tools.", status: "running"))
+                                            body: "Choosing muesli settings or desktop tools.", status: "running"))
         let runtime = ComputerUsePlannerRuntime(config: config, writingCoordinator: transcriptionCoordinator, onStatus: { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
@@ -13098,7 +13135,7 @@ public final class MuesliController: NSObject {
             return "The model could not finish downloading. Check your connection and retry."
         }
         if lowercasedMessage.contains("permission") || lowercasedMessage.contains("microphone") {
-            return "Muesli could not access the microphone. Check Microphone permission and try again."
+            return "muesli could not access the microphone. Check Microphone permission and try again."
         }
         return "Dictation could not start. Try again in a moment."
     }

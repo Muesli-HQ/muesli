@@ -37,6 +37,8 @@ targets:
         PRODUCT_NAME: Muesli
         PRODUCT_BUNDLE_IDENTIFIER: com.muesli.build.intermediate
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: muesli
+        INFOPLIST_KEY_MuesliSupportDirectoryName: Muesli
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         MARKETING_VERSION: "1"

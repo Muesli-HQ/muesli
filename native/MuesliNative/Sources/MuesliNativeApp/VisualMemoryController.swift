@@ -208,7 +208,7 @@ final class VisualMemoryController {
     }
 
     private func beginClip(attempt: UUID) async throws {
-        guard let store = meetingStore else { throw ScreenVideoRecorder.error("Meeting video storage is unavailable. Please restart Muesli and try again.") }
+        guard let store = meetingStore else { throw ScreenVideoRecorder.error("Meeting video storage is unavailable. Please restart muesli and try again.") }
         guard token == attempt, recorder == nil, let filter, recordingMeetingID != nil, !pauseState.isPaused else { return }
         updateSpace()
         guard freeBytes > 2_000_000_000 else { throw ScreenVideoRecorder.error("Screen recording needs at least 2 GB of free disk space.") }

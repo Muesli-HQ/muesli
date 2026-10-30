@@ -16,6 +16,9 @@ extension MuesliController {
             apply: { value in
                 guard let mode = AppAppearanceMode(rawValue: value) else { return }
                 self.updateConfig { $0.appearanceMode = mode }
+            }, voiceUnavailable: { value in
+                value == AppAppearanceMode.ultraDark.rawValue
+                    ? "Choose Ultra Dark in Settings → Appearance." : nil
             })
     }
 
@@ -435,6 +438,9 @@ extension MuesliController {
                     return "Unknown dictation model."
                 }
                 if let reason = option.incompatibilityReason() { return reason }
+                if option == .medASR, !self.medASRTerms.isAccepted {
+                    return "Review and accept MedASR's terms in Models first."
+                }
                 guard option.isDownloaded else { return "Download this dictation model from Models first." }
                 if !TranscriptCleanupBackendOption.resolved(self.config.postProcessorBackend).isCompatible(with: option) {
                     return "This model conflicts with the selected cleanup backend. Change cleanup first."
@@ -533,6 +539,9 @@ extension MuesliController {
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
                 guard let option = backends.first(where: { backendID($0) == value }) else { return "Unknown dictation model." }
                 if let reason = option.incompatibilityReason() { return reason }
+                if option == .medASR, !self.medASRTerms.isAccepted {
+                    return "Review and accept MedASR's terms in Models first."
+                }
                 return option.isDownloaded ? nil : "Download this model first."
             }) { value in
             if let option = backends.first(where: { backendID($0) == value }) { self.selectBackend(option) }

@@ -64,7 +64,10 @@ struct MeetingChatView: View {
         let _ = appState.config
         return chatContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
             .aiElementsTheme(.init(surface: MuesliTheme.backgroundRaised, border: MuesliTheme.surfaceBorder,
-                                   accent: MuesliTheme.accent, muted: MuesliTheme.textSecondary))
+                                   accent: MuesliTheme.accent, muted: MuesliTheme.textSecondary,
+                                   textFont: { MuesliTheme.font(size: $0, weight: $1) },
+                                   heading: MuesliTheme.title3(), subheading: MuesliTheme.headline()))
+            .font(MuesliTheme.body())
     }
 
     private var chatContent: some View {
@@ -92,7 +95,7 @@ struct MeetingChatView: View {
                                 if (index == 0 && turn.scope != coordinator.scope) ||
                                     (index > 0 && coordinator.turns[index - 1].scope != turn.scope) {
                                     Text(turn.scopeLabel ?? "Meeting context changed")
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                                 }
                                 turnView(turn).id(turn.id)
                             }
@@ -172,10 +175,10 @@ struct MeetingChatView: View {
         HStack(spacing: 12) {
             if !isEmbedded && coordinator.selectedSessionID != nil {
                 Button { controller.showMeetingChatIndex() } label: {
-                    Label { Text("Ask Meetings") } icon: { AIIcon(.arrowLeft) }
+                    Label { Text("Chat") } icon: { AIIcon(.arrowLeft) }
                 }
                 .buttonStyle(.plain).help("Back to all chats")
-                .accessibilityLabel("Back to Ask Meetings")
+                .accessibilityLabel("Back to Chat")
                 Divider().frame(height: 16)
             }
             Button { showHistory.toggle() } label: {
@@ -185,20 +188,20 @@ struct MeetingChatView: View {
                 .popover(isPresented: $showHistory) { history.frame(width: 280, height: 340) }
             if isEmbedded {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Ask Meetings").font(.system(size: 13, weight: .semibold))
+                    Text("Chat").font(MuesliTheme.font(size: 13, weight: .semibold))
                     if let title = coordinator.sessions.first(where: { $0.id == coordinator.selectedSessionID })?.title {
-                        Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(title).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             } else {
-                Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Ask Meetings").lineLimit(1).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Chat").lineLimit(1).font(MuesliTheme.font(size: 13, weight: .medium)).foregroundStyle(.secondary)
             }
             Spacer()
             if isEmbedded {
                 Button { controller.showMeetingChat() } label: {
                     AIIcon(.arrowUpRight).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain).help("Open Ask Meetings").accessibilityLabel("Open Ask Meetings")
+                    .buttonStyle(.plain).help("Open Chat").accessibilityLabel("Open Chat")
                 Button { expanded = false } label: {
                     AIIcon(.chevronDown).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
@@ -215,17 +218,17 @@ struct MeetingChatView: View {
 
     private var history: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Conversations").font(.system(size: 11, weight: .medium))
+            Text("Conversations").font(MuesliTheme.font(size: 11, weight: .medium))
                 .foregroundStyle(.secondary).padding(.horizontal, 14).padding(.top, 16)
             ScrollView {
                 LazyVStack(spacing: 3) {
                     ForEach(coordinator.sessions) { session in
                         Button { coordinator.selectChat(id: session.id); showHistory = false; expanded = true } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(session.title).font(.system(size: 12, weight: .regular)).lineLimit(2)
+                                Text(session.title).font(MuesliTheme.font(size: 12, weight: .regular)).lineLimit(2)
                                     .foregroundStyle(coordinator.selectedSessionID == session.id ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                                 Text(session.updatedAt, format: .dateTime.month(.abbreviated).day())
-                                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                                    .font(MuesliTheme.font(size: 10)).foregroundStyle(.tertiary)
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
                                 .background(coordinator.selectedSessionID == session.id ? MuesliTheme.backgroundRaised : Color.clear,
                                             in: RoundedRectangle(cornerRadius: 7))
@@ -245,8 +248,8 @@ struct MeetingChatView: View {
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("What’s on your mind?")
-                .font(.system(size: 24, weight: .medium)).tracking(-0.5)
-            Text("Ask your meetings.").font(.callout).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(size: 24, weight: .medium)).tracking(-0.5)
+            Text("Ask your meetings.").font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
         }.padding(.horizontal, 24)
     }
 
@@ -257,14 +260,14 @@ struct MeetingChatView: View {
                 VStack(alignment: .leading, spacing: 8) { suggestions }
             }
             if !coordinator.sessions.isEmpty {
-                Text("Recent chats").font(.caption).foregroundStyle(.secondary).padding(.top, 16)
+                Text("Recent chats").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).padding(.top, 16)
                 ForEach(coordinator.sessions) { session in
                     Button { coordinator.selectChat(id: session.id) } label: {
                         HStack(spacing: 12) {
                             AIIcon(.clock).foregroundStyle(.secondary)
                             Text(session.title).lineLimit(1)
                             Spacer()
-                            Text(session.updatedAt, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.tertiary)
+                            Text(session.updatedAt, format: .dateTime.month(.abbreviated).day()).font(MuesliTheme.font(.caption)).foregroundStyle(.tertiary)
                         }.padding(.vertical, 8).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
@@ -275,7 +278,7 @@ struct MeetingChatView: View {
     private var suggestions: some View {
         ForEach(MeetingChatQuickAction.allCases) { action in
             Button { Task { await prepare(action, name: appState.config.userName) } } label: {
-                Text(action.label).font(.caption).padding(.horizontal, 12).padding(.vertical, 8)
+                Text(action.label).font(MuesliTheme.font(.caption)).padding(.horizontal, 12).padding(.vertical, 8)
                     .background(MuesliTheme.backgroundRaised.opacity(0.6), in: Capsule())
             }.buttonStyle(.plain).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
         }
@@ -310,7 +313,7 @@ struct MeetingChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let error = coordinator.errorMessage {
-                Text(error).foregroundStyle(.orange).font(.callout).textSelection(.enabled)
+                Text(error).foregroundStyle(.orange).font(MuesliTheme.font(.callout)).textSelection(.enabled)
             }
             if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
@@ -339,9 +342,9 @@ struct MeetingChatView: View {
                     Button { showScope = true } label: {
                         HStack(spacing: 5) {
                             AIIcon(.slidersHorizontal)
-                            if attachedMeetingIDs == nil { Text(scopeLabel).font(.caption).lineLimit(1) }
+                            if attachedMeetingIDs == nil { Text(scopeLabel).font(MuesliTheme.font(.caption)).lineLimit(1) }
                             if let dates = MeetingChatScopePresentation.dateLabel(coordinator.scope) {
-                                Text(dates).font(.caption).lineLimit(1)
+                                Text(dates).font(MuesliTheme.font(.caption)).lineLimit(1)
                             }
                         }
                     }
@@ -354,7 +357,7 @@ struct MeetingChatView: View {
                             Text(MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
                             if let thinkingLabel { Text("· " + thinkingLabel).foregroundStyle(.secondary).lineLimit(1) }
                             AIIcon(.chevronDown, size: 10)
-                        }.font(.caption)
+                        }.font(MuesliTheme.font(.caption))
                     }.buttonStyle(.plain).foregroundStyle(.secondary).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         .help("Choose the model and thinking level shared by meeting chats and summaries")
                         .accessibilityLabel("Meeting AI model and thinking level")
@@ -376,7 +379,7 @@ struct MeetingChatView: View {
                     } else {
                         Button { send() } label: {
                             AIIcon(.arrowUp, size: 16)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .frame(width: 32, height: 32)
                                 .background(MuesliTheme.accent, in: Circle())
                                 .contentShape(Circle())
@@ -390,7 +393,7 @@ struct MeetingChatView: View {
                 }
             })
             Text("↵ Send · ⇧↵ New line")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(size: 10)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }.frame(maxWidth: 704).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
@@ -422,14 +425,14 @@ struct MeetingChatView: View {
     private func mentionSuggestions(_ mention: MeetingChatMentionQuery) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Label { Text("Attach a meeting") } icon: { AIIcon(.atSign) }.font(.caption.weight(.semibold))
+                Label { Text("Attach a meeting") } icon: { AIIcon(.atSign) }.font(MuesliTheme.font(.caption).weight(.semibold))
                 Spacer()
-                Text("↑↓ Choose · ↵ Attach · Esc Close").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("↑↓ Choose · ↵ Attach · Esc Close").font(MuesliTheme.font(size: 10)).foregroundStyle(.secondary)
             }.padding(12)
             Divider()
             if mentionMatches.isEmpty {
                 Text("No saved meetings match “\(mention.query)”.")
-                    .font(.callout).foregroundStyle(.secondary).padding(14)
+                    .font(MuesliTheme.font(.callout)).foregroundStyle(.secondary).padding(14)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -439,9 +442,9 @@ struct MeetingChatView: View {
                         HStack(spacing: 10) {
                             AIIcon(.fileText).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(meeting.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                Text(meeting.title).font(MuesliTheme.font(size: 13, weight: .medium)).lineLimit(1)
                                 Text(meeting.startDate, format: .dateTime.month(.abbreviated).day().year())
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                             }
                             Spacer()
                             if attachedMeetingIDs?.contains(meeting.id) == true {
@@ -459,7 +462,7 @@ struct MeetingChatView: View {
             if attachedMeetingIDs == nil {
                 Divider()
                 Text("Attaching a meeting narrows this chat to attached meetings and clears date filters.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary).padding(10)
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary).padding(10)
             }
         }.background(MuesliTheme.backgroundBase, in: RoundedRectangle(cornerRadius: 12))
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -549,7 +552,7 @@ struct MeetingChatView: View {
                                 MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
                                      ? coordinator.phase
                                      : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
-                                    .font(.callout).foregroundStyle(.secondary)
+                                    .font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
                             }
                             if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
                                 AIDisclosure(title: "\(coordinator.activities.count) research steps", icon: .search) {
@@ -582,10 +585,10 @@ struct MeetingChatView: View {
                         answerActions(turn)
                     } else if turn.state == .sourceDeleted {
                         Label { Text("Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
                     } else if !turn.state.isPending {
                         Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
                         Button {
                             let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config, contextWindowTokens: modelContextWindow) }
                         } label: { Label { Text("Try again") } icon: { AIIcon(.rotateCcw) } }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
@@ -633,7 +636,7 @@ struct MeetingChatView: View {
                     }
                 } label: { Label { Text("Export") } icon: { AIIcon(.download) } }.menuStyle(.borderlessButton).fixedSize()
                 if turn.editableDraft != nil { AIIcon(.check).help("Edited draft saved").accessibilityLabel("Edited draft saved") }
-            }.buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
+            }.buttonStyle(.borderless).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
         }
     }
     private func prepare(_ action: MeetingChatQuickAction, name: String?) async {
@@ -694,7 +697,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
-        editor.font = .systemFont(ofSize: 14)
+        editor.font = AppFonts.font(size: 14)
         editor.textColor = .labelColor
         editor.drawsBackground = false
         editor.textContainerInset = NSSize(width: 0, height: 8)
@@ -854,7 +857,7 @@ enum MeetingChatWaitingStatus {
 /// Measure the native font at the available width and cap long drafts for scrolling.
 enum MeetingChatComposerLayout {
     static func height(for text: String, width: CGFloat) -> CGFloat {
-        let measured = NSAttributedString(string: text + "\u{200B}", attributes: [.font: NSFont.systemFont(ofSize: 14)])
+        let measured = NSAttributedString(string: text + "\u{200B}", attributes: [.font: AppFonts.font(size: 14)])
             .boundingRect(with: NSSize(width: max(80, width - 10), height: CGFloat.greatestFiniteMagnitude),
                           options: [.usesLineFragmentOrigin, .usesFontLeading])
         return min(144, max(34, ceil(measured.height) + 16))
@@ -868,17 +871,26 @@ enum MeetingChatComposerLayout {
 @MainActor
 enum MeetingChatComposerTextSync {
     static func apply(_ text: String, to editor: NSTextView, resetUndo: Bool) {
+        guard resetUndo || editor.string != text else { return }
+        // Direct text-storage replacements do not inherit NSTextView's typing attributes
+        // when the composer is empty. Supply them explicitly for presets and restored drafts.
+        var attributes = editor.typingAttributes
+        attributes[.font] = AppFonts.font(size: 14)
+        attributes[.foregroundColor] = NSColor.labelColor
+        editor.typingAttributes = attributes
         if resetUndo {
             editor.breakUndoCoalescing()
             editor.undoManager?.removeAllActions()
-            if editor.string != text { editor.string = text }
+            if editor.string != text {
+                editor.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+            }
             return
         }
         guard editor.string != text else { return }
         let range = NSRange(location: 0, length: (editor.string as NSString).length)
         editor.breakUndoCoalescing()
         guard editor.shouldChangeText(in: range, replacementString: text) else { return }
-        editor.textStorage?.replaceCharacters(in: range, with: text)
+        editor.textStorage?.replaceCharacters(in: range, with: NSAttributedString(string: text, attributes: attributes))
         editor.didChangeText()
         editor.breakUndoCoalescing()
     }

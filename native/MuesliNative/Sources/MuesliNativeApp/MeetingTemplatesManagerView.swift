@@ -196,7 +196,7 @@ struct MeetingTemplatesManagerView: View {
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
                 TextEditor(text: $draftTemplatePrompt)
-                    .font(.system(size: 12))
+                    .font(MuesliTheme.font(size: 12))
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 140)
@@ -376,7 +376,7 @@ struct MeetingTemplatesManagerView: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 11, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(MuesliTheme.font(size: 13, weight: .medium))
             }
             .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)

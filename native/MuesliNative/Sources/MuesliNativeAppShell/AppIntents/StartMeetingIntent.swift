@@ -4,7 +4,7 @@ import MuesliNativeApp
 @available(macOS 13.0, *)
 struct StartMeetingIntent: AppIntent {
     static var title: LocalizedStringResource = "Start Meeting Recording"
-    static var description = IntentDescription("Starts a Muesli meeting recording, capturing mic and system audio.")
+    static var description = IntentDescription("Starts a muesli meeting recording, capturing mic and system audio.")
     // Ask the system to launch Muesli before performing so the in-process
     // controller exists; without this a closed app makes the wait time out.
     static var openAppWhenRun: Bool { true }

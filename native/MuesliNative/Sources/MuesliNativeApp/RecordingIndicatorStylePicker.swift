@@ -50,10 +50,10 @@ struct RecordingIndicatorStylePicker: View {
                         HStack(spacing: 8) {
                             Image(systemName: selection == style ? "largecircle.fill.circle" : "circle")
                                 .foregroundStyle(selection == style ? accent : Color.secondary)
-                            Text(style.title).font(.headline)
+                            Text(style.title).font(MuesliTheme.font(.headline))
                         }
                         .frame(maxWidth: .infinity)
-                        Text(style.description).font(.caption).foregroundStyle(.secondary)
+                        Text(style.description).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity, minHeight: 32, alignment: .top)
                     }
@@ -120,7 +120,7 @@ struct RecordingIndicatorPreview: View {
 
     private func sample(active: Bool) -> some View {
         VStack(spacing: 12) {
-            Text(active ? "Recording" : "At rest").font(.system(size: 11)).foregroundStyle(.black.opacity(0.7))
+            Text(active ? "Recording" : "At rest").font(MuesliTheme.font(size: 11)).foregroundStyle(.black.opacity(0.7))
             Group {
                 if style == .notch {
                     notch(active: active)
@@ -150,7 +150,7 @@ struct RecordingIndicatorPreview: View {
             if active {
                 HStack(spacing: 4) {
                     logo.frame(width: 16).scaleEffect(0.7)
-                    Text("Listening").font(.system(size: 8))
+                    Text("Listening").font(MuesliTheme.font(size: 8))
                 }.frame(width: 76)
             }
             Color.black.frame(width: 74)

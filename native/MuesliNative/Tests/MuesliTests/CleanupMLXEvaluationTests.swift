@@ -26,7 +26,7 @@ struct CleanupMLXEvaluationTests {
                 MuesliCleanupV2Prompt.ggufRequest("First check latency. Second check formatting.", appContext: "App: Codex", format: option.inputFormat))
         }
         #expect(PostProcessorOption.lfmV12.modelURL.pathExtension == "gguf")
-        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
+        #expect(PostProcessorOption.finetunedV4.label == "muesli Cleanup Lite")
     }
 
     /// Exercises the actual production manager, not just the evaluation adapter.

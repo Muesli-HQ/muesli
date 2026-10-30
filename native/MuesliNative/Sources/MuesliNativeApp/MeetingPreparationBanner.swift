@@ -13,7 +13,7 @@ struct MeetingPreparationBanner: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Preparing transcription")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(MuesliTheme.font(size: 13, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textPrimary)
                 Text(status ?? "Meeting transcription will start shortly.")
                     .font(MuesliTheme.caption())

@@ -55,3 +55,10 @@ reasoning request states, and shimmer are now available. This remains partial
 upstream parity: Markdown does not yet offer syntax highlighting, math layout,
 or a full CommonMark parser. Tool details are supplied text, not a JSON inspector.
 Shimmer respects Reduce Motion and does not convey fabricated progress.
+
+### Host typography
+
+`AIElementsTheme.textFont` lets the host supply its bundled typeface for labels,
+metadata, tables and headings. The default remains the system font for standalone
+clients. Code blocks, verbatim tool payloads and source-number gutters retain
+monospaced fonts. Font loading and licensing stay in the host app.

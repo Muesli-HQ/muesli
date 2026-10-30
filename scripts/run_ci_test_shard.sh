@@ -82,6 +82,9 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       BufferedTranscriptionContinuityTests
@@ -211,6 +214,7 @@ case "${shard}" in
       MeetingChatNotesActionTests
       MeetingChatReviewTests
       MeetingChatPresentationTests
+      MuesliTypographyTests
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests

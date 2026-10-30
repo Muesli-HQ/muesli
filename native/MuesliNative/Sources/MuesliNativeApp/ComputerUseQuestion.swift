@@ -98,7 +98,7 @@ struct ComputerUseQuestionView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Your answer", systemImage: "questionmark.bubble")
-                    .font(.caption).foregroundStyle(.white.opacity(0.65))
+                    .font(MuesliTheme.font(.caption)).foregroundStyle(.white.opacity(0.65))
                 Spacer()
                 if let onCollapse {
                     Button(action: onCollapse) { Image(systemName: "chevron.up") }
@@ -107,7 +107,7 @@ struct ComputerUseQuestionView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(session.question.question).font(.headline)
+                    Text(session.question.question).font(MuesliTheme.font(.headline))
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     ForEach(Array(session.question.options.enumerated()), id: \.offset) { _, option in
@@ -131,6 +131,7 @@ struct ComputerUseQuestionView: View {
         .background(Color(white: 0.055))
         .clipShape(shape)
         .overlay { shape.strokeBorder(accent.opacity(0.5), lineWidth: 0.75).allowsHitTesting(false) }
+        .font(MuesliTheme.body())
         .foregroundStyle(.white).tint(accent).preferredColorScheme(.dark)
     }
 

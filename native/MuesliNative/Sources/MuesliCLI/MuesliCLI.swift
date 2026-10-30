@@ -148,8 +148,8 @@ func emitJSON<T: Encodable>(_ value: T) {
 func ensureDatabaseAvailable(_ context: CLIContext, command: String) throws {
     guard context.store.databaseExists else {
         throw CLIError.databaseUnavailable(
-            "No Muesli database exists at the resolved path.",
-            fix: "Launch Muesli once or pass --db-path/--support-dir to point at the correct data directory."
+            "No muesli database exists at the resolved path.",
+            fix: "Launch muesli once or pass --db-path/--support-dir to point at the correct data directory."
         )
     }
 }
@@ -172,7 +172,7 @@ func migrationWarnings(_ context: CLIContext) -> [String] {
         return []
     } catch {
         return ["Schema migration failed: \(error.localizedDescription). "
-                + "Results may be missing fields added by newer Muesli versions."]
+                + "Results may be missing fields added by newer muesli versions."]
     }
 }
 
@@ -198,7 +198,7 @@ struct GlobalOptions: ParsableArguments {
     @Option(name: .long, help: "Override the absolute path to muesli.db.")
     var dbPath: String?
 
-    @Option(name: .long, help: "Override the Muesli support directory. The CLI will look for muesli.db inside it.")
+    @Option(name: .long, help: "Override the muesli support directory. The CLI will look for muesli.db inside it.")
     var supportDir: String?
 }
 
@@ -328,8 +328,8 @@ struct CommandSpecPayload: Encodable {
 struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
-        abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        abstract: "Agent-friendly CLI for local muesli meetings and dictations.",
+        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
     )
 
     static func main() async {
@@ -376,7 +376,8 @@ struct MuesliCLI: AsyncParsableCommand {
         CommandSpecPayload(commands: [
             .init(name: "spec", usage: "muesli-cli spec", summary: "Dump the command tree and CLI schema metadata.", examples: ["muesli-cli spec"]),
             .init(name: "info", usage: "muesli-cli info [--db-path <path>] [--support-dir <dir>]", summary: "Show resolved support and database paths.", examples: ["muesli-cli info", "muesli-cli info --support-dir ~/Library/Application\\ Support/Muesli"]),
-            .init(name: "transcribe", usage: "muesli-cli transcribe <file> [--format text|json|markdown] [--model \(TranscribeModel.allCases.map(\.rawValue).joined(separator: "|"))] [--summarize] [--save-meeting] [--title <title>] [--output <path>] [--dictionary <path>]", summary: "Transcribe a local mp3, mp4, m4a, or wav file with Muesli's bundled local ASR models.", examples: ["muesli-cli transcribe call.mp3", "muesli-cli transcribe call.m4a --format json", "muesli-cli transcribe call.wav --model nemotron35 --dictionary dictionary.json"]),
+            .init(name: "model-terms", usage: "muesli-cli model-terms medasr [--accept]", summary: "Read MedASR's terms and optionally record acceptance on this Mac.", examples: ["muesli-cli model-terms medasr", "muesli-cli model-terms medasr --accept"]),
+            .init(name: "transcribe", usage: "muesli-cli transcribe <file> [--format text|json|markdown] [--model \(TranscribeModel.allCases.map(\.rawValue).joined(separator: "|"))] [--summarize] [--save-meeting] [--title <title>] [--output <path>] [--dictionary <path>]", summary: "Transcribe a local mp3, mp4, m4a, or wav file with muesli's bundled local ASR models.", examples: ["muesli-cli transcribe call.mp3", "muesli-cli transcribe call.m4a --format json", "muesli-cli transcribe call.wav --model nemotron35 --dictionary dictionary.json"]),
             .init(name: "meetings list", usage: "muesli-cli meetings list [--limit <n>] [--folder-id <id>]", summary: "List recent meetings.", examples: ["muesli-cli meetings list --limit 5", "muesli-cli meetings list --folder-id 2"]),
             .init(name: "meetings get", usage: "muesli-cli meetings get <id>", summary: "Return a full meeting record.", examples: ["muesli-cli meetings get 42"]),
             .init(name: "meetings update-notes", usage: "muesli-cli meetings update-notes <id> (--stdin | --file <path>)", summary: "Replace stored meeting notes only.", examples: ["muesli-cli meetings update-notes 42 --file notes.md", "cat notes.md | muesli-cli meetings update-notes 42 --stdin"]),
@@ -425,7 +426,7 @@ struct InfoCommand: ParsableCommand {
 }
 
 struct MeetingsCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "meetings", abstract: "Inspect and update Muesli meetings.", subcommands: [MeetingsListCommand.self, MeetingsGetCommand.self, MeetingsUpdateNotesCommand.self])
+    static let configuration = CommandConfiguration(commandName: "meetings", abstract: "Inspect and update muesli meetings.", subcommands: [MeetingsListCommand.self, MeetingsGetCommand.self, MeetingsUpdateNotesCommand.self])
 }
 
 struct MeetingsListCommand: ParsableCommand {
@@ -440,7 +441,7 @@ struct MeetingsListCommand: ParsableCommand {
             throw CLIError.invalidInput("--limit must be greater than zero.", fix: "Pass a positive integer such as --limit 10.")
         }
         if !context.store.databaseExists {
-            emitSuccess(command: "muesli-cli meetings list", data: [MeetingListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
+            emitSuccess(command: "muesli-cli meetings list", data: [MeetingListRow](), dbPath: context.databaseURL, warnings: ["No muesli database exists at the resolved path."])
             return
         }
         let (rows, warnings) = try withMigration(context) {
@@ -513,7 +514,7 @@ struct MeetingsUpdateNotesCommand: ParsableCommand {
 }
 
 struct DictationsCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "dictations", abstract: "Inspect Muesli dictations.", subcommands: [DictationsListCommand.self, DictationsGetCommand.self])
+    static let configuration = CommandConfiguration(commandName: "dictations", abstract: "Inspect muesli dictations.", subcommands: [DictationsListCommand.self, DictationsGetCommand.self])
 }
 
 struct DictationsListCommand: ParsableCommand {
@@ -527,7 +528,7 @@ struct DictationsListCommand: ParsableCommand {
             throw CLIError.invalidInput("--limit must be greater than zero.", fix: "Pass a positive integer such as --limit 10.")
         }
         if !context.store.databaseExists {
-            emitSuccess(command: "muesli-cli dictations list", data: [DictationListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
+            emitSuccess(command: "muesli-cli dictations list", data: [DictationListRow](), dbPath: context.databaseURL, warnings: ["No muesli database exists at the resolved path."])
             return
         }
         let (rows, warnings) = try withMigration(context) {

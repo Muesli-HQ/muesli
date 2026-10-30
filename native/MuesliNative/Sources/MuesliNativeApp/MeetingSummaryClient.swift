@@ -440,11 +440,12 @@ enum MeetingSummaryClient {
             && [existingNotes, previousMeetingNotes].allSatisfy { ["", emptyRecordingNotes].contains(trimmed($0)) }
     }
 
-    private static let summaryFailureLead = "Muesli could not generate structured meeting notes.\n\n"
+    /// Matched case-insensitively: notes saved before the lowercase rebrand say "Muesli".
+    private static let summaryFailureLead = "muesli could not generate structured meeting notes.\n\n"
 
     /// The error text a failed summary stored in the notes, or nil when the notes are not a failure.
     static func summaryFailureReason(from notes: String) -> String? {
-        guard isSummaryFailureNotes(notes), let lead = notes.range(of: summaryFailureLead) else { return nil }
+        guard isSummaryFailureNotes(notes), let lead = notes.range(of: summaryFailureLead, options: .caseInsensitive) else { return nil }
         let rest = notes[lead.upperBound...]
         let end = ["\n\n### Written notes", "\n\n## Raw Transcript"]
             .compactMap { rest.range(of: $0)?.lowerBound }

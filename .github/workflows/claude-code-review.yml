@@ -55,7 +55,6 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      checks: write
       actions: read
       id-token: write
 
@@ -74,10 +73,11 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # The installed Claude GitHub App cannot grant checks:write.
+          # Tracking and review feedback use PR comments, not custom check runs.
           additional_permissions: |
             pull_requests: write
             issues: write
-            checks: write
             actions: read
           use_sticky_comment: true
           track_progress: true

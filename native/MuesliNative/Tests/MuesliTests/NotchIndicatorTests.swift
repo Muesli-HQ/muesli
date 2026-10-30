@@ -486,7 +486,7 @@ struct NotchIndicatorTests {
         #expect(frame.width == 440)
         #expect(frame.height == 100)
         let progress = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), resultCount: 99)
-        #expect(progress.height == 190)
+        #expect(progress.height == 202)
         #expect(progress.maxY == geometry.cutout.minY)
         let narrow = CGRect(x: 1500, y: 0, width: 300, height: 900)
         #expect(geometry.instructionFrame(in: narrow).minX == narrow.minX)

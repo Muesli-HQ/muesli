@@ -61,7 +61,7 @@ struct AboutView: View {
                                 Image(systemName: "heart.fill")
                                     .font(.system(size: 12))
                                 Text("Donate")
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(MuesliTheme.font(size: 13, weight: .semibold))
                             }
                             .foregroundStyle(.white)
                             .padding(.horizontal, MuesliTheme.spacing20)
@@ -97,6 +97,7 @@ struct AboutView: View {
                             set: onSetAutomaticDiagnosticIssuePrompts
                         ))
                         .toggleStyle(.switch)
+                .tint(MuesliTheme.toggleAccent)
                         .labelsHidden()
                         .help("Suggest an anonymized GitHub issue after an app error")
                         .accessibilityLabel("Automatic issue reporting prompts")
@@ -106,7 +107,7 @@ struct AboutView: View {
                 if ContributionSocialShare.completedWordMilestone(totalWords: appState.dictationStats.totalWords) != nil {
                     sectionHeader("Spread the Word")
                     aboutCard {
-                        aboutRow("Share Muesli") {
+                        aboutRow("Share muesli") {
                             HStack(spacing: MuesliTheme.spacing12) {
                                 Button("Post on X") { onShare(.tweetAboutMuesli) }
                                 Button("LinkedIn") { onShare(.postOnLinkedIn) }
@@ -164,6 +165,9 @@ struct AboutView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     acknowledgement(name: "Hugging Face Transformers and XGrammar",
                         description: "Swift tokenization, Gemma audio algorithms, and constrained tool generation. Apache 2.0 licenses and notices included with the app.")
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(name: "Nunito Sans by the Nunito Sans Project Authors",
+                        description: "The app’s typeface, shared with muesli.works. SIL Open Font License included with the app.")
                 }
 
                 Spacer(minLength: MuesliTheme.spacing32)
@@ -180,7 +184,7 @@ struct AboutView: View {
     @ViewBuilder
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .semibold))
+            .font(MuesliTheme.font(size: 11, weight: .semibold))
             .foregroundStyle(MuesliTheme.textTertiary)
             .textCase(.uppercase)
             .padding(.leading, 2)
@@ -230,7 +234,7 @@ struct AboutView: View {
             return UpdateBanner(
                 icon: "arrow.triangle.2.circlepath",
                 title: "Checking for updates",
-                message: "Muesli is checking the appcast for the latest version.",
+                message: "muesli is checking the appcast for the latest version.",
                 tint: MuesliTheme.transcribing
             )
         case .busy(let message):
@@ -243,28 +247,28 @@ struct AboutView: View {
         case .available(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
-                title: "Muesli \(version) is available",
+                title: "muesli \(version) is available",
                 message: "An update is available. Use the menu bar icon > Check for Updates... to open the updater.",
                 tint: MuesliTheme.transcribing
             )
         case .downloaded(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
-                title: "Muesli \(version) is ready to install",
+                title: "muesli \(version) is ready to install",
                 message: "The update is downloaded. Use the menu bar updater to finish installation.",
                 tint: MuesliTheme.transcribing
             )
         case .installing(let version):
             return UpdateBanner(
                 icon: "arrow.down.circle.fill",
-                title: "Installing Muesli \(version)",
-                message: "Sparkle is preparing the update. Muesli may relaunch when installation finishes.",
+                title: "Installing muesli \(version)",
+                message: "Sparkle is preparing the update. muesli may relaunch when installation finishes.",
                 tint: MuesliTheme.transcribing
             )
         case .upToDate:
             return UpdateBanner(
                 icon: "checkmark.circle.fill",
-                title: "Muesli is up to date",
+                title: "muesli is up to date",
                 message: "No newer version was found in the appcast.",
                 tint: MuesliTheme.success
             )
@@ -330,7 +334,7 @@ struct AboutView: View {
     private func acknowledgement(name: String, description: String) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
             Text(name)
-                .font(.system(size: 14, weight: .semibold))
+                .font(MuesliTheme.font(size: 14, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textPrimary)
             Text(description)
                 .font(MuesliTheme.callout())
@@ -350,7 +354,7 @@ struct AboutView: View {
                         .font(.system(size: 11))
                 }
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(MuesliTheme.font(size: 13, weight: .medium))
             }
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing16)

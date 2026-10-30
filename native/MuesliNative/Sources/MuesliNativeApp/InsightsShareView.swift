@@ -17,10 +17,10 @@ struct InsightsShareSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Share your activity")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(MuesliTheme.font(size: 20, weight: .semibold))
                         .tracking(-0.4)
                     Text("A private snapshot with no transcripts or account details")
-                        .font(.system(size: 12))
+                        .font(MuesliTheme.font(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -43,7 +43,7 @@ struct InsightsShareSheet: View {
                         .overlay { ProgressView().controlSize(.small) }
                 }
             }
-            .accessibilityLabel("Preview of your Muesli activity image")
+            .accessibilityLabel("Preview of your muesli activity image")
 
             if let saveErrorMessage {
                 HStack(alignment: .top, spacing: 10) {
@@ -51,9 +51,9 @@ struct InsightsShareSheet: View {
                         .foregroundStyle(.red)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("The image couldn’t be saved")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(MuesliTheme.font(size: 12, weight: .semibold))
                         Text(saveErrorMessage)
-                            .font(.system(size: 11))
+                            .font(MuesliTheme.caption())
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
@@ -97,7 +97,7 @@ struct InsightsShareSheet: View {
 
                 if let confirmation {
                     Label(confirmation, systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .transition(.opacity)
                 }
@@ -125,7 +125,7 @@ struct InsightsShareSheet: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "Muesli activity – \(rangeLabel).png"
+        panel.nameFieldStringValue = "muesli activity – \(rangeLabel).png"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
@@ -253,7 +253,7 @@ private struct InsightsShareCard: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
                     Text(rangeLabel.uppercased())
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(MuesliTheme.font(size: 14, weight: .semibold))
                         .tracking(1.9)
                         .foregroundStyle(pale.opacity(0.82))
                     Spacer()
@@ -268,17 +268,17 @@ private struct InsightsShareCard: View {
                 Spacer(minLength: 34)
 
                 Text(showsNumbers ? snapshot.selected.dictationWords.formatted() : "—")
-                    .font(.system(size: 108, weight: .bold, design: .rounded))
+                    .font(MuesliTheme.font(size: 108, weight: .bold, design: .rounded))
                     .tracking(-5)
                     .monospacedDigit()
                     .foregroundStyle(pale)
                 Text("WORDS DICTATED")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(MuesliTheme.font(size: 18, weight: .bold))
                     .tracking(2.8)
                     .foregroundStyle(muted)
 
                 Text(showsNumbers ? "\(snapshot.selected.meetingWords.formatted()) words transcribed in meetings" : "— words transcribed in meetings")
-                    .font(.system(size: 18, weight: .medium))
+                    .font(MuesliTheme.font(size: 18, weight: .medium))
                     .foregroundStyle(muted)
 
                 Spacer(minLength: 36)
@@ -301,12 +301,12 @@ private struct InsightsShareCard: View {
 
                 HStack {
                     Text("Private by design. Made on this Mac.")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(MuesliTheme.font(size: 15, weight: .medium))
                         .foregroundStyle(pale.opacity(0.88))
                         .shadow(color: Color.black.opacity(0.48), radius: 3, y: 1)
                     Spacer()
                     Text("muesli.works")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(MuesliTheme.font(size: 15, weight: .semibold))
                         .foregroundStyle(cyan)
                         .shadow(color: Color.black.opacity(0.48), radius: 3, y: 1)
                 }
@@ -318,12 +318,12 @@ private struct InsightsShareCard: View {
     private func shareDatum(value: String, label: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(value)
-                .font(.system(size: 30, weight: .semibold, design: .rounded))
+                .font(MuesliTheme.font(size: 30, weight: .semibold, design: .rounded))
                 .tracking(-0.8)
                 .monospacedDigit()
                 .foregroundStyle(pale)
             Text(label)
-                .font(.system(size: 12, weight: .bold))
+                .font(MuesliTheme.font(size: 12, weight: .bold))
                 .tracking(1.7)
                 .foregroundStyle(muted)
         }
@@ -353,12 +353,12 @@ private struct MuesliShareMark: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             Text("muesli")
-                .font(Font(AppFonts.bold(30)))
+                .font(MuesliTheme.font(size: 30, weight: .bold))
                 .tracking(-1.1)
                 .foregroundStyle(color)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Muesli")
+        .accessibilityLabel("muesli")
     }
 }
 

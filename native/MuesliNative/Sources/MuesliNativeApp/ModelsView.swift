@@ -125,6 +125,7 @@ struct ModelsView: View {
             }
         }
         .background(MuesliTheme.backgroundBase)
+        .task { await controller.medASRTerms.refresh() }
         .onAppear {
             checkDownloadedModels()
             checkDownloadedPostProcModels()
@@ -268,6 +269,10 @@ struct ModelsView: View {
                 modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
             }
 
+            if BackendOption.medASR.isCompatible() {
+                modelCard(option: .medASR, logo: "google-logo")
+            }
+
             if BackendOption.cohereTranscribe.isCompatible() {
                 modelCard(option: .cohereTranscribe, logo: "cohere-logo")
             }
@@ -291,11 +296,7 @@ struct ModelsView: View {
     private var comingSoonSection: some View {
         if !BackendOption.comingSoon.isEmpty {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                Text("COMING SOON")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .textCase(.uppercase)
-                    .padding(.leading, 2)
+                SettingsSectionHeading(title: "Coming soon")
                     .padding(.top, MuesliTheme.spacing8)
 
                 VStack(spacing: MuesliTheme.spacing12) {
@@ -345,15 +346,13 @@ struct ModelsView: View {
     private var streamingSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("LIVE MEETINGS")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                SettingsSectionHeading(title: "Live meetings")
 
-                Text("Choose how words appear while a meeting is in progress. Apple Speech and Nemotron also create the saved transcript; Parakeet provides a provisional preview.")
+                Text("Shows words while a meeting is in progress. Apple Speech and Nemotron also create the saved transcript; Parakeet is a preview only.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.leading, 2)
             }
-            .padding(.leading, 2)
             .padding(.top, MuesliTheme.spacing8)
             .id(FeatureTourTarget.streamingModels.rawValue)
             .featureTourTarget(.streamingModels)
@@ -371,7 +370,7 @@ struct ModelsView: View {
                             $0.enableLiveStreamingPartials = true
                         }
                     },
-                    description: "Apple's private, on-device streaming transcription on macOS 26. Finalized speech becomes your saved transcript; your regular meeting model recovers any audio the live stream could not finish.",
+                    description: "Private, on-device streaming transcription on macOS 26. Finalized speech becomes your saved transcript; your meeting model recovers any audio the stream could not finish.",
                     downloadedLabel: "Available"
                 )
             }
@@ -416,7 +415,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text("Fast English captions while a meeting is in progress. They are a provisional preview; your regular meeting model creates the transcript you keep.")
+                    Text("Fast English captions during meetings. A preview only; your meeting model creates the transcript you keep.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -425,7 +424,7 @@ struct ModelsView: View {
 
                 if isActive {
                     Text("Active")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(MuesliTheme.font(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -433,7 +432,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else if isLiveCaptionModelDownloaded {
                     Text("Ready")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -484,7 +483,7 @@ struct ModelsView: View {
                     }
                     .disabled(isCancellingLiveCaptionModelDownload)
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
                 } else if isLiveCaptionModelDownloaded {
                     if !isActive {
@@ -495,7 +494,7 @@ struct ModelsView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.accent)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, 4)
@@ -519,7 +518,7 @@ struct ModelsView: View {
                         startLiveCaptionModelDownload()
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.accent)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
@@ -607,20 +606,19 @@ struct ModelsView: View {
                                 .foregroundStyle(MuesliTheme.textTertiary)
 
                             Text("Experimental")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .font(MuesliTheme.headline())
+                                .foregroundStyle(MuesliTheme.textPrimary)
                         }
 
-                        Text("Early models for specific languages and evaluation. Expect less consistent transcripts, and try them with your own voice before relying on them.")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                            .opacity(0.8)
+                        Text("Early models for specific languages and evaluation. Results vary; try them with your own voice before relying on them.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
                     }
 
                     Spacer()
 
                     Text("Early access")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -686,14 +684,10 @@ struct ModelsView: View {
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("CLEANUP")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .textCase(.uppercase)
-                    .padding(.leading, 2)
+                SettingsSectionHeading(title: "Cleanup")
 
-                Text("Optional cleanup after transcription. Use it to remove filler words, follow spoken corrections, format lists, and fix obvious dictation errors.")
-                    .font(.system(size: 12, weight: .medium))
+                Text("Optional pass after transcription that removes filler words, follows spoken corrections, formats lists, and fixes obvious dictation errors.")
+                    .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.leading, 2)
             }
@@ -716,13 +710,9 @@ struct ModelsView: View {
     private var cotypistSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("COTYPIST")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .textCase(.uppercase)
-                    .padding(.leading, 2)
+                SettingsSectionHeading(title: "Cotypist")
                 Text("The model that suggests your next words as you type. All run on this Mac; smaller ones answer faster.")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.leading, 2)
             }
@@ -763,8 +753,8 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textPrimary)
                         if model.isRecommended {
                             Text("Recommended")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .font(MuesliTheme.metadata())
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accent)
@@ -783,7 +773,7 @@ struct ModelsView: View {
 
                 if isInUse {
                     Text("Cotypist Active")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(MuesliTheme.font(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -791,7 +781,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else if state == .ready {
                     Text("Downloaded")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -848,7 +838,7 @@ struct ModelsView: View {
     private func cotypistCardButton(_ title: String, prominent: Bool = true, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
+            .font(MuesliTheme.font(size: 12, weight: .medium))
             .foregroundStyle(prominent ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 4)
@@ -858,12 +848,13 @@ struct ModelsView: View {
 
     private var quillSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            Text("QUILL")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(MuesliTheme.textTertiary)
-            Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.textSecondary)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                SettingsSectionHeading(title: "Quill")
+                Text("Local models for rewriting selected text or writing at the cursor. Download one, choose Use for Quill, then turn on Quill in Settings. Downloads are shared with cleanup.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.leading, 2)
+            }
             ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
@@ -948,7 +939,7 @@ struct ModelsView: View {
 
                 if isActive {
                     Text(forQuill ? "Quill Selected" : "Cleanup Active")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(MuesliTheme.font(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -956,7 +947,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else if isDownloaded {
                     Text("Downloaded")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -980,7 +971,7 @@ struct ModelsView: View {
                         cancelPostProcDownload(option)
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
@@ -996,7 +987,7 @@ struct ModelsView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.accent)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, 4)
@@ -1018,7 +1009,7 @@ struct ModelsView: View {
                         startPostProcDownload(option, forQuill: forQuill)
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.accent)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
@@ -1066,7 +1057,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textPrimary)
 
                         Text(defaultBadge)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(MuesliTheme.metadata())
                             .foregroundStyle(MuesliTheme.accent)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -1087,7 +1078,7 @@ struct ModelsView: View {
             HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                 Text("Variant")
                     .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .foregroundStyle(MuesliTheme.textSecondary)
                     .frame(width: 52, alignment: .leading)
 
                 Picker("", selection: selection) {
@@ -1169,7 +1160,7 @@ struct ModelsView: View {
     private func familyStatusBadge(isActive: Bool, isDownloaded: Bool) -> some View {
         if isActive {
             Text("Active")
-                .font(.system(size: 11, weight: .semibold))
+                .font(MuesliTheme.font(size: 11, weight: .semibold))
                 .foregroundStyle(MuesliTheme.success)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -1177,7 +1168,7 @@ struct ModelsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         } else if isDownloaded {
             Text("Downloaded")
-                .font(.system(size: 11, weight: .medium))
+                .font(MuesliTheme.metadata())
                 .foregroundStyle(MuesliTheme.textTertiary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -1204,18 +1195,18 @@ struct ModelsView: View {
 
                 if let currentFile = snapshot.currentFile?.split(separator: "/").last.map(String.init), !currentFile.isEmpty {
                     Text("\(downloadPhaseLabel(snapshot.phase)): \(currentFile)")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.captionMedium())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 } else {
                     Text(snapshot.message ?? downloadPhaseLabel(snapshot.phase))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(snapshot.phase == .failed ? MuesliTheme.recording : MuesliTheme.textSecondary)
                 }
 
                 if let detail = downloadDetailText(snapshot), !detail.isEmpty {
                     Text(detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .font(MuesliTheme.metadata())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
         } else {
@@ -1228,8 +1219,8 @@ struct ModelsView: View {
                         .tint(MuesliTheme.accent)
                 }
                 Text(fallbackMessage ?? "\(Int(fallbackProgress * 100))% downloading...")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
             }
         }
     }
@@ -1329,6 +1320,7 @@ struct ModelsView: View {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
+        case "medasr": return "google-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
@@ -1357,7 +1349,7 @@ struct ModelsView: View {
                     cancelDownload(option)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 4)
@@ -1374,7 +1366,7 @@ struct ModelsView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(disabledReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
@@ -1401,7 +1393,7 @@ struct ModelsView: View {
                     startDownload(option)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 4)
@@ -1466,8 +1458,8 @@ struct ModelsView: View {
 
                         if option.recommended {
                             Text("Recommended")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .font(MuesliTheme.metadata())
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accent)
@@ -1489,7 +1481,7 @@ struct ModelsView: View {
                 // Status badge — Incompatible takes priority over Active/Downloaded.
                 if let incompatibilityReason {
                     Text("Incompatible")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -1498,7 +1490,7 @@ struct ModelsView: View {
                         .help(incompatibilityReason)
                 } else if isActive {
                     Text(activeLabel)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(MuesliTheme.font(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -1506,12 +1498,25 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else if isDownloaded {
                     Text(downloadedLabel)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.metadata())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(MuesliTheme.surfacePrimary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if option == .medASR {
+                Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                if isActive && !controller.medASRTerms.isAccepted {
+                    Button("Review terms") {
+                        controller.requestMedASRLicense {
+                            if appState.selectedBackend == .medASR { controller.selectBackend(.medASR) }
+                        }
+                    }
                 }
             }
 
@@ -1652,7 +1657,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textSecondary)
                         Button("Update") { updateNemotron35(option) }
                             .buttonStyle(.plain)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(MuesliTheme.font(size: 12, weight: .medium))
                             .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                             .disabled(incompatibilityReason != nil || !controller.canModifyModelFiles)
                             .help(incompatibilityReason ?? "Update")
@@ -1710,7 +1715,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
 
                         Text("Coming soon")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(MuesliTheme.metadata())
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -1907,6 +1912,12 @@ struct ModelsView: View {
 
     private func startDownload(_ option: BackendOption) {
         guard option.isCompatible() else { return }
+        if option == .medASR, !controller.medASRTerms.isAccepted {
+            controller.requestMedASRLicense {
+                startDownload(option)
+            }
+            return
+        }
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
         downloadMessages.removeValue(forKey: option.model)
@@ -2174,6 +2185,9 @@ struct ModelsView: View {
             WhisperKitTranscriber.deleteModel(option.model)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
+        case "medasr":
+            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
+            try MedASRModel.plan().delete(fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
@@ -2265,6 +2279,8 @@ struct ModelsView: View {
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":

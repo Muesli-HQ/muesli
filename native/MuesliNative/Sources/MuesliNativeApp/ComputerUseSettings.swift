@@ -219,7 +219,7 @@ enum ComputerUseSettings {
         case .failed: traceStatus = "failed"
         }
         return .init(status: status, message: message, traceEvents: [
-            ComputerUseTraceEvent(kind: "muesli_settings", title: "Muesli settings", body: message,
+            ComputerUseTraceEvent(kind: "muesli_settings", title: "muesli settings", body: message,
                                   status: traceStatus)
         ])
     }
@@ -274,11 +274,11 @@ enum ComputerUseSettings {
                  ["setting": ["type": "string"]]),
             tool("ask_user_question", "Ask for a missing choice. The user can select a suggestion or type any answer.",
                  ["question": ["type": "string"], "options": ["type": "array", "items": ["type": "string"], "minItems": 2, "maxItems": 4]]),
-            tool("set_muesli_setting", "Change one Muesli setting to a catalog choice or a shortcut combination allowed by its catalog rules.",
+            tool("set_muesli_setting", "Change one muesli setting to a catalog choice or a shortcut combination allowed by its catalog rules.",
                  ["setting": ["type": "string"], "value": ["type": "string"]]),
             tool("configure_muesli_setting", "Confirm activation scope and a compatible model, then save the requested preference. Only for inspected settings with activation metadata.",
                  ["setting": ["type": "string"], "value": ["type": "string"]]),
-            tool("settings_manual_only", "Decline a request to change Muesli system/AI prompts or select a prompt preset; these require manual Settings interaction.", [:]),
+            tool("settings_manual_only", "Decline a request to change muesli system/AI prompts or select a prompt preset; these require manual Settings interaction.", [:]),
             tool("continue_desktop_task", "The command concerns another app or a desktop task.", [:]),
             tool("settings_unavailable", "Explain why a setting cannot be changed.",
                  ["reason": ["type": "string"]])

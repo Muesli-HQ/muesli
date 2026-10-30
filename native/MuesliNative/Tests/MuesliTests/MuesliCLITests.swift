@@ -258,7 +258,7 @@ struct MuesliCLITests {
         let mac15 = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
         let mac26 = OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
         for model in NativeFileTranscriptionModel.allCases {
-            #expect(model.unavailabilityReason(currentOSVersion: mac14) != nil)
+            #expect((model.unavailabilityReason(currentOSVersion: mac14) == nil) == (model == .medASR))
             #expect((model.unavailabilityReason(currentOSVersion: mac15) == nil) == (model != .appleSpeech))
             #expect(model.unavailabilityReason(currentOSVersion: mac26) == nil)
         }

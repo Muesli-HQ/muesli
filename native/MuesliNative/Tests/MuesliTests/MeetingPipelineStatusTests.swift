@@ -40,6 +40,15 @@ struct MeetingPipelineStatusTests {
         #expect(MeetingSummaryClient.summaryFailureReason(from: notes) == "Server is off.")
     }
 
+    @Test("failure notes saved before the lowercase rebrand still give their reason")
+    func reasonFromCapitalizedLead() {
+        let notes = failureNotes("Server is off.").replacingOccurrences(
+            of: "muesli could not generate", with: "Muesli could not generate"
+        )
+        #expect(notes.contains("Muesli could not generate"))
+        #expect(MeetingSummaryClient.summaryFailureReason(from: notes) == "Server is off.")
+    }
+
     @Test("notes that are not a failure have no reason")
     func structuredNotesHaveNoReason() {
         #expect(MeetingSummaryClient.summaryFailureReason(from: "## Decision\nShip it") == nil)
